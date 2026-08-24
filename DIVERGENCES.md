@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **5 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **6 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -196,6 +196,40 @@ Status counts: **5 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   parameter region, so in-range access is the only case exercised.
 - **pinned by**: `storage::tests::d007_out_of_range_access_is_reported_not_silent`,
   which also asserts a rejected write leaves the region untouched.
+
+## D-008 — `_update_height_demand` divides by an unguarded time constant
+
+- **status**: `applied`
+- **upstream**: `AP_TECS.cpp`, in `_update_height_demand`. Two *adjacent* lines
+  treat the same value differently:
+
+  ```cpp
+  const float coef = MIN(_DT / (_DT + MAX(_hgt_dem_tconst, _DT)), 1.0f);
+  _hgt_rate_dem = (_hgt_dem_rate_ltd - _hgt_dem_lpf) / _hgt_dem_tconst;
+  ```
+
+  The first guards the denominator with `MAX(_hgt_dem_tconst, _DT)`. The second
+  divides by the raw parameter.
+- **ported**: applies the same `MAX(tconst, dt)` guard on the second line.
+- **why**: `TECS_HDEM_TCONST` is documented `@Range: 1.0 5.0`, but `AP_Param`
+  does not enforce ranges at runtime — the range is GCS metadata. A value of
+  zero therefore reaches the division and produces `inf` in `_hgt_rate_dem`,
+  which feeds the pitch demand.
+
+  The guard on the immediately preceding line is the strongest possible
+  evidence this is an oversight rather than a decision: the author guarded the
+  same quantity one line earlier, in the same function, for the same reason.
+- **risk**: **Very low, and provably so.** For any `tconst` at or above `dt`,
+  `MAX(tconst, dt) == tconst`, so the arithmetic is bit-identical to upstream.
+  With the documented range starting at 1.0 and a typical `dt` around 0.02, no
+  in-range configuration is affected. The divergence exists only where upstream
+  divides by approximately zero.
+- **sitl_impact**: None. Reference flights use in-range parameters, where the
+  guard is a no-op. Confirmed by test: the in-range case is asserted to match
+  upstream's arithmetic exactly.
+- **pinned by**: `height::tests::d008_height_rate_demand_survives_zero_time_constant`,
+  which asserts both that a zero `tconst` yields a finite result **and** that an
+  in-range `tconst` produces upstream's exact value.
 
 ---
 
