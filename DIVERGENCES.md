@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **2 applied · 2 proposed · 3 reproduced (not bugs)**
+Status counts: **2 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -83,25 +83,44 @@ Status counts: **2 applied · 2 proposed · 3 reproduced (not bugs)**
 
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
-- **status**: `proposed` — **NOT APPLIED**, needs sign-off
+- **status**: `rejected` — reproduce upstream, do not change
 - **upstream**: `AP_Math/ftype.h:70` — `is_zero(double x)` returns `fabs(x) < FLT_EPSILON`,
   i.e. `1.19e-7`, not `DBL_EPSILON` (`2.22e-16`).
-- **would become**: compare against the epsilon of the value's own type, making `is_zero`
-  consistent with `is_equal`, which already uses the common type's epsilon
-  (`AP_Math.cpp:32`).
-- **why it may be a defect**: A double carrying `1e-10` is reported as zero — nine orders of
-  magnitude above `DBL_EPSILON`. The same library's `is_equal(1e-10, 0.0)` returns `false`.
-  Both cannot be right.
-- **why it may be deliberate**: `FLT_EPSILON` may be intended as a uniform "physically
-  negligible" threshold rather than a precision limit — sensible for a flight controller where
-  a double is still measuring metres or radians.
-- **risk**: **High.** `is_zero` underpins `is_positive` and `is_negative`, which gate
-  divide-by-zero guards throughout the estimator and controllers. Tightening the threshold
-  makes small-but-nonzero values newly count as positive, changing which guard branches fire.
-- **sitl_impact**: Potentially broad and progressive. Not a candidate for quiet application.
-- **recommendation**: **Do not apply.** The double branch is explicitly written with
-  `FLT_EPSILON` under `#if AP_MATH_ALLOW_DOUBLE_FUNCTIONS`, which reads as chosen rather than
-  overlooked. Reproduce it, and revisit if the estimator shows a concrete problem.
+- **considered**: comparing against the value's own type epsilon, making `is_zero` consistent
+  with `is_equal`, which uses the common type's epsilon (`AP_Math.cpp:32`).
+- **why it looked like a defect**: A double carrying `1e-10` is reported as zero, nine orders
+  of magnitude above `DBL_EPSILON`, while `is_equal(1e-10, 0.0)` returns `false`. The same
+  library appears to contradict itself.
+- **why it is REJECTED**: The inconsistency is protective, and "fixing" it would move
+  numerical behavior in the dangerous direction.
+
+  `is_zero` underpins `is_positive`, which gates divide-by-zero guards throughout the
+  library. The prevailing shape is:
+
+  ```cpp
+  const T len = length();
+  if ((len > max_length) && is_positive(len)) {
+      x *= (max_length / len);   // guarded division
+  }
+  ```
+
+  A **looser** threshold means more near-zero values are treated as zero, so the guard fires
+  more often and the division is **skipped**. Tightening to `DBL_EPSILON` would let values
+  around `1e-10` pass `is_positive`, reach the division, and produce scale factors on the
+  order of `1e10` instead of a skipped branch.
+
+  So upstream's choice is the conservative one. The apparent inconsistency with `is_equal` is
+  real but benign: `is_equal` answers "are these the same number", a precision question, while
+  `is_zero`/`is_positive` answer "is this safe to divide by", a physical-magnitude question.
+  Different questions legitimately take different thresholds.
+
+  Supporting evidence that it is deliberate: the double branch explicitly writes `FLT_EPSILON`
+  under `#if AP_MATH_ALLOW_DOUBLE_FUNCTIONS`, rather than inheriting a default.
+- **risk if applied**: High, and in the wrong direction — numerical blow-up where upstream
+  skips a branch, across the estimator and controllers.
+- **decision**: Reproduce upstream. Revisit only with a concrete estimator problem that traces
+  to this threshold, and treat any future change as a controls decision rather than a
+  correctness cleanup.
 
 ## D-004 — no internal-error channel for reported-but-unhandled conditions
 
