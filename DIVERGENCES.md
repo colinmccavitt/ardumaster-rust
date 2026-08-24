@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **6 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **7 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -230,6 +230,66 @@ Status counts: **6 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
 - **pinned by**: `height::tests::d008_height_rate_demand_survives_zero_time_constant`,
   which asserts both that a zero `tconst` yields a finite result **and** that an
   in-range `tconst` produces upstream's exact value.
+
+## D-009 — takeoff minimum pitch is converted from centidegrees twice
+
+- **status**: `applied`
+- **upstream**: `AP_TECS.cpp:1562`, in `_update_pitch_limits`:
+
+  ```cpp
+  // Apply TAKEOFF minimum pitch
+  if (_flight_stage == TAKEOFF || _flight_stage == ABORT_LANDING) {
+      _PITCHminf = cd_to_rad(ptchMinCO_cd);      // centidegrees -> RADIANS
+  }
+  ...
+  // convert to radians
+  _PITCHminf = radians(_PITCHminf);              // applied again, as if degrees
+  ```
+
+- **ported**: `ptchMinCO_cd * 0.01` — centidegrees to **degrees** — so the single
+  trailing `radians()` conversion is correct.
+- **why**: The whole function works in degrees and converts once at the end.
+  Every other assignment to `_PITCHminf`/`_PITCHmaxf` is degrees:
+
+  | source | units |
+  |---|---|
+  | `aparm.pitch_limit_min` / `_max` | `@Units: deg` |
+  | `TECS_PITCH_MIN` / `_MAX` | degrees |
+  | `pitch_limit_deg` in the flare | degrees, `0.01 * get_pitch_cd()` |
+  | `_PITCHminf_ext` / `_PITCHmaxf_ext` | `-90.0` / `90.0`, degrees |
+  | `flare_pitch_range` | `20`, degrees |
+
+  The takeoff branch is the only one producing radians, and it is then treated
+  as degrees. The result is scaled by `pi/180`: **a configured 10° climbout
+  minimum becomes 0.175°**, a factor of 57.3 too small.
+
+  This also feeds the takeoff pitch bias in `_update_pitch`
+  (`SEBdot_dem_total += _PITCHminf * gainInv`), which becomes negligible instead
+  of biasing the demand toward the climbout minimum.
+
+- **risk**: **Latent in normal operation, but safety-relevant when it binds.**
+  During a normal takeoff the height demand is far above the aircraft, so TECS
+  commands high pitch anyway and the *minimum* limit never becomes active. The
+  bug matters exactly when TECS wants to lower the nose during climbout — an
+  overspeed, for instance — which is precisely the case the climbout minimum
+  exists to prevent.
+
+  Applying the fix restores the configured limit. That is a real behaviour
+  change during TAKEOFF and ABORT_LANDING, not a no-op like D-008.
+
+- **sitl_impact**: **Expected, and must not be misread as a port defect.** The
+  reference flight (`test.Plane.ClimbBeforeTurn`) includes a takeoff, so the
+  replay may diverge during that phase. Any divergence there should be checked
+  against this entry *first*. Outside TAKEOFF and ABORT_LANDING the ported code
+  is identical to upstream.
+
+- **pinned by**: `limits::tests::d009_takeoff_pitch_min_uses_degrees`, which
+  asserts the ported value matches the configured climbout minimum in radians,
+  and separately shows what upstream's double conversion produces.
+
+- **note**: This is the first divergence found that changes behaviour in a
+  normal flight phase. Worth reporting upstream if the user chooses to; the
+  register is the artifact for that.
 
 ---
 
