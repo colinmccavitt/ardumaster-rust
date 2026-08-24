@@ -8,4 +8,7 @@
 
 #![no_std]
 
+pub mod average;
+pub mod buffer;
 pub mod lowpass;
+pub mod mode;
