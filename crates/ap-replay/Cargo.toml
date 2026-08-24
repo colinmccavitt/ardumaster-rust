@@ -1,0 +1,12 @@
+[package]
+name = "ap-replay"
+description = "Log-replay differential test support (ADR-0008). Test infrastructure, not flight code."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
