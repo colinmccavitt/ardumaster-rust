@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ap-hal = { workspace = true }
 ap-math = { workspace = true }
 ap-filter = { workspace = true }
 libm = { workspace = true }
