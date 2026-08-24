@@ -14,6 +14,7 @@
 #![no_std]
 
 pub mod matrix3;
+pub mod quaternion;
 pub mod scalar;
 pub mod vector2;
 pub mod vector3;
