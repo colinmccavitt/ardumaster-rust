@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **3 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **4 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -117,6 +117,53 @@ Status counts: **3 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   does. The divergence appears only where upstream's UB resolves the other way, which SITL is
   unlikely to exhibit.
 - **pinned by**: `lowpass::tests::d005_fresh_filter_is_deterministically_unseeded`
+
+## D-006 — `SlewLimiter` leaves thirteen members uninitialised
+
+- **status**: `applied`
+- **upstream**: `Filter/SlewLimiter.cpp:33` — the constructor initialises only the two
+  parameter references and configures the internal filter:
+
+  ```cpp
+  SlewLimiter::SlewLimiter(const float &_slew_rate_max, const float &_slew_rate_tau) :
+      slew_rate_max(_slew_rate_max),
+      slew_rate_tau(_slew_rate_tau)
+  {
+      slew_filter.set_cutoff_frequency(DERIVATIVE_CUTOFF_FREQ);
+      slew_filter.reset(0.0);
+  }
+  ```
+
+  `SlewLimiter.h:36-48` then declares, with no default member initialisers:
+  `_output_slew_rate`, `_modifier_slew_rate`, `last_sample`, `_max_pos_slew_rate`,
+  `_max_neg_slew_rate`, `_max_pos_slew_event_ms`, `_max_neg_slew_event_ms`,
+  `_pos_event_index`, `_neg_event_index`, `_pos_event_ms[2]`, `_neg_event_ms[2]`,
+  `_pos_event_stored`, `_neg_event_stored`. All are read on the first `modifier()` call.
+- **ported**: every field is zeroed by `Default`. Rust cannot express the bug.
+- **why**: Same class as D-005, larger blast radius. `SlewLimiter` produces the gain
+  multiplier that reduces PID gains when a controller oscillates, with three call sites on
+  the fixed-wing path.
+
+  The dangerous field is `last_sample`. The first call computes
+  `(sample - last_sample) / dt`; with a garbage `last_sample` that derivative can be
+  enormous, which latches `_max_pos_slew_rate` high. Since
+  `mod = slew_rate_max / (slew_rate_max + 1.5 * (modifier_slew_rate - slew_rate_max))`,
+  a large latched slew rate drives the multiplier toward **zero** — PID gains crushed at
+  startup, decaying back only over `slew_rate_tau`.
+
+  A garbage `_max_pos_slew_event_ms` compounds it, since the decay branch is gated on
+  `now_ms - _max_pos_slew_event_ms > WINDOW_MS`.
+
+  As with D-005 this usually works in practice: these limiters live inside PID objects owned
+  by statically-stored vehicle objects, which are zero-initialised. Stack or heap
+  construction has no such guarantee.
+- **risk**: Low to apply — the port has one defined behavior where upstream has many possible
+  ones. Fixed-wing call sites: 3, all in `APM_Control` PID gain limiting.
+- **sitl_impact**: None expected, for the same reason as D-005 — SITL constructs these within
+  statically-stored objects, so upstream is already zero-initialised there.
+- **pinned by**: `slew::tests::d006_state_is_deterministically_zeroed`, which also asserts
+  that a signal at rest yields a multiplier of exactly 1.0 — the check a garbage
+  `last_sample` would fail.
 
 ---
 

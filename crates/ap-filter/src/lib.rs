@@ -12,3 +12,4 @@ pub mod average;
 pub mod buffer;
 pub mod lowpass;
 pub mod mode;
+pub mod slew;
