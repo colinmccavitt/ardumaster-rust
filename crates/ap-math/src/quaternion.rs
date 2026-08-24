@@ -286,6 +286,20 @@ mod tests {
         assert!((a - b).abs() < 1.0e-6, "expected {b}, got {a}");
     }
 
+    /// Compare all four components. Upstream loops `for (int a = 0; a < 4; ++a)`
+    /// over `operator[]`; zipping avoids indexing so the workspace
+    /// `indexing_slicing` lint keeps its value on real code.
+    fn near_all(a: Quaternion, b: Quaternion) {
+        for (x, y) in comps(a).into_iter().zip(comps(b)) {
+            near(x, y);
+        }
+    }
+
+    /// Component-wise negation, for upstream's `-unit` style expectations.
+    fn neg(q: Quaternion) -> Quaternion {
+        Quaternion::new(-q.q1, -q.q2, -q.q3, -q.q4)
+    }
+
     /// UPSTREAM-PARITY: TEST(QuaternionTest, QuaternionMultiplicationOfBases)
     ///
     /// The full Hamilton table: i^2 = j^2 = k^2 = ijk = -1, ij = k, jk = i,
@@ -310,21 +324,19 @@ mod tests {
         let kk = k * k;
         let ijk = i * j * k;
 
-        for a in 0..4 {
-            near(comps(ii)[a], comps(jj)[a]);
-            near(comps(jj)[a], comps(kk)[a]);
-            near(comps(kk)[a], comps(ijk)[a]);
-            near(comps(ijk)[a], -comps(unit)[a]);
-            near(comps(ij)[a], comps(k)[a]);
-            near(comps(ii)[a], -comps(unit)[a]);
-            near(comps(ik)[a], -comps(j)[a]);
-            near(comps(ji)[a], -comps(k)[a]);
-            near(comps(jj)[a], -comps(unit)[a]);
-            near(comps(jk)[a], comps(i)[a]);
-            near(comps(ki)[a], comps(j)[a]);
-            near(comps(kj)[a], -comps(i)[a]);
-            near(comps(kk)[a], -comps(unit)[a]);
-        }
+        near_all(ii, jj);
+        near_all(jj, kk);
+        near_all(kk, ijk);
+        near_all(ijk, neg(unit));
+        near_all(ij, k);
+        near_all(ii, neg(unit));
+        near_all(ik, neg(j));
+        near_all(ji, neg(k));
+        near_all(jj, neg(unit));
+        near_all(jk, i);
+        near_all(ki, j);
+        near_all(kj, neg(i));
+        near_all(kk, neg(unit));
     }
 
     /// UPSTREAM-PARITY: TEST(QuaternionTest, QuaternionToRotationMatrix)
