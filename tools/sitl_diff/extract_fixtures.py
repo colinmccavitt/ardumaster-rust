@@ -45,6 +45,22 @@ ATOMIC = {
 }
 
 
+def read_series(path, mtype, fields):
+    """[(TimeUS, (values...)), ...] for one message type."""
+    log = DFReader.DFReader_binary(str(path))
+    out = []
+    while True:
+        m = log.recv_match(type=mtype)
+        if m is None:
+            break
+        d = m.to_dict()
+        try:
+            out.append((int(d["TimeUS"]), tuple(float(d[f]) for f in fields)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def extract(log_path: Path, out_dir: Path, name: str) -> int:
     mtype, ins, outs = ATOMIC[name]
     log = DFReader.DFReader_binary(str(log_path))
@@ -95,3 +111,41 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# TECS replay fixture: TECI (inputs) joined to TECS (outputs) on EXACT TimeUS.
+#
+# These are two messages, but both are written from the same
+# update_pitch_throttle() call using the same `now`, so an exact-timestamp
+# join is atomic in the sense that matters - no interpolation, no skew. The
+# join is asserted to be exact; any unmatched row is dropped and reported
+# rather than silently approximated.
+#
+# TECI exists only because upstream logs TECS internal state rather than the
+# nine arguments the controller actually received, five of which are logged
+# nowhere. It is added by tools/sitl_diff/patches/apply_tecs_logging.py to the
+# REFERENCE BUILD ONLY, per ADR-0008.
+# ---------------------------------------------------------------------------
+
+TECI_INPUTS = ["hdem", "easd", "stg", "dbey", "pmin", "thnu", "hafe", "ldf", "ptrm"]
+TECS_OUTPUTS = ["th", "ph"]
+
+
+def tecs_replay(log_path, out_dir):
+    ins = dict(read_series(log_path, "TECI", TECI_INPUTS))
+    outs = dict(read_series(log_path, "TECS", TECS_OUTPUTS))
+    common = sorted(set(ins) & set(outs))
+    dropped = len(ins) - len(common)
+
+    path = out_dir / "tecs_replay.csv"
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time_us"] + ["in_" + x for x in TECI_INPUTS]
+                   + ["out_" + x for x in TECS_OUTPUTS])
+        for t in common:
+            w.writerow([t] + ["{:.9g}".format(v) for v in ins[t]]
+                       + ["{:.9g}".format(v) for v in outs[t]])
+    print("  {:<12} {:,} rows exact-joined (TECI {:,}, TECS {:,}, {} unmatched)".format(
+        "tecs_replay", len(common), len(ins), len(outs), dropped))
+    return len(common)
