@@ -14,6 +14,7 @@
 #![no_std]
 
 pub mod scalar;
+pub mod vector2;
 
 /// The chosen float type, mirroring upstream's `ftype` in `AP_Math/ftype.h`.
 ///

@@ -18,14 +18,20 @@
 //! So `is_zero(1e-10_f64)` is `true` but `is_equal(1e-10_f64, 0.0_f64)` is
 //! `false`. That is upstream behavior and is deliberately preserved.
 
-use crate::Ftype;
-
 /// Upstream `FLT_EPSILON`, used by the `is_*` predicates regardless of width.
 pub const FLT_EPSILON: f64 = f32::EPSILON as f64;
 
 /// Float types the scalar helpers operate on. Mirrors upstream's template
 /// instantiations for `float` and `double`.
-pub trait Real: Copy + PartialOrd {
+pub trait Real:
+    Copy
+    + PartialOrd
+    + core::ops::Add<Output = Self>
+    + core::ops::Sub<Output = Self>
+    + core::ops::Mul<Output = Self>
+    + core::ops::Div<Output = Self>
+    + core::ops::Neg<Output = Self>
+{
     /// Epsilon of this type, as `std::numeric_limits<T>::epsilon()`.
     const EPSILON: Self;
     /// Pi.
@@ -41,6 +47,18 @@ pub trait Real: Copy + PartialOrd {
     fn sqrt(self) -> Self;
     /// Arcsine.
     fn asin(self) -> Self;
+    /// Arccosine.
+    fn acos(self) -> Self;
+    /// Cosine.
+    fn cos(self) -> Self;
+    /// Sine.
+    fn sin(self) -> Self;
+    /// Two-argument arctangent, upstream `atan2F(y, x)`.
+    fn atan2(self, x: Self) -> Self;
+    /// True if this is positive or negative infinity.
+    fn is_infinite(self) -> bool;
+    /// One.
+    fn one() -> Self;
     /// Floating point remainder, upstream `fmodf`/`fmod`.
     fn fmod(self, rhs: Self) -> Self;
     /// True if this is NaN.
@@ -70,6 +88,30 @@ impl Real for f32 {
     #[inline]
     fn asin(self) -> Self {
         libm::asinf(self)
+    }
+    #[inline]
+    fn acos(self) -> Self {
+        libm::acosf(self)
+    }
+    #[inline]
+    fn cos(self) -> Self {
+        libm::cosf(self)
+    }
+    #[inline]
+    fn sin(self) -> Self {
+        libm::sinf(self)
+    }
+    #[inline]
+    fn atan2(self, x: Self) -> Self {
+        libm::atan2f(self, x)
+    }
+    #[inline]
+    fn is_infinite(self) -> bool {
+        <f32>::is_infinite(self)
+    }
+    #[inline]
+    fn one() -> Self {
+        1.0
     }
     #[inline]
     fn fmod(self, rhs: Self) -> Self {
@@ -112,6 +154,30 @@ impl Real for f64 {
     #[inline]
     fn asin(self) -> Self {
         libm::asin(self)
+    }
+    #[inline]
+    fn acos(self) -> Self {
+        libm::acos(self)
+    }
+    #[inline]
+    fn cos(self) -> Self {
+        libm::cos(self)
+    }
+    #[inline]
+    fn sin(self) -> Self {
+        libm::sin(self)
+    }
+    #[inline]
+    fn atan2(self, x: Self) -> Self {
+        libm::atan2(self, x)
+    }
+    #[inline]
+    fn is_infinite(self) -> bool {
+        <f64>::is_infinite(self)
+    }
+    #[inline]
+    fn one() -> Self {
+        1.0
     }
     #[inline]
     fn fmod(self, rhs: Self) -> Self {
@@ -273,31 +339,31 @@ pub fn constrain_value<T: Real>(amt: T, low: T, high: T) -> T {
 
 /// Degrees to radians. Upstream `AP_Math.h:227`.
 #[inline]
-pub fn radians(deg: Ftype) -> Ftype {
-    deg * (core::f64::consts::PI / 180.0) as Ftype
+pub fn radians<T: Real>(deg: T) -> T {
+    deg * T::from_f64(core::f64::consts::PI / 180.0)
 }
 
 /// Radians to degrees. Upstream `AP_Math.h:255`.
 #[inline]
-pub fn degrees(rad: Ftype) -> Ftype {
-    rad * (180.0 / core::f64::consts::PI) as Ftype
+pub fn degrees<T: Real>(rad: T) -> T {
+    rad * T::from_f64(180.0 / core::f64::consts::PI)
 }
 
 /// Square of a value. Upstream `AP_Math.h:261`.
 #[inline]
-pub fn sq(v: Ftype) -> Ftype {
+pub fn sq<T: Real>(v: T) -> T {
     v * v
 }
 
 /// Pythagorean norm of two components. Upstream's variadic `norm()`.
 #[inline]
-pub fn norm2(a: Ftype, b: Ftype) -> Ftype {
+pub fn norm2<T: Real>(a: T, b: T) -> T {
     safe_sqrt(sq(a) + sq(b))
 }
 
 /// Pythagorean norm of three components.
 #[inline]
-pub fn norm3(a: Ftype, b: Ftype, c: Ftype) -> Ftype {
+pub fn norm3<T: Real>(a: T, b: T, c: T) -> T {
     safe_sqrt(sq(a) + sq(b) + sq(c))
 }
 
@@ -309,6 +375,7 @@ mod tests {
     #![allow(clippy::float_cmp, clippy::manual_clamp)]
 
     use super::*;
+    use crate::Ftype;
 
     // Cases below are ported from upstream
     // libraries/AP_Math/tests/test_math.cpp at Plane-4.7.0.
@@ -484,16 +551,16 @@ mod tests {
     /// upstream TEST(MathTest, Square) and TEST(MathTest, Norm)
     #[test]
     fn sq_and_norm_match_upstream() {
-        near(sq(0.0) as f64, 0.0);
-        near(sq(1.0) as f64, 1.0);
-        near(sq(2.0) as f64, 4.0);
-        near(norm2(3.0, 4.0) as f64, 5.0);
-        near(norm3(2.0, 3.0, 6.0) as f64, 7.0);
+        near(sq(0.0_f32) as f64, 0.0);
+        near(sq(1.0_f32) as f64, 1.0);
+        near(sq(2.0_f32) as f64, 4.0);
+        near(norm2(3.0_f32, 4.0) as f64, 5.0);
+        near(norm3(2.0_f32, 3.0, 6.0) as f64, 7.0);
     }
 
     #[test]
     fn degrees_radians_roundtrip() {
-        near(radians(180.0) as f64, core::f64::consts::PI);
+        near(radians(180.0_f32) as f64, core::f64::consts::PI);
         near(degrees(core::f32::consts::PI as Ftype) as f64, 180.0);
     }
 }
