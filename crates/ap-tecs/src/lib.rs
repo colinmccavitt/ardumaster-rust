@@ -14,4 +14,5 @@ pub mod energy;
 pub mod height;
 pub mod params;
 pub mod speed;
+pub mod throttle;
 pub mod underspeed;
