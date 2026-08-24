@@ -1,0 +1,13 @@
+[package]
+name = "ap-scheduler"
+description = "Port of ArduPilot libraries/AP_Scheduler (Plane-4.7.0). Tracked as FW-005."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-hal = { workspace = true }
+
+[lints]
+workspace = true
