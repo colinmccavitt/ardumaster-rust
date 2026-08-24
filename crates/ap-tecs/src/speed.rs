@@ -15,6 +15,7 @@ use ap_filter::average::AverageFilter;
 use ap_math::scalar::{constrain_value, is_positive, safe_sqrt};
 
 use crate::params::TecsParams;
+use crate::util::{max_f32, min_f32};
 
 /// Standard gravity, upstream `GRAVITY_MSS`.
 pub const GRAVITY_MSS: f32 = 9.80665;
@@ -255,24 +256,6 @@ impl SpeedState {
             self.integ_dtas_state + self.vel_dot + aspd_err * params.spd_comp_filt_omega * damping;
         self.tas_state += tas_input * dt;
         self.tas_state = max_f32(self.tas_state, MIN_AIRSPEED);
-    }
-}
-
-#[inline]
-fn max_f32(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-#[inline]
-fn min_f32(a: f32, b: f32) -> f32 {
-    if a < b {
-        a
-    } else {
-        b
     }
 }
 

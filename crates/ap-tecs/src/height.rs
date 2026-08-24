@@ -19,6 +19,7 @@ use ap_math::scalar::{constrain_value, is_negative};
 
 use crate::params::{FlightStage, TecsParams};
 use crate::speed::ClipStatus;
+use crate::util::{max_f32, min_f32};
 
 /// Everything `_update_height_demand` reads from outside TECS.
 #[derive(Debug, Clone, Copy)]
@@ -265,24 +266,6 @@ impl HeightDemand {
 
         // fade from the offset profile onto the ideal one
         self.hgt_dem = self.flare_hgt_dem_adj * (1.0 - p) + self.flare_hgt_dem_ideal * p;
-    }
-}
-
-#[inline]
-fn max_f32(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-#[inline]
-fn min_f32(a: f32, b: f32) -> f32 {
-    if a < b {
-        a
-    } else {
-        b
     }
 }
 
