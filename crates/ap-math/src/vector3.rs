@@ -114,18 +114,37 @@ impl<T: Real> Vector3<T> {
         false
     }
 
-    /// Normalize in place. Upstream `normalize()`, `*this /= length()`.
+    /// Normalize in place, returning false for a zero-length vector.
     ///
-    /// No zero guard, matching upstream: a zero vector becomes NaN.
+    /// DIVERGENCE D-002 - see DIVERGENCES.md.
     #[inline]
-    pub fn normalize(&mut self) {
-        *self = self.normalized();
+    pub fn normalize(&mut self) -> bool {
+        match self.normalized() {
+            Some(n) => {
+                *self = n;
+                true
+            }
+            None => false,
+        }
     }
 
-    /// The normalized vector. No zero guard, matching upstream.
+    /// The normalized vector, or `None` when it has zero length.
+    ///
+    /// DIVERGENCE D-002 - see DIVERGENCES.md. Upstream divides by `length()`
+    /// unguarded, producing NaN for a zero vector.
     #[inline]
-    pub fn normalized(self) -> Self {
-        self / self.length()
+    pub fn normalized(self) -> Option<Self> {
+        let len = self.length();
+        if is_zero(len) {
+            return None;
+        }
+        Some(self / len)
+    }
+
+    /// The normalized vector, or the zero vector when it has zero length.
+    #[inline]
+    pub fn normalized_or_zero(self) -> Self {
+        self.normalized().unwrap_or_else(Self::zero)
     }
 
     /// Angle to `v2` in radians.
@@ -139,10 +158,15 @@ impl<T: Real> Vector3<T> {
             return T::zero();
         }
         let cosv = self.dot(v2) / len;
-        // Upstream collapses both out-of-domain ends to zero here, unlike
-        // Vector2 which returns PI for the antiparallel end.
-        if cosv >= T::one() || cosv <= -T::one() {
+        if cosv >= T::one() {
             return T::zero();
+        }
+        // DIVERGENCE D-001: upstream vector3.cpp collapses both out-of-domain
+        // ends into a single `return 0`, so antiparallel vectors report an
+        // angle of 0 instead of PI. Vector2 handles the two ends separately
+        // and correctly. See DIVERGENCES.md.
+        if cosv <= -T::one() {
+            return T::PI;
         }
         cosv.acos()
     }
@@ -364,29 +388,43 @@ mod tests {
     }
 
     /// UPSTREAM-PARITY: TEST(Vector3Test, normalized)
+    ///
+    /// Values match upstream; only the return shape differs, per D-002.
     #[test]
     fn normalized_matches_upstream() {
         let mut v = Vector3f::new(3.0, 3.0, 3.0);
-        v.normalize();
-        assert_eq!(Vector3f::new(3.0, 3.0, 3.0).normalized(), v);
+        assert!(v.normalize());
+        assert_eq!(Vector3f::new(3.0, 3.0, 3.0).normalized().unwrap(), v);
 
         let r = 1.0 / libm::sqrtf(3.0);
         assert_eq!(
             Vector3f::new(r, r, r),
-            Vector3f::new(2.0, 2.0, 2.0).normalized()
+            Vector3f::new(2.0, 2.0, 2.0).normalized().unwrap()
         );
         assert_eq!(
-            Vector3f::new(3.0, 3.0, 3.0).normalized(),
-            Vector3f::new(5.0, 5.0, 5.0).normalized()
+            Vector3f::new(3.0, 3.0, 3.0).normalized().unwrap(),
+            Vector3f::new(5.0, 5.0, 5.0).normalized().unwrap()
         );
         assert_eq!(
-            Vector3f::new(-3.0, 3.0, 3.0).normalized(),
-            Vector3f::new(-5.0, 5.0, 5.0).normalized()
+            Vector3f::new(-3.0, 3.0, 3.0).normalized().unwrap(),
+            Vector3f::new(-5.0, 5.0, 5.0).normalized().unwrap()
         );
         assert_ne!(
-            Vector3f::new(-3.0, 3.0, 3.0).normalized(),
-            Vector3f::new(5.0, 5.0, 5.0).normalized()
+            Vector3f::new(-3.0, 3.0, 3.0).normalized().unwrap(),
+            Vector3f::new(5.0, 5.0, 5.0).normalized().unwrap()
         );
+    }
+
+    /// DIVERGENCE D-002, pinned. See the Vector2 twin for the rationale.
+    #[test]
+    fn d002_normalized_zero_is_none() {
+        assert!(Vector3f::zero().normalized().is_none());
+
+        let mut z = Vector3f::zero();
+        assert!(!z.normalize());
+        assert!(z.is_zero());
+        assert!(!z.is_nan(), "the upstream NaN must not appear");
+        assert_eq!(Vector3f::zero().normalized_or_zero(), Vector3f::zero());
     }
 
     /// UPSTREAM-PARITY: TEST(Vector3Test, Operator) and IsEqual
@@ -420,27 +458,38 @@ mod tests {
         assert!(Vector3f::new(f32::INFINITY, 0.0, 0.0).is_inf());
     }
 
-    /// PORT-DERIVED: pins the upstream inconsistency documented in the module
-    /// header. Upstream's own angle test is COMMENTED OUT at test_vector3.cpp
-    /// lines 140-149, and it expects M_PI for the antiparallel case - which
-    /// this implementation does not produce. That disabled test is good
-    /// evidence the Vector3 behavior is an upstream bug, not a decision.
+    /// DIVERGENCE D-001, pinned.
+    ///
+    /// UPSTREAM: `vector3.cpp` collapses both out-of-domain ends into a single
+    /// `return 0`, so antiparallel vectors report an angle of 0.
+    /// PORTED: returns PI, matching `Vector2::angle_to` and the mathematics.
+    ///
+    /// Evidence this is a defect: upstream's own Vector3 angle test expects
+    /// M_PI and is commented out at tests/test_vector3.cpp:140-149. Real
+    /// caller affected is AP_Compass.cpp:2243 in Compass::consistent(), where
+    /// the bug reports two opposed compasses as perfectly consistent.
+    ///
+    /// Do not "restore parity" here - the 0 is the defect.
     #[test]
-    fn angle_to_antiparallel_differs_from_vector2() {
+    fn d001_angle_to_antiparallel_returns_pi() {
         use crate::vector2::Vector2f;
 
-        // 2D returns PI for antiparallel...
+        // 2D was always correct
         near(
             Vector2f::new(1.0, 0.0).angle_to(Vector2f::new(-1.0, 0.0)),
             PI,
         );
-        // ...but 3D returns 0 for the same geometry.
+        // 3D now agrees, where upstream returned 0.0
         near(
             Vector3f::new(1.0, 0.0, 0.0).angle_to(Vector3f::new(-1.0, 0.0, 0.0)),
-            0.0,
+            PI,
+        );
+        near(
+            Vector3f::new(0.0, 5.0, 0.0).angle_to(Vector3f::new(0.0, -2.0, 0.0)),
+            PI,
         );
 
-        // the agreeing cases
+        // cases where upstream and the port already agreed
         near(
             Vector3f::new(0.0, 1.0, 0.0).angle_to(Vector3f::new(1.0, 0.0, 0.0)),
             PI / 2.0,
@@ -449,7 +498,7 @@ mod tests {
             Vector3f::new(0.5, 0.5, 0.0).angle_to(Vector3f::new(0.5, 0.5, 0.0)),
             0.0,
         );
-        // zero length returns 0 rather than NaN
+        // zero length still returns 0 rather than NaN, as upstream does
         near(
             Vector3f::new(0.0, 0.0, 0.0).angle_to(Vector3f::new(0.0, 1.0, 0.0)),
             0.0,

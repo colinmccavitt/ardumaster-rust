@@ -20,9 +20,9 @@
 //! - `==` compares with [`is_equal`] per component, **not** exact equality
 //!   (`vector2.cpp:133`). Two vectors differing by less than an epsilon are
 //!   equal, so `Vector2` is deliberately not `Eq`.
-//! - [`Vector2::normalized`] divides by `length()` with **no zero guard**,
-//!   matching `vector2.cpp`. A zero vector yields NaN components rather than
-//!   an error. ADR-0003 requires reproducing this rather than fixing it.
+//! - [`Vector2::normalized`] returns `Option`, diverging from upstream, which
+//!   divides by `length()` unguarded and yields NaN. Registered as **D-002**
+//!   in DIVERGENCES.md per ADR-0007.
 
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -106,19 +106,43 @@ impl<T: Real> Vector2<T> {
         false
     }
 
-    /// Normalize in place. Upstream `normalize()`.
+    /// Normalize in place, returning false for a zero-length vector.
+    ///
+    /// DIVERGENCE D-002 - see DIVERGENCES.md. Upstream has no zero guard and
+    /// produces NaN components, which then propagate silently.
     #[inline]
-    pub fn normalize(&mut self) {
-        *self = self.normalized();
+    pub fn normalize(&mut self) -> bool {
+        match self.normalized() {
+            Some(n) => {
+                *self = n;
+                true
+            }
+            None => false,
+        }
     }
 
-    /// Return the normalized vector.
+    /// The normalized vector, or `None` when it has zero length.
     ///
-    /// Upstream `vector2.cpp` divides by `length()` with no zero check, so a
-    /// zero vector produces NaN components. Preserved deliberately.
+    /// DIVERGENCE D-002 - see DIVERGENCES.md. Upstream `vector2.cpp` divides
+    /// by `length()` unguarded, so a zero vector yields NaN. Upstream is
+    /// inconsistent with itself here: `QuaternionT::normalize` does guard the
+    /// zero case. Surfacing it in the type is the clearest reason to port to
+    /// Rust at all.
     #[inline]
-    pub fn normalized(self) -> Self {
-        self / self.length()
+    pub fn normalized(self) -> Option<Self> {
+        let len = self.length();
+        if is_zero(len) {
+            return None;
+        }
+        Some(self / len)
+    }
+
+    /// The normalized vector, or the zero vector when it has zero length.
+    ///
+    /// For callers that want the lenient shape without NaN propagation.
+    #[inline]
+    pub fn normalized_or_zero(self) -> Self {
+        self.normalized().unwrap_or_else(Self::zero)
     }
 
     /// Angle between this vector and `v2`, in radians.
@@ -356,33 +380,52 @@ mod tests {
     }
 
     /// upstream TEST(Vector2Test, normalized)
+    ///
+    /// Values match upstream; only the return shape differs, per D-002.
     #[test]
     fn normalized_matches_upstream() {
         let mut v = Vector2f::new(3.0, 3.0);
-        v.normalize();
-        assert_eq!(Vector2f::new(3.0, 3.0).normalized(), v);
+        assert!(v.normalize());
+        assert_eq!(Vector2f::new(3.0, 3.0).normalized().unwrap(), v);
 
         let r = libm::sqrtf(2.0) / 2.0;
-        assert_eq!(Vector2f::new(r, r), Vector2f::new(5.0, 5.0).normalized());
         assert_eq!(
-            Vector2f::new(3.0, 3.0).normalized(),
-            Vector2f::new(5.0, 5.0).normalized()
+            Vector2f::new(r, r),
+            Vector2f::new(5.0, 5.0).normalized().unwrap()
         );
         assert_eq!(
-            Vector2f::new(-3.0, 3.0).normalized(),
-            Vector2f::new(-5.0, 5.0).normalized()
+            Vector2f::new(3.0, 3.0).normalized().unwrap(),
+            Vector2f::new(5.0, 5.0).normalized().unwrap()
+        );
+        assert_eq!(
+            Vector2f::new(-3.0, 3.0).normalized().unwrap(),
+            Vector2f::new(-5.0, 5.0).normalized().unwrap()
         );
         assert_ne!(
-            Vector2f::new(-3.0, 3.0).normalized(),
-            Vector2f::new(5.0, 5.0).normalized()
+            Vector2f::new(-3.0, 3.0).normalized().unwrap(),
+            Vector2f::new(5.0, 5.0).normalized().unwrap()
         );
     }
 
-    /// Upstream divides by length with no zero guard, so this is NaN rather
-    /// than an error or a zero vector. Reproduced deliberately (ADR-0003).
+    /// DIVERGENCE D-002, pinned.
+    ///
+    /// UPSTREAM: `vector2.cpp` computes `*this / length()` with no zero guard,
+    /// so a zero vector yields NaN components that propagate silently.
+    /// PORTED: `None`, with `normalize()` reporting false and leaving the
+    /// value untouched.
+    ///
+    /// Do not "restore parity" here - the NaN behavior is the defect.
     #[test]
-    fn normalized_zero_vector_is_nan_like_upstream() {
-        assert!(Vector2f::zero().normalized().is_nan());
+    fn d002_normalized_zero_is_none() {
+        assert!(Vector2f::zero().normalized().is_none());
+
+        let mut z = Vector2f::zero();
+        assert!(!z.normalize());
+        assert!(z.is_zero(), "a failed normalize must not modify the value");
+        assert!(!z.is_nan(), "the upstream NaN must not appear");
+
+        // lenient helper for callers that want the old shape without NaN
+        assert_eq!(Vector2f::zero().normalized_or_zero(), Vector2f::zero());
     }
 
     /// upstream TEST(Vector2Test, Project)
