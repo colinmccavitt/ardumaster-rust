@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **4 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **5 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -164,6 +164,38 @@ Status counts: **4 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
 - **pinned by**: `slew::tests::d006_state_is_deterministically_zeroed`, which also asserts
   that a signal at rest yields a multiplier of exactly 1.0 — the check a garbage
   `last_sample` would fail.
+
+## D-007 — `Storage` block access cannot report an out-of-range offset
+
+- **status**: `applied`
+- **upstream**: `AP_HAL/Storage.h:10-11`
+
+  ```cpp
+  virtual void read_block(void *dst, uint16_t src, size_t n) = 0;
+  virtual void write_block(uint16_t dst, const void* src, size_t n) = 0;
+  ```
+
+  Both return `void` and take a raw pointer plus a separate length, so an
+  offset past the end of the storage region cannot be reported. What happens is
+  backend-defined: clamp, read adjacent memory, or silently do nothing.
+- **ported**: both take slices, which carry their own length, and return
+  `Result<()>`. An out-of-range or overflowing offset is `Err`, and a rejected
+  write applies nothing.
+- **why**: This backs the parameter system (FW-004) and mission storage. A
+  silently truncated or misdirected parameter write is the kind of fault that
+  surfaces much later as an inexplicable configuration change, with nothing in
+  the logs tying it to the write that caused it.
+
+  This is a shape change more than a behavior change — backends that currently
+  succeed still succeed — but it is registered rather than filed as a doc note,
+  because converting silent undefined behavior into a reported error **is**
+  observable to a caller, and that is the bar ADR-0007 sets for the register.
+- **risk**: Low. No ported caller exists yet; FW-004 will be the first, and it
+  gets the checked API from the start rather than being retrofitted.
+- **sitl_impact**: None. Upstream's SITL backend is file-backed and sized to the
+  parameter region, so in-range access is the only case exercised.
+- **pinned by**: `storage::tests::d007_out_of_range_access_is_reported_not_silent`,
+  which also asserts a rejected write leaves the region untouched.
 
 ---
 
