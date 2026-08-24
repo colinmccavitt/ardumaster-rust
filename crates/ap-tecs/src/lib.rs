@@ -17,5 +17,6 @@ pub mod speed;
 pub mod throttle;
 pub mod underspeed;
 
+pub mod demand;
 pub mod pitch;
 mod util;

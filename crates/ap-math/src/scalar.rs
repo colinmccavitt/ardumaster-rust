@@ -394,6 +394,40 @@ pub fn calc_lowpass_alpha_dt(dt: f32, cutoff_freq: f32) -> f32 {
     dt / (dt + rc)
 }
 
+/// Linear interpolation with clamped ends, upstream `linear_interpolate()`.
+///
+/// Maps `input_value` from the `input_low..input_high` range onto
+/// `output_low..output_high`, clamping outside the input range rather than
+/// extrapolating.
+///
+/// Upstream swaps both pairs when `input_low > input_high` so either polarity
+/// works. Reproduced: TECS relies on it, passing a range that runs downward.
+#[inline]
+pub fn linear_interpolate<T: Real>(
+    output_low: T,
+    output_high: T,
+    input_value: T,
+    input_low: T,
+    input_high: T,
+) -> T {
+    let (input_low, input_high, output_low, output_high) = if input_low > input_high {
+        // support either polarity
+        (input_high, input_low, output_high, output_low)
+    } else {
+        (input_low, input_high, output_low, output_high)
+    };
+
+    if input_value <= input_low {
+        return output_low;
+    }
+    if input_value >= input_high {
+        return output_high;
+    }
+    let p =
+        (input_value.to_f64() - input_low.to_f64()) / (input_high.to_f64() - input_low.to_f64());
+    T::from_f64(output_low.to_f64() + p * (output_high.to_f64() - output_low.to_f64()))
+}
+
 #[cfg(test)]
 mod tests {
     // Upstream asserts exact equality with EXPECT_EQ on these cases, so the
@@ -612,5 +646,38 @@ mod tests {
         // alpha is bounded to (0, 1) for sane inputs
         let a = calc_lowpass_alpha_dt(0.0025, 20.0);
         assert!(a > 0.0 && a < 1.0, "alpha out of range: {a}");
+    }
+
+    /// PORT-DERIVED: upstream has no unit test for linear_interpolate.
+    #[test]
+    fn linear_interpolate_clamps_and_maps() {
+        // inside the range
+        near(linear_interpolate(0.0_f32, 10.0, 0.5, 0.0, 1.0) as f64, 5.0);
+        // clamped at both ends rather than extrapolated
+        near(
+            linear_interpolate(0.0_f32, 10.0, -5.0, 0.0, 1.0) as f64,
+            0.0,
+        );
+        near(
+            linear_interpolate(0.0_f32, 10.0, 99.0, 0.0, 1.0) as f64,
+            10.0,
+        );
+        // exact endpoints
+        near(linear_interpolate(2.0_f32, 8.0, 0.0, 0.0, 1.0) as f64, 2.0);
+        near(linear_interpolate(2.0_f32, 8.0, 1.0, 0.0, 1.0) as f64, 8.0);
+    }
+
+    /// Either polarity works: a descending input range swaps both pairs. TECS
+    /// depends on this, passing a range that runs downward.
+    #[test]
+    fn linear_interpolate_supports_reversed_input_range() {
+        // descending input range, same mapping
+        near(linear_interpolate(0.0_f32, 10.0, 0.5, 1.0, 0.0) as f64, 5.0);
+        // and the ends swap with it
+        near(linear_interpolate(0.0_f32, 10.0, 1.0, 1.0, 0.0) as f64, 0.0);
+        near(
+            linear_interpolate(0.0_f32, 10.0, 0.0, 1.0, 0.0) as f64,
+            10.0,
+        );
     }
 }
