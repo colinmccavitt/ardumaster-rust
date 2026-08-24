@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **2 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **3 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -78,6 +78,45 @@ Status counts: **2 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   with corrupt state. That is the intended difference.
 - **pinned by**: `vector2::tests::d002_normalized_zero_is_none`,
   `vector3::tests::d002_normalized_zero_is_none`
+
+## D-005 — `DigitalLPF::initialised` is read uninitialised (undefined behavior)
+
+- **status**: `applied`
+- **upstream**: `Filter/LowPassFilter.h:72` declares `bool initialised;` with no default member
+  initializer, and the constructor (`LowPassFilter.cpp:17-20`) sets only `output`:
+
+  ```cpp
+  template <class T>
+  DigitalLPF<T>::DigitalLPF() {
+    // built in initialization
+    output = T();          // initialised is NOT set
+  }
+  ```
+
+  It is then read at `LowPassFilter.cpp:26` (`if (!initialised)`). Reading an indeterminate
+  `bool` is undefined behavior in C++.
+- **ported**: `DigitalLpf::default()` sets `initialised: false` explicitly. Rust cannot express
+  the bug — every field must be initialised — so the port is correct by construction.
+- **why**: A defect, and not a subtle one. Upstream's intent is unambiguous: `reset()` sets the
+  flag `false` specifically so the next sample re-seeds the filter. The constructor simply
+  fails to establish that starting state.
+
+  The consequence when the indeterminate byte is nonzero: the filter skips first-sample
+  seeding and instead treats its zero-initialised `output` as a real previous value, ramping
+  from **0** toward the signal at the filter's time constant. That is a startup transient in a
+  control filter, not a cosmetic difference.
+
+  It often works in practice because many filter instances are members of objects with static
+  storage duration, which are zero-initialised before construction. Instances on the stack or
+  heap have no such guarantee.
+- **risk**: Low to apply — the port simply has one defined behavior instead of two possible
+  ones. Fixed-wing callers affected: `LowPassFilterConstDtFloat` (3 sites),
+  `LowPassFilterFloat` (2), `LowPassFilterVector3f` (1).
+- **sitl_impact**: None expected. SITL builds construct these as members of statically-stored
+  vehicle objects, so upstream's flag is zero-initialised there and already behaves as the port
+  does. The divergence appears only where upstream's UB resolves the other way, which SITL is
+  unlikely to exhibit.
+- **pinned by**: `lowpass::tests::d005_fresh_filter_is_deterministically_unseeded`
 
 ---
 

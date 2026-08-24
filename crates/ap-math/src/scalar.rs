@@ -367,6 +367,33 @@ pub fn norm3<T: Real>(a: T, b: T, c: T) -> T {
     safe_sqrt(sq(a) + sq(b) + sq(c))
 }
 
+/// Low-pass filter coefficient for a step of `dt` seconds at `cutoff_freq` Hz.
+///
+/// Upstream `AP_Math.cpp`, `calc_lowpass_alpha_dt()`. Lives in AP_Math upstream
+/// rather than in Filter, so it stays here.
+///
+/// Edge cases are upstream's and are load-bearing:
+/// - a negative `dt` or cutoff yields 1.0 (pass-through) rather than a negative
+///   coefficient. Upstream also raises `INTERNAL_ERROR(invalid_arg_or_result)`
+///   here; the port has no error channel yet, tracked as divergence D-004.
+/// - a zero cutoff yields 1.0, so the filter follows its input exactly.
+/// - a zero `dt` yields 0.0, so the filter holds its previous output.
+#[inline]
+pub fn calc_lowpass_alpha_dt(dt: f32, cutoff_freq: f32) -> f32 {
+    // D-004: upstream reports INTERNAL_ERROR on this branch.
+    if is_negative(dt) || is_negative(cutoff_freq) {
+        return 1.0;
+    }
+    if is_zero(cutoff_freq) {
+        return 1.0;
+    }
+    if is_zero(dt) {
+        return 0.0;
+    }
+    let rc = 1.0 / ((core::f32::consts::PI * 2.0) * cutoff_freq);
+    dt / (dt + rc)
+}
+
 #[cfg(test)]
 mod tests {
     // Upstream asserts exact equality with EXPECT_EQ on these cases, so the
@@ -562,5 +589,28 @@ mod tests {
     fn degrees_radians_roundtrip() {
         near(radians(180.0_f32) as f64, core::f64::consts::PI);
         near(degrees(core::f32::consts::PI as Ftype) as f64, 180.0);
+    }
+
+    /// PORT-DERIVED: upstream has no unit test for calc_lowpass_alpha_dt.
+    #[test]
+    fn calc_lowpass_alpha_dt_edges() {
+        // negative inputs pass through rather than producing a negative alpha
+        assert_eq!(calc_lowpass_alpha_dt(-1.0, 10.0), 1.0);
+        assert_eq!(calc_lowpass_alpha_dt(0.01, -10.0), 1.0);
+        // zero cutoff follows the input
+        assert_eq!(calc_lowpass_alpha_dt(0.01, 0.0), 1.0);
+        // zero dt holds the output
+        assert_eq!(calc_lowpass_alpha_dt(0.0, 10.0), 0.0);
+        // normal case: alpha = dt / (dt + rc), rc = 1/(2*pi*fc)
+        let dt = 0.01_f32;
+        let fc = 10.0_f32;
+        let rc = 1.0 / (core::f32::consts::PI * 2.0 * fc);
+        near(
+            calc_lowpass_alpha_dt(dt, fc) as f64,
+            (dt / (dt + rc)) as f64,
+        );
+        // alpha is bounded to (0, 1) for sane inputs
+        let a = calc_lowpass_alpha_dt(0.0025, 20.0);
+        assert!(a > 0.0 && a < 1.0, "alpha out of range: {a}");
     }
 }
