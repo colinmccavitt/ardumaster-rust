@@ -39,6 +39,7 @@ pub enum Error {
 /// Result alias for HAL operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
+pub mod context;
 pub mod internal_error;
 pub mod rc;
 pub mod storage;
