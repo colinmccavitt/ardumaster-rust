@@ -1,0 +1,21 @@
+[package]
+name = "ap-math"
+description = "Port of ArduPilot libraries/AP_Math (Plane-4.7.0). Tracked as FW-002."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libm = { workspace = true }
+
+[features]
+default = []
+# ADR-0004 decision 3: mirrors upstream HAL_WITH_EKF_DOUBLE, a global
+# compile-time switch (AP_Math/ftype.h). Deliberately NOT a scalar generic:
+# a generic would permit mixed-precision builds upstream cannot produce,
+# leaving states with no upstream counterpart for sitl-diff to compare.
+ekf-double = []
+
+[lints]
+workspace = true

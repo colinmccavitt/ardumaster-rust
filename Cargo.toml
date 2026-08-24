@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"          # matches upstream ArduPilot
+repository = "https://github.com/ardupilot/ardupilot"
+rust-version = "1.98"
+
+[workspace.dependencies]
+# no_std float math. Upstream calls sinf/cosf/atan2f from libm directly
+# (AP_Math/ftype.h); std's f32 methods are unavailable in no_std, so we
+# depend on the same underlying implementations rather than pulling in std.
+libm = "0.2"
+
+ap-math = { path = "crates/ap-math" }
+ap-hal = { path = "crates/ap-hal" }
+
+# ADR-0004 decision 1: upstream builds -fno-exceptions. There is no unwinding
+# to reproduce, and a panic in flight code is a bug rather than control flow.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+# Note: cargo ignores `panic` for the test profile - tests always unwind so
+# failures can be reported. Setting it there produces a warning, so we do not.
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Upstream runs on hardware with no allocator on the flight path.
+# These catch accidental drift toward std/alloc behavior.
+float_cmp = "warn"
+indexing_slicing = "warn"

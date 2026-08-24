@@ -1,0 +1,16 @@
+[package]
+name = "ap-hal"
+description = "Port of ArduPilot libraries/AP_HAL trait surface (Plane-4.7.0). Tracked as FW-001."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[features]
+default = []
+std = []
+
+[lints]
+workspace = true
