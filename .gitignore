@@ -1,2 +1,4 @@
 target/
 Cargo.lock merge=binary
+logs/
+*.BIN
