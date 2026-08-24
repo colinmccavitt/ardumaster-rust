@@ -1,0 +1,15 @@
+[package]
+name = "ap-tecs"
+description = "Port of ArduPilot libraries/AP_TECS (Plane-4.7.0). Tracked as FW-015."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+ap-filter = { workspace = true }
+libm = { workspace = true }
+
+[lints]
+workspace = true
