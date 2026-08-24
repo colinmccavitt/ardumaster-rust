@@ -11,3 +11,4 @@
 #![no_std]
 
 pub mod params;
+pub mod speed;
