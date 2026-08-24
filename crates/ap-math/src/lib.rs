@@ -13,6 +13,8 @@
 
 #![no_std]
 
+pub mod scalar;
+
 /// The chosen float type, mirroring upstream's `ftype` in `AP_Math/ftype.h`.
 ///
 /// Upstream writes this as a `typedef` switched on `HAL_WITH_EKF_DOUBLE`, with
