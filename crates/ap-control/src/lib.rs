@@ -24,6 +24,7 @@
 pub mod attitude_controller;
 pub mod attitude_error;
 pub mod attitude_kinematics;
+pub mod pos_control_ne;
 pub mod rate_loop;
 mod steer;
 pub mod throttle_mix;
