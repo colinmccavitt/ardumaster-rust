@@ -27,10 +27,12 @@
 index fault is a test failure, which is the desired outcome"
 )]
 
+use ap_control::attitude_controller::ShapingConfig;
 use ap_control::attitude_error::{
     thrust_heading_rotation_angles, update_ang_vel_target_from_att_error, AngleGains, YawLimitGains,
 };
 use ap_math::quaternion::Quaternion;
+use ap_math::vector3::Vector3f;
 
 /// Absorbs transcendental disagreement; far below any structural error.
 ///
@@ -807,6 +809,267 @@ fn the_body_rate_sequence_matches_upstream() {
 
     println!(
         "{} body-rate steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// Looser than `STEP_TOL`, and the reason is the algorithm rather than the port.
+///
+/// Both entry points obtain their thrust error as `acos` of a dot product of
+/// unit vectors. Near alignment that is ill-conditioned: at an error angle of
+/// theta the dot product is about `1 - theta^2/2`, so at theta = 0.01 rad it
+/// sits a few hundred ulps below 1.0, while `d(acos)/d(dot) = 1/sin(theta)` is
+/// about 100. One ulp of difference in the accumulated target therefore comes
+/// out as roughly 1e-5 rad of angle.
+///
+/// The thrust-angle sequence drives the target through a minimum error of half
+/// a degree, and every value exceeding `STEP_TOL` -- ten of 3600 -- falls in
+/// the twenty-two steps around it. That region is a real flight condition, so
+/// the sequence keeps it rather than steering around it, and the tolerance is
+/// sized to what the conditioning permits.
+///
+/// The margin is still wide. Measured by applying each mutation with the bound
+/// lifted and reading the largest difference over the whole sequence: the five
+/// plausible mistakes checked against these tests diverge by 0.52 to 4.7, four
+/// to five orders above this bound, against 2.8e-5 unmutated.
+const THRUST_TOL: f32 = 1e-4;
+
+/// The gains the harness configured, read once.
+///
+/// Every test had been repeating this block, and the repetition was not free:
+/// adding a column for one test broke the length assertion in the others three
+/// times. New tests read it from here. The five older ones still carry their
+/// own copy; converting them is worth doing but is not this slice's work.
+struct Gains {
+    shaping: ShapingConfig,
+    yaw: YawLimitGains,
+    angle: AngleGains,
+    dt: f32,
+}
+
+fn gains_and_rows(section: &str) -> (Gains, Vec<Vec<String>>) {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/attitude_error.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).expect("fixture");
+
+    let mut current = "";
+    let mut g: Vec<f32> = Vec::new();
+    let mut ff_enabled = false;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix('#') {
+            current = tag;
+            continue;
+        }
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        if current == "gains" {
+            assert!(
+                c.len() >= 17,
+                "gains row has {} columns, need at least 17",
+                c.len()
+            );
+            // Columns 7 and 11 are flags, not floats, so they are dropped and
+            // every index below is into the filtered list.
+            g = c
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 7 && *i != 11)
+                .map(|(_, s)| f(s))
+                .collect();
+            ff_enabled = c[11] == "1";
+        } else if current == section {
+            rows.push(c.iter().map(|s| (*s).to_owned()).collect());
+        }
+    }
+
+    assert!(!rows.is_empty(), "no {section} rows in the fixture");
+    assert!(
+        ff_enabled,
+        "the fixture has feedforward off, so only the fallback path is covered"
+    );
+
+    let gains = Gains {
+        shaping: ShapingConfig {
+            input_tc: g[8],
+            rate_y_tc: g[9],
+            rate_rp_tc: g[14],
+            rate_bf_ff_enabled: ff_enabled,
+            ang_vel_roll_max_degs: g[10],
+            ang_vel_pitch_max_degs: g[11],
+            ang_vel_yaw_max_degs: g[12],
+            accel_roll_max_radss: g[3],
+            accel_pitch_max_radss: g[4],
+            accel_yaw_max_radss: g[5],
+            slew_yaw_max_rads: g[13],
+        },
+        yaw: YawLimitGains {
+            accel_yaw_max_radss: g[5],
+            rate_yaw_kp: g[6],
+            angle_yaw_kp: g[2],
+            ..YawLimitGains::default()
+        },
+        angle: AngleGains {
+            angle_p_roll: g[0],
+            angle_p_pitch: g[1],
+            angle_p_yaw: g[2],
+            accel_roll_max_radss: g[3],
+            accel_pitch_max_radss: g[4],
+            accel_yaw_max_radss: g[5],
+            use_sqrt_controller: true,
+        },
+        dt: g[7],
+    };
+    (gains, rows)
+}
+
+/// Compare one step's nine recorded outputs, given the column each sits in.
+fn compare_step(
+    step: usize,
+    target: Vector3f,
+    ang_vel: Vector3f,
+    body_rate: Vector3f,
+    row: &[String],
+    first: usize,
+    largest: &mut f32,
+) -> usize {
+    let got = [
+        ("targ_r", target.x),
+        ("targ_p", target.y),
+        ("targ_y", target.z),
+        ("ang_vel_x", ang_vel.x),
+        ("ang_vel_y", ang_vel.y),
+        ("ang_vel_z", ang_vel.z),
+        ("rate_x", body_rate.x),
+        ("rate_y", body_rate.y),
+        ("rate_z", body_rate.z),
+    ];
+    for (i, (label, value)) in got.iter().enumerate() {
+        let want = f(&row[first + i]);
+        let diff = libm::fabsf(value - want);
+        *largest = largest.max(diff);
+        assert!(
+            diff < THRUST_TOL,
+            "step {step} {label}: {value} != upstream {want} (diff {diff})"
+        );
+    }
+    got.len()
+}
+
+/// A thrust direction with yaw commanded as a rate — the position
+/// controller's entry point.
+///
+/// Recorded twice, once per `slew_yaw` setting, because the flag chooses
+/// between two different yaw limits and the commanded rate sits between them.
+#[test]
+fn the_thrust_vector_rate_heading_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("thrustrate");
+
+    let mut controller = AttitudeController::new();
+    let mut current_slew = -1_i32;
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 18, "malformed thrust-rate row");
+        let slew: i32 = r[0].parse().expect("slew");
+        let step: usize = r[1].parse().expect("step");
+
+        // Each pass is its own run; the harness rebuilt the probe.
+        if slew != current_slew {
+            current_slew = slew;
+            controller = AttitudeController::new();
+            controller.set_attitude_target(Quaternion::from_euler(0.10, -0.15, 0.60));
+        }
+
+        let thrust = Vector3f::new(f(&r[2]), f(&r[3]), f(&r[4]));
+        let body = Quaternion::from_euler(f(&r[6]), f(&r[7]), f(&r[8]));
+
+        let out = controller.input_thrust_vector_rate_heading(
+            thrust,
+            f(&r[5]),
+            slew != 0,
+            body,
+            &g.shaping,
+            &g.yaw,
+            &g.angle,
+            Vector3f::new(0.0, 0.0, 0.0),
+            g.dt,
+        );
+
+        checked += compare_step(
+            step,
+            controller.euler_angle_target_rad(),
+            controller.ang_vel_target_rads(),
+            out.ang_vel_body_rads,
+            r,
+            9,
+            &mut largest,
+        );
+    }
+
+    println!(
+        "{} thrust-rate steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// A thrust direction with yaw commanded as an angle plus a feedforward rate.
+///
+/// The only path whose yaw shaper receives an angle error and a rate at the
+/// same time, so both are held non-zero throughout.
+#[test]
+fn the_thrust_vector_heading_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("thrustangle");
+
+    let mut controller = AttitudeController::new();
+    controller.set_attitude_target(Quaternion::from_euler(-0.20, 0.25, -0.50));
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 18, "malformed thrust-angle row");
+        let step: usize = r[0].parse().expect("step");
+
+        let thrust = Vector3f::new(f(&r[1]), f(&r[2]), f(&r[3]));
+        let body = Quaternion::from_euler(f(&r[6]), f(&r[7]), f(&r[8]));
+
+        let out = controller.input_thrust_vector_heading(
+            thrust,
+            f(&r[4]),
+            f(&r[5]),
+            body,
+            &g.shaping,
+            &g.yaw,
+            &g.angle,
+            Vector3f::new(0.0, 0.0, 0.0),
+            g.dt,
+        );
+
+        checked += compare_step(
+            step,
+            controller.euler_angle_target_rad(),
+            controller.ang_vel_target_rads(),
+            out.ang_vel_body_rads,
+            r,
+            9,
+            &mut largest,
+        );
+    }
+
+    println!(
+        "{} thrust-angle steps, {checked} values, largest difference {largest:e}",
         rows.len()
     );
 }

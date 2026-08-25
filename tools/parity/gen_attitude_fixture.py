@@ -384,6 +384,124 @@ int main(void)
         }
     }
 
+    // ---- a thrust vector with a heading RATE, both slew settings ----
+    //
+    // The heading rate reaches 1.5 rad/s, above the slew limit (~1.05 rad/s)
+    // but below ATC_RATE_Y_MAX (120 deg/s = 2.09 rad/s), so the slew flag
+    // decides whether the command is clipped. Anything smaller records the
+    // same numbers twice.
+    printf("#thrustrate\n");
+    printf("slew,step,tx,ty,tz,hrate,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,av_x,av_y,av_z,rate_x,rate_y,rate_z\n");
+    {
+        for (int slew = 0; slew <= 1; slew++) {
+            static Probe tr(view, motors);
+            tr._dt_s = 0.0025f;
+            tr._rate_rp_tc = 0.15f;
+            tr._rate_y_tc = 0.25f;
+            tr._ang_vel_roll_max_degs.set(220.0f);
+            tr._ang_vel_pitch_max_degs.set(140.0f);
+            tr._ang_vel_yaw_max_degs.set(120.0f);
+            tr.reset_target_and_rate(true);
+
+            Quaternion offset;
+            offset.from_euler(0.10f, -0.15f, 0.60f);
+            tr._attitude_target = offset;
+
+            const int STEPS = 400;
+            for (int i = 0; i < STEPS; i++) {
+                const float ts = i * 0.0025f;
+
+                // A lean that opens up, swung around the compass, so roll and
+                // pitch are both driven and neither dominates.
+                const float lean = 0.05f + 0.30f * ts;
+                const float azim = 2.0f * ts;
+                Vector3f thrust{sinf(lean) * cosf(azim),
+                                sinf(lean) * sinf(azim),
+                                -cosf(lean)};
+
+                const float hrate = ts < 0.4f ? 1.5f : -1.5f;
+
+                tr.input_thrust_vector_rate_heading_rads(thrust, hrate, slew != 0);
+
+                Quaternion body_now;
+                view.get_quat_body_to_ned(body_now);
+                Vector3f body_euler;
+                body_now.to_euler(body_euler);
+
+                const Vector3f euler = tr._euler_angle_target_rad;
+                const Vector3f ang_vel = tr.get_attitude_target_ang_vel();
+                const Vector3f rate = tr.rate_bf_targets();
+
+                printf("%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                       slew, i,
+                       fbits(thrust.x), fbits(thrust.y), fbits(thrust.z), fbits(hrate),
+                       fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                       fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                       fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                       fbits(rate.x), fbits(rate.y), fbits(rate.z));
+            }
+        }
+    }
+
+    // ---- a thrust vector with a heading ANGLE and a feedforward rate ----
+    //
+    // The only path where the yaw shaper gets an angle error and a rate at
+    // once, so the sequence keeps both non-zero rather than exercising them
+    // one at a time.
+    printf("#thrustangle\n");
+    printf("step,tx,ty,tz,hangle,hrate,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,av_x,av_y,av_z,rate_x,rate_y,rate_z\n");
+    {
+        static Probe ta(view, motors);
+        ta._dt_s = 0.0025f;
+        ta._rate_rp_tc = 0.15f;
+        ta._rate_y_tc = 0.25f;
+        ta._ang_vel_roll_max_degs.set(220.0f);
+        ta._ang_vel_pitch_max_degs.set(140.0f);
+        ta._ang_vel_yaw_max_degs.set(120.0f);
+        ta.reset_target_and_rate(true);
+
+        Quaternion offset;
+        offset.from_euler(-0.20f, 0.25f, -0.50f);
+        ta._attitude_target = offset;
+
+        const int STEPS = 400;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+
+            const float lean = 0.30f - 0.25f * ts;
+            const float azim = -1.5f * ts;
+            Vector3f thrust{sinf(lean) * cosf(azim),
+                            sinf(lean) * sinf(azim),
+                            -cosf(lean)};
+
+            // The commanded heading walks away from the target's own, so the
+            // error stays live instead of collapsing in the first few steps.
+            const float hangle = 0.9f + 0.8f * ts;
+            const float hrate = ts < 0.5f ? 0.4f : -0.6f;
+
+            ta.input_thrust_vector_heading_rad(thrust, hangle, hrate);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = ta._euler_angle_target_rad;
+            const Vector3f ang_vel = ta.get_attitude_target_ang_vel();
+            const Vector3f rate = ta.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(thrust.x), fbits(thrust.y), fbits(thrust.z),
+                   fbits(hangle), fbits(hrate),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                   fbits(rate.x), fbits(rate.y), fbits(rate.z));
+        }
+    }
+
     return 0;
 }
 '''
