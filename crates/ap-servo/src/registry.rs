@@ -22,15 +22,6 @@ use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 /// A mask of output channels, upstream `SRV_Channel::servo_mask_t`.
 pub type ChannelMask = u32;
 
-/// What `get_output_channel_mask` returns for a function this build does not
-/// define, upstream `invalid_mask`.
-///
-/// All ones rather than zero. Zero would read as "no channels", which is a
-/// legitimate answer for a function nobody assigned; this is "the question was
-/// meaningless", and a caller that ignores the difference will notice, because
-/// acting on every channel at once is not subtle.
-pub const INVALID_MASK: ChannelMask = ChannelMask::MAX;
-
 /// One function's registry entry, upstream `srv_function`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SrvFunction {
@@ -47,6 +38,17 @@ pub struct Registry {
     /// Channels whose value was last set as a pulse width rather than a scaled
     /// value, upstream `SRV_Channel::have_pwm_mask`.
     have_pwm_mask: ChannelMask,
+    /// Channels whose own `SERVOn_FUNCTION` is not a function this build
+    /// defines, upstream `invalid_mask`.
+    ///
+    /// Not a sentinel. It is a real set of channels, rebuilt by
+    /// [`Self::update_aux_servo_function`], and it is what
+    /// [`Self::output_channel_mask`] answers with when asked about an
+    /// undefined function.
+    invalid_mask: ChannelMask,
+    /// Whether the masks have been built at least once, upstream
+    /// `initialised`.
+    initialised: bool,
 }
 
 impl Default for Registry {
@@ -62,6 +64,8 @@ impl Registry {
         Self {
             functions: [SrvFunction::default(); NR_AUX_SERVO_FUNCTIONS],
             have_pwm_mask: 0,
+            invalid_mask: 0,
+            initialised: false,
         }
     }
 
@@ -78,18 +82,78 @@ impl Registry {
 
     /// The channels a function drives, upstream `get_output_channel_mask`.
     ///
-    /// [`INVALID_MASK`] for a function this build does not define — which is
-    /// not the same as a function nobody assigned, and upstream is careful to
-    /// distinguish them.
+    /// For a function this build does not define, the answer is
+    /// [`Self::invalid_mask`] — the channels whose own assignment is invalid.
+    /// That is a genuine set, not a sentinel: asking about a meaningless
+    /// function returns the channels that are themselves meaningless, which is
+    /// odd but is what upstream does and what callers see.
+    ///
+    /// Upstream also builds the masks lazily here if they have never been
+    /// built. This does not, because the channel assignments are an argument
+    /// to [`Self::update_aux_servo_function`] rather than global state it
+    /// could reach for — so a caller that has not built them gets the honest
+    /// answer for an empty registry instead of a hidden rebuild. See
+    /// [`Self::initialised`].
     #[must_use]
     pub fn output_channel_mask(&self, function: Function) -> ChannelMask {
         if function.valid() {
             self.functions
                 .get(usize::from(function.0))
-                .map_or(INVALID_MASK, |f| f.channel_mask)
+                .map_or(self.invalid_mask, |f| f.channel_mask)
         } else {
-            INVALID_MASK
+            self.invalid_mask
         }
+    }
+
+    /// The channels whose own `SERVOn_FUNCTION` is not a defined function,
+    /// upstream `invalid_mask`.
+    #[must_use]
+    pub fn invalid_mask(&self) -> ChannelMask {
+        self.invalid_mask
+    }
+
+    /// Whether the channel masks have been built, upstream `initialised`.
+    #[must_use]
+    pub fn initialised(&self) -> bool {
+        self.initialised
+    }
+
+    /// Rebuild every function's channel mask from the channel assignments,
+    /// upstream `update_aux_servo_function`.
+    ///
+    /// `channel_functions[i]` is channel `i`'s `SERVOn_FUNCTION`. A channel
+    /// whose function this build does not define is not silently skipped: it
+    /// goes into [`Self::invalid_mask`], which is how a misconfigured output
+    /// stays visible instead of looking like an unused one.
+    ///
+    /// Everything is cleared first, so this is a rebuild rather than a merge —
+    /// a channel moved from one function to another leaves no trace on the
+    /// old one.
+    ///
+    /// Upstream also calls `aux_servo_function_setup()` per channel here,
+    /// which configures that channel's range or angle limits. That belongs to
+    /// the channel, not the registry, so it is not done here.
+    pub fn update_aux_servo_function(&mut self, channel_functions: &[Function]) {
+        for f in &mut self.functions {
+            f.channel_mask = 0;
+        }
+        self.invalid_mask = 0;
+
+        for (i, &function) in channel_functions.iter().enumerate() {
+            if i >= 32 {
+                break;
+            }
+            let bit = 1_u32 << i;
+            if !function.valid() {
+                self.invalid_mask |= bit;
+                continue;
+            }
+            if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+                entry.channel_mask |= bit;
+            }
+        }
+
+        self.initialised = true;
     }
 
     /// Write a function's scaled value, upstream `set_output_scaled`.

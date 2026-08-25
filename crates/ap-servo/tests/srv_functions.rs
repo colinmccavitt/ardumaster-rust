@@ -138,25 +138,81 @@ fn an_empty_mask_is_not_digital() {
     }
 }
 
-/// A function nobody assigned and a function that does not exist are different
-/// answers.
+/// `invalid_mask` is a real set of channels, not a sentinel.
 ///
-/// Unassigned is an empty channel mask; undefined is `INVALID_MASK`. A port
-/// that returned zero for both would let a typo in `SERVOn_FUNCTION` look like
-/// a channel that simply is not driven.
+/// This test previously asserted that an undefined function returns an
+/// all-ones sentinel. That was wrong, and it passed anyway because the port and
+/// the test were wrong together — the exact failure a fixture against upstream
+/// exists to catch, and the reason this one now checks against
+/// `update_aux_servo_function`'s actual output.
+///
+/// What upstream does: `invalid_mask` accumulates the channels whose *own*
+/// `SERVOn_FUNCTION` is not a function this build defines, and
+/// `get_output_channel_mask` answers with it when asked about an undefined
+/// function. So asking a meaningless question returns the channels that are
+/// themselves meaningless.
 #[test]
-fn an_undefined_function_is_distinguishable_from_an_unassigned_one() {
-    let registry = Registry::new();
+fn an_undefined_function_answers_with_the_invalid_channels() {
+    let mut registry = Registry::new();
 
-    let unassigned = registry.output_channel_mask(Function::MOTOR1);
-    assert_eq!(unassigned, 0, "an unassigned function drives no channels");
+    // Channels 0 and 2 are assigned; 1 and 3 hold a function this build does
+    // not define.
+    let assignments = [
+        Function::MOTOR1,
+        Function(250),
+        Function::MOTOR2,
+        Function(251),
+    ];
+    registry.update_aux_servo_function(&assignments);
 
-    let undefined = registry.output_channel_mask(Function(250));
     assert_eq!(
-        undefined,
-        ap_servo::registry::INVALID_MASK,
-        "a function this build does not define is not merely unassigned"
+        registry.invalid_mask(),
+        0b1010,
+        "channels 1 and 3 are invalid"
     );
+    assert_eq!(registry.output_channel_mask(Function::MOTOR1), 0b0001);
+    assert_eq!(registry.output_channel_mask(Function::MOTOR2), 0b0100);
+
+    // An assigned-to-nobody function is empty; an undefined one is the invalid
+    // set. Those are different answers, which is the whole point.
+    assert_eq!(registry.output_channel_mask(Function::MOTOR3), 0);
+    assert_eq!(registry.output_channel_mask(Function(250)), 0b1010);
+}
+
+/// One function can drive several channels.
+///
+/// Two servos on one surface is ordinary, and writing the function has to
+/// write both. A port storing a single channel per function would work on
+/// every simple airframe and fail silently on the ones that need this.
+#[test]
+fn one_function_can_drive_several_channels() {
+    let mut registry = Registry::new();
+    let assignments = [Function::MOTOR1, Function::MOTOR1, Function::MOTOR2];
+    registry.update_aux_servo_function(&assignments);
+
+    assert_eq!(registry.output_channel_mask(Function::MOTOR1), 0b011);
+    assert_eq!(registry.output_channel_mask(Function::MOTOR2), 0b100);
+}
+
+/// Rebuilding clears what came before.
+///
+/// A channel moved from one function to another must leave no trace on the
+/// old one, or the old function keeps driving an output nobody assigned to it.
+#[test]
+fn rebuilding_the_masks_is_not_a_merge() {
+    let mut registry = Registry::new();
+
+    registry.update_aux_servo_function(&[Function::MOTOR1, Function::MOTOR2]);
+    assert_eq!(registry.output_channel_mask(Function::MOTOR1), 0b01);
+
+    // Channel 0 moves to MOTOR3.
+    registry.update_aux_servo_function(&[Function::MOTOR3, Function::MOTOR2]);
+    assert_eq!(
+        registry.output_channel_mask(Function::MOTOR1),
+        0,
+        "the old function must not keep the channel"
+    );
+    assert_eq!(registry.output_channel_mask(Function::MOTOR3), 0b01);
 }
 
 /// Writing a scaled value clears those channels from the pulse-width mask.
