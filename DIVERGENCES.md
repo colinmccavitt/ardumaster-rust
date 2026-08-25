@@ -417,6 +417,101 @@ an inversion failure is the hazard; `Result` is that warning with teeth.
 Distinguishing `Singular` from `BadDimensions` also means a caller that passed
 a mis-sized buffer is not told its matrix was singular.
 
+## D-013 — `VectorN`'s dot product accumulates in `float` whatever `T` is
+
+- **status**: `applied`
+- **upstream**: `AP_Math/vectorN.h`:
+
+  ```cpp
+  // dot product
+  T operator *(const VectorN<T,N> &v) const {
+      float ret = 0;
+      for (uint8_t i=0; i<N; i++) {
+          ret += _v[i] * v._v[i];
+      }
+      return ret;
+  }
+  ```
+
+  The accumulator is `float` regardless of the template parameter. On a build
+  with `HAL_WITH_EKF_DOUBLE`, `ftype` is `double` (`ftype.h:15`) and
+  `VectorN<ftype,N>` — which `AP_NavEKF3_core.h` uses throughout — computes each
+  product in double, rounds it to float to accumulate, and widens the sum back
+  to double on return. The double build exists to carry more precision than
+  that.
+- **ported**: accumulates in `T`.
+- **why**: the return type is `T` and every operand is `T`; a `float`
+  accumulator in a `double` vector cannot be deliberate. Nothing else in
+  `vectorN.h` mentions `float`.
+- **risk**: **None for the float instantiation**, which is bit-identical —
+  confirmed across the parity fixture at N = 2, 3, 4, 5 and 9. The divergence
+  appears only where `T` is wider than `float`, and there the port is more
+  accurate.
+- **reachability, stated honestly**: `VectorN<ftype,N>` is declared 49 times
+  across NavEKF3, so double instantiations certainly exist. Whether any current
+  caller invokes *this operator* on one, I did not establish — the call is a
+  bare `a * b` and cannot be found reliably by grep. The claim registered is
+  that the accumulator is wrong, not that a specific flight path is affected.
+- **sitl_impact**: None observed. SITL builds used here are float.
+- **pinned by**: `vector_n::tests::d013_dot_product_accumulates_in_t`, which
+  sums 2³⁰ and 1 — exactly representable in `f64`, not in `f32` — so a `float`
+  accumulator gives a visibly different answer. The float instantiation is
+  asserted to still behave as float.
+
+## D-014 — `MatrixN::force_symmetry` leaves the sub-diagonal asymmetric
+
+- **status**: `applied`
+- **upstream**: `AP_Math/matrixN.cpp`:
+
+  ```cpp
+  for (uint8_t i = 0; i < N; i++) {
+      for (uint8_t j = 0; j < (i - 1); j++) {
+          v[i][j] = (v[i][j] + v[j][i]) / 2;
+          v[j][i] = v[i][j];
+      }
+  }
+  ```
+
+  The inner bound is one short. It should be `j < i`; as written every pair
+  `(i, i-1)` is skipped, so the routine whose only purpose is to make the
+  matrix symmetric leaves the entire sub-diagonal asymmetric.
+
+  (`i - 1` at `i == 0` promotes to `int` and yields `-1`, so the loop is merely
+  skipped rather than running away. The bound is wrong, not unsafe.)
+- **ported**: `j < i`.
+- **why**: `AP_Soaring/ExtendedKalmanFilter.cpp:81` calls `P.force_symmetry()`
+  on its covariance after every update, and soaring is a **fixed-wing** feature
+  — `ArduPlane/soaring.cpp` and `ArduPlane/mode_thermal.cpp`. At the `N = 4`
+  that filter uses, three of the six off-diagonal pairs are left alone, so half
+  the matrix is not symmetrised. Keeping a Kalman covariance symmetric is the
+  entire point of calling the routine.
+- **risk**: **None where upstream does the work.** The two agree element for
+  element everywhere upstream symmetrises; the port additionally symmetrises
+  the pairs upstream skips.
+- **sitl_impact**: Only through soaring, which no reference flight uses.
+- **pinned by**:
+  `vector_n_parity::d014_force_symmetry_divergence_is_exactly_the_sub_diagonal`,
+  which asserts three things against upstream's **recorded output**, not just
+  against the source reading: that upstream leaves exactly `(1,0)`, `(2,1)` and
+  `(3,2)` asymmetric, that the port leaves nothing asymmetric, and that the two
+  agree on every other element. Also
+  `vector_n::tests::d014_force_symmetry_symmetrises_every_pair`.
+
+### Observed while porting, no port change
+
+`VectorN::operator==` compares elementwise with `!=`, unlike `Vector2` and
+`Vector3` which use `is_equal`. Reproduced as exact comparison. Note it cannot
+be instantiated for a float type in upstream's own build — doing so trips their
+`-Werror=float-equal` — which means no upstream code calls it on a float
+vector. The port's behaviour here is read from the source rather than observed,
+and is pinned by
+`vector_n::tests::equality_is_exact_not_epsilon_based`.
+
+`MatrixN`'s diagonal constructor takes `const float d[N]` regardless of `T`, so
+building a `MatrixN<double,N>` narrows the diagonal through `float` first. The
+port's `from_diagonal` takes `&[T; N]`. No current caller passes a double
+diagonal, so this is an API difference rather than a behavioural one.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change

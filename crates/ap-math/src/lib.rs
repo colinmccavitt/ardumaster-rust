@@ -25,6 +25,7 @@ pub mod quaternion;
 pub mod scalar;
 pub mod vector2;
 pub mod vector3;
+pub mod vector_n;
 
 /// The chosen float type, mirroring upstream's `ftype` in `AP_Math/ftype.h`.
 ///
