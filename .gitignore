@@ -7,3 +7,7 @@ logs/
 # to disk now that the firmware is linked rather than stubbed. It is harness
 # scratch, not an input -- the fixtures do not read it.
 eeprom.bin
+
+# cargo-mutants working output: regenerated on every run, never reviewed.
+mutants.out/
+mutants.out.old/
