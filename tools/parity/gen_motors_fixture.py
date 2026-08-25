@@ -56,6 +56,7 @@ OUT = ROOT / "fixtures/motors_parity.csv"
 FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
 SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"
 OUTPUT_OUT = ROOT / "fixtures/motors_output.csv"
+THROTTLE_OUT = ROOT / "fixtures/motors_throttle.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -105,10 +106,15 @@ HARNESS = r'''
 
 namespace AP_HAL {
     void panic(const char *m, ...) { fputs(m, stderr); abort(); }
-    uint32_t millis() { return 0; }
-    uint64_t micros64() { return 0; }
-    uint32_t micros() { return 0; }
-    uint64_t millis64() { return 0; }
+    // Driven by the fixture rather than pinned. update_throttle_filter reads
+    // micros() itself and feeds it to a seven-sample derivative filter; a
+    // constant would hand that filter identical timestamps and measure
+    // nothing, while still passing.
+    uint32_t harness_now_us = 0;
+    uint32_t millis() { return harness_now_us / 1000; }
+    uint64_t micros64() { return harness_now_us; }
+    uint32_t micros() { return harness_now_us; }
+    uint64_t millis64() { return harness_now_us / 1000; }
 }
 void AP_InternalError::error(const AP_InternalError::error_t, uint16_t) {}
 namespace AP {
@@ -332,6 +338,12 @@ public:
     using AP_MotorsMulticopter::_slew_dn_time;
     using AP_MotorsMulticopter::_pwm_min;
     using AP_MotorsMulticopter::_pwm_max;
+    using AP_MotorsMulticopter::update_throttle_filter;
+    using AP_MotorsMulticopter::update_throttle_hover;
+    using AP_MotorsMulticopter::_throttle_hover;
+    using AP_Motors::_throttle_in;
+    using AP_Motors::_throttle_slew_rate;
+
 
     // AP_MotorsMatrix enforces a singleton in its constructor, so the fixture
     // reuses one instance and clears it between frames rather than building
@@ -700,6 +712,121 @@ int main(void)
         }
     }
 
+    // ---- the throttle input path ----
+    printf("#throttle\n");
+
+    // update_throttle_filter across a few stick profiles, both arming states,
+    // and two filter cutoffs. The filtered throttle and the slew estimate are
+    // both dumped every step: the slew estimate is a seven-sample derivative,
+    // so it only agrees if the whole history agrees.
+    printf("#filter\n");
+    printf("case,step,cutoff,slew_cutoff,armed,throttle_in,now_us,"
+           "filtered,slew_rate\n");
+    {
+        Probe &m = motors;
+        static const float CUTOFFS[][2] = { {0.0f, 0.0f}, {2.0f, 25.0f}, {10.0f, 50.0f} };
+        const int STEPS = 400;
+
+        // The spool scenarios leave the throttle filter holding a value.
+        // Clear it so the first pre-step compares zero against zero, the way
+        // it does on a freshly constructed object.
+        m._throttle_filter.reset(0.0f);
+
+        int cs = 0;
+        int feeds = 0;
+        for (unsigned c = 0; c < 3; c++) {
+            for (int profile = 0; profile < 4; profile++) {
+                for (int arm = 0; arm <= 1; arm++, cs++) {
+                    m.set_throttle_filter_cutoff(CUTOFFS[c][0]);
+                    m.set_slew_filter_cutoff(CUTOFFS[c][1]);
+                    // Deliberately NOT resetting the slew detector between
+                    // cases. DerivativeFilter::reset() does not clear its own
+                    // timestamps, so after it slope() computes across stale
+                    // timestamps and cleared samples -- a registered divergence
+                    // the port fixes, which means a fixture that reset would be
+                    // comparing against behaviour the port refuses to have.
+                    //
+                    // Instead the singleton keeps one continuous history and
+                    // the clock never rewinds, which both sides can reproduce.
+                    // Disarming still clears the throttle filter, because that
+                    // is upstream's own documented behaviour.
+                    m.armed(false);
+                    m.set_dt_s(0.0025f);
+                    m.set_throttle(0.0f);
+                    AP_HAL::harness_now_us += 2500u;
+                    {
+                        const float b = m._throttle_filter.get();
+                        m.update_throttle_filter();
+                        if (!is_equal(b, m._throttle_filter.get())) {
+                            feeds++;
+                        }
+                    }
+
+                    m.armed(arm != 0);
+                    for (int step = 0; step < STEPS; step++) {
+                        AP_HAL::harness_now_us += 2500u;
+                        const float ts = step * 0.0025f;
+                        float in;
+                        switch (profile) {
+                        case 0: in = 0.5f; break;                        // step
+                        case 1: in = ts < 0.5f ? 0.0f : 1.0f; break;     // late step
+                        case 2: in = 0.5f + 0.5f * sinf(ts * 6.0f); break;
+                        case 3: in = ts * 0.4f - 0.1f; break;            // ramps out of range
+                        default: in = 0.0f; break;
+                        }
+                        m.set_throttle(in);
+                        // The same is_equal test update_throttle_filter makes
+                        // internally, replicated so the fixture records whether
+                        // the detector was fed rather than only its eventual
+                        // effect on the slope.
+                        const float before = m._throttle_filter.get();
+                        m.update_throttle_filter();
+                        const int fed = !is_equal(before, m._throttle_filter.get());
+                        feeds += fed;
+                        printf("%d,%d,%u,%u,%d,%u,%u,%u,%u,%d,%d\n", cs, step,
+                               fbits(CUTOFFS[c][0]), fbits(CUTOFFS[c][1]),
+                               arm, fbits(in), AP_HAL::harness_now_us,
+                               fbits(m._throttle_filter.get()),
+                               fbits(m._throttle_slew_rate), fed, feeds);
+                    }
+                }
+            }
+        }
+        m.armed(false);
+    }
+
+    // update_throttle_hover: the ten-second lag, including inputs outside the
+    // reachable range so the clamp on write is pinned.
+    printf("#hover\n");
+    printf("case,step,learn,dt,throttle,hover_raw,hover_get\n");
+    {
+        Probe &m = motors;
+        static const float STARTS[] = { 0.35f, 0.125f, 0.6875f, 0.5f };
+        static const float TARGETS[] = { 0.0f, 0.2f, 0.45f, 0.9f };
+        static const float DTS[] = { 0.01f, 0.0025f };
+
+        int cs = 0;
+        for (int learn = 0; learn <= 2; learn++) {
+            for (unsigned s = 0; s < 4; s++) {
+                for (unsigned g = 0; g < 4; g++) {
+                    for (unsigned k = 0; k < 2; k++, cs++) {
+                        m._throttle_hover_learn.set((int8_t)learn);
+                        m._throttle_hover.set(STARTS[s]);
+                        m._throttle_filter.reset(TARGETS[g]);
+                        for (int step = 0; step < 30; step++) {
+                            m.update_throttle_hover(DTS[k]);
+                            printf("%d,%d,%d,%u,%u,%u,%u\n", cs, step, learn,
+                                   fbits(DTS[k]), fbits(TARGETS[g]),
+                                   fbits(m._throttle_hover.get()),
+                                   fbits(m.get_throttle_hover()));
+                        }
+                    }
+                }
+            }
+        }
+        m._throttle_hover_learn.set((int8_t)0);
+    }
+
     return 0;
 }
 '''
@@ -722,6 +849,14 @@ def main():
             out_marker = "#output\n"
             if out_marker in third:
                 third, fourth = third.split(out_marker, 1)
+                thr_marker = "#throttle\n"
+                if thr_marker in fourth:
+                    fourth, fifth = fourth.split(thr_marker, 1)
+                    THROTTLE_OUT.write_text(thr_marker + fifth)
+                    rows = sum(1 for l in fifth.splitlines()
+                               if l and not l.startswith("#") and "," in l
+                               and not l[0].isalpha())
+                    print("wrote %s: %d rows" % (THROTTLE_OUT.name, rows))
                 OUTPUT_OUT.write_text(out_marker + fourth)
                 rows = sum(1 for l in fourth.splitlines()
                            if l and not l.startswith("#") and "," in l

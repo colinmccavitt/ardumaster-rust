@@ -86,6 +86,7 @@ dependencies = [
 name = "ap-motors"
 version = "0.1.0"
 dependencies = [
+ "ap-filter",
  "ap-math",
 ]
 

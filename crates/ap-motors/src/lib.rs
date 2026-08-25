@@ -35,6 +35,7 @@ use ap_math::scalar::{is_zero, radians, Real};
 mod frames;
 pub mod output;
 pub mod spool;
+pub mod throttle;
 
 /// Motors a frame may have, upstream `AP_MOTORS_MAX_NUM_MOTORS`.
 ///
