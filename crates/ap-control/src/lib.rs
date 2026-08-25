@@ -25,6 +25,7 @@ pub mod attitude_controller;
 pub mod attitude_error;
 pub mod attitude_kinematics;
 mod steer;
+pub mod throttle_mix;
 mod yaw;
 
 pub use steer::{SteerController, SteerGains, SteerInputs};
