@@ -11,7 +11,7 @@
 //! confirms it — nothing outside `AP_Math` references either. They are left
 //! unported rather than carried over untested.
 
-use crate::scalar::{wrap_2pi, Real};
+use crate::scalar::{radians, wrap_2pi, Real};
 use crate::vector2::{Vector2, Vector2f};
 use crate::Ftype;
 
@@ -181,6 +181,14 @@ fn rad_to_cd_f32(rad: f32) -> f32 {
 /// upstream ever computes with.
 pub const LOCATION_SCALING_FACTOR: f32 = 0.011_131_884_5;
 
+/// 1e-7 degrees of latitude per metre, upstream
+/// `LOCATION_SCALING_FACTOR_INV` (`LATLON_TO_M_INV`).
+///
+/// Not computed as `1.0 / LOCATION_SCALING_FACTOR`: upstream carries both as
+/// separate literals, and the reciprocal of the rounded `f32` forward factor
+/// is not the rounded `f32` of the true reciprocal.
+pub const LOCATION_SCALING_FACTOR_INV: f32 = 89.832_05;
+
 /// A geodetic position, upstream `Location`'s latitude and longitude.
 ///
 /// Both are in units of 1e-7 degrees, as ArduPilot stores and logs them.
@@ -261,6 +269,104 @@ upstream's and reproducing it is the point"
     /// Offset from this position to `other`, north and east in metres,
     /// upstream `get_distance_NE`.
     ///
+    /// Wrap a longitude into -180e7..180e7, upstream `wrap_longitude`.
+    ///
+    /// One wrap only. A value more than a full turn out stays out — upstream
+    /// subtracts 360 degrees once rather than looping, which is enough for an
+    /// offset that started in range.
+    #[must_use]
+    pub const fn wrap_longitude(lon: i64) -> i32 {
+        if lon > 1_800_000_000 {
+            (lon - 3_600_000_000) as i32
+        } else if lon < -1_800_000_000 {
+            (lon + 3_600_000_000) as i32
+        } else {
+            lon as i32
+        }
+    }
+
+    /// Fold a latitude back inside -90e7..90e7, upstream `limit_lattitude`.
+    ///
+    /// # This reflects rather than wraps
+    ///
+    /// Going north past the pole gives `1800000000 - lat`, which is the right
+    /// latitude for a point that carried on over the top — but the longitude
+    /// is left alone, and crossing a pole flips longitude by 180 degrees. So
+    /// offsetting north from 89 degrees by 200 km lands back at 89 degrees on
+    /// the *same* meridian, which is where the vehicle started rather than
+    /// where it was going.
+    ///
+    /// Reproduced rather than corrected. The name says "limit": this is a
+    /// guard against nonsense coordinates, not polar navigation, and a
+    /// fixed-wing vehicle reaching it has already lost. Changing it would mean
+    /// diverging on a path that only runs when the inputs are already wrong.
+    #[must_use]
+    pub const fn limit_latitude(lat: i32) -> i32 {
+        if lat > 900_000_000 {
+            (1_800_000_000_i64 - lat as i64) as i32
+        } else if lat < -900_000_000 {
+            -((1_800_000_000_i64 + lat as i64) as i32)
+        } else {
+            lat
+        }
+    }
+
+    /// Move by a north and east offset in metres, upstream `offset`.
+    ///
+    /// The east conversion divides by the longitude scale at the *midpoint*
+    /// latitude of the move, not at the start — `lat + dlat/2`. Over a long
+    /// northward leg the meridians converge, and taking the scale at the start
+    /// would put the endpoint progressively too far east.
+    pub fn offset(&mut self, ofs_north: Ftype, ofs_east: Ftype) {
+        // Everything in Ftype, as upstream does: `ofs_east` is ftype and the
+        // scaling factor is a constexpr float, so the product is ftype and so
+        // is `longitude_scale`. Widening part-way through changes the rounding
+        // before the truncation and shifts the answer by about a centimetre.
+        let inv = Ftype::from(LOCATION_SCALING_FACTOR_INV);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream assigns the product straight to an int32; the truncation toward zero is the behaviour, not an accident"
+        )]
+        let dlat = (ofs_north * inv) as i32;
+        let scale = Self::longitude_scale(self.lat.saturating_add(dlat / 2));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream truncates the ftype quotient into an int64 here; the narrowing to int32 happens later, in wrap_longitude"
+        )]
+        let dlng = ((ofs_east * inv) / scale) as i64;
+
+        self.lat = Self::limit_latitude(self.lat.saturating_add(dlat));
+        self.lng = Self::wrap_longitude(dlng + i64::from(self.lng));
+    }
+
+    /// Move `distance` metres along a compass bearing, upstream
+    /// `offset_bearing`.
+    ///
+    /// A negative distance moves backwards along the bearing, which is how the
+    /// landing aim point is placed short of the runway threshold.
+    pub fn offset_bearing(&mut self, bearing_deg: Ftype, distance: Ftype) {
+        let b = radians(bearing_deg);
+        self.offset(Real::cos(b) * distance, Real::sin(b) * distance);
+    }
+
+    /// How far along the line from `point1` to `point2` this location sits,
+    /// upstream `line_path_proportion`.
+    ///
+    /// Zero at `point1`, one at `point2`, and outside that range when the
+    /// projection falls beyond either end — callers that need it bounded
+    /// clamp it themselves. Two points closer together than about 3 cm report
+    /// 1.0, because the direction of a line that short is noise.
+    #[must_use]
+    pub fn line_path_proportion(self, point1: Self, point2: Self) -> f32 {
+        let vec1 = point1.get_distance_ne(point2);
+        let vec2 = point1.get_distance_ne(self);
+        let dsquared = vec1.x * vec1.x + vec1.y * vec1.y;
+        if dsquared < 0.001 {
+            return 1.0;
+        }
+        (vec1.x * vec2.x + vec1.y * vec2.y) / dsquared
+    }
+
     /// The longitude scale is taken at the midpoint of the two latitudes, so
     /// the answer is symmetric rather than biased toward the origin.
     #[must_use]
