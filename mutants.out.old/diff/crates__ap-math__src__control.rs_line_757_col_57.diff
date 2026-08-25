@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace / with % in shape_pos_vel_accel_xy
+@@ -749,17 +749,17 @@
+         );
+ 
+         vel_corr_cmd_length += accel_corr_cmd_length / k_v;
+ 
+         if is_positive(vel_max) {
+             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);
+         }
+ 
+-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);
++        vel_corr_cmd = pos_error * (vel_corr_cmd_length % /* ~ changed by cargo-mutants ~ */ pos_error_length);
+     }
+ 
+     let mut vel_target = vel_desired + vel_corr_cmd;
+     if limit_total && is_positive(vel_max) {
+         vel_target.limit_length(vel_max);
+     }
+ 
+     let mut accel_target = (vel_target - vel) * k_v;

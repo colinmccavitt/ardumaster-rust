@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace + with - in limit_accel_xy
+@@ -827,17 +827,17 @@
+         accel_dir = 0.0;
+     } else {
+         // limit_length cannot absolutely guarantee this difference is
+         // non-negative, hence the guarded square root — upstream's comment.
+         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());
+         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);
+     }
+ 
+-    *accel = accel_cross + vel_unit * accel_dir;
++    *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;
+     true
+ }
+ 
+ /// Limit acceleration with direction-dependent priority — upstream
+ /// `limit_accel_corner_xy`.
+ ///
+ /// The same budget problem as [`limit_accel_xy`], answered differently
+ /// depending on whether the vehicle is trying to slow down.

@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace += with *= in shape_pos_vel_accel_xy
+@@ -761,17 +761,17 @@
+     if limit_total && is_positive(vel_max) {
+         vel_target.limit_length(vel_max);
+     }
+ 
+     let mut accel_target = (vel_target - vel) * k_v;
+ 
+     limit_accel_corner_xy(vel, &mut accel_target, accel_max);
+ 
+-    accel_target += accel_desired;
++    accel_target *= /* ~ changed by cargo-mutants ~ */ accel_desired;
+ 
+     if limit_total {
+         accel_target.limit_length(accel_max);
+     }
+ 
+     shape_accel_xy(accel_target, accel, jerk_max, dt);
+ }
+ 

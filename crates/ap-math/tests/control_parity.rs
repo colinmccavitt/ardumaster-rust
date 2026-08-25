@@ -26,7 +26,7 @@ use ap_math::vector3::Vector3f;
 use ap_math::control::{
     inv_sqrt_controller, kinematic_limit, shape_accel, shape_angle_vel_accel, shape_pos_vel_accel,
     shape_vel_accel, sqrt_controller, sqrt_controller_accel, stopping_distance,
-    update_pos_vel_accel, update_vel_accel,
+    update_pos_vel_accel, update_vel_accel, Postype,
 };
 
 fn fixture() -> String {
@@ -113,6 +113,20 @@ fn the_control_shaping_matches_upstream() {
                 let mut vel = f(r[1]);
                 update_vel_accel(&mut vel, f(r[2]), 0.02, f(r[3]), f(r[4]));
                 pairs.push(("update_vel_accel", vel, f(r[7])));
+            }
+            "upd_pos" => {
+                // Position is compared as Postype, not as a float: it
+                // accumulates for a whole flight and the type exists to stop
+                // that drifting.
+                let mut pos: Postype = 7.5;
+                let mut vel = f(r[1]);
+                update_pos_vel_accel(&mut pos, &mut vel, f(r[2]), 0.02, f(r[3]), f(r[4]), f(r[5]));
+                pairs.push(("update_pos_vel_accel_vel", vel, f(r[7])));
+                let want: Postype = r[8].trim().parse().expect("position");
+                assert!(
+                    (pos - want).abs() < 1e-12,
+                    "update_pos_vel_accel position: {pos} != upstream {want}"
+                );
             }
             "shape_accel" => {
                 let mut accel = f(r[2]);
@@ -244,6 +258,7 @@ fn the_control_shaping_matches_upstream() {
         "inv",
         "sqrt_accel",
         "upd_vel",
+        "upd_pos",
         "shape_accel",
         "loop_vel",
         "loop_pos",

@@ -32,9 +32,9 @@
 +    () /* ~ changed by cargo-mutants ~ */
  }
  
- /// The vector square-root controller — upstream's `Vector2f` overload of
- /// `sqrt_controller`.
+ /// Shape a position command into a jerk-limited acceleration — upstream
+ /// `shape_pos_vel_accel_xy`.
  ///
- /// Scalar controller on the error's *length*, with the result pointed back
- /// along the error. So the correction never changes direction, only magnitude
- /// — a per-axis version would corner differently depending on which way the
+ /// The full outer loop: position error becomes a velocity correction, which
+ /// joins the feedforward velocity, which becomes an acceleration demand, which
+ /// is jerk-limited. Everything the vehicle is asked to do in the horizontal

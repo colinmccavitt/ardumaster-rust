@@ -126,7 +126,15 @@ int main(void)
     }
 
     // ---- update_vel_accel: the limit logic ----
-    static const float vels[]   = { -2.0f, -0.5f, 0.0f, 0.5f, 2.0f };
+    //
+    // The 0.01 velocities and the 30 accelerations are what make the clamp
+    // inside the suppression branch bind. It limits the step to the
+    // velocity's own magnitude, so it does nothing unless |accel * dt|
+    // exceeds |vel|; with dt at 0.02 the step needs an acceleration in the
+    // tens to beat even a small velocity. Without both, the branch is entered
+    // and the clamp never fires.
+    static const float vels[]   = { -30.0f, -2.0f, -0.5f, -0.01f, 0.0f,
+                                    0.01f, 0.5f, 2.0f, 30.0f };
     static const float limits[] = { -1.0f, 0.0f, 1.0f };
     for (unsigned iv = 0; iv < ARRAY_SIZE(vels); iv++) {
         for (unsigned ia = 0; ia < ARRAY_SIZE(vels); ia++) {
@@ -137,6 +145,32 @@ int main(void)
                     printf("upd_vel,%u,%u,%u,%u,0,0,%u,0\n",
                            fbits(vels[iv]), fbits(vels[ia]),
                            fbits(limits[il]), fbits(limits[ie]), fbits(vel));
+                }
+            }
+        }
+    }
+
+    // ---- update_pos_vel_accel: position suppressed independently ----
+    //
+    // The position step is dropped on its own two conditions while the
+    // velocity follows the three-condition rule above, so a vehicle can be
+    // held in place while still being allowed to slow down. A sweep that
+    // moved both together could not tell the two rules apart.
+    static const float perrs[] = { -1.0f, 0.0f, 1.0f };
+    for (unsigned iv = 0; iv < ARRAY_SIZE(vels); iv++) {
+        for (unsigned ia = 0; ia < ARRAY_SIZE(vels); ia++) {
+            for (unsigned il = 0; il < ARRAY_SIZE(limits); il++) {
+                for (unsigned ip = 0; ip < ARRAY_SIZE(perrs); ip++) {
+                    for (unsigned ie = 0; ie < ARRAY_SIZE(limits); ie++) {
+                        postype_t pos = 7.5;
+                        float vel = vels[iv];
+                        update_pos_vel_accel(pos, vel, vels[ia], 0.02f,
+                                             limits[il], perrs[ip], limits[ie]);
+                        printf("upd_pos,%u,%u,%u,%u,%u,0,%u,%.17g\n",
+                               fbits(vels[iv]), fbits(vels[ia]),
+                               fbits(limits[il]), fbits(perrs[ip]),
+                               fbits(limits[ie]), fbits(vel), (double)pos);
+                    }
                 }
             }
         }

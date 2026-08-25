@@ -9216,7 +9216,7 @@
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace shape_vel_accel_xy with ()\n@@ -636,36 +636,17 @@\n     accel_desired: Vector2f,\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total_accel: bool,\n ) {\n-    if !is_positive(accel_max) || !is_positive(jerk_max) {\n-        return;\n-    }\n-\n-    // The gain that makes the sqrt controller's linear region hand over to\n-    // its square-root region exactly at the acceleration limit.\n-    let kpa = jerk_max / accel_max;\n-\n-    let vel_error = vel_desired - vel;\n-    let mut accel_target = sqrt_controller_xy(vel_error, kpa, jerk_max, dt);\n-\n-    limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n-\n-    accel_target += accel_desired;\n-\n-    if limit_total_accel {\n-        accel_target.limit_length(accel_max);\n-    }\n-\n-    shape_accel_xy(accel_target, accel, jerk_max, dt);\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n /// The vector square-root controller — upstream's `Vector2f` overload of\n /// `sqrt_controller`.\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace shape_vel_accel_xy with ()\n@@ -636,36 +636,17 @@\n     accel_desired: Vector2f,\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total_accel: bool,\n ) {\n-    if !is_positive(accel_max) || !is_positive(jerk_max) {\n-        return;\n-    }\n-\n-    // The gain that makes the sqrt controller's linear region hand over to\n-    // its square-root region exactly at the acceleration limit.\n-    let kpa = jerk_max / accel_max;\n-\n-    let vel_error = vel_desired - vel;\n-    let mut accel_target = sqrt_controller_xy(vel_error, kpa, jerk_max, dt);\n-\n-    limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n-\n-    accel_target += accel_desired;\n-\n-    if limit_total_accel {\n-        accel_target.limit_length(accel_max);\n-    }\n-\n-    shape_accel_xy(accel_target, accel, jerk_max, dt);\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n /// Shape a position command into a jerk-limited acceleration — upstream\n /// `shape_pos_vel_accel_xy`.\n ///\n /// The full outer loop: position error becomes a velocity correction, which\n /// joins the feedforward velocity, which becomes an acceleration demand, which\n /// is jerk-limited. Everything the vehicle is asked to do in the horizontal\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "shape_vel_accel_xy",
@@ -9536,15 +9536,15 @@
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace sqrt_controller_xy -> Vector2f with Default::default()\n@@ -667,22 +667,17 @@\n /// `sqrt_controller`.\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n-    let error_length = error.length();\n-    if !is_positive(error_length) {\n-        return Vector2f::new(0.0, 0.0);\n-    }\n-    let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace shape_pos_vel_accel_xy with ()\n@@ -714,70 +714,17 @@\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     vel_max: f32,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total: bool,\n ) {\n-    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n-        return;\n-    }\n-\n-    // Inner velocity-loop gain, set so the sqrt controller's linear region\n-    // hands over to its square-root region exactly at the acceleration limit.\n-    let k_v = jerk_max / accel_max;\n-\n-    let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n-\n-    let pos_error = Vector2f::new(\n-        (pos_desired.x - pos.x) as f32,\n-        (pos_desired.y - pos.y) as f32,\n-    );\n-    let pos_error_length = pos_error.length();\n-\n-    if is_positive(pos_error_length) {\n-        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n-\n-        let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n-\n-        let accel_corr_cmd_length = sqrt_controller_accel(\n-            pos_error_length,\n-            vel_corr_cmd_length,\n-            vel_corr_proj,\n-            k_v,\n-            accel_max,\n-        );\n-\n-        vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n-\n-        if is_positive(vel_max) {\n-            vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n-        }\n-\n-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n-    }\n-\n-    let mut vel_target = vel_desired + vel_corr_cmd;\n-    if limit_total && is_positive(vel_max) {\n-        vel_target.limit_length(vel_max);\n-    }\n-\n-    let mut accel_target = (vel_target - vel) * k_v;\n-\n-    limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n-\n-    accel_target += accel_desired;\n-\n-    if limit_total {\n-        accel_target.limit_length(accel_max);\n-    }\n-\n-    shape_accel_xy(accel_target, accel, jerk_max, dt);\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n /// The vector square-root controller — upstream's `Vector2f` overload of\n /// `sqrt_controller`.\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
-      "function_name": "sqrt_controller_xy",
-      "return_type": "-> Vector2f",
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 776
         },
         "start": {
           "column": 1,
@@ -9553,22 +9553,1078 @@
       }
     },
     "genre": "FnValue",
-    "name": "crates/ap-math/src/control.rs:675:5: replace sqrt_controller_xy -> Vector2f with Default::default()",
+    "name": "crates/ap-math/src/control.rs:722:5: replace shape_pos_vel_accel_xy with ()",
+    "package": "ap-math",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 55,
+        "line": 775
+      },
+      "start": {
+        "column": 5,
+        "line": 722
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace || with && in shape_pos_vel_accel_xy\n@@ -714,17 +714,17 @@\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     vel_max: f32,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total: bool,\n ) {\n-    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n+    if is_negative(vel_max) || !is_positive(accel_max) && /* ~ changed by cargo-mutants ~ */ !is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:722:56: replace || with && in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 58,
+        "line": 722
+      },
+      "start": {
+        "column": 56,
+        "line": 722
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace || with && in shape_pos_vel_accel_xy\n@@ -714,17 +714,17 @@\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     vel_max: f32,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total: bool,\n ) {\n-    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n+    if is_negative(vel_max) && /* ~ changed by cargo-mutants ~ */ !is_positive(accel_max) || !is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:722:29: replace || with && in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 31,
+        "line": 722
+      },
+      "start": {
+        "column": 29,
+        "line": 722
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in shape_pos_vel_accel_xy\n@@ -714,17 +714,17 @@\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     vel_max: f32,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total: bool,\n ) {\n-    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n+    if is_negative(vel_max) ||  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) || !is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/ap-math/src/control.rs:722:32: delete ! in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 33,
+        "line": 722
+      },
+      "start": {
+        "column": 32,
+        "line": 722
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in shape_pos_vel_accel_xy\n@@ -714,17 +714,17 @@\n     vel: Vector2f,\n     accel: &mut Vector2f,\n     vel_max: f32,\n     accel_max: f32,\n     jerk_max: f32,\n     dt: f32,\n     limit_total: bool,\n ) {\n-    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n+    if is_negative(vel_max) || !is_positive(accel_max) ||  /* ~ changed by cargo-mutants ~ */is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/ap-math/src/control.rs:722:59: delete ! in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 60,
+        "line": 722
+      },
+      "start": {
+        "column": 59,
+        "line": 722
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in shape_pos_vel_accel_xy\n@@ -720,17 +720,17 @@\n     limit_total: bool,\n ) {\n     if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n-    let k_v = jerk_max / accel_max;\n+    let k_v = jerk_max % /* ~ changed by cargo-mutants ~ */ accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:728:24: replace / with % in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "%",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 728
+      },
+      "start": {
+        "column": 24,
+        "line": 728
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in shape_pos_vel_accel_xy\n@@ -720,17 +720,17 @@\n     limit_total: bool,\n ) {\n     if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {\n         return;\n     }\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n-    let k_v = jerk_max / accel_max;\n+    let k_v = jerk_max * /* ~ changed by cargo-mutants ~ */ accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:728:24: replace / with * in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 728
+      },
+      "start": {
+        "column": 24,
+        "line": 728
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in shape_pos_vel_accel_xy\n@@ -725,17 +725,17 @@\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n-        (pos_desired.x - pos.x) as f32,\n+        (pos_desired.x + /* ~ changed by cargo-mutants ~ */ pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n         let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:733:24: replace - with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 733
+      },
+      "start": {
+        "column": 24,
+        "line": 733
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in shape_pos_vel_accel_xy\n@@ -725,17 +725,17 @@\n \n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n-        (pos_desired.x - pos.x) as f32,\n+        (pos_desired.x / /* ~ changed by cargo-mutants ~ */ pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n         let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:733:24: replace - with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 733
+      },
+      "start": {
+        "column": 24,
+        "line": 733
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in shape_pos_vel_accel_xy\n@@ -726,17 +726,17 @@\n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n-        (pos_desired.y - pos.y) as f32,\n+        (pos_desired.y + /* ~ changed by cargo-mutants ~ */ pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n         let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:734:24: replace - with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 734
+      },
+      "start": {
+        "column": 24,
+        "line": 734
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in shape_pos_vel_accel_xy\n@@ -726,17 +726,17 @@\n     // Inner velocity-loop gain, set so the sqrt controller's linear region\n     // hands over to its square-root region exactly at the acceleration limit.\n     let k_v = jerk_max / accel_max;\n \n     let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n-        (pos_desired.y - pos.y) as f32,\n+        (pos_desired.y / /* ~ changed by cargo-mutants ~ */ pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n         let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:734:24: replace - with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 25,
+        "line": 734
+      },
+      "start": {
+        "column": 24,
+        "line": 734
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in shape_pos_vel_accel_xy\n@@ -731,17 +731,17 @@\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n-        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n+        let vel_corr_proj = (vel - vel_desired).dot(pos_error) % /* ~ changed by cargo-mutants ~ */ pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:739:64: replace / with % in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "%",
+    "span": {
+      "end": {
+        "column": 65,
+        "line": 739
+      },
+      "start": {
+        "column": 64,
+        "line": 739
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in shape_pos_vel_accel_xy\n@@ -731,17 +731,17 @@\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n-        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n+        let vel_corr_proj = (vel - vel_desired).dot(pos_error) * /* ~ changed by cargo-mutants ~ */ pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:739:64: replace / with * in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 65,
+        "line": 739
+      },
+      "start": {
+        "column": 64,
+        "line": 739
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in shape_pos_vel_accel_xy\n@@ -731,17 +731,17 @@\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n-        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n+        let vel_corr_proj = (vel + /* ~ changed by cargo-mutants ~ */ vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:739:34: replace - with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 739
+      },
+      "start": {
+        "column": 34,
+        "line": 739
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in shape_pos_vel_accel_xy\n@@ -731,17 +731,17 @@\n \n     let pos_error = Vector2f::new(\n         (pos_desired.x - pos.x) as f32,\n         (pos_desired.y - pos.y) as f32,\n     );\n     let pos_error_length = pos_error.length();\n \n     if is_positive(pos_error_length) {\n-        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;\n+        let vel_corr_proj = (vel / /* ~ changed by cargo-mutants ~ */ vel_desired).dot(pos_error) / pos_error_length;\n \n         let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);\n \n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:739:34: replace - with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 739
+      },
+      "start": {
+        "column": 34,
+        "line": 739
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace += with -= in shape_pos_vel_accel_xy\n@@ -743,17 +743,17 @@\n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n             accel_max,\n         );\n \n-        vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n+        vel_corr_cmd_length -= /* ~ changed by cargo-mutants ~ */ accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:751:29: replace += with -= in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "-=",
+    "span": {
+      "end": {
+        "column": 31,
+        "line": 751
+      },
+      "start": {
+        "column": 29,
+        "line": 751
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace += with *= in shape_pos_vel_accel_xy\n@@ -743,17 +743,17 @@\n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n             accel_max,\n         );\n \n-        vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n+        vel_corr_cmd_length *= /* ~ changed by cargo-mutants ~ */ accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:751:29: replace += with *= in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*=",
+    "span": {
+      "end": {
+        "column": 31,
+        "line": 751
+      },
+      "start": {
+        "column": 29,
+        "line": 751
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in shape_pos_vel_accel_xy\n@@ -743,17 +743,17 @@\n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n             accel_max,\n         );\n \n-        vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n+        vel_corr_cmd_length += accel_corr_cmd_length % /* ~ changed by cargo-mutants ~ */ k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:751:54: replace / with % in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "%",
+    "span": {
+      "end": {
+        "column": 55,
+        "line": 751
+      },
+      "start": {
+        "column": 54,
+        "line": 751
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in shape_pos_vel_accel_xy\n@@ -743,17 +743,17 @@\n         let accel_corr_cmd_length = sqrt_controller_accel(\n             pos_error_length,\n             vel_corr_cmd_length,\n             vel_corr_proj,\n             k_v,\n             accel_max,\n         );\n \n-        vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n+        vel_corr_cmd_length += accel_corr_cmd_length * /* ~ changed by cargo-mutants ~ */ k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:751:54: replace / with * in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 55,
+        "line": 751
+      },
+      "start": {
+        "column": 54,
+        "line": 751
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete - in shape_pos_vel_accel_xy\n@@ -746,17 +746,17 @@\n             vel_corr_proj,\n             k_v,\n             accel_max,\n         );\n \n         vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n-            vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n+            vel_corr_cmd_length = vel_corr_cmd_length.clamp( /* ~ changed by cargo-mutants ~ */vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/ap-math/src/control.rs:754:61: delete - in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 62,
+        "line": 754
+      },
+      "start": {
+        "column": 61,
+        "line": 754
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in shape_pos_vel_accel_xy\n@@ -749,17 +749,17 @@\n         );\n \n         vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n+        vel_corr_cmd = pos_error + /* ~ changed by cargo-mutants ~ */ (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:757:34: replace * with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 757
+      },
+      "start": {
+        "column": 34,
+        "line": 757
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in shape_pos_vel_accel_xy\n@@ -749,17 +749,17 @@\n         );\n \n         vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n+        vel_corr_cmd = pos_error / /* ~ changed by cargo-mutants ~ */ (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:757:34: replace * with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 757
+      },
+      "start": {
+        "column": 34,
+        "line": 757
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in shape_pos_vel_accel_xy\n@@ -749,17 +749,17 @@\n         );\n \n         vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n+        vel_corr_cmd = pos_error * (vel_corr_cmd_length % /* ~ changed by cargo-mutants ~ */ pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:757:57: replace / with % in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "%",
+    "span": {
+      "end": {
+        "column": 58,
+        "line": 757
+      },
+      "start": {
+        "column": 57,
+        "line": 757
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in shape_pos_vel_accel_xy\n@@ -749,17 +749,17 @@\n         );\n \n         vel_corr_cmd_length += accel_corr_cmd_length / k_v;\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n-        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n+        vel_corr_cmd = pos_error * (vel_corr_cmd_length * /* ~ changed by cargo-mutants ~ */ pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:757:57: replace / with * in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 58,
+        "line": 757
+      },
+      "start": {
+        "column": 57,
+        "line": 757
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in shape_pos_vel_accel_xy\n@@ -752,17 +752,17 @@\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n-    let mut vel_target = vel_desired + vel_corr_cmd;\n+    let mut vel_target = vel_desired - /* ~ changed by cargo-mutants ~ */ vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:760:38: replace + with - in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 760
+      },
+      "start": {
+        "column": 38,
+        "line": 760
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in shape_pos_vel_accel_xy\n@@ -752,17 +752,17 @@\n \n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n-    let mut vel_target = vel_desired + vel_corr_cmd;\n+    let mut vel_target = vel_desired * /* ~ changed by cargo-mutants ~ */ vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:760:38: replace + with * in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 760
+      },
+      "start": {
+        "column": 38,
+        "line": 760
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace && with || in shape_pos_vel_accel_xy\n@@ -753,17 +753,17 @@\n         if is_positive(vel_max) {\n             vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);\n         }\n \n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n-    if limit_total && is_positive(vel_max) {\n+    if limit_total || /* ~ changed by cargo-mutants ~ */ is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n     accel_target += accel_desired;\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:761:20: replace && with || in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 761
+      },
+      "start": {
+        "column": 20,
+        "line": 761
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in shape_pos_vel_accel_xy\n@@ -757,17 +757,17 @@\n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n-    let mut accel_target = (vel_target - vel) * k_v;\n+    let mut accel_target = (vel_target - vel) + /* ~ changed by cargo-mutants ~ */ k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n     accel_target += accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:765:47: replace * with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 48,
+        "line": 765
+      },
+      "start": {
+        "column": 47,
+        "line": 765
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in shape_pos_vel_accel_xy\n@@ -757,17 +757,17 @@\n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n-    let mut accel_target = (vel_target - vel) * k_v;\n+    let mut accel_target = (vel_target - vel) / /* ~ changed by cargo-mutants ~ */ k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n     accel_target += accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:765:47: replace * with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 48,
+        "line": 765
+      },
+      "start": {
+        "column": 47,
+        "line": 765
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in shape_pos_vel_accel_xy\n@@ -757,17 +757,17 @@\n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n-    let mut accel_target = (vel_target - vel) * k_v;\n+    let mut accel_target = (vel_target + /* ~ changed by cargo-mutants ~ */ vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n     accel_target += accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:765:40: replace - with + in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 765
+      },
+      "start": {
+        "column": 40,
+        "line": 765
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in shape_pos_vel_accel_xy\n@@ -757,17 +757,17 @@\n         vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);\n     }\n \n     let mut vel_target = vel_desired + vel_corr_cmd;\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n-    let mut accel_target = (vel_target - vel) * k_v;\n+    let mut accel_target = (vel_target / /* ~ changed by cargo-mutants ~ */ vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n     accel_target += accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:765:40: replace - with / in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 765
+      },
+      "start": {
+        "column": 40,
+        "line": 765
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace += with -= in shape_pos_vel_accel_xy\n@@ -761,17 +761,17 @@\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n-    accel_target += accel_desired;\n+    accel_target -= /* ~ changed by cargo-mutants ~ */ accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n \n     shape_accel_xy(accel_target, accel, jerk_max, dt);\n }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:769:18: replace += with -= in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "-=",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 769
+      },
+      "start": {
+        "column": 18,
+        "line": 769
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace += with *= in shape_pos_vel_accel_xy\n@@ -761,17 +761,17 @@\n     if limit_total && is_positive(vel_max) {\n         vel_target.limit_length(vel_max);\n     }\n \n     let mut accel_target = (vel_target - vel) * k_v;\n \n     limit_accel_corner_xy(vel, &mut accel_target, accel_max);\n \n-    accel_target += accel_desired;\n+    accel_target *= /* ~ changed by cargo-mutants ~ */ accel_desired;\n \n     if limit_total {\n         accel_target.limit_length(accel_max);\n     }\n \n     shape_accel_xy(accel_target, accel, jerk_max, dt);\n }\n \n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "shape_pos_vel_accel_xy",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 776
+        },
+        "start": {
+          "column": 1,
+          "line": 666
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/ap-math/src/control.rs:769:18: replace += with *= in shape_pos_vel_accel_xy",
+    "package": "ap-math",
+    "replacement": "*=",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 769
+      },
+      "start": {
+        "column": 18,
+        "line": 769
+      }
+    }
+  },
+  {
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace sqrt_controller_xy -> Vector2f with Default::default()\n@@ -779,22 +779,17 @@\n /// `sqrt_controller`.\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n-    let error_length = error.length();\n-    if !is_positive(error_length) {\n-        return Vector2f::new(0.0, 0.0);\n-    }\n-    let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "file": "crates/ap-math/src/control.rs",
+    "function": {
+      "function_name": "sqrt_controller_xy",
+      "return_type": "-> Vector2f",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 793
+        },
+        "start": {
+          "column": 1,
+          "line": 778
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/ap-math/src/control.rs:787:5: replace sqrt_controller_xy -> Vector2f with Default::default()",
     "package": "ap-math",
     "replacement": "Default::default()",
     "span": {
       "end": {
         "column": 47,
-        "line": 680
+        "line": 792
       },
       "start": {
         "column": 5,
-        "line": 675
+        "line": 787
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in sqrt_controller_xy\n@@ -668,17 +668,17 @@\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n-    if !is_positive(error_length) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n     error * (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in sqrt_controller_xy\n@@ -780,17 +780,17 @@\n ///\n /// Scalar controller on the error's *length*, with the result pointed back\n /// along the error. So the correction never changes direction, only magnitude\n /// — a per-axis version would corner differently depending on which way the\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n-    if !is_positive(error_length) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n     error * (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "sqrt_controller_xy",
@@ -9576,31 +10632,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 793
         },
         "start": {
           "column": 1,
-          "line": 666
+          "line": 778
         }
       }
     },
     "genre": "UnaryOperator",
-    "name": "crates/ap-math/src/control.rs:676:8: delete ! in sqrt_controller_xy",
+    "name": "crates/ap-math/src/control.rs:788:8: delete ! in sqrt_controller_xy",
     "package": "ap-math",
     "replacement": "",
     "span": {
       "end": {
         "column": 9,
-        "line": 676
+        "line": 788
       },
       "start": {
         "column": 8,
-        "line": 676
+        "line": 788
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in sqrt_controller_xy\n@@ -672,17 +672,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error + /* ~ changed by cargo-mutants ~ */ (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in sqrt_controller_xy\n@@ -784,17 +784,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error + /* ~ changed by cargo-mutants ~ */ (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "sqrt_controller_xy",
@@ -9608,31 +10664,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 793
         },
         "start": {
           "column": 1,
-          "line": 666
+          "line": 778
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:680:11: replace * with + in sqrt_controller_xy",
+    "name": "crates/ap-math/src/control.rs:792:11: replace * with + in sqrt_controller_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 12,
-        "line": 680
+        "line": 792
       },
       "start": {
         "column": 11,
-        "line": 680
+        "line": 792
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in sqrt_controller_xy\n@@ -672,17 +672,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error / /* ~ changed by cargo-mutants ~ */ (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in sqrt_controller_xy\n@@ -784,17 +784,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error / /* ~ changed by cargo-mutants ~ */ (correction_length / error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "sqrt_controller_xy",
@@ -9640,31 +10696,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 793
         },
         "start": {
           "column": 1,
-          "line": 666
+          "line": 778
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:680:11: replace * with / in sqrt_controller_xy",
+    "name": "crates/ap-math/src/control.rs:792:11: replace * with / in sqrt_controller_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 12,
-        "line": 680
+        "line": 792
       },
       "start": {
         "column": 11,
-        "line": 680
+        "line": 792
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in sqrt_controller_xy\n@@ -672,17 +672,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error * (correction_length % /* ~ changed by cargo-mutants ~ */ error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with % in sqrt_controller_xy\n@@ -784,17 +784,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error * (correction_length % /* ~ changed by cargo-mutants ~ */ error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "sqrt_controller_xy",
@@ -9672,31 +10728,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 793
         },
         "start": {
           "column": 1,
-          "line": 666
+          "line": 778
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:680:32: replace / with % in sqrt_controller_xy",
+    "name": "crates/ap-math/src/control.rs:792:32: replace / with % in sqrt_controller_xy",
     "package": "ap-math",
     "replacement": "%",
     "span": {
       "end": {
         "column": 33,
-        "line": 680
+        "line": 792
       },
       "start": {
         "column": 32,
-        "line": 680
+        "line": 792
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in sqrt_controller_xy\n@@ -672,17 +672,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error * (correction_length * /* ~ changed by cargo-mutants ~ */ error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace / with * in sqrt_controller_xy\n@@ -784,17 +784,17 @@\n /// error happened to lie.\n #[must_use]\n pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {\n     let error_length = error.length();\n     if !is_positive(error_length) {\n         return Vector2f::new(0.0, 0.0);\n     }\n     let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);\n-    error * (correction_length / error_length)\n+    error * (correction_length * /* ~ changed by cargo-mutants ~ */ error_length)\n }\n \n /// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.\n ///\n /// When the demand exceeds what the airframe can deliver, something has to be\n /// given up, and this gives up along-track first. Cross-track acceleration is\n /// what holds the vehicle on its path; along-track only changes how fast it\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "sqrt_controller_xy",
@@ -9704,31 +10760,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 681
+          "line": 793
         },
         "start": {
           "column": 1,
-          "line": 666
+          "line": 778
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:680:32: replace / with * in sqrt_controller_xy",
+    "name": "crates/ap-math/src/control.rs:792:32: replace / with * in sqrt_controller_xy",
     "package": "ap-math",
     "replacement": "*",
     "span": {
       "end": {
         "column": 33,
-        "line": 680
+        "line": 792
       },
       "start": {
         "column": 32,
-        "line": 680
+        "line": 792
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_xy -> bool with true\n@@ -688,45 +688,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-    if accel.length_squared() <= accel_max * accel_max {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        accel.limit_length(accel_max);\n-        return true;\n-    }\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n-\n-    if accel_cross.limit_length(accel_max) {\n-        // The cross-track component alone used the entire budget, so there is\n-        // nothing left for along-track at all.\n-        accel_dir = 0.0;\n-    } else {\n-        // limit_length cannot absolutely guarantee this difference is\n-        // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n-    }\n-\n-    *accel = accel_cross + vel_unit * accel_dir;\n-    true\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n ///\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_xy -> bool with true\n@@ -800,45 +800,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-    if accel.length_squared() <= accel_max * accel_max {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        accel.limit_length(accel_max);\n-        return true;\n-    }\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n-\n-    if accel_cross.limit_length(accel_max) {\n-        // The cross-track component alone used the entire budget, so there is\n-        // nothing left for along-track at all.\n-        accel_dir = 0.0;\n-    } else {\n-        // limit_length cannot absolutely guarantee this difference is\n-        // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n-    }\n-\n-    *accel = accel_cross + vel_unit * accel_dir;\n-    true\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n ///\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9736,31 +10792,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "FnValue",
-    "name": "crates/ap-math/src/control.rs:696:5: replace limit_accel_xy -> bool with true",
+    "name": "crates/ap-math/src/control.rs:808:5: replace limit_accel_xy -> bool with true",
     "package": "ap-math",
     "replacement": "true",
     "span": {
       "end": {
         "column": 9,
-        "line": 724
+        "line": 836
       },
       "start": {
         "column": 5,
-        "line": 696
+        "line": 808
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_xy -> bool with false\n@@ -688,45 +688,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-    if accel.length_squared() <= accel_max * accel_max {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        accel.limit_length(accel_max);\n-        return true;\n-    }\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n-\n-    if accel_cross.limit_length(accel_max) {\n-        // The cross-track component alone used the entire budget, so there is\n-        // nothing left for along-track at all.\n-        accel_dir = 0.0;\n-    } else {\n-        // limit_length cannot absolutely guarantee this difference is\n-        // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n-    }\n-\n-    *accel = accel_cross + vel_unit * accel_dir;\n-    true\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n ///\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_xy -> bool with false\n@@ -800,45 +800,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-    if accel.length_squared() <= accel_max * accel_max {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        accel.limit_length(accel_max);\n-        return true;\n-    }\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n-\n-    if accel_cross.limit_length(accel_max) {\n-        // The cross-track component alone used the entire budget, so there is\n-        // nothing left for along-track at all.\n-        accel_dir = 0.0;\n-    } else {\n-        // limit_length cannot absolutely guarantee this difference is\n-        // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n-    }\n-\n-    *accel = accel_cross + vel_unit * accel_dir;\n-    true\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n ///\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9768,31 +10824,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "FnValue",
-    "name": "crates/ap-math/src/control.rs:696:5: replace limit_accel_xy -> bool with false",
+    "name": "crates/ap-math/src/control.rs:808:5: replace limit_accel_xy -> bool with false",
     "package": "ap-math",
     "replacement": "false",
     "span": {
       "end": {
         "column": 9,
-        "line": 724
+        "line": 836
       },
       "start": {
         "column": 5,
-        "line": 696
+        "line": 808
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in limit_accel_xy\n@@ -688,17 +688,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) {\n         return false;\n     }\n     if accel.length_squared() <= accel_max * accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in limit_accel_xy\n@@ -800,17 +800,17 @@\n /// gets there. Sacrificing the path to keep the schedule is the wrong trade,\n /// so the schedule goes.\n ///\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) {\n         return false;\n     }\n     if accel.length_squared() <= accel_max * accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9800,31 +10856,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "UnaryOperator",
-    "name": "crates/ap-math/src/control.rs:696:8: delete ! in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:808:8: delete ! in limit_accel_xy",
     "package": "ap-math",
     "replacement": "",
     "span": {
       "end": {
         "column": 9,
-        "line": 696
+        "line": 808
       },
       "start": {
         "column": 8,
-        "line": 696
+        "line": 808
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace <= with > in limit_accel_xy\n@@ -691,17 +691,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() > /* ~ changed by cargo-mutants ~ */ accel_max * accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace <= with > in limit_accel_xy\n@@ -803,17 +803,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() > /* ~ changed by cargo-mutants ~ */ accel_max * accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9832,31 +10888,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:699:31: replace <= with > in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:811:31: replace <= with > in limit_accel_xy",
     "package": "ap-math",
     "replacement": ">",
     "span": {
       "end": {
         "column": 33,
-        "line": 699
+        "line": 811
       },
       "start": {
         "column": 31,
-        "line": 699
+        "line": 811
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -691,17 +691,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() <= accel_max + /* ~ changed by cargo-mutants ~ */ accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -803,17 +803,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() <= accel_max + /* ~ changed by cargo-mutants ~ */ accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9864,31 +10920,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:699:44: replace * with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:811:44: replace * with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 45,
-        "line": 699
+        "line": 811
       },
       "start": {
         "column": 44,
-        "line": 699
+        "line": 811
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -691,17 +691,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() <= accel_max / /* ~ changed by cargo-mutants ~ */ accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -803,17 +803,17 @@\n /// With no velocity there is no track to be cross to, and it falls back to a\n /// plain magnitude limit.\n ///\n /// Returns whether any limiting happened.\n pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n     if !is_positive(accel_max) {\n         return false;\n     }\n-    if accel.length_squared() <= accel_max * accel_max {\n+    if accel.length_squared() <= accel_max / /* ~ changed by cargo-mutants ~ */ accel_max {\n         return false;\n     }\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9896,31 +10952,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:699:44: replace * with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:811:44: replace * with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 45,
-        "line": 699
+        "line": 811
       },
       "start": {
         "column": 44,
-        "line": 699
+        "line": 811
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_xy\n@@ -702,17 +702,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel + /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_xy\n@@ -814,17 +814,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel + /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9928,31 +10984,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:710:34: replace - with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:822:34: replace - with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 35,
-        "line": 710
+        "line": 822
       },
       "start": {
         "column": 34,
-        "line": 710
+        "line": 822
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_xy\n@@ -702,17 +702,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel / /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_xy\n@@ -814,17 +814,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel / /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9960,31 +11016,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:710:34: replace - with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:822:34: replace - with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 35,
-        "line": 710
+        "line": 822
       },
       "start": {
         "column": 34,
-        "line": 710
+        "line": 822
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -702,17 +702,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel - vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -814,17 +814,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel - vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -9992,31 +11048,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:710:45: replace * with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:822:45: replace * with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 46,
-        "line": 710
+        "line": 822
       },
       "start": {
         "column": 45,
-        "line": 710
+        "line": 822
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -702,17 +702,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel - vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -814,17 +814,17 @@\n \n     if vel.is_zero() {\n         accel.limit_length(accel_max);\n         return true;\n     }\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir = vel_unit.dot(*accel);\n-    let mut accel_cross = *accel - vel_unit * accel_dir;\n+    let mut accel_cross = *accel - vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10024,31 +11080,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:710:45: replace * with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:822:45: replace * with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 46,
-        "line": 710
+        "line": 822
       },
       "start": {
         "column": 45,
-        "line": 710
+        "line": 822
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_xy\n@@ -711,17 +711,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_xy\n@@ -823,17 +823,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10056,31 +11112,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:719:61: replace - with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:831:61: replace - with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 62,
-        "line": 719
+        "line": 831
       },
       "start": {
         "column": 61,
-        "line": 719
+        "line": 831
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_xy\n@@ -711,17 +711,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_xy\n@@ -823,17 +823,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10088,31 +11144,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:719:61: replace - with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:831:61: replace - with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 62,
-        "line": 719
+        "line": 831
       },
       "start": {
         "column": 61,
-        "line": 719
+        "line": 831
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -711,17 +711,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -823,17 +823,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10120,31 +11176,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:719:49: replace * with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:831:49: replace * with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 50,
-        "line": 719
+        "line": 831
       },
       "start": {
         "column": 49,
-        "line": 719
+        "line": 831
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -711,17 +711,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -823,17 +823,17 @@\n \n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n-        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n+        let accel_max_dir = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10152,31 +11208,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:719:49: replace * with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:831:49: replace * with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 50,
-        "line": 719
+        "line": 831
       },
       "start": {
         "column": 49,
-        "line": 719
+        "line": 831
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ delete - in limit_accel_xy\n@@ -712,17 +712,17 @@\n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n+        accel_dir = accel_dir.clamp( /* ~ changed by cargo-mutants ~ */accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete - in limit_accel_xy\n@@ -824,17 +824,17 @@\n     if accel_cross.limit_length(accel_max) {\n         // The cross-track component alone used the entire budget, so there is\n         // nothing left for along-track at all.\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n-        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n+        accel_dir = accel_dir.clamp( /* ~ changed by cargo-mutants ~ */accel_max_dir, accel_max_dir);\n     }\n \n     *accel = accel_cross + vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10184,31 +11240,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "UnaryOperator",
-    "name": "crates/ap-math/src/control.rs:720:37: delete - in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:832:37: delete - in limit_accel_xy",
     "package": "ap-math",
     "replacement": "",
     "span": {
       "end": {
         "column": 38,
-        "line": 720
+        "line": 832
       },
       "start": {
         "column": 37,
-        "line": 720
+        "line": 832
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_xy\n@@ -715,17 +715,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_xy\n@@ -827,17 +827,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10216,31 +11272,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:723:26: replace + with - in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:835:26: replace + with - in limit_accel_xy",
     "package": "ap-math",
     "replacement": "-",
     "span": {
       "end": {
         "column": 27,
-        "line": 723
+        "line": 835
       },
       "start": {
         "column": 26,
-        "line": 723
+        "line": 835
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_xy\n@@ -715,17 +715,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_xy\n@@ -827,17 +827,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ vel_unit * accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10248,31 +11304,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:723:26: replace + with * in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:835:26: replace + with * in limit_accel_xy",
     "package": "ap-math",
     "replacement": "*",
     "span": {
       "end": {
         "column": 27,
-        "line": 723
+        "line": 835
       },
       "start": {
         "column": 26,
-        "line": 723
+        "line": 835
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -715,17 +715,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross + vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_xy\n@@ -827,17 +827,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross + vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10280,31 +11336,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:723:37: replace * with + in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:835:37: replace * with + in limit_accel_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 38,
-        "line": 723
+        "line": 835
       },
       "start": {
         "column": 37,
-        "line": 723
+        "line": 835
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -715,17 +715,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross + vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_xy\n@@ -827,17 +827,17 @@\n         accel_dir = 0.0;\n     } else {\n         // limit_length cannot absolutely guarantee this difference is\n         // non-negative, hence the guarded square root — upstream's comment.\n         let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());\n         accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);\n     }\n \n-    *accel = accel_cross + vel_unit * accel_dir;\n+    *accel = accel_cross + vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n /// Limit acceleration with direction-dependent priority — upstream\n /// `limit_accel_corner_xy`.\n ///\n /// The same budget problem as [`limit_accel_xy`], answered differently\n /// depending on whether the vehicle is trying to slow down.\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_xy",
@@ -10312,31 +11368,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 725
+          "line": 837
         },
         "start": {
           "column": 1,
-          "line": 683
+          "line": 795
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:723:37: replace * with / in limit_accel_xy",
+    "name": "crates/ap-math/src/control.rs:835:37: replace * with / in limit_accel_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 38,
-        "line": 723
+        "line": 835
       },
       "start": {
         "column": 37,
-        "line": 723
+        "line": 835
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_corner_xy -> bool with true\n@@ -738,50 +738,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        return accel.limit_length(accel_max);\n-    }\n-\n-    accel.limit_length(2.0 * accel_max);\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n-\n-    if is_positive(accel_dir_scalar) {\n-        let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n-\n-        accel_cross.limit_length(accel_max);\n-        accel_dir.limit_length(accel_along_max);\n-\n-        *accel = accel_cross + accel_dir;\n-        return true;\n-    }\n-\n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n-\n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n-    accel_cross.limit_length(accel_cross_max);\n-\n-    *accel = accel_cross + accel_dir;\n-    true\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n claim; an epsilon would accept a small change and a small change is the failure\"\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_corner_xy -> bool with true\n@@ -850,50 +850,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        return accel.limit_length(accel_max);\n-    }\n-\n-    accel.limit_length(2.0 * accel_max);\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n-\n-    if is_positive(accel_dir_scalar) {\n-        let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n-\n-        accel_cross.limit_length(accel_max);\n-        accel_dir.limit_length(accel_along_max);\n-\n-        *accel = accel_cross + accel_dir;\n-        return true;\n-    }\n-\n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n-\n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n-    accel_cross.limit_length(accel_cross_max);\n-\n-    *accel = accel_cross + accel_dir;\n-    true\n+    true /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n claim; an epsilon would accept a small change and a small change is the failure\"\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10344,31 +11400,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "FnValue",
-    "name": "crates/ap-math/src/control.rs:746:5: replace limit_accel_corner_xy -> bool with true",
+    "name": "crates/ap-math/src/control.rs:858:5: replace limit_accel_corner_xy -> bool with true",
     "package": "ap-math",
     "replacement": "true",
     "span": {
       "end": {
         "column": 9,
-        "line": 779
+        "line": 891
       },
       "start": {
         "column": 5,
-        "line": 746
+        "line": 858
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_corner_xy -> bool with false\n@@ -738,50 +738,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        return accel.limit_length(accel_max);\n-    }\n-\n-    accel.limit_length(2.0 * accel_max);\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n-\n-    if is_positive(accel_dir_scalar) {\n-        let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n-\n-        accel_cross.limit_length(accel_max);\n-        accel_dir.limit_length(accel_along_max);\n-\n-        *accel = accel_cross + accel_dir;\n-        return true;\n-    }\n-\n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n-\n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n-    accel_cross.limit_length(accel_cross_max);\n-\n-    *accel = accel_cross + accel_dir;\n-    true\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n claim; an epsilon would accept a small change and a small change is the failure\"\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace limit_accel_corner_xy -> bool with false\n@@ -850,50 +850,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n-        return false;\n-    }\n-\n-    if vel.is_zero() {\n-        return accel.limit_length(accel_max);\n-    }\n-\n-    accel.limit_length(2.0 * accel_max);\n-\n-    let vel_unit = vel.normalized_or_zero();\n-    let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n-\n-    if is_positive(accel_dir_scalar) {\n-        let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n-\n-        accel_cross.limit_length(accel_max);\n-        accel_dir.limit_length(accel_along_max);\n-\n-        *accel = accel_cross + accel_dir;\n-        return true;\n-    }\n-\n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n-\n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n-    accel_cross.limit_length(accel_cross_max);\n-\n-    *accel = accel_cross + accel_dir;\n-    true\n+    false /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n claim; an epsilon would accept a small change and a small change is the failure\"\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10376,31 +11432,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "FnValue",
-    "name": "crates/ap-math/src/control.rs:746:5: replace limit_accel_corner_xy -> bool with false",
+    "name": "crates/ap-math/src/control.rs:858:5: replace limit_accel_corner_xy -> bool with false",
     "package": "ap-math",
     "replacement": "false",
     "span": {
       "end": {
         "column": 9,
-        "line": 779
+        "line": 891
       },
       "start": {
         "column": 5,
-        "line": 746
+        "line": 858
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in limit_accel_corner_xy\n@@ -738,17 +738,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete ! in limit_accel_corner_xy\n@@ -850,17 +850,17 @@\n /// where holding the curve matters least.\n ///\n /// The pre-limit to twice `accel_max` before decomposing is upstream's, and\n /// its comment explains it: the demand is often proportional to velocity\n /// error and can be enormous, which makes the direction ill-conditioned. Two\n /// times leaves room for the decomposition to be meaningful while bounding\n /// the input.\n pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {\n-    if !is_positive(accel_max) {\n+    if  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10408,31 +11464,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "UnaryOperator",
-    "name": "crates/ap-math/src/control.rs:746:8: delete ! in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:858:8: delete ! in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "",
     "span": {
       "end": {
         "column": 9,
-        "line": 746
+        "line": 858
       },
       "start": {
         "column": 8,
-        "line": 746
+        "line": 858
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -746,17 +746,17 @@\n     if !is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n-    accel.limit_length(2.0 * accel_max);\n+    accel.limit_length(2.0 + /* ~ changed by cargo-mutants ~ */ accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -858,17 +858,17 @@\n     if !is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n-    accel.limit_length(2.0 * accel_max);\n+    accel.limit_length(2.0 + /* ~ changed by cargo-mutants ~ */ accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10440,31 +11496,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:754:28: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:866:28: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 29,
-        "line": 754
+        "line": 866
       },
       "start": {
         "column": 28,
-        "line": 754
+        "line": 866
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -746,17 +746,17 @@\n     if !is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n-    accel.limit_length(2.0 * accel_max);\n+    accel.limit_length(2.0 / /* ~ changed by cargo-mutants ~ */ accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -858,17 +858,17 @@\n     if !is_positive(accel_max) {\n         return false;\n     }\n \n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n-    accel.limit_length(2.0 * accel_max);\n+    accel.limit_length(2.0 / /* ~ changed by cargo-mutants ~ */ accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10472,31 +11528,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:754:28: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:866:28: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 29,
-        "line": 754
+        "line": 866
       },
       "start": {
         "column": 28,
-        "line": 754
+        "line": 866
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -750,17 +750,17 @@\n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n+    let mut accel_dir = vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -862,17 +862,17 @@\n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n+    let mut accel_dir = vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10504,31 +11560,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:758:34: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:870:34: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 35,
-        "line": 758
+        "line": 870
       },
       "start": {
         "column": 34,
-        "line": 758
+        "line": 870
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -750,17 +750,17 @@\n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n+    let mut accel_dir = vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -862,17 +862,17 @@\n     if vel.is_zero() {\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n-    let mut accel_dir = vel_unit * accel_dir_scalar;\n+    let mut accel_dir = vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10536,31 +11592,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:758:34: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:870:34: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 35,
-        "line": 758
+        "line": 870
       },
       "start": {
         "column": 34,
-        "line": 758
+        "line": 870
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -751,17 +751,17 @@\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n+    let mut accel_cross = *accel + /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -863,17 +863,17 @@\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n+    let mut accel_cross = *accel + /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10568,31 +11624,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:759:34: replace - with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:871:34: replace - with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 35,
-        "line": 759
+        "line": 871
       },
       "start": {
         "column": 34,
-        "line": 759
+        "line": 871
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -751,17 +751,17 @@\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n+    let mut accel_cross = *accel / /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -863,17 +863,17 @@\n         return accel.limit_length(accel_max);\n     }\n \n     accel.limit_length(2.0 * accel_max);\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n-    let mut accel_cross = *accel - accel_dir;\n+    let mut accel_cross = *accel / /* ~ changed by cargo-mutants ~ */ accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10600,31 +11656,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:759:34: replace - with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:871:34: replace - with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 35,
-        "line": 759
+        "line": 871
       },
       "start": {
         "column": 34,
-        "line": 759
+        "line": 871
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10632,31 +11688,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:63: replace - with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:63: replace - with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 64,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 63,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10664,31 +11720,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:63: replace - with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:63: replace - with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 64,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 63,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10696,31 +11752,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:51: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:51: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 52,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 51,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10728,31 +11784,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:51: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:51: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 52,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 51,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag + /* ~ changed by cargo-mutants ~ */ accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag + /* ~ changed by cargo-mutants ~ */ accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10760,31 +11816,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:81: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:81: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 82,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 81,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -755,17 +755,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag / /* ~ changed by cargo-mutants ~ */ accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -867,17 +867,17 @@\n \n     let vel_unit = vel.normalized_or_zero();\n     let mut accel_dir_scalar = accel.dot(vel_unit);\n     let mut accel_dir = vel_unit * accel_dir_scalar;\n     let mut accel_cross = *accel - accel_dir;\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n-        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n+        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag / /* ~ changed by cargo-mutants ~ */ accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10792,31 +11848,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:763:81: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:875:81: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 82,
-        "line": 763
+        "line": 875
       },
       "start": {
         "column": 81,
-        "line": 763
+        "line": 875
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_corner_xy\n@@ -760,17 +760,17 @@\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n-        *accel = accel_cross + accel_dir;\n+        *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_corner_xy\n@@ -872,17 +872,17 @@\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n-        *accel = accel_cross + accel_dir;\n+        *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10824,31 +11880,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:768:30: replace + with - in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:880:30: replace + with - in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "-",
     "span": {
       "end": {
         "column": 31,
-        "line": 768
+        "line": 880
       },
       "start": {
         "column": 30,
-        "line": 768
+        "line": 880
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_corner_xy\n@@ -760,17 +760,17 @@\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n-        *accel = accel_cross + accel_dir;\n+        *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_corner_xy\n@@ -872,17 +872,17 @@\n \n     if is_positive(accel_dir_scalar) {\n         let accel_cross_mag = accel_cross.length().min(accel_max);\n         let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n-        *accel = accel_cross + accel_dir;\n+        *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10856,31 +11912,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:768:30: replace + with * in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:880:30: replace + with * in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "*",
     "span": {
       "end": {
         "column": 31,
-        "line": 768
+        "line": 880
       },
       "start": {
         "column": 30,
-        "line": 768
+        "line": 880
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ delete - in limit_accel_corner_xy\n@@ -764,17 +764,17 @@\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n+    accel_dir_scalar = accel_dir_scalar.max( /* ~ changed by cargo-mutants ~ */accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ delete - in limit_accel_corner_xy\n@@ -876,17 +876,17 @@\n \n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n-    accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n+    accel_dir_scalar = accel_dir_scalar.max( /* ~ changed by cargo-mutants ~ */accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10888,31 +11944,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "UnaryOperator",
-    "name": "crates/ap-math/src/control.rs:772:45: delete - in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:884:45: delete - in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "",
     "span": {
       "end": {
         "column": 46,
-        "line": 772
+        "line": 884
       },
       "start": {
         "column": 45,
-        "line": 772
+        "line": 884
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -765,17 +765,17 @@\n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n+    accel_dir = vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -877,17 +877,17 @@\n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n+    accel_dir = vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10920,31 +11976,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:773:26: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:885:26: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 27,
-        "line": 773
+        "line": 885
       },
       "start": {
         "column": 26,
-        "line": 773
+        "line": 885
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -765,17 +765,17 @@\n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n+    accel_dir = vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -877,17 +877,17 @@\n         accel_cross.limit_length(accel_max);\n         accel_dir.limit_length(accel_along_max);\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n-    accel_dir = vel_unit * accel_dir_scalar;\n+    accel_dir = vel_unit / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10952,31 +12008,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:773:26: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:885:26: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 27,
-        "line": 773
+        "line": 885
       },
       "start": {
         "column": 26,
-        "line": 773
+        "line": 885
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with + in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -10984,31 +12040,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:59: replace - with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:59: replace - with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 60,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 59,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace - with / in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11016,31 +12072,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:59: replace - with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:59: replace - with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 60,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 59,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max + /* ~ changed by cargo-mutants ~ */ accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11048,31 +12104,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:47: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:47: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 48,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 47,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max / /* ~ changed by cargo-mutants ~ */ accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11080,31 +12136,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:47: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:47: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 48,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 47,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with + in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar + /* ~ changed by cargo-mutants ~ */ accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11112,31 +12168,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:78: replace * with + in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:78: replace * with + in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "+",
     "span": {
       "end": {
         "column": 79,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 78,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -767,17 +767,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace * with / in limit_accel_corner_xy\n@@ -879,17 +879,17 @@\n \n         *accel = accel_cross + accel_dir;\n         return true;\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n-    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n+    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar / /* ~ changed by cargo-mutants ~ */ accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n     *accel = accel_cross + accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11144,31 +12200,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:775:78: replace * with / in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:887:78: replace * with / in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "/",
     "span": {
       "end": {
         "column": 79,
-        "line": 775
+        "line": 887
       },
       "start": {
         "column": 78,
-        "line": 775
+        "line": 887
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_corner_xy\n@@ -770,17 +770,17 @@\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n-    *accel = accel_cross + accel_dir;\n+    *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with - in limit_accel_corner_xy\n@@ -882,17 +882,17 @@\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n-    *accel = accel_cross + accel_dir;\n+    *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11176,31 +12232,31 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:778:26: replace + with - in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:890:26: replace + with - in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "-",
     "span": {
       "end": {
         "column": 27,
-        "line": 778
+        "line": 890
       },
       "start": {
         "column": 26,
-        "line": 778
+        "line": 890
       }
     }
   },
   {
-    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_corner_xy\n@@ -770,17 +770,17 @@\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n-    *accel = accel_cross + accel_dir;\n+    *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n",
+    "diff": "--- crates/ap-math/src/control.rs\n+++ replace + with * in limit_accel_corner_xy\n@@ -882,17 +882,17 @@\n     }\n \n     accel_dir_scalar = accel_dir_scalar.max(-accel_max);\n     accel_dir = vel_unit * accel_dir_scalar;\n \n     let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);\n     accel_cross.limit_length(accel_cross_max);\n \n-    *accel = accel_cross + accel_dir;\n+    *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ accel_dir;\n     true\n }\n \n #[cfg(test)]\n mod tests {\n     #![allow(\n         clippy::float_cmp,\n         reason = \"several tests assert a value was left exactly alone, which is the \\\n",
     "file": "crates/ap-math/src/control.rs",
     "function": {
       "function_name": "limit_accel_corner_xy",
@@ -11208,26 +12264,26 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 780
+          "line": 892
         },
         "start": {
           "column": 1,
-          "line": 727
+          "line": 839
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "crates/ap-math/src/control.rs:778:26: replace + with * in limit_accel_corner_xy",
+    "name": "crates/ap-math/src/control.rs:890:26: replace + with * in limit_accel_corner_xy",
     "package": "ap-math",
     "replacement": "*",
     "span": {
       "end": {
         "column": 27,
-        "line": 778
+        "line": 890
       },
       "start": {
         "column": 26,
-        "line": 778
+        "line": 890
       }
     }
   }
