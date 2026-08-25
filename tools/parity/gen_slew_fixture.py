@@ -316,6 +316,58 @@ int main()
         }
     }
 
+    // ---- adjust_trim ----
+    //
+    // Held in one direction long enough to walk the trim into its bound and
+    // then reversed, because the bounds are asymmetric -- up stops at 60% of
+    // travel, down at 40% -- and a sequence that only pushes one way sees one
+    // of them.
+    //
+    // Two channels again, one reversed, since the reversal flips the sense
+    // before any of the bounds are consulted. Magnitudes vary deliberately:
+    // only the sign is read, so a port scaling by v would drift away
+    // immediately.
+    printf("#adjtrim\n");
+    printf("step,v,chan,servo_trim,trimmed_mask\n");
+    {
+        const SRV_Channel::Function TR = SRV_Channel::k_flap_auto;
+        const uint8_t E = 11;
+        const uint8_t F = 12;
+        SRV_Channels::set_default_function(E, TR);
+        SRV_Channels::set_default_function(F, TR);
+        SRV_Channels::update_aux_servo_function();
+
+        SRV_Channel *ce = SRV_Channels::srv_channel(E);
+        SRV_Channel *cf = SRV_Channels::srv_channel(F);
+        ce->set_output_min(1000);
+        ce->set_output_max(2000);
+        cf->set_output_min(1000);
+        cf->set_output_max(2000);
+        cf->reversed_set_and_save_ifchanged(true);
+        SRV_Channels::set_trim_to_pwm_for(TR, 1500);
+
+        for (int i = 0; i < 500; i++) {
+            // Long enough in each direction that BOTH channels reach both
+            // bounds -- 200 steps of travel between them, plus slack. The
+            // zero stretch must move nothing at all.
+            float v;
+            if (i < 150)      v = 0.25f + 0.01f * (i % 7);
+            else if (i < 160) v = 0.0f;
+            else if (i < 400) v = -3.0f - 0.5f * (i % 5);
+            else              v = 0.75f;
+
+            AP::srv().adjust_trim(TR, v);
+
+            const uint8_t chans[2] = {E, F};
+            for (int k = 0; k < 2; k++) {
+                printf("%d,%u,%u,%u,%u\n", i, fbits(v),
+                       (unsigned)chans[k],
+                       (unsigned)SRV_Channels::srv_channel(chans[k])->get_trim(),
+                       0u);
+            }
+        }
+    }
+
     return 0;
 }
 '''

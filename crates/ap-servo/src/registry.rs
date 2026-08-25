@@ -21,7 +21,7 @@ use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 use crate::output_channel::{OutputChannel, OutputContext};
 use crate::Limit;
 use crate::NUM_SERVO_CHANNELS;
-use ap_math::scalar::is_positive;
+use ap_math::scalar::{is_positive, is_zero};
 
 /// A mask of output channels, upstream `SRV_Channel::servo_mask_t`.
 pub type ChannelMask = u32;
@@ -57,6 +57,9 @@ pub struct Registry {
     slew: [Option<SlewEntry>; MAX_SLEW_ENTRIES],
     /// Loops of override remaining per channel, upstream `override_counter`.
     override_counter: [u16; NUM_SERVO_CHANNELS],
+    /// Channels whose trim has been nudged since the last save, upstream
+    /// `trimmed_mask`.
+    trimmed_mask: ChannelMask,
 }
 
 /// How many functions may carry a slew limit at once.
@@ -96,6 +99,7 @@ impl Registry {
             initialised: false,
             slew: [None; MAX_SLEW_ENTRIES],
             override_counter: [0; NUM_SERVO_CHANNELS],
+            trimmed_mask: 0,
         }
     }
 
@@ -722,6 +726,105 @@ impl Registry {
         let scaled = self.output_scaled(function);
         ch.calc_pwm(scaled, &ctx);
         Some(ch.output_pwm())
+    }
+
+    /// Nudge the trim of every channel with this function, upstream
+    /// `adjust_trim`.
+    ///
+    /// Three things about this are surprising and all three are deliberate.
+    ///
+    /// **The magnitude of `v` is ignored.** Only its sign is read, and the
+    /// trim moves by exactly one microsecond per call regardless. A pilot
+    /// holding full trim input moves the surface at the same rate as one
+    /// feathering it; what changes is how long they hold it. Trim is a
+    /// slow, deliberate adjustment and this makes it impossible to make a
+    /// large one by accident.
+    ///
+    /// **The dead zone is asymmetric and overlapping.** Trim may increase only
+    /// while it sits below 60% of travel and decrease only while above 40%.
+    /// Between those the direction still works — it is not a band where
+    /// nothing happens — but each direction stops at its own bound, so trim
+    /// can never be walked out to an endpoint. Whatever else goes wrong, the
+    /// surface keeps most of its authority in both directions.
+    ///
+    /// **A degenerate channel is skipped rather than clamped.** With `max` at
+    /// or below `min` there is no travel to express the trim as a fraction of,
+    /// so the channel is left alone instead of being given an arbitrary
+    /// answer.
+    ///
+    /// Reversal flips the sense before any of that, so a nudge means the same
+    /// thing to the pilot on a reversed channel.
+    pub fn adjust_trim(&mut self, channels: &mut [OutputChannel], function: Function, v: f32) {
+        if is_zero(v) {
+            return;
+        }
+        for (i, ch) in channels.iter_mut().enumerate() {
+            if ch.function != function {
+                continue;
+            }
+            let change = if ch.config.reversed { -v } else { v };
+            let min = ch.config.servo_min;
+            let max = ch.config.servo_max;
+            if max <= min {
+                continue;
+            }
+            let trim_scaled = f32::from(ch.config.servo_trim - min) / f32::from(max - min);
+            let new_trim = if change > 0.0 && trim_scaled < 0.6 {
+                ch.config.servo_trim + 1
+            } else if change < 0.0 && trim_scaled > 0.4 {
+                ch.config.servo_trim - 1
+            } else {
+                continue;
+            };
+            ch.config.servo_trim = new_trim;
+            self.trimmed_mask |= 1u32 << i;
+        }
+    }
+
+    /// Which channels have had their trim nudged, upstream `trimmed_mask`.
+    #[must_use]
+    pub fn trimmed_mask(&self) -> ChannelMask {
+        self.trimmed_mask
+    }
+
+    /// Take the set of nudged channels and clear it, upstream `save_trim`.
+    ///
+    /// Upstream writes each one to storage here. Storage is not this type's
+    /// business, so the set is handed back and cleared — the caller saves.
+    /// Clearing regardless is upstream's behaviour: a save that fails is not
+    /// retried, and the alternative would be an unbounded set of pending
+    /// writes.
+    pub fn take_trimmed(&mut self) -> ChannelMask {
+        core::mem::take(&mut self.trimmed_mask)
+    }
+
+    /// Set every matching channel's trim to its current output, upstream
+    /// `set_trim_to_servo_out_for`.
+    ///
+    /// The "trim to where it is now" operation, for a pilot who has flown the
+    /// surface to where they want it to rest.
+    pub fn set_trim_to_servo_out_for(&self, channels: &mut [OutputChannel], function: Function) {
+        if !self.function_assigned(function) {
+            return;
+        }
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                ch.config.servo_trim = ch.output_pwm();
+            }
+        }
+    }
+
+    /// Drive every matching channel to a normalised value, upstream
+    /// `set_output_norm`.
+    pub fn set_output_norm(&self, channels: &mut [OutputChannel], function: Function, value: f32) {
+        if !self.function_assigned(function) {
+            return;
+        }
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                ch.set_output_norm(value);
+            }
+        }
     }
 
     /// Visit each channel that should be given a failsafe pulse width,

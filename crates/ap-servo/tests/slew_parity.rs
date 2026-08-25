@@ -854,3 +854,206 @@ fn the_normalised_read_handles_the_awkward_shapes() {
         "find_channel must return the lowest channel, not the highest"
     );
 }
+
+/// `adjust_trim`, held into both of its bounds on both channels.
+///
+/// Three behaviours, all of which a plausible port gets wrong:
+///
+/// The magnitude of the argument is ignored — only its sign is read, and the
+/// trim moves one microsecond per call regardless. The recorded sequence
+/// varies the magnitude from 0.25 to 5.5 precisely so a port scaling by it
+/// diverges on the second step.
+///
+/// The bounds are asymmetric: up stops at 60% of travel, down at 40%. Both
+/// channels reach both, which takes a long hold in each direction — the first
+/// version of this sequence had each channel finding one bound and the test
+/// would have passed with either limit wrong.
+///
+/// Zero returns immediately and must move nothing, which is why the sequence
+/// spends ten steps there.
+#[test]
+fn the_trim_adjustment_matches_upstream() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let s = sections();
+    let rows = s.get("adjtrim").expect("adjtrim section");
+    let func = Function(3);
+
+    let upright = ServoChannel::angle(1000, 1500, 2000, 4500);
+    let mut reversed = upright;
+    reversed.reversed = true;
+
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let (config, f) = match i {
+                11 => (upright, func),
+                12 => (reversed, func),
+                _ => (upright, Function(0)),
+            };
+            OutputChannel::new(config, f, u8::try_from(i).expect("fits"))
+        })
+        .collect();
+
+    let mut reg = Registry::new();
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+
+    let mut checked = 0_usize;
+    let mut last_step = usize::MAX;
+    let mut seen: std::collections::BTreeMap<usize, (u16, u16)> = Default::default();
+
+    for r in rows {
+        assert_eq!(r.len(), 5, "malformed adjtrim row");
+        let step: usize = r[0].parse().expect("step");
+        let chan: usize = r[2].trim().parse().expect("chan");
+        let want: u16 = r[3].trim().parse().expect("trim");
+
+        // Two rows per step; adjust once, then check both channels.
+        if step != last_step {
+            reg.adjust_trim(&mut channels, func, f(&r[1]));
+            last_step = step;
+        }
+
+        let got = channels[chan].config.servo_trim;
+        assert_eq!(got, want, "step {step} channel {chan} trim");
+        checked += 1;
+
+        let entry = seen.entry(chan).or_insert((u16::MAX, 0));
+        entry.0 = entry.0.min(got);
+        entry.1 = entry.1.max(got);
+    }
+
+    // Both channels must have reached both bounds, or a wrong limit passes.
+    for (chan, (lo, hi)) in &seen {
+        assert_eq!(
+            (*lo, *hi),
+            (1400, 1600),
+            "channel {chan} only covered {lo}..{hi}; with 1000..2000 of travel \
+             the bounds are 1400 and 1600 and both must be reached"
+        );
+    }
+
+    // And the trimmed mask must have recorded both.
+    let mask = reg.trimmed_mask();
+    assert_eq!(
+        mask & ((1 << 11) | (1 << 12)),
+        (1 << 11) | (1 << 12),
+        "both nudged channels should be in the trimmed mask, got {mask:#x}"
+    );
+
+    // Taking it clears it, so a second save writes nothing.
+    assert_eq!(reg.take_trimmed(), mask);
+    assert_eq!(reg.trimmed_mask(), 0, "taking the set must clear it");
+
+    println!(
+        "{checked} trim values checked across {} steps",
+        rows.len() / 2
+    );
+}
+
+/// A degenerate channel is skipped rather than clamped.
+///
+/// With no travel there is no fraction to express the trim as, so upstream
+/// leaves the channel alone instead of giving it an arbitrary answer. Not
+/// reachable from the recording, whose channels all have a thousand
+/// microseconds of travel.
+#[test]
+fn adjust_trim_skips_a_channel_with_no_travel() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let func = Function(3);
+    let flat = ServoChannel::angle(1500, 1500, 1500, 4500);
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let f = if i == 2 { func } else { Function(0) };
+            OutputChannel::new(flat, f, u8::try_from(i).expect("fits"))
+        })
+        .collect();
+
+    let mut reg = Registry::new();
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+
+    for _ in 0..50 {
+        reg.adjust_trim(&mut channels, func, 1.0);
+        reg.adjust_trim(&mut channels, func, -1.0);
+    }
+
+    assert_eq!(
+        channels[2].config.servo_trim, 1500,
+        "a channel with no travel must be left alone"
+    );
+    assert_eq!(
+        reg.trimmed_mask(),
+        0,
+        "and must not be recorded as needing a save"
+    );
+
+    // Inverted, not merely flat. Equal endpoints are harmless without the
+    // guard — the division gives NaN and both comparisons fail — but max
+    // below min underflows the unsigned subtraction, which here is a panic
+    // where upstream would carry on with a negative divisor.
+    let inverted = ServoChannel::angle(1600, 1500, 1500, 4500);
+    let mut backwards: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let f = if i == 2 { func } else { Function(0) };
+            OutputChannel::new(inverted, f, u8::try_from(i).expect("fits"))
+        })
+        .collect();
+    let mut reg2 = Registry::new();
+    let fns: Vec<Function> = backwards.iter().map(|c| c.function).collect();
+    reg2.update_aux_servo_function(&fns);
+
+    reg2.adjust_trim(&mut backwards, func, 1.0);
+    reg2.adjust_trim(&mut backwards, func, -1.0);
+    assert_eq!(
+        backwards[2].config.servo_trim, 1500,
+        "an inverted channel must be skipped, not underflowed"
+    );
+}
+
+/// A `v` small enough to be zero, but strictly positive.
+///
+/// `is_zero` compares against an epsilon while the sign tests below it compare
+/// against literal zero, so the guard is not redundant with them: without it a
+/// value of 1e-12 trims exactly as a value of 1.0 does, because the magnitude
+/// is never read. The recorded sequence uses 0.0 for its no-op stretch and so
+/// cannot tell the two apart.
+#[test]
+fn a_negligible_but_nonzero_adjustment_does_nothing() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let func = Function(3);
+    let config = ServoChannel::angle(1000, 1500, 2000, 4500);
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let f = if i == 5 { func } else { Function(0) };
+            OutputChannel::new(config, f, u8::try_from(i).expect("fits"))
+        })
+        .collect();
+
+    let mut reg = Registry::new();
+    let fns: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&fns);
+
+    for _ in 0..40 {
+        reg.adjust_trim(&mut channels, func, 1e-12);
+    }
+    assert_eq!(
+        channels[5].config.servo_trim, 1500,
+        "a negligible adjustment must not move the trim; the magnitude is \
+         never read, so without the zero guard this trims as fast as full input"
+    );
+    assert_eq!(reg.trimmed_mask(), 0, "and records nothing to save");
+
+    // A value just outside the epsilon does move it, so the test is not
+    // passing because nothing ever trims.
+    reg.adjust_trim(&mut channels, func, 0.01);
+    assert_eq!(
+        channels[5].config.servo_trim, 1501,
+        "a real adjustment must still work"
+    );
+}
