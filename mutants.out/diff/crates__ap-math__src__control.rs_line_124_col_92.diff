@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with + in shape_accel
+@@ -116,17 +116,17 @@
+     accel: &mut f32,
+     jerk_max: f32,
+     dt: f32,
+ ) -> Result<(), ShapeError> {
+     if !is_positive(jerk_max) {
+         return Err(ShapeError::JerkNotPositive);
+     }
+     if is_positive(dt) {
+-        let accel_delta = constrain_value(accel_desired - *accel, -jerk_max * dt, jerk_max * dt);
++        let accel_delta = constrain_value(accel_desired - *accel, -jerk_max * dt, jerk_max + /* ~ changed by cargo-mutants ~ */ dt);
+         *accel += accel_delta;
+     }
+     Ok(())
+ }
+ 
+ /// Shape an acceleration to track a velocity demand, upstream
+ /// `shape_vel_accel`.
+ ///

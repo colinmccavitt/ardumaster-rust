@@ -1,0 +1,36 @@
+--- crates/ap-math/src/control.rs
++++ replace shape_angle_vel_accel -> Result<(), ShapeError> with Ok(())
+@@ -289,32 +289,17 @@
+     angle_accel: &mut f32,
+     angle_vel_min: f32,
+     angle_vel_max: f32,
+     angle_accel_max: f32,
+     angle_jerk_max: f32,
+     dt: f32,
+     limit_total: bool,
+ ) -> Result<(), ShapeError> {
+-    let angle_desired_wrapped = angle + wrap_pi(angle_desired - angle);
+-    shape_pos_vel_accel(
+-        Postype::from(angle_desired_wrapped),
+-        angle_vel_desired,
+-        angle_accel_desired,
+-        Postype::from(angle),
+-        angle_vel,
+-        angle_accel,
+-        angle_vel_min,
+-        angle_vel_max,
+-        -angle_accel_max,
+-        angle_accel_max,
+-        angle_jerk_max,
+-        dt,
+-        limit_total,
+-    )
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Proportional near the target, square-root far from it. Upstream
+ /// `sqrt_controller`.
+ ///
+ /// The square-root branch returns the speed from which `second_ord_lim` of
+ /// deceleration would stop exactly at the target. The two branches meet at
+ /// `linear_dist = second_ord_lim / p²`, and the `linear_dist / 2` term inside

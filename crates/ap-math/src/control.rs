@@ -663,6 +663,118 @@ pub fn shape_vel_accel_xy(
     shape_accel_xy(accel_target, accel, jerk_max, dt);
 }
 
+/// Shape a position command into a jerk-limited acceleration — upstream
+/// `shape_pos_vel_accel_xy`.
+///
+/// The full outer loop: position error becomes a velocity correction, which
+/// joins the feedforward velocity, which becomes an acceleration demand, which
+/// is jerk-limited. Everything the vehicle is asked to do in the horizontal
+/// plane comes through here.
+///
+/// # The correction is a scalar on the error's direction
+///
+/// The position error is reduced to a length, shaped as a scalar, and mapped
+/// back onto its own direction. So the correction never points anywhere except
+/// straight at the target. Shaping each axis separately would let a diagonal
+/// error produce a curved approach, because the axis with less error would
+/// finish first.
+///
+/// # The closing-rate bias
+///
+/// `sqrt_controller_accel` is given the *correction-frame* closing rate —
+/// `(vel - vel_desired)` projected onto the error — rather than the raw
+/// velocity. For a moving setpoint those differ: chasing a target that is
+/// itself moving away means the position error shrinks more slowly than the
+/// ground speed suggests, and biasing on ground speed would brake too early.
+///
+/// The result is divided by `k_v` before being added, which converts an
+/// acceleration into the velocity correction that would have produced it —
+/// the two terms have to be in the same units to be summed.
+///
+/// # Two different velocity limits
+///
+/// `vel_max` bounds the *correction* unconditionally, and additionally bounds
+/// the *total* only when `limit_total` is set. A caller with a trajectory it
+/// trusts still wants its correction bounded, but not its feedforward.
+///
+/// Note the correction is constrained symmetrically to `±vel_max` even though
+/// the length it constrains is a magnitude — the negative half is reachable,
+/// because the closing-rate bias above can drive it negative when the vehicle
+/// is already overtaking the target.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "upstream's signature; splitting it into a struct would make the \
+call sites disagree with the code they are being checked against"
+)]
+pub fn shape_pos_vel_accel_xy(
+    pos_desired: Vector2<Postype>,
+    vel_desired: Vector2f,
+    accel_desired: Vector2f,
+    pos: Vector2<Postype>,
+    vel: Vector2f,
+    accel: &mut Vector2f,
+    vel_max: f32,
+    accel_max: f32,
+    jerk_max: f32,
+    dt: f32,
+    limit_total: bool,
+) {
+    if is_negative(vel_max) || !is_positive(accel_max) || !is_positive(jerk_max) {
+        return;
+    }
+
+    // Inner velocity-loop gain, set so the sqrt controller's linear region
+    // hands over to its square-root region exactly at the acceleration limit.
+    let k_v = jerk_max / accel_max;
+
+    let mut vel_corr_cmd = Vector2f::new(0.0, 0.0);
+
+    let pos_error = Vector2f::new(
+        (pos_desired.x - pos.x) as f32,
+        (pos_desired.y - pos.y) as f32,
+    );
+    let pos_error_length = pos_error.length();
+
+    if is_positive(pos_error_length) {
+        let vel_corr_proj = (vel - vel_desired).dot(pos_error) / pos_error_length;
+
+        let mut vel_corr_cmd_length = sqrt_controller(pos_error_length, k_v, accel_max, dt);
+
+        let accel_corr_cmd_length = sqrt_controller_accel(
+            pos_error_length,
+            vel_corr_cmd_length,
+            vel_corr_proj,
+            k_v,
+            accel_max,
+        );
+
+        vel_corr_cmd_length += accel_corr_cmd_length / k_v;
+
+        if is_positive(vel_max) {
+            vel_corr_cmd_length = vel_corr_cmd_length.clamp(-vel_max, vel_max);
+        }
+
+        vel_corr_cmd = pos_error * (vel_corr_cmd_length / pos_error_length);
+    }
+
+    let mut vel_target = vel_desired + vel_corr_cmd;
+    if limit_total && is_positive(vel_max) {
+        vel_target.limit_length(vel_max);
+    }
+
+    let mut accel_target = (vel_target - vel) * k_v;
+
+    limit_accel_corner_xy(vel, &mut accel_target, accel_max);
+
+    accel_target += accel_desired;
+
+    if limit_total {
+        accel_target.limit_length(accel_max);
+    }
+
+    shape_accel_xy(accel_target, accel, jerk_max, dt);
+}
+
 /// The vector square-root controller — upstream's `Vector2f` overload of
 /// `sqrt_controller`.
 ///

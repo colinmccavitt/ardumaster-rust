@@ -1,2 +1,196 @@
 crates/ap-math/src/control.rs:71:5: replace update_vel_accel with ()
 crates/ap-math/src/control.rs:72:64: replace * with + in update_vel_accel
+crates/ap-math/src/control.rs:71:31: replace * with + in update_vel_accel
+crates/ap-math/src/control.rs:71:31: replace * with / in update_vel_accel
+crates/ap-math/src/control.rs:72:39: replace && with || in update_vel_accel
+crates/ap-math/src/control.rs:72:30: replace * with + in update_vel_accel
+crates/ap-math/src/control.rs:73:29: replace * with + in update_vel_accel
+crates/ap-math/src/control.rs:74:52: delete - in update_vel_accel
+crates/ap-math/src/control.rs:79:10: replace += with -= in update_vel_accel
+crates/ap-math/src/control.rs:79:10: replace += with *= in update_vel_accel
+crates/ap-math/src/control.rs:97:5: replace update_pos_vel_accel with ()
+crates/ap-math/src/control.rs:97:35: replace + with - in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:35: replace + with * in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:30: replace * with + in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:30: replace * with / in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:43: replace * with + in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:49: replace * with + in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:49: replace * with / in update_pos_vel_accel
+crates/ap-math/src/control.rs:97:43: replace * with / in update_pos_vel_accel
+crates/ap-math/src/control.rs:101:10: replace += with -= in update_pos_vel_accel
+crates/ap-math/src/control.rs:101:10: replace += with *= in update_pos_vel_accel
+crates/ap-math/src/control.rs:120:5: replace shape_accel -> Result<(), ShapeError> with Ok(())
+crates/ap-math/src/control.rs:124:57: replace - with / in shape_accel
+crates/ap-math/src/control.rs:120:8: delete ! in shape_accel
+crates/ap-math/src/control.rs:124:57: replace - with + in shape_accel
+crates/ap-math/src/control.rs:124:77: replace * with + in shape_accel
+crates/ap-math/src/control.rs:124:77: replace * with / in shape_accel
+crates/ap-math/src/control.rs:124:67: delete - in shape_accel
+crates/ap-math/src/control.rs:124:92: replace * with + in shape_accel
+crates/ap-math/src/control.rs:125:16: replace += with -= in shape_accel
+crates/ap-math/src/control.rs:124:92: replace * with / in shape_accel
+crates/ap-math/src/control.rs:125:16: replace += with *= in shape_accel
+crates/ap-math/src/control.rs:155:5: replace shape_vel_accel -> Result<(), ShapeError> with Ok(())
+crates/ap-math/src/control.rs:155:32: replace || with && in shape_vel_accel
+crates/ap-math/src/control.rs:155:8: delete ! in shape_vel_accel
+crates/ap-math/src/control.rs:158:8: delete ! in shape_vel_accel
+crates/ap-math/src/control.rs:155:35: delete ! in shape_vel_accel
+crates/ap-math/src/control.rs:162:33: replace - with + in shape_vel_accel
+crates/ap-math/src/control.rs:162:33: replace - with / in shape_vel_accel
+crates/ap-math/src/control.rs:165:18: replace / with % in shape_vel_accel
+crates/ap-math/src/control.rs:165:18: replace / with * in shape_vel_accel
+crates/ap-math/src/control.rs:172:18: replace += with *= in shape_vel_accel
+crates/ap-math/src/control.rs:209:5: replace shape_pos_vel_accel -> Result<(), ShapeError> with Ok(())
+crates/ap-math/src/control.rs:212:8: delete ! in shape_pos_vel_accel
+crates/ap-math/src/control.rs:212:35: delete ! in shape_pos_vel_accel
+crates/ap-math/src/control.rs:215:8: delete ! in shape_pos_vel_accel
+crates/ap-math/src/control.rs:225:34: replace - with + in shape_pos_vel_accel
+crates/ap-math/src/control.rs:225:34: replace - with / in shape_pos_vel_accel
+crates/ap-math/src/control.rs:230:19: delete - in shape_pos_vel_accel
+crates/ap-math/src/control.rs:231:24: replace / with % in shape_pos_vel_accel
+crates/ap-math/src/control.rs:231:24: replace / with * in shape_pos_vel_accel
+crates/ap-math/src/control.rs:234:24: replace / with % in shape_pos_vel_accel
+crates/ap-math/src/control.rs:234:24: replace / with * in shape_pos_vel_accel
+crates/ap-math/src/control.rs:238:24: replace - with / in shape_pos_vel_accel
+crates/ap-math/src/control.rs:242:18: replace += with -= in shape_pos_vel_accel
+crates/ap-math/src/control.rs:242:18: replace += with *= in shape_pos_vel_accel
+crates/ap-math/src/control.rs:242:36: replace / with % in shape_pos_vel_accel
+crates/ap-math/src/control.rs:251:38: replace + with - in shape_pos_vel_accel
+crates/ap-math/src/control.rs:242:36: replace / with * in shape_pos_vel_accel
+crates/ap-math/src/control.rs:251:38: replace + with * in shape_pos_vel_accel
+crates/ap-math/src/control.rs:262:47: replace * with + in shape_pos_vel_accel
+crates/ap-math/src/control.rs:262:47: replace * with / in shape_pos_vel_accel
+crates/ap-math/src/control.rs:262:40: replace - with + in shape_pos_vel_accel
+crates/ap-math/src/control.rs:262:40: replace - with / in shape_pos_vel_accel
+crates/ap-math/src/control.rs:264:18: replace += with *= in shape_pos_vel_accel
+crates/ap-math/src/control.rs:297:5: replace shape_angle_vel_accel -> Result<(), ShapeError> with Ok(())
+crates/ap-math/src/control.rs:297:39: replace + with - in shape_angle_vel_accel
+crates/ap-math/src/control.rs:297:39: replace + with * in shape_angle_vel_accel
+crates/ap-math/src/control.rs:297:63: replace - with + in shape_angle_vel_accel
+crates/ap-math/src/control.rs:297:63: replace - with / in shape_angle_vel_accel
+crates/ap-math/src/control.rs:307:9: delete - in shape_angle_vel_accel
+crates/ap-math/src/control.rs:327:5: replace sqrt_controller -> f32 with 0.0
+crates/ap-math/src/control.rs:327:5: replace sqrt_controller -> f32 with 1.0
+crates/ap-math/src/control.rs:327:5: replace sqrt_controller -> f32 with -1.0
+crates/ap-math/src/control.rs:327:58: replace || with && in sqrt_controller
+crates/ap-math/src/control.rs:329:15: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:329:15: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:333:44: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:333:44: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:333:27: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:333:27: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:335:13: delete - in sqrt_controller
+crates/ap-math/src/control.rs:335:45: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:335:28: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:335:45: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:335:28: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:340:42: replace / with % in sqrt_controller
+crates/ap-math/src/control.rs:340:42: replace / with * in sqrt_controller
+crates/ap-math/src/control.rs:335:47: delete - in sqrt_controller
+crates/ap-math/src/control.rs:341:18: replace > with == in sqrt_controller
+crates/ap-math/src/control.rs:341:18: replace > with < in sqrt_controller
+crates/ap-math/src/control.rs:342:27: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:342:44: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:342:44: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:342:27: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:342:53: replace - with / in sqrt_controller
+crates/ap-math/src/control.rs:342:53: replace - with + in sqrt_controller
+crates/ap-math/src/control.rs:342:67: replace / with * in sqrt_controller
+crates/ap-math/src/control.rs:343:25: replace < with == in sqrt_controller
+crates/ap-math/src/control.rs:342:67: replace / with % in sqrt_controller
+crates/ap-math/src/control.rs:343:25: replace < with > in sqrt_controller
+crates/ap-math/src/control.rs:343:27: delete - in sqrt_controller
+crates/ap-math/src/control.rs:344:13: delete - in sqrt_controller
+crates/ap-math/src/control.rs:344:45: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:344:45: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:344:28: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:344:28: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:344:55: replace - with + in sqrt_controller
+crates/ap-math/src/control.rs:344:55: replace - with / in sqrt_controller
+crates/ap-math/src/control.rs:344:48: delete - in sqrt_controller
+crates/ap-math/src/control.rs:344:69: replace / with % in sqrt_controller
+crates/ap-math/src/control.rs:344:69: replace / with * in sqrt_controller
+crates/ap-math/src/control.rs:346:19: replace * with + in sqrt_controller
+crates/ap-math/src/control.rs:346:19: replace * with / in sqrt_controller
+crates/ap-math/src/control.rs:351:55: replace / with % in sqrt_controller
+crates/ap-math/src/control.rs:351:55: replace / with * in sqrt_controller
+crates/ap-math/src/control.rs:351:42: delete - in sqrt_controller
+crates/ap-math/src/control.rs:351:73: replace / with % in sqrt_controller
+crates/ap-math/src/control.rs:351:73: replace / with * in sqrt_controller
+crates/ap-math/src/control.rs:364:5: replace inv_sqrt_controller -> f32 with 0.0
+crates/ap-math/src/control.rs:364:5: replace inv_sqrt_controller -> f32 with 1.0
+crates/ap-math/src/control.rs:364:5: replace inv_sqrt_controller -> f32 with -1.0
+crates/ap-math/src/control.rs:364:27: replace && with || in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:34: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:34: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:24: replace * with + in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:24: replace * with / in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:41: replace * with + in inv_sqrt_controller
+crates/ap-math/src/control.rs:365:41: replace * with / in inv_sqrt_controller
+crates/ap-math/src/control.rs:367:47: replace && with || in inv_sqrt_controller
+crates/ap-math/src/control.rs:367:28: replace || with && in inv_sqrt_controller
+crates/ap-math/src/control.rs:367:50: delete ! in inv_sqrt_controller
+crates/ap-math/src/control.rs:368:23: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:368:23: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:370:28: replace || with && in inv_sqrt_controller
+crates/ap-math/src/control.rs:374:33: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:374:33: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:375:21: replace < with == in inv_sqrt_controller
+crates/ap-math/src/control.rs:375:21: replace < with > in inv_sqrt_controller
+crates/ap-math/src/control.rs:376:23: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:376:23: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:379:29: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:379:29: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:45: replace + with - in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:38: replace * with + in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:45: replace + with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:38: replace * with / in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:58: replace / with % in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:65: replace * with + in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:58: replace / with * in inv_sqrt_controller
+crates/ap-math/src/control.rs:380:65: replace * with / in inv_sqrt_controller
+crates/ap-math/src/control.rs:384:9: delete - in inv_sqrt_controller
+crates/ap-math/src/control.rs:405:5: replace sqrt_controller_accel -> f32 with 0.0
+crates/ap-math/src/control.rs:405:5: replace sqrt_controller_accel -> f32 with 1.0
+crates/ap-math/src/control.rs:405:8: delete ! in sqrt_controller_accel
+crates/ap-math/src/control.rs:405:5: replace sqrt_controller_accel -> f32 with -1.0
+crates/ap-math/src/control.rs:405:30: replace * with + in sqrt_controller_accel
+crates/ap-math/src/control.rs:405:30: replace * with / in sqrt_controller_accel
+crates/ap-math/src/control.rs:408:8: delete ! in sqrt_controller_accel
+crates/ap-math/src/control.rs:409:16: delete - in sqrt_controller_accel
+crates/ap-math/src/control.rs:409:19: replace * with / in sqrt_controller_accel
+crates/ap-math/src/control.rs:409:19: replace * with + in sqrt_controller_accel
+crates/ap-math/src/control.rs:415:51: replace * with / in sqrt_controller_accel
+crates/ap-math/src/control.rs:415:51: replace * with + in sqrt_controller_accel
+crates/ap-math/src/control.rs:411:8: delete ! in sqrt_controller_accel
+crates/ap-math/src/control.rs:415:33: replace / with % in sqrt_controller_accel
+crates/ap-math/src/control.rs:415:33: replace / with * in sqrt_controller_accel
+crates/ap-math/src/control.rs:415:16: delete - in sqrt_controller_accel
+crates/ap-math/src/control.rs:418:38: replace / with % in sqrt_controller_accel
+crates/ap-math/src/control.rs:418:38: replace / with * in sqrt_controller_accel
+crates/ap-math/src/control.rs:419:20: replace <= with > in sqrt_controller_accel
+crates/ap-math/src/control.rs:420:19: replace * with / in sqrt_controller_accel
+crates/ap-math/src/control.rs:420:19: replace * with + in sqrt_controller_accel
+crates/ap-math/src/control.rs:420:16: delete - in sqrt_controller_accel
+crates/ap-math/src/control.rs:425:40: replace * with / in sqrt_controller_accel
+crates/ap-math/src/control.rs:425:40: replace * with + in sqrt_controller_accel
+crates/ap-math/src/control.rs:425:5: delete - in sqrt_controller_accel
+crates/ap-math/src/control.rs:425:22: replace / with % in sqrt_controller_accel
+crates/ap-math/src/control.rs:434:5: replace stopping_distance -> f32 with 0.0
+crates/ap-math/src/control.rs:425:22: replace / with * in sqrt_controller_accel
+crates/ap-math/src/control.rs:434:5: replace stopping_distance -> f32 with -1.0
+crates/ap-math/src/control.rs:455:5: replace kinematic_limit_xyz -> f32 with 0.0
+crates/ap-math/src/control.rs:434:5: replace stopping_distance -> f32 with 1.0
+crates/ap-math/src/control.rs:455:46: replace || with && in kinematic_limit_xyz
+crates/ap-math/src/control.rs:455:5: replace kinematic_limit_xyz -> f32 with 1.0
+crates/ap-math/src/control.rs:455:5: replace kinematic_limit_xyz -> f32 with -1.0
+crates/ap-math/src/control.rs:463:50: replace + with * in kinematic_limit_xyz
+crates/ap-math/src/control.rs:463:50: replace + with - in kinematic_limit_xyz
+crates/ap-math/src/control.rs:455:24: replace || with && in kinematic_limit_xyz
+crates/ap-math/src/control.rs:464:8: delete ! in kinematic_limit_xyz
+crates/ap-math/src/control.rs:467:47: replace / with % in kinematic_limit_xyz
+crates/ap-math/src/control.rs:467:47: replace / with * in kinematic_limit_xyz
+crates/ap-math/src/control.rs:468:45: replace / with % in kinematic_limit_xyz
+crates/ap-math/src/control.rs:468:45: replace / with * in kinematic_limit_xyz
+crates/ap-math/src/control.rs:485:34: replace / with % in kinematic_limit_xyz
+crates/ap-math/src/control.rs:485:34: replace / with * in kinematic_limit_xyz

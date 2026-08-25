@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace > with >= in sqrt_controller
+@@ -333,17 +333,17 @@
+             safe_sqrt(2.0 * second_ord_lim * error)
+         } else if is_negative(error) {
+             -safe_sqrt(2.0 * second_ord_lim * -error)
+         } else {
+             0.0
+         }
+     } else {
+         let linear_dist = second_ord_lim / sq(p);
+-        if error > linear_dist {
++        if error >= /* ~ changed by cargo-mutants ~ */ linear_dist {
+             safe_sqrt(2.0 * second_ord_lim * (error - linear_dist / 2.0))
+         } else if error < -linear_dist {
+             -safe_sqrt(2.0 * second_ord_lim * (-error - linear_dist / 2.0))
+         } else {
+             error * p
+         }
+     };
+ 

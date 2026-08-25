@@ -217,6 +217,62 @@ int main()
         }
     }
 
+    // ---- the outer position loop ----
+    //
+    // A vehicle flying to a target that is itself moving, which is what makes
+    // the closing-rate bias matter: chasing a receding setpoint shrinks the
+    // position error more slowly than ground speed suggests, and a version
+    // biased on ground speed would brake too early. A stationary target
+    // cannot show that.
+    //
+    // The run passes through three regimes: far from target with the
+    // correction saturated, closing where it is in the linear region, and
+    // overtaking, where the closing-rate term drives the correction negative
+    // and the symmetric constraint on it is the one that binds.
+    printf("#shapepos\n");
+    printf("step,dt,vel_max,accel_max,jerk_max,limit_total,"
+           "pos_des_x,pos_des_y,vel_des_x,vel_des_y,acc_ff_x,acc_ff_y,"
+           "pos_x,pos_y,vel_x,vel_y,out_x,out_y\n");
+    {
+        const float dt = 0.0025f;
+        const float vel_max = 5.0f;
+        const float accel_max = 4.0f;
+        const float jerk_max = 20.0f;
+
+        Vector2f accel{0.0f, 0.0f};
+        Vector2p pos{-3.0, 6.0};
+        Vector2f vel{0.0f, 0.0f};
+
+        for (int i = 0; i < 1600; i++) {
+            const float ts = i * dt;
+            const bool limit_total = (i / 400) % 2 == 0;
+
+            // The target moves, so the setpoint is never stationary.
+            const Vector2p pos_des{2.0 * ts, 6.0 - 0.5 * ts};
+            const Vector2f vel_des{2.0f, -0.5f};
+            const Vector2f accel_ff{0.3f * sinf(4.0f * ts), 0.2f * cosf(3.0f * ts)};
+
+            shape_pos_vel_accel_xy(pos_des, vel_des, accel_ff, pos, vel, accel,
+                                   vel_max, accel_max, jerk_max, dt, limit_total);
+
+            printf("%d,%u,%u,%u,%u,%d,%.17g,%.17g,%u,%u,%u,%u,"
+                   "%.17g,%.17g,%u,%u,%u,%u\n", i,
+                   fbits(dt), fbits(vel_max), fbits(accel_max), fbits(jerk_max),
+                   limit_total ? 1 : 0,
+                   (double)pos_des.x, (double)pos_des.y,
+                   fbits(vel_des.x), fbits(vel_des.y),
+                   fbits(accel_ff.x), fbits(accel_ff.y),
+                   (double)pos.x, (double)pos.y,
+                   fbits(vel.x), fbits(vel.y),
+                   fbits(accel.x), fbits(accel.y));
+
+            // Integrate, so the vehicle actually flies the trajectory and
+            // passes through the target rather than sitting at one error.
+            update_pos_vel_accel_xy(pos, vel, accel, dt, Vector2f(),
+                                    Vector2f(), Vector2f());
+        }
+    }
+
     return 0;
 }
 '''

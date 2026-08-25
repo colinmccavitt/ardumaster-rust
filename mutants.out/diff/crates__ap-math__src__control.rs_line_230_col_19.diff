@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete - in shape_pos_vel_accel
+@@ -222,17 +222,17 @@
+ are far apart in absolute terms and close in relative ones, which is the whole \
+ reason the subtraction happens at the wider width first"
+     )]
+     let pos_error = (pos_desired - pos) as f32;
+ 
+     // The acceleration allowance is taken from the direction of travel: a
+     // positive position error is closed by decelerating, which uses accel_min.
+     let (accel_lim, k_v) = if is_positive(pos_error) {
+-        let lim = -accel_min;
++        let lim =  /* ~ changed by cargo-mutants ~ */accel_min;
+         (lim, jerk_max / lim)
+     } else {
+         let lim = accel_max;
+         (lim, jerk_max / lim)
+     };
+ 
+     // Correction frame: remove the feedforward velocity.
+     let vel_corr = vel - vel_desired;

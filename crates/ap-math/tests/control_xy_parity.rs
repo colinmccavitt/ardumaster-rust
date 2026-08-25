@@ -7,8 +7,9 @@ index fault is a test failure, which is the desired outcome"
 )]
 
 use ap_math::control::{
-    limit_accel_corner_xy, limit_accel_xy, shape_accel_xy, shape_accel_xy_3d, shape_vel_accel_xy,
-    update_pos_vel_accel_xy, update_vel_accel_xy, Postype,
+    limit_accel_corner_xy, limit_accel_xy, shape_accel_xy, shape_accel_xy_3d,
+    shape_pos_vel_accel_xy, shape_vel_accel_xy, update_pos_vel_accel_xy, update_vel_accel_xy,
+    Postype,
 };
 use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
@@ -357,5 +358,165 @@ fn a_degenerate_limit_leaves_the_command_alone() {
         (accel.x, accel.y),
         (start.x, start.y),
         "a valid pair must shape the command"
+    );
+}
+
+/// The outer position loop, flown as a closing trajectory.
+///
+/// The vehicle starts 3.7 m behind a target that is itself moving, closes, and
+/// settles within a centimetre. That matters for two reasons.
+///
+/// The setpoint moves, which is what makes the closing-rate bias observable:
+/// `sqrt_controller_accel` is given `(vel - vel_desired)` projected onto the
+/// error rather than the raw velocity, because chasing a receding target
+/// shrinks the error more slowly than ground speed suggests. Against a
+/// stationary target the two are identical and the distinction is invisible.
+///
+/// And it passes through all three regimes — far out with the correction
+/// saturated, closing in the controller's linear region, and settled where the
+/// error is millimetres. A run that stayed far away would prove nothing about
+/// the gain, as the velocity shaper's first recording did.
+#[test]
+fn the_position_loop_matches_upstream() {
+    let s = sections();
+    let rows = s.get("shapepos").expect("shapepos section");
+
+    let mut accel = Vector2f::new(0.0, 0.0);
+    let mut pos = Vector2::new(-3.0_f64, 6.0_f64);
+    let mut vel = Vector2f::new(0.0, 0.0);
+
+    let mut largest = 0.0_f32;
+    let mut both_limits = [0_usize; 2];
+    let mut close = 0_usize;
+    let mut worst_error = 0.0_f64;
+
+    for r in rows {
+        assert_eq!(r.len(), 18, "malformed shapepos row");
+        let step: usize = r[0].parse().expect("step");
+        let dt = f(&r[1]);
+        let vel_max = f(&r[2]);
+        let accel_max = f(&r[3]);
+        let jerk_max = f(&r[4]);
+        let limit_total = r[5].trim() == "1";
+        both_limits[usize::from(limit_total)] += 1;
+
+        let pos_des = Vector2::new(d(&r[6]), d(&r[7]));
+        let vel_des = Vector2f::new(f(&r[8]), f(&r[9]));
+        let accel_ff = Vector2f::new(f(&r[10]), f(&r[11]));
+
+        // The recorded state must match what the port has integrated to, or
+        // the two are flying different trajectories and the comparison is
+        // vacuous.
+        for (label, got, want) in [("pos_x", pos.x, d(&r[12])), ("pos_y", pos.y, d(&r[13]))] {
+            let diff = (got - want).abs();
+            worst_error = worst_error.max(diff);
+            assert!(
+                diff < 1e-9,
+                "step {step} {label}: the port has flown to {got}, upstream to \
+                 {want} — the trajectories have diverged"
+            );
+        }
+
+        shape_pos_vel_accel_xy(
+            pos_des,
+            vel_des,
+            accel_ff,
+            pos,
+            vel,
+            &mut accel,
+            vel_max,
+            accel_max,
+            jerk_max,
+            dt,
+            limit_total,
+        );
+
+        for (label, got, want) in [("out_x", accel.x, f(&r[16])), ("out_y", accel.y, f(&r[17]))] {
+            let diff = (got - want).abs();
+            largest = largest.max(diff);
+            assert!(
+                diff < TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+        }
+
+        let err = ((pos_des.x - pos.x).powi(2) + (pos_des.y - pos.y).powi(2)).sqrt();
+        if err < 0.5 {
+            close += 1;
+        }
+
+        update_pos_vel_accel_xy(
+            &mut pos,
+            &mut vel,
+            accel,
+            dt,
+            Vector2f::new(0.0, 0.0),
+            Vector2f::new(0.0, 0.0),
+            Vector2f::new(0.0, 0.0),
+        );
+    }
+
+    assert!(
+        both_limits[0] > 200 && both_limits[1] > 200,
+        "limit_total must be exercised both ways, got {both_limits:?}"
+    );
+    assert!(
+        close > 200 && close < rows.len() - 200,
+        "the run must both start far out and close in; only {close} of {} steps \
+         were within half a metre",
+        rows.len()
+    );
+
+    println!(
+        "{} position-loop steps, largest difference {largest:e}, \
+         worst trajectory divergence {worst_error:e}, {close} steps within 0.5 m",
+        rows.len()
+    );
+}
+
+/// The position loop refuses a nonsensical limit set.
+///
+/// As with the velocity shaper, upstream raises an internal error and returns;
+/// the port returns quietly. Note `vel_max` is rejected only when *negative* —
+/// zero is a legitimate "no velocity limit" — where the other two must be
+/// strictly positive. Getting that asymmetry wrong would silently disable
+/// every velocity limit or reject every valid call.
+#[test]
+fn the_position_loop_refuses_a_degenerate_limit_set() {
+    let pos_des = Vector2::new(10.0_f64, 4.0_f64);
+    let pos = Vector2::new(0.0_f64, 0.0_f64);
+    let vel_des = Vector2f::new(1.0, 0.5);
+    let accel_ff = Vector2f::new(0.1, 0.0);
+    let vel = Vector2f::new(0.5, 0.25);
+    let start = Vector2f::new(0.75, -0.5);
+
+    for (vel_max, accel_max, jerk_max) in [
+        (-1.0, 4.0, 20.0),
+        (5.0, 0.0, 20.0),
+        (5.0, 4.0, 0.0),
+        (5.0, -4.0, 20.0),
+    ] {
+        let mut accel = start;
+        shape_pos_vel_accel_xy(
+            pos_des, vel_des, accel_ff, pos, vel, &mut accel, vel_max, accel_max, jerk_max, 0.0025,
+            true,
+        );
+        assert_eq!(
+            (accel.x, accel.y),
+            (start.x, start.y),
+            "({vel_max}, {accel_max}, {jerk_max}) should have been refused"
+        );
+    }
+
+    // Zero vel_max is NOT degenerate: it means no velocity limit, and the
+    // call must proceed.
+    let mut accel = start;
+    shape_pos_vel_accel_xy(
+        pos_des, vel_des, accel_ff, pos, vel, &mut accel, 0.0, 4.0, 20.0, 0.0025, true,
+    );
+    assert_ne!(
+        (accel.x, accel.y),
+        (start.x, start.y),
+        "a zero velocity limit means unlimited, not invalid"
     );
 }

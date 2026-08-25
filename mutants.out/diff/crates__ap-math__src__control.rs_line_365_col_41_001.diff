@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with / in inv_sqrt_controller
+@@ -357,17 +357,17 @@
+ /// The error that would produce a given output, upstream
+ /// `inv_sqrt_controller`.
+ ///
+ /// Used to work out how far ahead of a stop the braking must begin — see
+ /// [`stopping_distance`], which is this function under another name.
+ #[must_use]
+ pub fn inv_sqrt_controller(output: f32, p: f32, d_max: f32) -> f32 {
+     if is_positive(d_max) && is_zero(p) {
+-        return (output * output) / (2.0 * d_max);
++        return (output * output) / (2.0 / /* ~ changed by cargo-mutants ~ */ d_max);
+     }
+     if (is_negative(d_max) || is_zero(d_max)) && !is_zero(p) {
+         return output / p;
+     }
+     if (is_negative(d_max) || is_zero(d_max)) && is_zero(p) {
+         return 0.0;
+     }
+ 

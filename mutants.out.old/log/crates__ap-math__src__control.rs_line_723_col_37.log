@@ -27,9 +27,9 @@
 
 *** /root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=ap-math@0.1.0
        Fresh libm v0.2.16
-       Dirty ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/crates/ap-math): the file `crates/ap-math/src/control.rs` has changed (1787679415.223387331s, 5s after last build at 1787679410.177337519s)
-   Compiling ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/crates/ap-math)
-     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta`
+       Dirty ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/crates/ap-math): couldn't read metadata for file `target/debug/deps/libap_math-28bd256dfed83426.rlib`
+   Compiling ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/crates/ap-math)
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta`
 error[E0308]: mismatched types
    --> crates/ap-math/src/control.rs:723:74
     |
@@ -41,27 +41,10 @@ error[E0308]: mismatched types
     = note: expected struct `Vector2<f32>`
                  found type `f32`
 
-     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=5e48cbd8090f0b88 -C extra-filename=-7c2e9a5eabe3f21e --out-dir /tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rlib`
 For more information about this error, try `rustc --explain E0308`.
 error: could not compile `ap-math` (lib) due to 1 previous error
 
 Caused by:
-  process didn't exit successfully: `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta` (exit status: 1)
-warning: build failed, waiting for other jobs to finish...
-error[E0308]: mismatched types
-   --> crates/ap-math/src/control.rs:723:74
-    |
-723 |     *accel = accel_cross + vel_unit + /* ~ changed by cargo-mutants ~ */ accel_dir;
-    |              ----------------------                                      ^^^^^^^^^ expected `Vector2<f32>`, found `f32`
-    |              |
-    |              expected because this is `vector2::Vector2<f32>`
-    |
-    = note: expected struct `vector2::Vector2<f32>`
-                 found type `f32`
-
-error: could not compile `ap-math` (lib test) due to 1 previous error
-
-Caused by:
-  process didn't exit successfully: `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=5e48cbd8090f0b88 -C extra-filename=-7c2e9a5eabe3f21e --out-dir /tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-FF1i69.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rlib` (exit status: 1)
+  process didn't exit successfully: `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-Ff3eos.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta` (exit status: 1)
 
 *** result: Failure(101)

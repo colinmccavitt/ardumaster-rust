@@ -1,7 +1,7 @@
 crates/ap-math/src/control.rs:529:31: replace * with + in update_vel_accel_xy
 crates/ap-math/src/control.rs:538:10: replace += with *= in update_vel_accel_xy
-crates/ap-math/src/control.rs:561:30: replace * with + in update_pos_vel_accel_xy
 crates/ap-math/src/control.rs:561:35: replace + with * in update_pos_vel_accel_xy
+crates/ap-math/src/control.rs:561:30: replace * with + in update_pos_vel_accel_xy
 crates/ap-math/src/control.rs:561:43: replace * with + in update_pos_vel_accel_xy
 crates/ap-math/src/control.rs:595:45: replace - with / in shape_accel_xy
 crates/ap-math/src/control.rs:597:16: replace += with *= in shape_accel_xy

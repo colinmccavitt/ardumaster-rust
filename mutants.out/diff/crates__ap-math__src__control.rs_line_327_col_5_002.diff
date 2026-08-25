@@ -1,0 +1,48 @@
+--- crates/ap-math/src/control.rs
++++ replace sqrt_controller -> f32 with -1.0
+@@ -319,44 +319,17 @@
+ /// deceleration would stop exactly at the target. The two branches meet at
+ /// `linear_dist = second_ord_lim / p²`, and the `linear_dist / 2` term inside
+ /// the square root is what makes the join continuous rather than merely close.
+ ///
+ /// With a positive `dt` the result is clamped so the correction cannot
+ /// overshoot the whole error in one step.
+ #[must_use]
+ pub fn sqrt_controller(error: f32, p: f32, second_ord_lim: f32, dt: f32) -> f32 {
+-    let correction_rate = if is_negative(second_ord_lim) || is_zero(second_ord_lim) {
+-        // No acceleration limit: purely proportional.
+-        error * p
+-    } else if is_zero(p) {
+-        // No proportional gain: purely square-root.
+-        if is_positive(error) {
+-            safe_sqrt(2.0 * second_ord_lim * error)
+-        } else if is_negative(error) {
+-            -safe_sqrt(2.0 * second_ord_lim * -error)
+-        } else {
+-            0.0
+-        }
+-    } else {
+-        let linear_dist = second_ord_lim / sq(p);
+-        if error > linear_dist {
+-            safe_sqrt(2.0 * second_ord_lim * (error - linear_dist / 2.0))
+-        } else if error < -linear_dist {
+-            -safe_sqrt(2.0 * second_ord_lim * (-error - linear_dist / 2.0))
+-        } else {
+-            error * p
+-        }
+-    };
+-
+-    if is_positive(dt) {
+-        constrain_value(correction_rate, -error.abs() / dt, error.abs() / dt)
+-    } else {
+-        correction_rate
+-    }
++    -1.0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The error that would produce a given output, upstream
+ /// `inv_sqrt_controller`.
+ ///
+ /// Used to work out how far ahead of a stop the braking must begin — see
+ /// [`stopping_distance`], which is this function under another name.
+ #[must_use]

@@ -1,5 +1,5 @@
-crates/ap-math/src/control.rs:72:30: replace * with / in update_vel_accel
 crates/ap-math/src/control.rs:72:64: replace * with / in update_vel_accel
+crates/ap-math/src/control.rs:72:30: replace * with / in update_vel_accel
 crates/ap-math/src/control.rs:73:29: replace * with / in update_vel_accel
 crates/ap-math/src/control.rs:98:39: replace && with || in update_pos_vel_accel
 crates/ap-math/src/control.rs:98:30: replace * with + in update_pos_vel_accel
@@ -7,11 +7,11 @@ crates/ap-math/src/control.rs:98:30: replace * with / in update_pos_vel_accel
 crates/ap-math/src/control.rs:98:64: replace * with + in update_pos_vel_accel
 crates/ap-math/src/control.rs:98:64: replace * with / in update_pos_vel_accel
 crates/ap-math/src/control.rs:167:18: replace / with % in shape_vel_accel
+crates/ap-math/src/control.rs:172:18: replace += with -= in shape_vel_accel
 crates/ap-math/src/control.rs:167:18: replace / with * in shape_vel_accel
 crates/ap-math/src/control.rs:167:20: delete - in shape_vel_accel
-crates/ap-math/src/control.rs:172:18: replace += with -= in shape_vel_accel
-crates/ap-math/src/control.rs:212:32: replace || with && in shape_pos_vel_accel
 crates/ap-math/src/control.rs:209:29: replace || with && in shape_pos_vel_accel
+crates/ap-math/src/control.rs:212:32: replace || with && in shape_pos_vel_accel
 crates/ap-math/src/control.rs:238:24: replace - with + in shape_pos_vel_accel
 crates/ap-math/src/control.rs:264:18: replace += with -= in shape_pos_vel_accel
 crates/ap-math/src/control.rs:341:18: replace > with >= in sqrt_controller

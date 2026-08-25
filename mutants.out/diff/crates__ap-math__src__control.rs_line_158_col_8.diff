@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete ! in shape_vel_accel
+@@ -150,17 +150,17 @@
+     accel_max: f32,
+     jerk_max: f32,
+     dt: f32,
+     limit_total_accel: bool,
+ ) -> Result<(), ShapeError> {
+     if !is_negative(accel_min) || !is_positive(accel_max) {
+         return Err(ShapeError::AccelLimitsMalformed);
+     }
+-    if !is_positive(jerk_max) {
++    if  /* ~ changed by cargo-mutants ~ */is_positive(jerk_max) {
+         return Err(ShapeError::JerkNotPositive);
+     }
+ 
+     let vel_error = vel_desired - vel;
+ 
+     let kpa = if is_positive(vel_error) {
+         jerk_max / accel_max
+     } else {

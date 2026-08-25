@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace stopping_distance -> f32 with 1.0
+@@ -426,17 +426,17 @@
+ }
+ 
+ /// How far it takes to stop from a velocity, upstream `stopping_distance`.
+ ///
+ /// Literally [`inv_sqrt_controller`]: the distance at which the controller
+ /// would command exactly this speed is the distance it needs to shed it.
+ #[must_use]
+ pub fn stopping_distance(velocity: f32, p: f32, accel_max: f32) -> f32 {
+-    inv_sqrt_controller(velocity, p, accel_max)
++    1.0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The fastest travel possible in a direction, given separate horizontal and
+ /// vertical limits. Upstream `kinematic_limit`.
+ ///
+ /// A multirotor can usually move faster sideways than it can climb, and faster
+ /// down than up. So the speed available along a diagonal is not either limit
+ /// but whichever binds first — and which one that is depends on the slope of

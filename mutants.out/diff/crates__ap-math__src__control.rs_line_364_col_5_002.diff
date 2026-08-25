@@ -1,0 +1,42 @@
+--- crates/ap-math/src/control.rs
++++ replace inv_sqrt_controller -> f32 with -1.0
+@@ -356,38 +356,17 @@
+ 
+ /// The error that would produce a given output, upstream
+ /// `inv_sqrt_controller`.
+ ///
+ /// Used to work out how far ahead of a stop the braking must begin — see
+ /// [`stopping_distance`], which is this function under another name.
+ #[must_use]
+ pub fn inv_sqrt_controller(output: f32, p: f32, d_max: f32) -> f32 {
+-    if is_positive(d_max) && is_zero(p) {
+-        return (output * output) / (2.0 * d_max);
+-    }
+-    if (is_negative(d_max) || is_zero(d_max)) && !is_zero(p) {
+-        return output / p;
+-    }
+-    if (is_negative(d_max) || is_zero(d_max)) && is_zero(p) {
+-        return 0.0;
+-    }
+-
+-    let linear_velocity = d_max / p;
+-    if output.abs() < linear_velocity {
+-        return output / p;
+-    }
+-
+-    let linear_dist = d_max / sq(p);
+-    let stopping_dist = (linear_dist * 0.5) + sq(output) / (2.0 * d_max);
+-    if is_positive(output) {
+-        stopping_dist
+-    } else {
+-        -stopping_dist
+-    }
++    -1.0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The rate of change [`sqrt_controller`] implies, upstream
+ /// `sqrt_controller_accel`.
+ ///
+ /// Differentiating the controller's own response with respect to time, via the
+ /// chain rule and the actual closing rate. In the linear region the slope is
+ /// `p`; in the square-root region it is `second_ord_lim / |rate_cmd|`.

@@ -1,0 +1,82 @@
+--- crates/ap-math/src/control.rs
++++ replace shape_pos_vel_accel -> Result<(), ShapeError> with Ok(())
+@@ -201,78 +201,17 @@
+     vel_min: f32,
+     vel_max: f32,
+     accel_min: f32,
+     accel_max: f32,
+     jerk_max: f32,
+     dt: f32,
+     limit_total: bool,
+ ) -> Result<(), ShapeError> {
+-    if is_positive(vel_min) || is_negative(vel_max) {
+-        return Err(ShapeError::VelLimitsMalformed);
+-    }
+-    if !is_negative(accel_min) || !is_positive(accel_max) {
+-        return Err(ShapeError::AccelLimitsMalformed);
+-    }
+-    if !is_positive(jerk_max) {
+-        return Err(ShapeError::JerkNotPositive);
+-    }
+-
+-    #[allow(
+-        clippy::cast_possible_truncation,
+-        reason = "upstream assigns the postype_t difference to a float; positions \
+-are far apart in absolute terms and close in relative ones, which is the whole \
+-reason the subtraction happens at the wider width first"
+-    )]
+-    let pos_error = (pos_desired - pos) as f32;
+-
+-    // The acceleration allowance is taken from the direction of travel: a
+-    // positive position error is closed by decelerating, which uses accel_min.
+-    let (accel_lim, k_v) = if is_positive(pos_error) {
+-        let lim = -accel_min;
+-        (lim, jerk_max / lim)
+-    } else {
+-        let lim = accel_max;
+-        (lim, jerk_max / lim)
+-    };
+-
+-    // Correction frame: remove the feedforward velocity.
+-    let vel_corr = vel - vel_desired;
+-
+-    let mut vel_corr_cmd = sqrt_controller(pos_error, k_v, accel_lim, dt);
+-    let accel_corr_cmd = sqrt_controller_accel(pos_error, vel_corr_cmd, vel_corr, k_v, accel_lim);
+-    vel_corr_cmd += accel_corr_cmd / k_v;
+-
+-    if is_negative(vel_min) {
+-        vel_corr_cmd = vel_corr_cmd.max(vel_min);
+-    }
+-    if is_positive(vel_max) {
+-        vel_corr_cmd = vel_corr_cmd.min(vel_max);
+-    }
+-
+-    let mut vel_target = vel_desired + vel_corr_cmd;
+-
+-    if limit_total {
+-        if is_negative(vel_min) {
+-            vel_target = vel_target.max(vel_min);
+-        }
+-        if is_positive(vel_max) {
+-            vel_target = vel_target.min(vel_max);
+-        }
+-    }
+-
+-    let mut accel_target = (vel_target - vel) * k_v;
+-    accel_target = constrain_value(accel_target, accel_min, accel_max);
+-    accel_target += accel_desired;
+-
+-    if limit_total {
+-        accel_target = constrain_value(accel_target, accel_min, accel_max);
+-    }
+-
+-    shape_accel(accel_target, accel, jerk_max, dt)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The angular form of [`shape_pos_vel_accel`], upstream
+ /// `shape_angle_vel_accel`.
+ ///
+ /// The demand is wrapped to the nearest equivalent angle first, so a vehicle
+ /// at 179 degrees asked for -179 turns two degrees rather than 358.
+ ///

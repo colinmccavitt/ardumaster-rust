@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with + in update_pos_vel_accel
+@@ -89,17 +89,17 @@
+     pos: &mut Postype,
+     vel: &mut f32,
+     accel: f32,
+     dt: f32,
+     limit: f32,
+     pos_error: f32,
+     vel_error: f32,
+ ) {
+-    let mut delta_pos = *vel * dt + accel * 0.5 * sq(dt);
++    let mut delta_pos = *vel + /* ~ changed by cargo-mutants ~ */ dt + accel * 0.5 * sq(dt);
+     if is_positive(delta_pos * limit) && is_positive(pos_error * limit) {
+         delta_pos = 0.0;
+     }
+     *pos += Postype::from(delta_pos);
+ 
+     update_vel_accel(vel, accel, dt, limit, vel_error);
+ }
+ 

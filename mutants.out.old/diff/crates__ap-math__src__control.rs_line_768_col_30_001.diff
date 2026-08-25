@@ -1,5 +1,5 @@
 --- crates/ap-math/src/control.rs
-+++ replace + with - in limit_accel_corner_xy
++++ replace + with * in limit_accel_corner_xy
 @@ -760,17 +760,17 @@
  
      if is_positive(accel_dir_scalar) {
@@ -10,7 +10,7 @@
          accel_dir.limit_length(accel_along_max);
  
 -        *accel = accel_cross + accel_dir;
-+        *accel = accel_cross - /* ~ changed by cargo-mutants ~ */ accel_dir;
++        *accel = accel_cross * /* ~ changed by cargo-mutants ~ */ accel_dir;
          return true;
      }
  
