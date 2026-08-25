@@ -153,6 +153,34 @@ int main(void)
         }
     }
 
+    // ---- kinematic_limit: a sphere of directions against asymmetric limits ----
+    static const struct { float xy, zneg, zpos; } klims[] = {
+        { 5.0f, 2.0f, 3.0f },
+        { 5.0f, 5.0f, 5.0f },
+        { 0.0f, 2.0f, 3.0f },   // degenerate: returns zero
+        { 10.0f, 1.0f, 8.0f },
+        { 1.0f, 10.0f, 10.0f },
+    };
+    for (unsigned ik = 0; ik < ARRAY_SIZE(klims); ik++) {
+        // sweep a hemisphere of directions, including the pure axes
+        for (int iaz = 0; iaz < 8; iaz++) {
+            for (int iel = -6; iel <= 6; iel++) {
+                const float az = (float)iaz * (float)M_PI / 4.0f;
+                const float el = (float)iel * (float)M_PI / 12.0f;
+                Vector3f dir(cosf(el) * cosf(az), cosf(el) * sinf(az), sinf(el));
+                printf("kin,%u,%u,%u,%u,%u,%u,%u,0\n",
+                       fbits(dir.x), fbits(dir.y), fbits(dir.z),
+                       fbits(klims[ik].xy), fbits(klims[ik].zneg), fbits(klims[ik].zpos),
+                       fbits(kinematic_limit(dir, klims[ik].xy, klims[ik].zneg, klims[ik].zpos)));
+            }
+        }
+        // and the zero vector
+        printf("kin,%u,%u,%u,%u,%u,%u,%u,0\n",
+               fbits(0.0f), fbits(0.0f), fbits(0.0f),
+               fbits(klims[ik].xy), fbits(klims[ik].zneg), fbits(klims[ik].zpos),
+               fbits(kinematic_limit(Vector3f(0,0,0), klims[ik].xy, klims[ik].zneg, klims[ik].zpos)));
+    }
+
     // ---- closed loops, where the state compounds ----
     {
         float vel = 0.0f, accel = 0.0f;

@@ -21,10 +21,12 @@
 index fault is a test failure, which is the desired outcome"
 )]
 
+use ap_math::vector3::Vector3f;
+
 use ap_math::control::{
-    inv_sqrt_controller, shape_accel, shape_angle_vel_accel, shape_pos_vel_accel, shape_vel_accel,
-    sqrt_controller, sqrt_controller_accel, stopping_distance, update_pos_vel_accel,
-    update_vel_accel,
+    inv_sqrt_controller, kinematic_limit, shape_accel, shape_angle_vel_accel, shape_pos_vel_accel,
+    shape_vel_accel, sqrt_controller, sqrt_controller_accel, stopping_distance,
+    update_pos_vel_accel, update_vel_accel,
 };
 
 fn fixture() -> String {
@@ -116,6 +118,14 @@ fn the_control_shaping_matches_upstream() {
                 let mut accel = f(r[2]);
                 shape_accel(f(r[1]), &mut accel, 5.0, 0.02).expect("valid");
                 pairs.push(("shape_accel", accel, f(r[7])));
+            }
+            "kin" => {
+                let dir = Vector3f::new(f(r[1]), f(r[2]), f(r[3]));
+                pairs.push((
+                    "kinematic_limit",
+                    kinematic_limit(dir, f(r[4]), f(r[5]), f(r[6])),
+                    f(r[7]),
+                ));
             }
             "loop_vel" => {
                 shape_vel_accel(
@@ -238,6 +248,7 @@ fn the_control_shaping_matches_upstream() {
         "loop_vel",
         "loop_pos",
         "loop_angle",
+        "kin",
     ] {
         assert!(
             counts.get(kind).copied().unwrap_or(0) > 0,

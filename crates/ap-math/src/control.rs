@@ -27,6 +27,7 @@
 //! direction rather than a sign, and they are their own slice.
 
 use crate::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq, wrap_pi};
+use crate::vector3::Vector3f;
 
 /// Position type, upstream `postype_t`.
 ///
@@ -432,6 +433,78 @@ pub fn stopping_distance(velocity: f32, p: f32, accel_max: f32) -> f32 {
     inv_sqrt_controller(velocity, p, accel_max)
 }
 
+/// The fastest travel possible in a direction, given separate horizontal and
+/// vertical limits. Upstream `kinematic_limit`.
+///
+/// A multirotor can usually move faster sideways than it can climb, and faster
+/// down than up. So the speed available along a diagonal is not either limit
+/// but whichever binds first — and which one that is depends on the slope of
+/// the direction.
+///
+/// Returns zero for a direction of no length, or if any limit is zero: there
+/// is no meaningful answer, and upstream returns zero rather than dividing.
+#[must_use]
+pub fn kinematic_limit_xyz(
+    segment_length_xy: f32,
+    segment_length_z: f32,
+    max_xy: f32,
+    max_z_neg: f32,
+    max_z_pos: f32,
+) -> f32 {
+    if is_zero(max_xy) || is_zero(max_z_pos) || is_zero(max_z_neg) {
+        return 0.0;
+    }
+
+    let max_xy = max_xy.abs();
+    let max_z_pos = max_z_pos.abs();
+    let max_z_neg = max_z_neg.abs();
+
+    let length = safe_sqrt(sq(segment_length_xy) + sq(segment_length_z));
+    if !is_positive(length) {
+        return 0.0;
+    }
+    let segment_length_xy = segment_length_xy / length;
+    let segment_length_z = segment_length_z / length;
+
+    if is_zero(segment_length_xy) {
+        // Straight up or straight down: the vertical limit is the answer, and
+        // which one depends on the direction.
+        return if is_positive(segment_length_z) {
+            max_z_pos
+        } else {
+            max_z_neg
+        };
+    }
+    if is_zero(segment_length_z) {
+        return max_xy;
+    }
+
+    // Which limit binds is decided by comparing the direction's slope against
+    // the slope the two limits themselves describe.
+    let slope = segment_length_z / segment_length_xy;
+    if is_positive(slope) {
+        if slope.abs() < max_z_pos / max_xy {
+            return max_xy / segment_length_xy;
+        }
+        return (max_z_pos / segment_length_z).abs();
+    }
+    if slope.abs() < max_z_neg / max_xy {
+        return max_xy / segment_length_xy;
+    }
+    (max_z_neg / segment_length_z).abs()
+}
+
+/// [`kinematic_limit_xyz`] for a direction vector, upstream's `Vector3f`
+/// overload of `kinematic_limit`.
+#[must_use]
+pub fn kinematic_limit(direction: Vector3f, max_xy: f32, max_z_neg: f32, max_z_pos: f32) -> f32 {
+    if is_zero(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z) {
+        return 0.0;
+    }
+    let segment_length_xy = safe_sqrt(sq(direction.x) + sq(direction.y));
+    kinematic_limit_xyz(segment_length_xy, direction.z, max_xy, max_z_neg, max_z_pos)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -657,5 +730,81 @@ claim; an epsilon would accept a small change and a small change is the failure"
     fn the_implied_rate_is_zero_when_moving_away() {
         assert_eq!(sqrt_controller_accel(10.0, 5.0, -5.0, 2.0, 10.0), 0.0);
         assert_eq!(sqrt_controller_accel(10.0, -5.0, 5.0, 2.0, 10.0), 0.0);
+    }
+
+    /// Pure horizontal motion gets the horizontal limit; pure vertical gets
+    /// the vertical one, and which vertical depends on the direction.
+    #[test]
+    fn the_pure_axes_return_their_own_limits() {
+        assert_eq!(
+            kinematic_limit(Vector3f::new(1.0, 0.0, 0.0), 5.0, 2.0, 3.0),
+            5.0
+        );
+        assert_eq!(
+            kinematic_limit(Vector3f::new(0.0, 0.0, 1.0), 5.0, 2.0, 3.0),
+            3.0,
+            "upward"
+        );
+        assert_eq!(
+            kinematic_limit(Vector3f::new(0.0, 0.0, -1.0), 5.0, 2.0, 3.0),
+            2.0,
+            "downward"
+        );
+    }
+
+    /// A direction of no length has no answer, and neither does a zero limit.
+    #[test]
+    fn a_degenerate_direction_or_limit_gives_zero() {
+        assert_eq!(kinematic_limit(Vector3f::zero(), 5.0, 2.0, 3.0), 0.0);
+        assert_eq!(
+            kinematic_limit(Vector3f::new(1.0, 0.0, 1.0), 0.0, 2.0, 3.0),
+            0.0
+        );
+        assert_eq!(
+            kinematic_limit(Vector3f::new(1.0, 0.0, 1.0), 5.0, 0.0, 3.0),
+            0.0
+        );
+    }
+
+    /// On a diagonal, whichever limit binds first is the one that decides —
+    /// and the result is always at least as large as the speed either limit
+    /// alone would allow along that direction.
+    #[test]
+    fn the_binding_limit_decides_on_a_diagonal() {
+        // Shallow climb: horizontal binds.
+        let shallow = kinematic_limit(Vector3f::new(10.0, 0.0, 1.0), 5.0, 2.0, 3.0);
+        assert!(
+            shallow > 5.0,
+            "along a shallow slope, faster than 5: {shallow}"
+        );
+
+        // Steep climb: the vertical limit binds instead.
+        let steep = kinematic_limit(Vector3f::new(1.0, 0.0, 10.0), 5.0, 2.0, 3.0);
+        assert!(steep < shallow, "steeper should be slower: {steep}");
+        assert!(
+            steep > 3.0,
+            "but still faster than the vertical limit alone"
+        );
+    }
+
+    /// Up and down differ when the limits do — which is the reason the
+    /// function takes two of them.
+    #[test]
+    fn climbing_and_descending_differ() {
+        let up = kinematic_limit(Vector3f::new(1.0, 0.0, 5.0), 5.0, 1.0, 4.0);
+        let down = kinematic_limit(Vector3f::new(1.0, 0.0, -5.0), 5.0, 1.0, 4.0);
+        assert!(
+            up > down,
+            "a higher climb limit should allow more: {up} vs {down}"
+        );
+    }
+
+    /// Scaling a direction does not change the answer: only its slope
+    /// matters.
+    #[test]
+    fn only_the_direction_matters_not_its_length() {
+        let a = kinematic_limit(Vector3f::new(3.0, 4.0, 5.0), 5.0, 2.0, 3.0);
+        let b = kinematic_limit(Vector3f::new(30.0, 40.0, 50.0), 5.0, 2.0, 3.0);
+        assert!((a - b).abs() < 1e-4, "{a} and {b}");
     }
 }
