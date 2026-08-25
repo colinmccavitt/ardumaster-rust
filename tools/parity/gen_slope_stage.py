@@ -69,6 +69,13 @@ void panic(const char *errormsg, ...)
 
 extern const AP_HAL::HAL &hal;
 
+static uint32_t fbits(float f)
+{
+    uint32_t u;
+    memcpy(&u, &f, sizeof(u));
+    return u;
+}
+
 int main()
 {
     // AP_Landing has no singleton accessor -- the vehicle owns it, and the
@@ -117,6 +124,56 @@ int main()
                     printf("%d,%d,%d,%d\n", s, desireds[a], limits[b],
                            (int)land->constrain_roll(desireds[a], limits[b]));
                 }
+        }
+    }
+
+    // ---- the landing target airspeed ----
+    //
+    // The base speed comes from TECS when it has one and from the mean of
+    // cruise and minimum when it does not, then the stage overrides it, then
+    // the head wind is added. The TECS landing airspeed and the AHRS head
+    // wind cannot be driven from here, so both are recorded per row.
+    //
+    // The options bit is swept because it decides the ceiling, and the
+    // ceiling is what makes the final constrain interesting: with a TECS
+    // landing airspeed above cruise and the maximum not allowed, the target
+    // sits above its own ceiling and upstream's constrain returns the LOW
+    // bound where a clamp would be ill-formed.
+    printf("#airspeed\n");
+    printf("stage,cruise,min,max,land_airspeed,pre_flare,wind_comp,allow_max,"
+           "head_wind,out\n");
+    {
+        const int16_t cruises[] = {12, 22};
+        const int16_t mins[] = {8, 18};
+        const int16_t maxes[] = {20, 30};
+        const float preflares[] = {0.0f, 9.0f, 26.0f};
+        const float winds[] = {-50.0f, 0.0f, 40.0f, 150.0f};
+
+        for (int s = 0; s <= 3; s++) {
+            land->type_slope_stage = (decltype(land->type_slope_stage))s;
+            for (unsigned a = 0; a < 2; a++)
+              for (unsigned b = 0; b < 2; b++)
+                for (unsigned c = 0; c < 2; c++)
+                  for (unsigned d = 0; d < 3; d++)
+                    for (unsigned w = 0; w < 4; w++)
+                      for (int opt = 0; opt <= 1; opt++) {
+                          plane.aparm.airspeed_cruise.set((float)cruises[a]);
+                          plane.aparm.airspeed_min.set(mins[b]);
+                          plane.aparm.airspeed_max.set(maxes[c]);
+                          land->pre_flare_airspeed.set(preflares[d]);
+                          land->wind_comp.set(winds[w]);
+                          land->_options.set(opt ? (int16_t)AP_Landing::OptionsMask::ON_LANDING_USE_ARSPD_MAX : (int16_t)0);
+
+                          const int32_t out = land->type_slope_get_target_airspeed_cm();
+
+                          printf("%d,%d,%d,%d,%u,%u,%u,%d,%u,%d\n", s,
+                                 (int)cruises[a], (int)mins[b], (int)maxes[c],
+                                 fbits(plane.TECS_controller.get_land_airspeed()),
+                                 fbits(preflares[d]), fbits(winds[w]),
+                                 opt,
+                                 fbits(plane.ahrs.head_wind()),
+                                 (int)out);
+                      }
         }
     }
 

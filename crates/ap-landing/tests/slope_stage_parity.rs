@@ -9,7 +9,12 @@
 index fault is a test failure, which is the desired outcome"
 )]
 
-use ap_landing::slope_stage::SlopeStage;
+use ap_landing::slope_stage::{target_airspeed_cm, LandingAirspeedParams, SlopeStage};
+
+/// Bit-exact float from the fixture's `%u` column.
+fn f(s: &str) -> f32 {
+    f32::from_bits(s.trim().parse::<u32>().expect("float bits"))
+}
 
 fn rows(section: &str) -> Vec<Vec<String>> {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -171,5 +176,189 @@ fn the_flare_roll_constraint_matches_upstream() {
     println!(
         "{} roll rows, clamped on {clamped}, passed through on {passed_through}",
         rows.len()
+    );
+}
+
+/// The landing target airspeed, per stage.
+///
+/// # Two inputs the harness cannot drive
+///
+/// TECS reports no landing airspeed (−1) and the AHRS no head wind (0) in
+/// every recorded row. So the recording covers the *fallback* base speed and
+/// none of the TECS branch, and the head-wind term contributes zero
+/// throughout — which also makes the `wind_comp` sweep inert. Both are covered
+/// by [`the_tecs_airspeed_and_head_wind_paths_behave`] instead, and recorded
+/// here rather than left to be discovered.
+///
+/// What the recording does cover: the per-stage overrides, the pre-flare
+/// substitution, and the ceiling chosen by the options bit.
+#[test]
+fn the_landing_airspeed_matches_upstream() {
+    let rows = rows("airspeed");
+    assert!(!rows.is_empty(), "no airspeed rows");
+
+    let mut checked = 0_usize;
+    let mut distinct = std::collections::BTreeSet::new();
+
+    for r in &rows {
+        assert_eq!(r.len(), 10, "malformed airspeed row");
+        let stage = stage_of(r[0].trim().parse().expect("stage"));
+
+        let params = LandingAirspeedParams {
+            airspeed_cruise_ms: r[1].trim().parse::<f32>().expect("cruise"),
+            airspeed_min_ms: r[2].trim().parse::<f32>().expect("min"),
+            airspeed_max_ms: r[3].trim().parse::<f32>().expect("max"),
+            land_airspeed_ms: f(&r[4]),
+            pre_flare_airspeed_ms: f(&r[5]),
+            wind_comp_pct: f(&r[6]),
+            allow_max_airspeed: r[7].trim() == "1",
+        };
+
+        let got = target_airspeed_cm(stage, &params, f(&r[8]));
+        let want: i32 = r[9].trim().parse().expect("out");
+        assert_eq!(got, want, "stage {:?}, params {params:?}", stage);
+        checked += 1;
+        distinct.insert(got);
+    }
+
+    assert!(
+        distinct.len() > 4,
+        "only {} distinct airspeeds across {} rows",
+        distinct.len(),
+        rows.len()
+    );
+
+    println!(
+        "{} airspeed rows, {checked} values, {} distinct results",
+        rows.len(),
+        distinct.len()
+    );
+}
+
+/// The two paths the recording pins.
+///
+/// TECS's landing airspeed wins when it is set. Otherwise the fallback is the
+/// *mean* of cruise and minimum — not cruise, and not minimum. Landing wants
+/// slower than cruise for a shorter roll-out, but a margin above minimum
+/// because an approach is exactly where a stall is unrecoverable.
+///
+/// The head-wind term can only ever add: the final constrain's lower bound is
+/// the target itself. In a tail wind the head wind goes negative, and without
+/// that floor the aircraft would be told to fly slower than its landing speed
+/// on the approach where it already has the least margin.
+#[test]
+fn the_tecs_airspeed_and_head_wind_paths_behave() {
+    let base = LandingAirspeedParams {
+        airspeed_cruise_ms: 22.0,
+        airspeed_min_ms: 12.0,
+        airspeed_max_ms: 30.0,
+        land_airspeed_ms: -1.0,
+        pre_flare_airspeed_ms: 0.0,
+        wind_comp_pct: 50.0,
+        allow_max_airspeed: true,
+    };
+
+    // Unset: the mean of cruise and minimum, so 17 m/s.
+    let fallback = target_airspeed_cm(SlopeStage::Approach, &base, 0.0);
+    assert_eq!(
+        fallback, 1700,
+        "the fallback is the mean, not either endpoint"
+    );
+
+    // Set: TECS wins outright.
+    let with_tecs = LandingAirspeedParams {
+        land_airspeed_ms: 19.0,
+        ..base
+    };
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &with_tecs, 0.0),
+        1900,
+        "a set landing airspeed must win"
+    );
+
+    // Zero is set, not unset — the test is `>= 0`.
+    let zero_tecs = LandingAirspeedParams {
+        land_airspeed_ms: 0.0,
+        ..base
+    };
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &zero_tecs, 0.0),
+        0,
+        "zero is a set landing airspeed, not an absent one"
+    );
+
+    // Head wind adds half of itself at 50 percent.
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &base, 8.0),
+        1700 + 400,
+        "half of an eight metre head wind is four"
+    );
+
+    // Tail wind must not subtract.
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &base, -8.0),
+        1700,
+        "a tail wind must not reduce the approach speed below the target"
+    );
+
+    // And the compensation percentage is itself bounded to 0..100.
+    let over = LandingAirspeedParams {
+        wind_comp_pct: 400.0,
+        ..base
+    };
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &over, 8.0),
+        1700 + 800,
+        "the compensation is capped at the whole head wind, not four times it"
+    );
+}
+
+/// The ceiling can sit below the target, and the constrain must not be a clamp.
+///
+/// Reachable: a TECS landing airspeed above cruise, with the maximum not
+/// allowed on landing, puts the target above its own ceiling. `i32::clamp` is
+/// ill-formed with crossed bounds; upstream's `constrain_int32` is not, and
+/// which bound it returns depends on the wind.
+///
+/// With no wind the amount equals the target, which is the low bound, so the
+/// low test does not fire and the ceiling wins. Only a tail wind pushes the
+/// sum below the target — and then the floor returns the target, which is the
+/// whole reason the floor is the target rather than zero.
+#[test]
+fn a_target_above_its_ceiling_is_constrained_not_clamped() {
+    let params = LandingAirspeedParams {
+        airspeed_cruise_ms: 15.0,
+        airspeed_min_ms: 10.0,
+        airspeed_max_ms: 30.0,
+        // Above cruise, which is the ceiling when the option is off.
+        land_airspeed_ms: 25.0,
+        pre_flare_airspeed_ms: 0.0,
+        wind_comp_pct: 50.0,
+        allow_max_airspeed: false,
+    };
+
+    // No wind: the amount equals the low bound, so the ceiling binds.
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &params, 0.0),
+        1500,
+        "with the bounds crossed and no wind, the ceiling wins"
+    );
+
+    // Tail wind: the sum drops below the target, and the floor returns it.
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &params, -10.0),
+        2500,
+        "a tail wind must not reduce the speed below the target, even when \
+         the target is above its own ceiling"
+    );
+
+    // With the option on the ceiling is the maximum and nothing binds.
+    let allowed = LandingAirspeedParams {
+        allow_max_airspeed: true,
+        ..params
+    };
+    assert_eq!(
+        target_airspeed_cm(SlopeStage::Approach, &allowed, 0.0),
+        2500
     );
 }
