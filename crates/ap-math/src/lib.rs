@@ -14,6 +14,7 @@
 #![no_std]
 
 pub mod chirp;
+pub mod control;
 pub mod crc;
 /// Generated CRC lookup tables. See `tools/parity/gen_crc_tables.py`.
 pub mod crc_tables;
