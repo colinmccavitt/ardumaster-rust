@@ -124,6 +124,54 @@ impl OutputChannel {
         self.output_pwm = self.config.pwm_from_scaled_value(output_scaled);
     }
 
+    /// Read the output as a normalised value, upstream `get_output_norm`.
+    ///
+    /// Minus one to plus one, with zero at the midpoint of the travel — and
+    /// the midpoint, not the trim. A channel trimmed away from centre reads
+    /// non-zero at rest, which is correct: this reports where the surface is
+    /// within its range, not how far it is from where it likes to sit.
+    ///
+    /// Upstream divides the two halves by different expressions, `mid - min`
+    /// below the midpoint and `max - mid` above, which reads as though an
+    /// asymmetric channel maps each side onto its own unit. It does not:
+    /// `mid` is `(max + min) / 2`, so the two are the same number — except
+    /// when `min + max` is odd, where integer truncation pulls `mid` down and
+    /// the halves differ by exactly one microsecond of divisor.
+    ///
+    /// So the split is very nearly decoration. It is reproduced because that
+    /// one-microsecond case is real and a channel is free to be configured
+    /// into it, but nobody should read this as a deliberate asymmetric
+    /// mapping — a mutation collapsing the two branches passes every test
+    /// whose channels have an even span, which was all of them at first.
+    ///
+    /// A degenerate channel — one whose midpoint is at or below its minimum —
+    /// reads zero rather than dividing by it.
+    #[must_use]
+    pub fn output_norm(&self) -> f32 {
+        let min = self.config.servo_min;
+        let max = self.config.servo_max;
+        let mid = (max + min) / 2;
+        if mid <= min {
+            return 0.0;
+        }
+
+        let pwm = f32::from(self.output_pwm);
+        let midf = f32::from(mid);
+        let ret = if self.output_pwm < mid {
+            (pwm - midf) / f32::from(mid - min)
+        } else if self.output_pwm > mid {
+            (pwm - midf) / f32::from(max - mid)
+        } else {
+            0.0
+        };
+
+        if self.config.reversed {
+            -ret
+        } else {
+            ret
+        }
+    }
+
     /// Set a normalised output, upstream `set_output_norm`.
     ///
     /// `-1` to `1` about the mid point. Goes through

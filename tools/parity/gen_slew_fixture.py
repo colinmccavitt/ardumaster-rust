@@ -189,6 +189,133 @@ int main()
         }
     }
 
+    // ---- the function-scoped setters ----
+    //
+    // Two channels share ELEV, one reversed, because every setter here
+    // resolves endpoints per channel: the same Limit sends a reversed channel
+    // and an upright one in opposite directions, which is the whole point and
+    // is invisible if they both point the same way.
+    printf("#setters\n");
+    printf("case,chan,reversed,servo_min,servo_trim,servo_max,out_pwm\n");
+    {
+        const uint8_t A = 6;
+        const uint8_t B = 7;
+        SRV_Channels::set_default_function(A, ELEV);
+        SRV_Channels::set_default_function(B, ELEV);
+        SRV_Channels::update_aux_servo_function();
+
+        SRV_Channel *ca = SRV_Channels::srv_channel(A);
+        SRV_Channel *cb = SRV_Channels::srv_channel(B);
+        ca->set_output_min(1100);
+        ca->set_output_max(1900);
+        cb->set_output_min(1000);
+        cb->set_output_max(2000);
+        cb->reversed_set_and_save_ifchanged(true);
+        SRV_Channels::set_trim_to_pwm_for(ELEV, 1500);
+
+        struct Step { int kind; int arg; };
+        const Step steps[] = {
+            {0, (int)SRV_Channel::Limit::TRIM},
+            {0, (int)SRV_Channel::Limit::MIN},
+            {0, (int)SRV_Channel::Limit::MAX},
+            {0, (int)SRV_Channel::Limit::ZERO_PWM},
+            {1, 0},
+            {2, 1234},
+            {3, 0},
+            {0, (int)SRV_Channel::Limit::MIN},
+            {3, 1},
+            {0, (int)SRV_Channel::Limit::MIN},
+        };
+
+        for (unsigned s = 0; s < sizeof(steps)/sizeof(steps[0]); s++) {
+            switch (steps[s].kind) {
+            case 0:
+                SRV_Channels::set_output_limit(ELEV, (SRV_Channel::Limit)steps[s].arg);
+                break;
+            case 1:
+                SRV_Channels::set_output_to_trim(ELEV);
+                break;
+            case 2:
+                SRV_Channels::set_trim_to_pwm_for(ELEV, (int16_t)steps[s].arg);
+                break;
+            case 3:
+                SRV_Channels::set_trim_to_min_for(ELEV, steps[s].arg != 0);
+                break;
+            default:
+                break;
+            }
+
+            const uint8_t chans[2] = {A, B};
+            for (int k = 0; k < 2; k++) {
+                SRV_Channel *c = SRV_Channels::srv_channel(chans[k]);
+                printf("%u,%u,%d,%u,%u,%u,%u\n",
+                       s, (unsigned)chans[k],
+                       c->get_reversed() ? 1 : 0,
+                       (unsigned)c->get_output_min(),
+                       (unsigned)c->get_trim(),
+                       (unsigned)c->get_output_max(),
+                       (unsigned)c->get_output_pwm());
+            }
+        }
+    }
+
+    // ---- the normalised read ----
+    //
+    // Driven by scaled value, because the aggregate recomputes the width from
+    // it before reading -- so this exercises the conversion and the
+    // normalisation together, which is how the function is actually used.
+    //
+    // Two functions rather than two channels, because the aggregate reads the
+    // FIRST channel carrying a function. AIL is reversed with asymmetric
+    // travel, so the two halves scale differently and a port using one divisor
+    // for both is caught.
+    printf("#norm\n");
+    printf("idx,func,chan,reversed,servo_min,servo_trim,servo_max,"
+           "scaled,pwm,norm\n");
+    {
+        // Two functions of its own. ELEV is carried by channel 4 from the
+        // override section above and is still frozen there, so reading it
+        // would report a width set by a different sequence entirely.
+        const SRV_Channel::Function UP = SRV_Channel::k_rudder;
+        const SRV_Channel::Function REV = SRV_Channel::k_aileron;
+        const uint8_t C = 9;
+        const uint8_t D = 10;
+        SRV_Channels::set_default_function(C, UP);
+        SRV_Channels::set_default_function(D, REV);
+        SRV_Channels::update_aux_servo_function();
+
+        SRV_Channel *cc = SRV_Channels::srv_channel(C);
+        cc->set_output_min(1100);
+        cc->set_output_max(1900);
+        SRV_Channels::set_trim_to_pwm_for(UP, 1500);
+
+        SRV_Channel *cd = SRV_Channels::srv_channel(D);
+        cd->set_output_min(1000);
+        cd->set_output_max(2000);
+        cd->reversed_set_and_save_ifchanged(true);
+        SRV_Channels::set_trim_to_pwm_for(REV, 1600);
+
+        const SRV_Channel::Function funcs[2] = {UP, REV};
+        int idx = 0;
+        for (int k = 0; k < 2; k++) {
+            for (int s = -5000; s <= 5000; s += 250) {
+                SRV_Channels::set_output_scaled(funcs[k], (float)s);
+                const float norm = SRV_Channels::get_output_norm(funcs[k]);
+                uint16_t pwm = 0;
+                SRV_Channels::get_output_pwm(funcs[k], pwm);
+                const uint8_t cn = (k == 0) ? C : D;
+                const SRV_Channel *cfgc = SRV_Channels::srv_channel(cn);
+                printf("%d,%d,%u,%d,%u,%u,%u,%d,%u,%u\n", idx++,
+                       (int)funcs[k], (unsigned)cn,
+                       cfgc->get_reversed() ? 1 : 0,
+                       (unsigned)cfgc->get_output_min(),
+                       (unsigned)cfgc->get_trim(),
+                       (unsigned)cfgc->get_output_max(),
+                       s, (unsigned)pwm, fbits(norm));
+            }
+        }
+    }
+
     return 0;
 }
 '''

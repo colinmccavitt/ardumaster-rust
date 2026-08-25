@@ -539,3 +539,318 @@ fn a_long_timeout_on_a_fast_loop_saturates() {
     reg.set_output_pwm_chan_timeout(&mut channels, 1, 1500, u16::MAX, 2500);
     assert_eq!(reg.override_counter(1), 26214);
 }
+
+/// The function-scoped setters, across two channels that disagree.
+///
+/// Both carry the same function but one is reversed with wider travel, so
+/// every endpoint resolves differently on each. `Limit::Min` sends the upright
+/// channel to its smallest width and the reversed one to its largest, because
+/// `Min` names an end of the *surface's* travel rather than a pulse width.
+#[test]
+fn the_function_setters_match_upstream() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::Limit;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let s = sections();
+    let rows = s.get("setters").expect("setters section");
+    let elev = Function(19);
+
+    // The channels the recording configured.
+    let mut configs = [ServoChannel::angle(1100, 1500, 1900, 4500); 2];
+    configs[1] = ServoChannel::angle(1000, 1500, 2000, 4500);
+    configs[1].reversed = true;
+
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let (config, function) = match i {
+                6 => (configs[0], elev),
+                7 => (configs[1], elev),
+                _ => (configs[0], Function(0)),
+            };
+            OutputChannel::new(config, function, u8::try_from(i).expect("fits"))
+        })
+        .collect();
+
+    let mut reg = Registry::new();
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+    Registry::set_trim_to_pwm_for(&mut channels, elev, 1500);
+
+    // The same ten steps the recording took.
+    #[derive(Clone, Copy)]
+    enum Step {
+        SetLimit(Limit),
+        ToTrim,
+        TrimToPwm(u16),
+        TrimToMin(bool),
+    }
+    let steps = [
+        Step::SetLimit(Limit::Trim),
+        Step::SetLimit(Limit::Min),
+        Step::SetLimit(Limit::Max),
+        Step::SetLimit(Limit::ZeroPwm),
+        Step::ToTrim,
+        Step::TrimToPwm(1234),
+        Step::TrimToMin(false),
+        Step::SetLimit(Limit::Min),
+        Step::TrimToMin(true),
+        Step::SetLimit(Limit::Min),
+    ];
+
+    let mut checked = 0_usize;
+    let mut disagreed = 0_usize;
+
+    for (case, step) in steps.iter().enumerate() {
+        match *step {
+            Step::SetLimit(l) => reg.set_output_limit(&mut channels, elev, l),
+            Step::ToTrim => reg.set_output_to_trim(&mut channels, elev),
+            Step::TrimToPwm(pwm) => Registry::set_trim_to_pwm_for(&mut channels, elev, pwm),
+            Step::TrimToMin(ignore) => {
+                Registry::set_trim_to_min_for(&mut channels, elev, ignore);
+            }
+        }
+
+        let case_rows: Vec<&Vec<String>> = rows
+            .iter()
+            .filter(|r| r[0].trim().parse::<usize>() == Ok(case))
+            .collect();
+        assert_eq!(case_rows.len(), 2, "case {case}: expected two channels");
+
+        let mut widths = Vec::new();
+        for r in case_rows {
+            assert_eq!(r.len(), 7, "malformed setters row");
+            let chan: usize = r[1].trim().parse().expect("chan");
+            let ch = &channels[chan];
+            for (label, got, want) in [
+                (
+                    "reversed",
+                    u16::from(ch.config.reversed),
+                    r[2].trim().parse().expect("rev"),
+                ),
+                (
+                    "servo_min",
+                    ch.config.servo_min,
+                    r[3].trim().parse().expect("min"),
+                ),
+                (
+                    "servo_trim",
+                    ch.config.servo_trim,
+                    r[4].trim().parse().expect("trim"),
+                ),
+                (
+                    "servo_max",
+                    ch.config.servo_max,
+                    r[5].trim().parse().expect("max"),
+                ),
+                (
+                    "out_pwm",
+                    ch.output_pwm(),
+                    r[6].trim().parse().expect("pwm"),
+                ),
+            ] {
+                assert_eq!(got, want, "case {case} channel {chan} {label}");
+                checked += 1;
+            }
+            widths.push(ch.output_pwm());
+        }
+        if widths[0] != widths[1] {
+            disagreed += 1;
+        }
+    }
+
+    // If the two channels never diverged, the reversal is not being exercised
+    // and every endpoint could be resolved globally without failing.
+    assert!(
+        disagreed >= 4,
+        "the two channels only differed on {disagreed} of {} steps; the \
+         per-channel endpoint resolution is barely covered",
+        steps.len()
+    );
+
+    println!(
+        "{} setter values checked, channels diverged on {disagreed} steps",
+        checked
+    );
+}
+
+/// The normalised read, swept by scaled value across two channel shapes.
+///
+/// Driven the way the aggregate is actually used: it recomputes the width from
+/// the function's scaled value before reading, so this covers the conversion
+/// and the normalisation together.
+///
+/// The reversed channel has asymmetric travel and a trim off centre, which is
+/// where the two independently-scaled halves show up — its rest position reads
+/// -0.2 rather than zero, because the normalisation measures position within
+/// the travel, not distance from trim.
+#[test]
+fn the_normalised_read_matches_upstream() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let s = sections();
+    let rows = s.get("norm").expect("norm section");
+    assert!(!rows.is_empty(), "no norm rows");
+
+    let mut reg = Registry::new();
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            OutputChannel::new(
+                ServoChannel::angle(1100, 1500, 1900, 4500),
+                Function(0),
+                u8::try_from(i).expect("fits"),
+            )
+        })
+        .collect();
+
+    // Configure exactly what the recording did, read from the recording.
+    for r in rows {
+        assert_eq!(r.len(), 10, "malformed norm row");
+        let chan: usize = r[2].trim().parse().expect("chan");
+        let function = Function(r[1].trim().parse().expect("function"));
+        let mut config = ServoChannel::angle(
+            r[4].trim().parse().expect("min"),
+            r[5].trim().parse().expect("trim"),
+            r[6].trim().parse().expect("max"),
+            4500,
+        );
+        config.reversed = r[3].trim() == "1";
+        channels[chan].config = config;
+        channels[chan].function = function;
+    }
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+    let mut saturated = 0_usize;
+
+    for r in rows {
+        let idx: usize = r[0].trim().parse().expect("idx");
+        let function = Function(r[1].trim().parse().expect("function"));
+        let scaled: f32 = r[7].trim().parse().expect("scaled");
+
+        reg.set_output_scaled(function, scaled);
+        let norm = reg.output_norm(&mut channels, function, false);
+        let pwm = reg
+            .output_pwm_for(&mut channels, function, false)
+            .expect("assigned function");
+
+        let want_pwm: u16 = r[8].trim().parse().expect("pwm");
+        assert_eq!(pwm, want_pwm, "row {idx} pwm");
+
+        let want_norm = f(&r[9]);
+        let diff = (norm - want_norm).abs();
+        largest = largest.max(diff);
+        assert!(
+            diff < 3e-5,
+            "row {idx} norm: {norm} != upstream {want_norm} (diff {diff})"
+        );
+        checked += 2;
+
+        if want_norm.abs() >= 1.0 {
+            saturated += 1;
+        }
+    }
+
+    // Both ends of the travel must appear, or the independent scaling of the
+    // two halves is untested.
+    assert!(
+        saturated > 10,
+        "only {saturated} rows reached full deflection; the sweep is not \
+         covering the ends"
+    );
+
+    println!(
+        "{} norm rows, {checked} values, largest difference {largest:e}, \
+         {saturated} at full deflection",
+        rows.len()
+    );
+}
+
+/// Three shapes the recorded sweep does not contain.
+///
+/// Each was found by mutation testing: the recording's channels all have an
+/// even min-plus-max, exactly one channel per function, and a sane span, so
+/// three branches of `output_norm` and one of `find_channel` were never
+/// reached.
+#[test]
+fn the_normalised_read_handles_the_awkward_shapes() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let make = |config: ServoChannel, function: Function, at: usize| -> Vec<OutputChannel> {
+        (0..NUM_SERVO_CHANNELS)
+            .map(|i| {
+                let f = if i == at { function } else { Function(0) };
+                OutputChannel::new(config, f, u8::try_from(i).expect("fits"))
+            })
+            .collect()
+    };
+
+    // 1. An odd span, where mid truncates down and the two divisors differ.
+    //    min 1000, max 1901 -> mid 1450, so below uses 450 and above uses 451.
+    let odd = ServoChannel::angle(1000, 1450, 1901, 4500);
+    let mut ch = OutputChannel::new(odd, Function(21), 0);
+
+    ch.set_output_pwm(1000, true);
+    let low = ch.output_norm();
+    ch.set_output_pwm(1901, true);
+    let high = ch.output_norm();
+    assert!(
+        (low + 1.0).abs() < 1e-6,
+        "the bottom of the travel should read -1, got {low}"
+    );
+    assert!(
+        (high - 1.0).abs() < 1e-6,
+        "the top of the travel should read +1, got {high}"
+    );
+
+    // One microsecond either side of centre: the divisors differ by one, so
+    // the magnitudes must too. Collapsing the branches makes these equal.
+    ch.set_output_pwm(1449, true);
+    let just_below = ch.output_norm().abs();
+    ch.set_output_pwm(1451, true);
+    let just_above = ch.output_norm().abs();
+    assert!(
+        just_below != just_above,
+        "an odd span must scale its halves differently; both read {just_below}"
+    );
+
+    // 2. A degenerate channel: max at min, so mid <= min.
+    let flat = ServoChannel::angle(1500, 1500, 1500, 4500);
+    let mut degenerate = OutputChannel::new(flat, Function(21), 0);
+    degenerate.set_output_pwm(1700, true);
+    assert_eq!(
+        degenerate.output_norm(),
+        0.0,
+        "a channel with no travel must read zero rather than dividing by it"
+    );
+
+    // 3. Two channels on one function: the aggregate answers from the first.
+    let a = ServoChannel::angle(1100, 1500, 1900, 4500);
+    let mut b = a;
+    b.reversed = true;
+    let func = Function(21);
+    let mut channels = make(a, func, 3);
+    channels[9].config = b;
+    channels[9].function = func;
+
+    let mut reg = Registry::new();
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+    reg.set_output_scaled(func, 3000.0);
+
+    let norm = reg.output_norm(&mut channels, func, false);
+    assert!(
+        norm > 0.0,
+        "the aggregate must answer from channel 3, the first carrying the \
+         function; channel 9 is reversed and would read {norm} negated"
+    );
+    assert_eq!(
+        reg.find_channel(func),
+        Some(3),
+        "find_channel must return the lowest channel, not the highest"
+    );
+}

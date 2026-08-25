@@ -19,6 +19,7 @@
 
 use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 use crate::output_channel::{OutputChannel, OutputContext};
+use crate::Limit;
 use crate::NUM_SERVO_CHANNELS;
 use ap_math::scalar::is_positive;
 
@@ -560,6 +561,214 @@ impl Registry {
                 continue;
             }
             ch.calc_pwm(self.output_scaled(ch.function), &ctx);
+        }
+    }
+
+    /// Whether any channel carries this function, upstream
+    /// `function_assigned`.
+    #[must_use]
+    pub fn function_assigned(&self, function: Function) -> bool {
+        function.valid() && self.output_channel_mask(function) != 0
+    }
+
+    /// The first channel carrying a function, upstream `find_channel`.
+    ///
+    /// First, not only — a function may drive several channels, and the
+    /// callers that use this are asking a question with one answer (what is
+    /// this surface doing) rather than commanding all of them.
+    #[must_use]
+    pub fn find_channel(&self, function: Function) -> Option<usize> {
+        if !function.valid() {
+            return None;
+        }
+        let mask = self.output_channel_mask(function);
+        if mask == 0 {
+            None
+        } else {
+            Some(mask.trailing_zeros() as usize)
+        }
+    }
+
+    /// Drive every channel with this function to a named endpoint, upstream
+    /// `set_output_limit`.
+    ///
+    /// Endpoints are resolved per channel, so a reversed channel and an
+    /// upright one given the same limit travel in opposite directions — which
+    /// is the point: `Min` means the minimum of the *surface's* travel, not
+    /// the smaller pulse width.
+    pub fn set_output_limit(
+        &mut self,
+        channels: &mut [OutputChannel],
+        function: Function,
+        limit: Limit,
+    ) {
+        if !self.function_assigned(function) {
+            return;
+        }
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                let pwm = ch.config.limit_pwm(limit);
+                ch.set_output_pwm(pwm, false);
+            }
+        }
+    }
+
+    /// Drive every channel with this function to its trim, upstream
+    /// `set_output_to_trim`.
+    ///
+    /// Note this does not go through `function_assigned` upstream, unlike its
+    /// neighbours. The difference is almost never observable: an unassigned
+    /// function matches no channel, so the loop does nothing either way.
+    ///
+    /// Almost. `function_assigned` consults the channel mask, which is rebuilt
+    /// by [`Self::update_aux_servo_function`] — so between a channel's function
+    /// changing and that rebuild, the guard and the loop disagree, and the
+    /// guarded version would skip work the unguarded one does. Reproduced
+    /// unguarded, matching upstream, rather than making the port stricter than
+    /// the thing it is meant to reproduce.
+    pub fn set_output_to_trim(&mut self, channels: &mut [OutputChannel], function: Function) {
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                let trim = ch.config.servo_trim;
+                ch.set_output_pwm(trim, false);
+            }
+        }
+    }
+
+    /// Move the trim of every channel with this function, upstream
+    /// `set_trim_to_pwm_for`.
+    pub fn set_trim_to_pwm_for(channels: &mut [OutputChannel], function: Function, pwm: u16) {
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                ch.config.servo_trim = pwm;
+            }
+        }
+    }
+
+    /// Trim every channel with this function to its minimum, upstream
+    /// `set_trim_to_min_for`.
+    ///
+    /// `ignore_reversed` decides which minimum. Honouring the reversal picks
+    /// the endpoint the *surface* treats as minimum, which for a reversed
+    /// channel is the larger pulse width; ignoring it picks the smaller width
+    /// regardless. Callers setting a mechanical rest position want the former;
+    /// callers driving a specific pulse want the latter.
+    pub fn set_trim_to_min_for(
+        channels: &mut [OutputChannel],
+        function: Function,
+        ignore_reversed: bool,
+    ) {
+        for ch in channels.iter_mut() {
+            if ch.function == function {
+                ch.config.servo_trim = if ch.config.reversed && !ignore_reversed {
+                    ch.config.servo_max
+                } else {
+                    ch.config.servo_min
+                };
+            }
+        }
+    }
+
+    /// The normalised output of the first channel with this function, upstream
+    /// `get_output_norm`.
+    ///
+    /// Recomputes the channel's pulse width before reading it, so the answer
+    /// reflects the scaled value written this cycle rather than the width left
+    /// by the last `calc_pwm`. That means this is not a pure read — it writes
+    /// the channel — which is worth knowing before calling it in a log path.
+    pub fn output_norm(
+        &self,
+        channels: &mut [OutputChannel],
+        function: Function,
+        emergency_stop: bool,
+    ) -> f32 {
+        let Some(chan) = self.find_channel(function) else {
+            return 0.0;
+        };
+        let Some(ch) = channels.get_mut(chan) else {
+            return 0.0;
+        };
+        if function.valid() {
+            let ctx = OutputContext {
+                have_pwm_mask: self.have_pwm_mask,
+                emergency_stop,
+            };
+            let scaled = self.output_scaled(function);
+            ch.calc_pwm(scaled, &ctx);
+        }
+        ch.output_norm()
+    }
+
+    /// The pulse width of the first channel with this function, upstream
+    /// `get_output_pwm`.
+    ///
+    /// Recomputes first, for the same reason and with the same caveat as
+    /// [`Self::output_norm`].
+    pub fn output_pwm_for(
+        &self,
+        channels: &mut [OutputChannel],
+        function: Function,
+        emergency_stop: bool,
+    ) -> Option<u16> {
+        let chan = self.find_channel(function)?;
+        if !function.valid() {
+            return None;
+        }
+        let ch = channels.get_mut(chan)?;
+        let ctx = OutputContext {
+            have_pwm_mask: self.have_pwm_mask,
+            emergency_stop,
+        };
+        let scaled = self.output_scaled(function);
+        ch.calc_pwm(scaled, &ctx);
+        Some(ch.output_pwm())
+    }
+
+    /// Visit each channel that should be given a failsafe pulse width,
+    /// upstream `set_failsafe_pwm` and `set_failsafe_limit`.
+    ///
+    /// Upstream calls straight into `hal.rcout->set_failsafe_pwm`. That is the
+    /// HAL's business, so this reports which channel wants which width and
+    /// leaves the writing to whatever owns the outputs.
+    pub fn for_each_failsafe_target<F>(
+        &self,
+        channels: &[OutputChannel],
+        function: Function,
+        limit: Option<Limit>,
+        pwm: u16,
+        mut visit: F,
+    ) where
+        F: FnMut(u8, u16),
+    {
+        if !self.function_assigned(function) {
+            return;
+        }
+        for ch in channels {
+            if ch.function == function {
+                let value = match limit {
+                    Some(l) => ch.config.limit_pwm(l),
+                    None => pwm,
+                };
+                visit(ch.ch_num, value);
+            }
+        }
+    }
+
+    /// Visit every non-motor channel with its trim, upstream
+    /// `setup_failsafe_trim_all_non_motors`.
+    ///
+    /// Motors are excluded because a failsafe that drove them to trim would
+    /// command whatever trim happens to mean for a motor — on a multirotor,
+    /// mid-throttle. Leaving them out means their failsafe stays wherever it
+    /// was set deliberately.
+    pub fn for_each_non_motor_trim<F>(channels: &[OutputChannel], mut visit: F)
+    where
+        F: FnMut(u8, u16),
+    {
+        for ch in channels {
+            if !ch.function.is_motor() {
+                visit(ch.ch_num, ch.config.servo_trim);
+            }
         }
     }
 
