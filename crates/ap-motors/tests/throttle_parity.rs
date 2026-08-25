@@ -93,7 +93,10 @@ fn the_throttle_filter_matches_upstream() {
     // is a stronger test besides: 9,600 consecutive steps with no chance to
     // resynchronise.
     let mut input = ThrottleInput::new();
-    let mut now_us = 0_u32;
+    // Matches the harness, which drives the SITL scheduler's stopped
+    // clock. It starts above zero because stop_clock(0) reads as "not
+    // stopped", which would silently hand the fixture the wall clock.
+    let mut now_us = 1_000_000_u32;
     let mut feeds = 0_i32;
 
     while i < rows.len() {
