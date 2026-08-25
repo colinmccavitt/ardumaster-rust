@@ -83,6 +83,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-motors"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-nav"
 version = "0.1.0"
 dependencies = [
