@@ -34,10 +34,14 @@ use ap_math::scalar::{is_zero, radians, Real};
 
 /// Motors a frame may have, upstream `AP_MOTORS_MAX_NUM_MOTORS`.
 ///
-/// 12 on a normal build; 32 where the board has room. The smaller value is
-/// used here because it is what the SITL build compiles with, and the array is
-/// sized by it.
-pub const MAX_NUM_MOTORS: usize = 12;
+/// 32 where scripting is enabled and 12 where it is not, then clamped to the
+/// number of servo channels. SITL enables scripting, so 32 is what the
+/// reference build compiles and what the parity fixture measures.
+///
+/// The first version of this port took the 12 branch, and the fixture reported
+/// 32 motors per frame on its first successful run — which is the whole reason
+/// for having one.
+pub const MAX_NUM_MOTORS: usize = 32;
 
 /// One motor's contribution to each control axis.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

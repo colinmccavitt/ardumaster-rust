@@ -62,10 +62,17 @@ OBJECTS = [
     "build/sitl/libraries/AP_Motors/AP_Motors_Thrust_Linearization.cpp.3.o",
     "build/sitl/libraries/Filter/LowPassFilter.cpp.0.o",
     "build/sitl/libraries/Filter/DerivativeFilter.cpp.0.o",
+    "build/sitl/libraries/AP_Param/AP_Param.cpp.0.o",
+    "build/sitl/libraries/AP_Param/AP_ParamT.cpp.0.o",
+    "build/sitl/libraries/StorageManager/StorageManager.cpp.3.o",
+    "build/sitl/libraries/AP_HAL/Semaphores.cpp.0.o",
+    "build/sitl/libraries/AP_HAL_SITL/Semaphores.cpp.0.o",
+    "build/sitl/libraries/AP_HAL/utility/RingBuffer.cpp.0.o",
     "build/sitl/libraries/AP_Math/AP_Math.cpp.0.o",
     "build/sitl/libraries/AP_Math/vector2.cpp.0.o",
     "build/sitl/libraries/AP_Math/vector3.cpp.0.o",
     "build/sitl/libraries/AP_Math/matrix3.cpp.0.o",
+    "build/sitl/libraries/AP_Math/crc.cpp.0.o",
 ]
 
 HARNESS = r'''
@@ -84,6 +91,11 @@ HARNESS = r'''
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_BattMonitor/AP_BattMonitor.h>
 #include <AP_Param/AP_Param.h>
+#include <AP_Filesystem/AP_Filesystem.h>
+#include <GCS_MAVLink/GCS.h>
+#include <AP_HAL_SITL/Scheduler.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
+#include <AP_ROMFS/AP_ROMFS.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,15 +115,23 @@ AP_CustomRotations &custom_rotations() { abort(); }
 void AP_CustomRotations::rotate(enum Rotation, Vector3f &) { abort(); }
 void AP_CustomRotations::rotate(enum Rotation, Vector3d &) { abort(); }
 
-// add_motor_num registers an output channel. That is real work for a vehicle
-// and irrelevant to the mixing factors, which is all this fixture reads — so
-// the registration calls are no-ops rather than aborts. If they were removed
-// entirely the factors would be identical; they are here only so the link
-// succeeds without leaving a call to address zero.
+// SRV_Channels is NOT linked. All add_motor_num does with it is register
+// which output channel a motor uses, and linking it would drag in every ESC
+// backend in the tree -- CAN, DroneCAN, FETtec, KDECAN, Piccolo, Robotis,
+// SBus. None of that can reach the factor arrays this fixture reads, so the
+// registration calls are no-ops. That is a claim about what they do, not a
+// shortcut: if one of them affected a factor, every value below would be
+// wrong and the port's own tests would still pass, which is why it is written
+// down here.
 bool SRV_Channels::set_aux_channel_default(SRV_Channel::Function, uint8_t) { return true; }
 void SRV_Channels::set_angle(SRV_Channel::Function, uint16_t) {}
 void SRV_Channels::set_range(SRV_Channel::Function, uint16_t) {}
 uint32_t SRV_Channels::get_output_channel_mask(SRV_Channel::Function) { return 0; }
+void SRV_Channels::set_output_scaled(SRV_Channel::Function, float) {}
+bool SRV_Channels::find_channel(SRV_Channel::Function, uint8_t &) { return false; }
+void SRV_Channels::set_output_pwm(SRV_Channel::Function, uint16_t) {}
+uint32_t SRV_Channels::digital_mask;
+SRV_Channels *SRV_Channels::_singleton;
 
 // These are not on any path this harness takes. Aborting keeps that honest.
 namespace AP {
@@ -164,16 +184,9 @@ float AP_BattMonitor::voltage_resting_estimate(uint8_t) const
     abort();
 }
 
-// Parameter storage. setup_object_defaults runs from the constructor and only
-// copies defaults into memory, so it is a no-op; anything that would persist
-// aborts.
-void AP_Param::setup_object_defaults(const void *, const struct AP_Param::GroupInfo *) {}
-bool AP_Param::configured() const { return false; }
-void AP_Param::save(bool)
-{
-    fputs("harness: unexpected AP_Param::save\n", stderr);
-    abort();
-}
+// AP_Param.cpp is linked for real, so the motors object gets its parameter
+// defaults the way a vehicle does. Stubbing setup_object_defaults to nothing
+// would leave every parameter at zero -- a state no vehicle is ever in.
 
 // The last of the chain, all reached from constructor or output paths.
 bool AP_BattMonitor::current_amps(float &, uint8_t) const
@@ -181,20 +194,85 @@ bool AP_BattMonitor::current_amps(float &, uint8_t) const
     fputs("harness: unexpected battery current\n", stderr);
     abort();
 }
-bool SRV_Channels::find_channel(SRV_Channel::Function, uint8_t &)
+// AP_Param's persistence layer. setup_object_defaults, which is all the
+// motors constructor calls, only copies defaults into memory -- it never
+// touches storage. Everything below is therefore off-path, and aborts so that
+// a change which put it back on-path would be impossible to miss.
+AP_Filesystem &AP::FS()
 {
-    fputs("harness: unexpected find_channel\n", stderr);
+    fputs("harness: unexpected AP::FS()\n", stderr);
     abort();
 }
-void SRV_Channels::set_output_pwm(SRV_Channel::Function, uint16_t)
+int AP_Filesystem::close(int)
 {
-    fputs("harness: unexpected set_output_pwm\n", stderr);
+    fputs("harness: unexpected FS close\n", stderr);
     abort();
 }
-// AP_Int16's persisting setters. The constructor's default-setting path uses
-// them; nothing here changes a parameter after that.
-template <> void AP_ParamTBase<int16_t, AP_PARAM_INT16>::set_and_save(const int16_t &v) { _value = v; }
-template <> void AP_ParamTBase<int16_t, AP_PARAM_INT16>::set_and_default(const int16_t &v) { _value = v; }
+int AP_Filesystem::fsync(int)
+{
+    fputs("harness: unexpected FS fsync\n", stderr);
+    abort();
+}
+int32_t AP_Filesystem::lseek(int, int32_t, int)
+{
+    fputs("harness: unexpected FS lseek\n", stderr);
+    abort();
+}
+int32_t AP_Filesystem::write(int, const void *, uint32_t)
+{
+    fputs("harness: unexpected FS write\n", stderr);
+    abort();
+}
+GCS &gcs()
+{
+    fputs("harness: unexpected gcs()\n", stderr);
+    abort();
+}
+void GCS::send_text(MAV_SEVERITY, const char *, ...)
+{
+    fputs("harness: unexpected send_text\n", stderr);
+    abort();
+}
+
+// The SITL scheduler's semaphore bookkeeping. Reached from WithSemaphore,
+// which AP_Param takes around its storage access; the flag just has to exist.
+bool HALSITL::Scheduler::_in_semaphore_take_wait;
+bool HALSITL::Scheduler::semaphore_wait_hack_required() const { return false; }
+
+// The last of AP_Param's reach. All of it is on the load and error paths, and
+// setup_object_defaults takes neither.
+int AP_Filesystem::open(const char *, int, bool)
+{
+    fputs("harness: unexpected FS open\n", stderr);
+    abort();
+}
+int32_t AP_Filesystem::read(int, void *, uint32_t)
+{
+    fputs("harness: unexpected FS read\n", stderr);
+    abort();
+}
+bool AP_Filesystem::fgets(char *, uint8_t, int)
+{
+    fputs("harness: unexpected FS fgets\n", stderr);
+    abort();
+}
+void AP_BoardConfig::config_error(const char *, ...)
+{
+    fputs("harness: AP_BoardConfig::config_error\n", stderr);
+    abort();
+}
+void AP_BoardConfig::allocation_error(const char *, ...)
+{
+    fputs("harness: AP_BoardConfig::allocation_error\n", stderr);
+    abort();
+}
+void GCS::send_parameter_value(const char *, enum ap_var_type, float) {}
+
+// The embedded-defaults reader. AP_Param looks for a defaults file in ROMFS on
+// load; there is none here and load is not called anyway.
+AP_BoardConfig *AP_BoardConfig::_singleton;
+const uint8_t *AP_ROMFS::find_decompress(const char *, uint32_t &) { return nullptr; }
+void AP_ROMFS::free(const uint8_t *) {}
 
 static uint32_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
