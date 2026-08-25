@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace -= with += in Registry::step_override_counters
+@@ -434,17 +434,17 @@
+         for (chan, channel) in channels.iter_mut().enumerate() {
+             let Some(counter) = self.override_counter.get_mut(chan) else {
+                 break;
+             };
+             if *counter == 0 {
+                 channel.set_override(false);
+             } else {
+                 channel.set_override(true);
+-                *counter -= 1;
++                *counter += /* ~ changed by cargo-mutants ~ */ 1;
+             }
+         }
+     }
+ 
+     /// Loops of override left on a channel, for callers that want to know.
+     #[must_use]
+     pub fn override_counter(&self, chan: usize) -> u16 {
+         self.override_counter.get(chan).copied().unwrap_or(0)

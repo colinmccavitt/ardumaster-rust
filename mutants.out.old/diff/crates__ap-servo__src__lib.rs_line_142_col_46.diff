@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace * with + in ServoChannel::pwm_from_range
+@@ -134,17 +134,17 @@
+         }
+         let high = f32::from(self.high_out);
+         let mut v = constrain_value(scaled_value, 0.0, high);
+         if self.reversed {
+             v = high - v;
+         }
+         let span = f32::from(self.servo_max) - f32::from(self.servo_min);
+         self.servo_min
+-            .wrapping_add(truncate_to_u16((v * span) / high))
++            .wrapping_add(truncate_to_u16((v + /* ~ changed by cargo-mutants ~ */ span) / high))
+     }
+ 
+     /// Pulse width for a `-high_out..high_out` value, upstream
+     /// `pwm_from_angle`.
+     ///
+     /// The two halves are scaled independently, against `trim..max` above and
+     /// `min..trim` below, so a trim that is not centred still reaches both
+     /// endpoints at full deflection.

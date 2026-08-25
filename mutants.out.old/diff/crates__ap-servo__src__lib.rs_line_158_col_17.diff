@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ delete - in ServoChannel::pwm_from_angle
+@@ -150,17 +150,17 @@
+     /// endpoints at full deflection.
+     #[must_use]
+     pub fn pwm_from_angle(&self, scaled_value: f32) -> u16 {
+         if self.high_out == 0 {
+             return self.servo_trim;
+         }
+         let mut v = scaled_value;
+         if self.reversed {
+-            v = -v;
++            v =  /* ~ changed by cargo-mutants ~ */v;
+         }
+         let high = f32::from(self.high_out);
+         v = constrain_value(v, -high, high);
+ 
+         if v > 0.0 {
+             let span = f32::from(self.servo_max) - f32::from(self.servo_trim);
+             self.servo_trim
+                 .wrapping_add(truncate_to_u16((v * span) / high))

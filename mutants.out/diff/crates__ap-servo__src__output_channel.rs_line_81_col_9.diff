@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace OutputChannel::override_active -> bool with true
+@@ -73,17 +73,17 @@
+     pub fn output_pwm(&self) -> u16 {
+         self.output_pwm
+     }
+ 
+     /// Whether an override is holding this channel, upstream
+     /// `override_active`.
+     #[must_use]
+     pub fn override_active(&self) -> bool {
+-        self.override_active
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Upstream `set_override`.
+     pub fn set_override(&mut self, active: bool) {
+         self.override_active = active;
+     }
+ 
+     /// Set the pulse directly, upstream `set_output_pwm`.

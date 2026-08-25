@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ delete - in ServoChannel::output_norm
+@@ -196,17 +196,17 @@
+         let ret = if output_pwm < mid {
+             f32::from(mid - output_pwm) / -f32::from(mid - self.servo_min)
+         } else if output_pwm > mid {
+             f32::from(output_pwm - mid) / f32::from(self.servo_max - mid)
+         } else {
+             0.0
+         };
+         if self.reversed {
+-            -ret
++             /* ~ changed by cargo-mutants ~ */ret
+         } else {
+             ret
+         }
+     }
+ }
+ 
+ /// A named endpoint of a channel's travel, upstream `SRV_Channel::Limit`.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]

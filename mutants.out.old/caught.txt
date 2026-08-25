@@ -1,0 +1,286 @@
+crates/ap-servo/src/lib.rs:60:5: replace truncate_to_u16 -> u16 with 0
+crates/ap-servo/src/lib.rs:132:9: replace ServoChannel::pwm_from_range -> u16 with 0
+crates/ap-servo/src/lib.rs:132:9: replace ServoChannel::pwm_from_range -> u16 with 1
+crates/ap-servo/src/lib.rs:132:45: replace || with && in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:60:5: replace truncate_to_u16 -> u16 with 1
+crates/ap-servo/src/lib.rs:132:27: replace <= with > in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:138:22: replace - with + in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:132:62: replace == with != in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:138:22: replace - with / in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:140:46: replace - with + in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:140:46: replace - with / in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:142:54: replace / with % in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:142:54: replace / with * in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:142:46: replace * with + in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:142:46: replace * with / in ServoChannel::pwm_from_range
+crates/ap-servo/src/lib.rs:153:9: replace ServoChannel::pwm_from_angle -> u16 with 0
+crates/ap-servo/src/lib.rs:153:9: replace ServoChannel::pwm_from_angle -> u16 with 1
+crates/ap-servo/src/lib.rs:153:26: replace == with != in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:158:17: delete - in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:161:32: delete - in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:163:14: replace > with == in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:163:14: replace > with < in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:164:50: replace - with + in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:164:50: replace - with / in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:166:58: replace / with % in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:166:58: replace / with * in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:166:50: replace * with + in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:166:50: replace * with / in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:168:51: replace - with + in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:168:51: replace - with / in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:170:59: replace / with % in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:170:59: replace / with * in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:170:51: replace * with + in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:170:51: replace * with / in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:170:48: delete - in ServoChannel::pwm_from_angle
+crates/ap-servo/src/lib.rs:178:9: replace ServoChannel::pwm_from_scaled_value -> u16 with 0
+crates/ap-servo/src/lib.rs:178:9: replace ServoChannel::pwm_from_scaled_value -> u16 with 1
+crates/ap-servo/src/lib.rs:238:9: replace ServoChannel::limit_pwm -> u16 with 0
+crates/ap-servo/src/lib.rs:238:9: replace ServoChannel::limit_pwm -> u16 with 1
+crates/ap-servo/src/function.rs:381:9: replace Function::valid -> bool with true
+crates/ap-servo/src/function.rs:381:9: replace Function::valid -> bool with false
+crates/ap-servo/src/function.rs:381:27: replace < with == in Function::valid
+crates/ap-servo/src/function.rs:381:27: replace < with > in Function::valid
+crates/ap-servo/src/function.rs:395:20: replace < with == in Function::motor
+crates/ap-servo/src/function.rs:395:20: replace < with > in Function::motor
+crates/ap-servo/src/function.rs:395:20: replace < with <= in Function::motor
+crates/ap-servo/src/function.rs:396:33: replace + with - in Function::motor
+crates/ap-servo/src/function.rs:396:33: replace + with * in Function::motor
+crates/ap-servo/src/function.rs:397:27: replace < with == in Function::motor
+crates/ap-servo/src/function.rs:397:27: replace < with > in Function::motor
+crates/ap-servo/src/function.rs:397:27: replace < with <= in Function::motor
+crates/ap-servo/src/function.rs:398:33: replace + with - in Function::motor
+crates/ap-servo/src/function.rs:398:33: replace + with * in Function::motor
+crates/ap-servo/src/function.rs:398:44: replace - with + in Function::motor
+crates/ap-servo/src/function.rs:398:44: replace - with / in Function::motor
+crates/ap-servo/src/function.rs:400:34: replace + with - in Function::motor
+crates/ap-servo/src/function.rs:400:34: replace + with * in Function::motor
+crates/ap-servo/src/function.rs:400:45: replace - with + in Function::motor
+crates/ap-servo/src/function.rs:400:45: replace - with / in Function::motor
+crates/ap-servo/src/function.rs:428:9: replace Function::should_e_stop -> bool with true
+crates/ap-servo/src/function.rs:428:9: replace Function::should_e_stop -> bool with false
+crates/ap-servo/src/function.rs:543:9: replace Function::default_output -> Option<DefaultOutput> with None
+crates/ap-servo/src/function.rs:565:9: replace Function::is_motor -> bool with false
+crates/ap-servo/src/function.rs:565:9: replace Function::is_motor -> bool with true
+crates/ap-servo/src/function.rs:567:13: replace || with && in Function::is_motor
+crates/ap-servo/src/function.rs:566:13: replace || with && in Function::is_motor
+crates/ap-servo/src/function.rs:565:17: replace >= with < in Function::is_motor
+crates/ap-servo/src/function.rs:565:35: replace && with || in Function::is_motor
+crates/ap-servo/src/function.rs:565:45: replace <= with > in Function::is_motor
+crates/ap-servo/src/function.rs:566:42: replace && with || in Function::is_motor
+crates/ap-servo/src/function.rs:566:24: replace >= with < in Function::is_motor
+crates/ap-servo/src/function.rs:566:52: replace <= with > in Function::is_motor
+crates/ap-servo/src/function.rs:567:43: replace && with || in Function::is_motor
+crates/ap-servo/src/function.rs:567:24: replace >= with < in Function::is_motor
+crates/ap-servo/src/function.rs:567:53: replace <= with > in Function::is_motor
+crates/ap-servo/src/function.rs:574:9: replace Function::is_control_surface -> bool with true
+crates/ap-servo/src/function.rs:574:9: replace Function::is_control_surface -> bool with false
+crates/ap-servo/src/function.rs:585:9: replace Function::motor_num -> Option<u8> with None
+crates/ap-servo/src/function.rs:585:9: replace Function::motor_num -> Option<u8> with Some(0)
+crates/ap-servo/src/function.rs:585:9: replace Function::motor_num -> Option<u8> with Some(1)
+crates/ap-servo/src/function.rs:585:37: replace && with || in Function::motor_num
+crates/ap-servo/src/function.rs:585:19: replace >= with < in Function::motor_num
+crates/ap-servo/src/function.rs:585:47: replace <= with > in Function::motor_num
+crates/ap-servo/src/function.rs:586:25: replace - with + in Function::motor_num
+crates/ap-servo/src/function.rs:586:25: replace - with / in Function::motor_num
+crates/ap-servo/src/function.rs:587:44: replace && with || in Function::motor_num
+crates/ap-servo/src/function.rs:587:26: replace >= with < in Function::motor_num
+crates/ap-servo/src/function.rs:587:54: replace <= with > in Function::motor_num
+crates/ap-servo/src/function.rs:588:20: replace + with - in Function::motor_num
+crates/ap-servo/src/function.rs:588:20: replace + with * in Function::motor_num
+crates/ap-servo/src/function.rs:588:30: replace - with + in Function::motor_num
+crates/ap-servo/src/function.rs:588:30: replace - with / in Function::motor_num
+crates/ap-servo/src/function.rs:589:45: replace && with || in Function::motor_num
+crates/ap-servo/src/function.rs:589:26: replace >= with < in Function::motor_num
+crates/ap-servo/src/function.rs:589:55: replace <= with > in Function::motor_num
+crates/ap-servo/src/function.rs:590:21: replace + with - in Function::motor_num
+crates/ap-servo/src/function.rs:590:21: replace + with * in Function::motor_num
+crates/ap-servo/src/function.rs:590:31: replace - with + in Function::motor_num
+crates/ap-servo/src/function.rs:590:31: replace - with / in Function::motor_num
+crates/ap-servo/src/output_channel.rs:74:9: replace OutputChannel::output_pwm -> u16 with 0
+crates/ap-servo/src/output_channel.rs:74:9: replace OutputChannel::output_pwm -> u16 with 1
+crates/ap-servo/src/output_channel.rs:86:9: replace OutputChannel::set_override with ()
+crates/ap-servo/src/output_channel.rs:96:9: replace OutputChannel::set_output_pwm -> bool with true
+crates/ap-servo/src/output_channel.rs:96:9: replace OutputChannel::set_output_pwm -> bool with false
+crates/ap-servo/src/output_channel.rs:96:33: replace && with || in OutputChannel::set_output_pwm
+crates/ap-servo/src/output_channel.rs:96:36: delete ! in OutputChannel::set_output_pwm
+crates/ap-servo/src/output_channel.rs:109:29: replace && with || in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:9: replace OutputChannel::calc_pwm with ()
+crates/ap-servo/src/output_channel.rs:109:24: replace < with > in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:24: replace < with == in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:77: replace != with == in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:51: replace & with | in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:51: replace & with ^ in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:115:31: replace && with || in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:109:60: replace << with >> in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:120:19: replace && with || in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:120:12: delete ! in OutputChannel::calc_pwm
+crates/ap-servo/src/output_channel.rs:151:9: replace OutputChannel::output_norm -> f32 with 1.0
+crates/ap-servo/src/output_channel.rs:151:9: replace OutputChannel::output_norm -> f32 with 0.0
+crates/ap-servo/src/output_channel.rs:151:9: replace OutputChannel::output_norm -> f32 with -1.0
+crates/ap-servo/src/output_channel.rs:153:31: replace / with % in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:153:31: replace / with * in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:153:24: replace + with - in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:153:24: replace + with * in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:154:16: replace <= with > in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:160:38: replace < with == in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:160:38: replace < with > in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:26: replace / with % in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:26: replace / with * in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:18: replace - with + in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:18: replace - with / in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:42: replace - with + in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:161:42: replace - with / in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:162:35: replace > with == in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:162:35: replace > with < in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:26: replace / with % in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:26: replace / with * in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:18: replace - with + in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:18: replace - with / in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:42: replace - with / in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:163:42: replace - with + in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:169:13: delete - in OutputChannel::output_norm
+crates/ap-servo/src/output_channel.rs:181:9: replace OutputChannel::set_output_norm -> bool with true
+crates/ap-servo/src/output_channel.rs:181:9: replace OutputChannel::set_output_norm -> bool with false
+crates/ap-servo/src/output_channel.rs:181:28: replace * with + in OutputChannel::set_output_norm
+crates/ap-servo/src/output_channel.rs:181:28: replace * with / in OutputChannel::set_output_norm
+crates/ap-servo/src/registry.rs:112:9: replace Registry::assign with ()
+crates/ap-servo/src/registry.rs:133:9: replace Registry::output_channel_mask -> ChannelMask with Default::default()
+crates/ap-servo/src/registry.rs:146:9: replace Registry::invalid_mask -> ChannelMask with Default::default()
+crates/ap-servo/src/registry.rs:171:9: replace Registry::update_aux_servo_function with ()
+crates/ap-servo/src/registry.rs:177:18: replace >= with < in Registry::update_aux_servo_function
+crates/ap-servo/src/registry.rs:180:29: replace << with >> in Registry::update_aux_servo_function
+crates/ap-servo/src/registry.rs:181:16: delete ! in Registry::update_aux_servo_function
+crates/ap-servo/src/registry.rs:182:35: replace |= with &= in Registry::update_aux_servo_function
+crates/ap-servo/src/registry.rs:186:36: replace |= with &= in Registry::update_aux_servo_function
+crates/ap-servo/src/registry.rs:201:9: replace Registry::set_output_scaled with ()
+crates/ap-servo/src/registry.rs:201:12: delete ! in Registry::set_output_scaled
+crates/ap-servo/src/registry.rs:208:28: replace &= with |= in Registry::set_output_scaled
+crates/ap-servo/src/registry.rs:208:31: delete ! in Registry::set_output_scaled
+crates/ap-servo/src/registry.rs:219:9: replace Registry::output_scaled -> f32 with 0.0
+crates/ap-servo/src/registry.rs:219:9: replace Registry::output_scaled -> f32 with 1.0
+crates/ap-servo/src/registry.rs:219:9: replace Registry::output_scaled -> f32 with -1.0
+crates/ap-servo/src/registry.rs:248:9: replace Registry::set_slew_rate -> bool with true
+crates/ap-servo/src/registry.rs:248:9: replace Registry::set_slew_rate -> bool with false
+crates/ap-servo/src/registry.rs:248:12: delete ! in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:62: replace * with + in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:62: replace * with / in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:55: replace * with + in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:55: replace * with / in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:43: replace * with + in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:251:43: replace * with / in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:254:27: replace == with != in Registry::set_slew_rate
+crates/ap-servo/src/registry.rs:305:9: replace Registry::slew_limited_output_scaled -> f32 with 0.0
+crates/ap-servo/src/registry.rs:305:9: replace Registry::slew_limited_output_scaled -> f32 with 1.0
+crates/ap-servo/src/registry.rs:305:12: delete ! in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:305:9: replace Registry::slew_limited_output_scaled -> f32 with -1.0
+crates/ap-servo/src/registry.rs:310:27: replace == with != in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:319:46: replace - with + in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:311:20: delete ! in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:319:46: replace - with / in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:320:46: replace + with - in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:320:46: replace + with * in Registry::slew_limited_output_scaled
+crates/ap-servo/src/registry.rs:338:9: replace Registry::apply_slew_limits with ()
+crates/ap-servo/src/registry.rs:340:16: delete ! in Registry::apply_slew_limits
+crates/ap-servo/src/registry.rs:348:46: replace - with + in Registry::apply_slew_limits
+crates/ap-servo/src/registry.rs:348:46: replace - with / in Registry::apply_slew_limits
+crates/ap-servo/src/registry.rs:349:46: replace + with - in Registry::apply_slew_limits
+crates/ap-servo/src/registry.rs:349:46: replace + with * in Registry::apply_slew_limits
+crates/ap-servo/src/registry.rs:388:9: replace Registry::set_output_pwm_chan_timeout with ()
+crates/ap-servo/src/registry.rs:394:27: replace == with != in Registry::set_output_pwm_chan_timeout
+crates/ap-servo/src/registry.rs:401:49: replace * with + in Registry::set_output_pwm_chan_timeout
+crates/ap-servo/src/registry.rs:401:49: replace * with / in Registry::set_output_pwm_chan_timeout
+crates/ap-servo/src/registry.rs:434:9: replace Registry::step_override_counters with ()
+crates/ap-servo/src/registry.rs:438:25: replace == with != in Registry::step_override_counters
+crates/ap-servo/src/registry.rs:442:26: replace -= with += in Registry::step_override_counters
+crates/ap-servo/src/registry.rs:442:26: replace -= with /= in Registry::step_override_counters
+crates/ap-servo/src/registry.rs:450:9: replace Registry::override_counter -> u16 with 1
+crates/ap-servo/src/registry.rs:450:9: replace Registry::override_counter -> u16 with 0
+crates/ap-servo/src/registry.rs:457:9: replace Registry::slew_entries -> usize with 0
+crates/ap-servo/src/registry.rs:457:9: replace Registry::slew_entries -> usize with 1
+crates/ap-servo/src/registry.rs:463:9: replace Registry::have_pwm_mask -> ChannelMask with Default::default()
+crates/ap-servo/src/registry.rs:469:9: replace Registry::set_have_pwm with ()
+crates/ap-servo/src/registry.rs:469:28: replace |= with &= in Registry::set_have_pwm
+crates/ap-servo/src/registry.rs:532:9: replace Registry::set_output_pwm with ()
+crates/ap-servo/src/registry.rs:532:47: replace == with != in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:536:28: replace != with == in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:539:48: replace && with || in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:539:61: replace < with > in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:539:61: replace < with == in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:540:36: replace |= with &= in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:540:45: replace << with >> in Registry::set_output_pwm
+crates/ap-servo/src/registry.rs:556:9: replace Registry::calc_pwm with ()
+crates/ap-servo/src/registry.rs:564:16: delete ! in Registry::calc_pwm
+crates/ap-servo/src/registry.rs:575:9: replace Registry::function_assigned -> bool with false
+crates/ap-servo/src/registry.rs:575:64: replace != with == in Registry::function_assigned
+crates/ap-servo/src/registry.rs:585:9: replace Registry::find_channel -> Option<usize> with None
+crates/ap-servo/src/registry.rs:585:9: replace Registry::find_channel -> Option<usize> with Some(0)
+crates/ap-servo/src/registry.rs:585:9: replace Registry::find_channel -> Option<usize> with Some(1)
+crates/ap-servo/src/registry.rs:585:12: delete ! in Registry::find_channel
+crates/ap-servo/src/registry.rs:589:17: replace == with != in Registry::find_channel
+crates/ap-servo/src/registry.rs:609:9: replace Registry::set_output_limit with ()
+crates/ap-servo/src/registry.rs:609:12: delete ! in Registry::set_output_limit
+crates/ap-servo/src/registry.rs:613:28: replace == with != in Registry::set_output_limit
+crates/ap-servo/src/registry.rs:634:9: replace Registry::set_output_to_trim with ()
+crates/ap-servo/src/registry.rs:635:28: replace == with != in Registry::set_output_to_trim
+crates/ap-servo/src/registry.rs:645:9: replace Registry::set_trim_to_pwm_for with ()
+crates/ap-servo/src/registry.rs:646:28: replace == with != in Registry::set_trim_to_pwm_for
+crates/ap-servo/src/registry.rs:665:9: replace Registry::set_trim_to_min_for with ()
+crates/ap-servo/src/registry.rs:666:28: replace == with != in Registry::set_trim_to_min_for
+crates/ap-servo/src/registry.rs:667:62: replace && with || in Registry::set_trim_to_min_for
+crates/ap-servo/src/registry.rs:667:65: delete ! in Registry::set_trim_to_min_for
+crates/ap-servo/src/registry.rs:689:9: replace Registry::output_norm -> f32 with 0.0
+crates/ap-servo/src/registry.rs:689:9: replace Registry::output_norm -> f32 with 1.0
+crates/ap-servo/src/registry.rs:717:9: replace Registry::output_pwm_for -> Option<u16> with None
+crates/ap-servo/src/registry.rs:689:9: replace Registry::output_norm -> f32 with -1.0
+crates/ap-servo/src/registry.rs:717:9: replace Registry::output_pwm_for -> Option<u16> with Some(0)
+crates/ap-servo/src/registry.rs:717:9: replace Registry::output_pwm_for -> Option<u16> with Some(1)
+crates/ap-servo/src/registry.rs:758:9: replace Registry::adjust_trim with ()
+crates/ap-servo/src/registry.rs:718:12: delete ! in Registry::output_pwm_for
+crates/ap-servo/src/registry.rs:762:28: replace != with == in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:765:50: delete - in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:768:20: replace <= with > in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:69: replace / with % in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:69: replace / with * in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:62: replace - with + in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:62: replace - with / in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:85: replace - with + in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:771:85: replace - with / in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:44: replace && with || in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:38: replace > with == in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:38: replace > with < in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:59: replace < with == in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:59: replace < with > in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:772:59: replace < with <= in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:773:38: replace + with - in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:773:38: replace + with * in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:36: replace && with || in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:30: replace < with == in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:30: replace < with > in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:51: replace > with == in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:51: replace > with < in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:775:38: replace - with + in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:774:51: replace > with >= in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:775:38: replace - with / in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:780:31: replace |= with &= in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:787:9: replace Registry::trimmed_mask -> ChannelMask with Default::default()
+crates/ap-servo/src/registry.rs:780:39: replace << with >> in Registry::adjust_trim
+crates/ap-servo/src/registry.rs:798:9: replace Registry::take_trimmed -> ChannelMask with Default::default()
+crates/ap-servo/src/registry.rs:807:9: replace Registry::set_trim_to_servo_out_for with ()
+crates/ap-servo/src/registry.rs:807:12: delete ! in Registry::set_trim_to_servo_out_for
+crates/ap-servo/src/registry.rs:811:28: replace == with != in Registry::set_trim_to_servo_out_for
+crates/ap-servo/src/registry.rs:820:9: replace Registry::set_output_norm with ()
+crates/ap-servo/src/registry.rs:820:12: delete ! in Registry::set_output_norm
+crates/ap-servo/src/registry.rs:824:28: replace == with != in Registry::set_output_norm
+crates/ap-servo/src/registry.rs:846:9: replace Registry::for_each_failsafe_target with ()
+crates/ap-servo/src/registry.rs:850:28: replace == with != in Registry::for_each_failsafe_target
+crates/ap-servo/src/registry.rs:846:12: delete ! in Registry::for_each_failsafe_target
+crates/ap-servo/src/registry.rs:872:16: delete ! in Registry::for_each_non_motor_trim
+crates/ap-servo/src/registry.rs:871:9: replace Registry::for_each_non_motor_trim with ()
+crates/ap-servo/src/registry.rs:886:9: replace Registry::have_digital_outputs -> bool with true
+crates/ap-servo/src/registry.rs:886:9: replace Registry::have_digital_outputs -> bool with false
+crates/ap-servo/src/registry.rs:886:19: replace && with || in Registry::have_digital_outputs
+crates/ap-servo/src/registry.rs:886:14: replace != with == in Registry::have_digital_outputs
+crates/ap-servo/src/registry.rs:886:44: replace == with != in Registry::have_digital_outputs
+crates/ap-servo/src/registry.rs:886:28: replace & with | in Registry::have_digital_outputs
+crates/ap-servo/src/registry.rs:886:28: replace & with ^ in Registry::have_digital_outputs

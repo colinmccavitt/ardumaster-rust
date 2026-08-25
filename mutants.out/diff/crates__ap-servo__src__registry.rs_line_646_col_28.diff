@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::set_trim_to_pwm_for
+@@ -638,17 +638,17 @@
+             }
+         }
+     }
+ 
+     /// Move the trim of every channel with this function, upstream
+     /// `set_trim_to_pwm_for`.
+     pub fn set_trim_to_pwm_for(channels: &mut [OutputChannel], function: Function, pwm: u16) {
+         for ch in channels.iter_mut() {
+-            if ch.function == function {
++            if ch.function != /* ~ changed by cargo-mutants ~ */ function {
+                 ch.config.servo_trim = pwm;
+             }
+         }
+     }
+ 
+     /// Trim every channel with this function to its minimum, upstream
+     /// `set_trim_to_min_for`.
+     ///

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_have_pwm with ()
+@@ -461,17 +461,17 @@
+     #[must_use]
+     pub fn have_pwm_mask(&self) -> ChannelMask {
+         self.have_pwm_mask
+     }
+ 
+     /// Mark channels as carrying a pulse width, upstream's writes to
+     /// `have_pwm_mask` from `set_output_pwm`.
+     pub fn set_have_pwm(&mut self, channel_mask: ChannelMask) {
+-        self.have_pwm_mask |= channel_mask;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Claim a channel for a function if nothing else wants either, upstream
+     /// `set_aux_channel_default`.
+     ///
+     /// Returns whether the function ended up assigned. Three outcomes, and the
+     /// distinction between the last two is the point:
+     ///

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::set_trim_to_min_for
+@@ -658,17 +658,17 @@
+     /// regardless. Callers setting a mechanical rest position want the former;
+     /// callers driving a specific pulse want the latter.
+     pub fn set_trim_to_min_for(
+         channels: &mut [OutputChannel],
+         function: Function,
+         ignore_reversed: bool,
+     ) {
+         for ch in channels.iter_mut() {
+-            if ch.function == function {
++            if ch.function != /* ~ changed by cargo-mutants ~ */ function {
+                 ch.config.servo_trim = if ch.config.reversed && !ignore_reversed {
+                     ch.config.servo_max
+                 } else {
+                     ch.config.servo_min
+                 };
+             }
+         }
+     }

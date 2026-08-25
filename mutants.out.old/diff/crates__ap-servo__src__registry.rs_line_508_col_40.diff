@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace < with == in Registry::set_aux_channel_default
+@@ -500,17 +500,17 @@
+             return false;
+         };
+ 
+         if *current != Function::NONE {
+             return *current == function;
+         }
+ 
+         *current = function;
+-        if function.valid() && channel < 32 {
++        if function.valid() && channel == /* ~ changed by cargo-mutants ~ */ 32 {
+             if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+                 entry.channel_mask |= 1_u32 << channel;
+             }
+         }
+         true
+     }
+ 
+     /// Write a pulse to every channel a function drives, upstream

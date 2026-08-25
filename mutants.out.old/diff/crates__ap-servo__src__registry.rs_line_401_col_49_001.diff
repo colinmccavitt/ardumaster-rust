@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace * with / in Registry::set_output_pwm_chan_timeout
+@@ -393,17 +393,17 @@
+         };
+         if loop_period_us == 0 {
+             return;
+         }
+ 
+         // Round up, so a non-zero request is never rounded away.
+         // Upstream spells the round-up out as `(x + period - 1) / period`;
+         // this is the same arithmetic with the intent on the surface.
+-        let loop_count = (u32::from(timeout_ms) * 1000).div_ceil(loop_period_us);
++        let loop_count = (u32::from(timeout_ms) / /* ~ changed by cargo-mutants ~ */ 1000).div_ceil(loop_period_us);
+         *counter = u16::try_from(loop_count).unwrap_or(u16::MAX);
+ 
+         channel.set_override(true);
+         channel.set_output_pwm(value, true);
+         // The pulse-width mask is deliberately left alone.
+         //
+         // Upstream looks like it does something here: it reads whether the
+         // channel already had a width, writes the new one, and clears the bit

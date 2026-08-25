@@ -1,0 +1,39 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_aux_channel_default -> bool with false
+@@ -487,35 +487,17 @@
+     /// The same function on the same channel is `true` without complaint,
+     /// because that is not a conflict.
+     pub fn set_aux_channel_default(
+         &mut self,
+         channel_functions: &mut [Function],
+         function: Function,
+         channel: u8,
+     ) -> bool {
+-        if self.output_channel_mask(function) != 0 {
+-            return true;
+-        }
+-
+-        let Some(current) = channel_functions.get_mut(usize::from(channel)) else {
+-            return false;
+-        };
+-
+-        if *current != Function::NONE {
+-            return *current == function;
+-        }
+-
+-        *current = function;
+-        if function.valid() && channel < 32 {
+-            if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+-                entry.channel_mask |= 1_u32 << channel;
+-            }
+-        }
+-        true
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Write a pulse to every channel a function drives, upstream
+     /// `SRV_Channels::set_output_pwm`.
+     ///
+     /// Does nothing if the function drives no channels -- upstream checks
+     /// `function_assigned` first, so an unassigned function is a silent no-op
+     /// rather than a write to nothing.

@@ -1,0 +1,35 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::output_norm -> f32 with 1.0
+@@ -681,31 +681,17 @@
+     /// by the last `calc_pwm`. That means this is not a pure read — it writes
+     /// the channel — which is worth knowing before calling it in a log path.
+     pub fn output_norm(
+         &self,
+         channels: &mut [OutputChannel],
+         function: Function,
+         emergency_stop: bool,
+     ) -> f32 {
+-        let Some(chan) = self.find_channel(function) else {
+-            return 0.0;
+-        };
+-        let Some(ch) = channels.get_mut(chan) else {
+-            return 0.0;
+-        };
+-        if function.valid() {
+-            let ctx = OutputContext {
+-                have_pwm_mask: self.have_pwm_mask,
+-                emergency_stop,
+-            };
+-            let scaled = self.output_scaled(function);
+-            ch.calc_pwm(scaled, &ctx);
+-        }
+-        ch.output_norm()
++        1.0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The pulse width of the first channel with this function, upstream
+     /// `get_output_pwm`.
+     ///
+     /// Recomputes first, for the same reason and with the same caveat as
+     /// [`Self::output_norm`].
+     pub fn output_pwm_for(

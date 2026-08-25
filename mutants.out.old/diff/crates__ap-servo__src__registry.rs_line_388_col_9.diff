@@ -1,0 +1,38 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_output_pwm_chan_timeout with ()
+@@ -380,34 +380,17 @@
+     pub fn set_output_pwm_chan_timeout(
+         &mut self,
+         channels: &mut [OutputChannel],
+         chan: usize,
+         value: u16,
+         timeout_ms: u16,
+         loop_period_us: u32,
+     ) {
+-        let Some(counter) = self.override_counter.get_mut(chan) else {
+-            return;
+-        };
+-        let Some(channel) = channels.get_mut(chan) else {
+-            return;
+-        };
+-        if loop_period_us == 0 {
+-            return;
+-        }
+-
+-        // Round up, so a non-zero request is never rounded away.
+-        // Upstream spells the round-up out as `(x + period - 1) / period`;
+-        // this is the same arithmetic with the intent on the surface.
+-        let loop_count = (u32::from(timeout_ms) * 1000).div_ceil(loop_period_us);
+-        *counter = u16::try_from(loop_count).unwrap_or(u16::MAX);
+-
+-        channel.set_override(true);
+-        channel.set_output_pwm(value, true);
++        () /* ~ changed by cargo-mutants ~ */
+         // The pulse-width mask is deliberately left alone.
+         //
+         // Upstream looks like it does something here: it reads whether the
+         // channel already had a width, writes the new one, and clears the bit
+         // if it had not. That dance exists only because its
+         // `SRV_Channel::set_output_pwm` sets the bit unconditionally, so the
+         // clear is undoing a side effect of the line above it. Follow both
+         // branches and the mask ends up exactly as it started.

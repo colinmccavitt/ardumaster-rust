@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ delete ! in Registry::update_aux_servo_function
+@@ -173,17 +173,17 @@
+         }
+         self.invalid_mask = 0;
+ 
+         for (i, &function) in channel_functions.iter().enumerate() {
+             if i >= 32 {
+                 break;
+             }
+             let bit = 1_u32 << i;
+-            if !function.valid() {
++            if  /* ~ changed by cargo-mutants ~ */function.valid() {
+                 self.invalid_mask |= bit;
+                 continue;
+             }
+             if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+                 entry.channel_mask |= bit;
+             }
+         }
+ 

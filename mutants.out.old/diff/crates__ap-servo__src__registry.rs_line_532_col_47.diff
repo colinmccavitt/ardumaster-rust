@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::set_output_pwm
+@@ -524,17 +524,17 @@
+     /// that accepted it enter the pulse-width mask. Marking a refused channel
+     /// would make the scaled path skip a channel it should be driving.
+     pub fn set_output_pwm(
+         &mut self,
+         channels: &mut [OutputChannel],
+         function: Function,
+         value: u16,
+     ) {
+-        if self.output_channel_mask(function) == 0 {
++        if self.output_channel_mask(function) != /* ~ changed by cargo-mutants ~ */ 0 {
+             return;
+         }
+         for ch in channels.iter_mut() {
+             if ch.function != function {
+                 continue;
+             }
+             if ch.set_output_pwm(value, false) && ch.ch_num < 32 {
+                 self.have_pwm_mask |= 1_u32 << ch.ch_num;

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::invalid_mask -> ChannelMask with Default::default()
+@@ -138,17 +138,17 @@
+             self.invalid_mask
+         }
+     }
+ 
+     /// The channels whose own `SERVOn_FUNCTION` is not a defined function,
+     /// upstream `invalid_mask`.
+     #[must_use]
+     pub fn invalid_mask(&self) -> ChannelMask {
+-        self.invalid_mask
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Whether the channel masks have been built, upstream `initialised`.
+     #[must_use]
+     pub fn initialised(&self) -> bool {
+         self.initialised
+     }
+ 

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace - with / in ServoChannel::pwm_from_range
+@@ -130,17 +130,17 @@
+     #[must_use]
+     pub fn pwm_from_range(&self, scaled_value: f32) -> u16 {
+         if self.servo_max <= self.servo_min || self.high_out == 0 {
+             return self.servo_min;
+         }
+         let high = f32::from(self.high_out);
+         let mut v = constrain_value(scaled_value, 0.0, high);
+         if self.reversed {
+-            v = high - v;
++            v = high / /* ~ changed by cargo-mutants ~ */ v;
+         }
+         let span = f32::from(self.servo_max) - f32::from(self.servo_min);
+         self.servo_min
+             .wrapping_add(truncate_to_u16((v * span) / high))
+     }
+ 
+     /// Pulse width for a `-high_out..high_out` value, upstream
+     /// `pwm_from_angle`.

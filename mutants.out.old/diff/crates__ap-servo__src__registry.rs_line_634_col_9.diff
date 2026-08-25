@@ -1,0 +1,26 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_output_to_trim with ()
+@@ -626,22 +626,17 @@
+     ///
+     /// Almost. `function_assigned` consults the channel mask, which is rebuilt
+     /// by [`Self::update_aux_servo_function`] — so between a channel's function
+     /// changing and that rebuild, the guard and the loop disagree, and the
+     /// guarded version would skip work the unguarded one does. Reproduced
+     /// unguarded, matching upstream, rather than making the port stricter than
+     /// the thing it is meant to reproduce.
+     pub fn set_output_to_trim(&mut self, channels: &mut [OutputChannel], function: Function) {
+-        for ch in channels.iter_mut() {
+-            if ch.function == function {
+-                let trim = ch.config.servo_trim;
+-                ch.set_output_pwm(trim, false);
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Move the trim of every channel with this function, upstream
+     /// `set_trim_to_pwm_for`.
+     pub fn set_trim_to_pwm_for(channels: &mut [OutputChannel], function: Function, pwm: u16) {
+         for ch in channels.iter_mut() {
+             if ch.function == function {
+                 ch.config.servo_trim = pwm;

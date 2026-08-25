@@ -1,0 +1,39 @@
+--- crates/ap-servo/src/lib.rs
++++ replace ServoChannel::pwm_from_angle -> u16 with 0
+@@ -145,35 +145,17 @@
+     /// Pulse width for a `-high_out..high_out` value, upstream
+     /// `pwm_from_angle`.
+     ///
+     /// The two halves are scaled independently, against `trim..max` above and
+     /// `min..trim` below, so a trim that is not centred still reaches both
+     /// endpoints at full deflection.
+     #[must_use]
+     pub fn pwm_from_angle(&self, scaled_value: f32) -> u16 {
+-        if self.high_out == 0 {
+-            return self.servo_trim;
+-        }
+-        let mut v = scaled_value;
+-        if self.reversed {
+-            v = -v;
+-        }
+-        let high = f32::from(self.high_out);
+-        v = constrain_value(v, -high, high);
+-
+-        if v > 0.0 {
+-            let span = f32::from(self.servo_max) - f32::from(self.servo_trim);
+-            self.servo_trim
+-                .wrapping_add(truncate_to_u16((v * span) / high))
+-        } else {
+-            let span = f32::from(self.servo_trim) - f32::from(self.servo_min);
+-            self.servo_trim
+-                .wrapping_sub(truncate_to_u16((-v * span) / high))
+-        }
++        0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Pulse width for this channel's configured mapping, upstream
+     /// `pwm_from_scaled_value`.
+     #[must_use]
+     pub fn pwm_from_scaled_value(&self, scaled_value: f32) -> u16 {
+         match self.output_type {
+             OutputType::Angle => self.pwm_from_angle(scaled_value),

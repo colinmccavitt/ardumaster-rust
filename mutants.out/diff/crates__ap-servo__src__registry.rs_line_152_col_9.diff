@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::initialised -> bool with true
+@@ -144,17 +144,17 @@
+     #[must_use]
+     pub fn invalid_mask(&self) -> ChannelMask {
+         self.invalid_mask
+     }
+ 
+     /// Whether the channel masks have been built, upstream `initialised`.
+     #[must_use]
+     pub fn initialised(&self) -> bool {
+-        self.initialised
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Rebuild every function's channel mask from the channel assignments,
+     /// upstream `update_aux_servo_function`.
+     ///
+     /// `channel_functions[i]` is channel `i`'s `SERVOn_FUNCTION`. A channel
+     /// whose function this build does not define is not silently skipped: it
+     /// goes into [`Self::invalid_mask`], which is how a misconfigured output

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::override_counter -> u16 with 1
+@@ -442,17 +442,17 @@
+                 *counter -= 1;
+             }
+         }
+     }
+ 
+     /// Loops of override left on a channel, for callers that want to know.
+     #[must_use]
+     pub fn override_counter(&self, chan: usize) -> u16 {
+-        self.override_counter.get(chan).copied().unwrap_or(0)
++        1 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// How many slew entries are in use, so a caller can tell it has not
+     /// silently exhausted the table.
+     #[must_use]
+     pub fn slew_entries(&self) -> usize {
+         self.slew.iter().flatten().count()
+     }

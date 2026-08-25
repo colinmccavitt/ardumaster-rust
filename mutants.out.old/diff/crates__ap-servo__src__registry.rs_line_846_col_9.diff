@@ -1,0 +1,32 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::for_each_failsafe_target with ()
+@@ -838,28 +838,17 @@
+         channels: &[OutputChannel],
+         function: Function,
+         limit: Option<Limit>,
+         pwm: u16,
+         mut visit: F,
+     ) where
+         F: FnMut(u8, u16),
+     {
+-        if !self.function_assigned(function) {
+-            return;
+-        }
+-        for ch in channels {
+-            if ch.function == function {
+-                let value = match limit {
+-                    Some(l) => ch.config.limit_pwm(l),
+-                    None => pwm,
+-                };
+-                visit(ch.ch_num, value);
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Visit every non-motor channel with its trim, upstream
+     /// `setup_failsafe_trim_all_non_motors`.
+     ///
+     /// Motors are excluded because a failsafe that drove them to trim would
+     /// command whatever trim happens to mean for a motor — on a multirotor,
+     /// mid-throttle. Leaving them out means their failsafe stays wherever it

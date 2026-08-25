@@ -1057,3 +1057,130 @@ fn a_negligible_but_nonzero_adjustment_does_nothing() {
         "a real adjustment must still work"
     );
 }
+
+/// The four function-scoped operations that had no test at all.
+///
+/// Found by mutation testing: replacing each body with `()` left every test
+/// passing. Each is checked for what it does, that it visits *every* matching
+/// channel rather than the first, and that it declines an unassigned function.
+#[test]
+fn the_remaining_function_operations_do_something() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::Limit;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let func = Function(19);
+    let other = Function(21);
+    let config = ServoChannel::angle(1000, 1500, 2000, 4500);
+
+    let build = || {
+        let channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+            .map(|i| {
+                let f = if i == 2 || i == 5 { func } else { Function(0) };
+                OutputChannel::new(config, f, u8::try_from(i).expect("fits"))
+            })
+            .collect();
+        let mut reg = Registry::new();
+        let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+        reg.update_aux_servo_function(&functions);
+        (reg, channels)
+    };
+
+    // set_trim_to_servo_out_for: trim follows the current output, on both.
+    {
+        let (reg, mut channels) = build();
+        channels[2].set_output_pwm(1750, true);
+        channels[5].set_output_pwm(1250, true);
+        reg.set_trim_to_servo_out_for(&mut channels, func);
+        assert_eq!(channels[2].config.servo_trim, 1750);
+        assert_eq!(
+            channels[5].config.servo_trim, 1250,
+            "the second matching channel must be visited too"
+        );
+
+        // An unassigned function changes nothing.
+        let before = channels[2].config.servo_trim;
+        reg.set_trim_to_servo_out_for(&mut channels, other);
+        assert_eq!(channels[2].config.servo_trim, before);
+    }
+
+    // set_output_norm: drives both channels, and the value round-trips.
+    {
+        let (reg, mut channels) = build();
+        reg.set_output_norm(&mut channels, func, 0.5);
+        let a = channels[2].output_pwm();
+        let b = channels[5].output_pwm();
+        assert_ne!(a, 0, "set_output_norm must write a width");
+        assert_eq!(a, b, "both matching channels must be driven");
+        assert!(
+            (channels[2].output_norm() - 0.5).abs() < 1e-3,
+            "0.5 should read back as 0.5, got {}",
+            channels[2].output_norm()
+        );
+
+        reg.set_output_norm(&mut channels, other, -0.5);
+        assert_eq!(
+            channels[2].output_pwm(),
+            a,
+            "an unassigned function must change nothing"
+        );
+    }
+
+    // for_each_failsafe_target: visits every matching channel, resolving the
+    // limit per channel when one is given.
+    {
+        let (reg, channels) = build();
+        let mut seen: Vec<(u8, u16)> = Vec::new();
+        reg.for_each_failsafe_target(&channels, func, None, 1666, |ch, pwm| {
+            seen.push((ch, pwm));
+        });
+        assert_eq!(
+            seen,
+            vec![(2, 1666), (5, 1666)],
+            "explicit width, both channels"
+        );
+
+        seen.clear();
+        reg.for_each_failsafe_target(&channels, func, Some(Limit::Max), 0, |ch, pwm| {
+            seen.push((ch, pwm));
+        });
+        assert_eq!(
+            seen,
+            vec![(2, 2000), (5, 2000)],
+            "limit resolved per channel"
+        );
+
+        seen.clear();
+        reg.for_each_failsafe_target(&channels, other, None, 1500, |ch, pwm| {
+            seen.push((ch, pwm));
+        });
+        assert!(seen.is_empty(), "an unassigned function must visit nothing");
+    }
+
+    // for_each_non_motor_trim: every channel that is not a motor.
+    {
+        let (_, mut channels) = build();
+        channels[7].function = Function::motor(0);
+        channels[8].function = Function::motor(3);
+
+        let mut seen: Vec<u8> = Vec::new();
+        Registry::for_each_non_motor_trim(&channels, |ch, pwm| {
+            assert_eq!(pwm, 1500, "each channel reports its own trim");
+            seen.push(ch);
+        });
+
+        assert!(
+            !seen.contains(&7) && !seen.contains(&8),
+            "motors are excluded"
+        );
+        assert!(
+            seen.contains(&2) && seen.contains(&5),
+            "non-motors are included"
+        );
+        assert_eq!(
+            seen.len(),
+            NUM_SERVO_CHANNELS - 2,
+            "every other channel should have been visited"
+        );
+    }
+}

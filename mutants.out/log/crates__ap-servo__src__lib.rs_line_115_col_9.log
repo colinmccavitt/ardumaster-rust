@@ -1,0 +1,68 @@
+
+*** crates/ap-servo/src/lib.rs:115:9: replace ServoChannel::range -> Self with Default::default()
+
+*** mutation diff:
+--- crates/ap-servo/src/lib.rs
++++ replace ServoChannel::range -> Self with Default::default()
+@@ -107,24 +107,17 @@
+             output_type: OutputType::Angle,
+             high_out: angle,
+         }
+     }
+ 
+     /// A channel configured as a range output, upstream `set_range`.
+     #[must_use]
+     pub const fn range(servo_min: u16, servo_max: u16, high: u16) -> Self {
+-        Self {
+-            servo_min,
+-            servo_max,
+-            servo_trim: servo_min,
+-            reversed: false,
+-            output_type: OutputType::Range,
+-            high_out: high,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Pulse width for a `0..high_out` value, upstream `pwm_from_range`.
+     ///
+     /// A misconfigured channel — maximum not above minimum, or no range set —
+     /// produces the minimum rather than an error. That is upstream's choice
+     /// and it is the safe direction for a throttle.
+     #[must_use]
+
+
+*** /root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=ap-servo@0.1.0
+   Compiling libm v0.2.16
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libm-0.2.16/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --warn=unexpected_cfgs --check-cfg 'cfg(feature, values("compiler-builtins"))' --cfg 'feature="arch"' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arch", "default", "force-soft-floats", "unstable", "unstable-float", "unstable-intrinsics", "unstable-public-internals"))' -C metadata=c52071ad07d17fb1 -C extra-filename=-a4706cd3eaed6476 --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/build/libm-a4706cd3eaed6476 -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --cap-lints allow`
+     Running `/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/build/libm-a4706cd3eaed6476/build-script-build`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name libm --edition=2021 /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libm-0.2.16/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(feature, values("compiler-builtins"))' --cfg 'feature="arch"' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arch", "default", "force-soft-floats", "unstable", "unstable-float", "unstable-intrinsics", "unstable-public-internals"))' -C metadata=3a79d5d44dd8495c -C extra-filename=-a0720e46d9b34d24 --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --cap-lints allow --cfg arch_enabled --check-cfg 'cfg(assert_no_panic)' --check-cfg 'cfg(intrinsics_enabled)' --check-cfg 'cfg(arch_enabled)' --check-cfg 'cfg(optimizations_enabled)' --check-cfg 'cfg(x86_no_sse)' --check-cfg 'cfg(f16_enabled)' --check-cfg 'cfg(f128_enabled)'`
+   Compiling ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/crates/ap-math)
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta`
+   Compiling ap-servo v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/crates/ap-servo)
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b9e1bc22c34fd59e -C extra-filename=-0c170edf53bf4040 --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps/libap_math-28bd256dfed83426.rmeta`
+error[E0277]: the trait bound `ServoChannel: Default` is not satisfied
+   --> crates/ap-servo/src/lib.rs:115:9
+    |
+115 |         Default::default() /* ~ changed by cargo-mutants ~ */
+    |         ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Default` is not implemented for `ServoChannel`
+   --> crates/ap-servo/src/lib.rs:81:1
+    |
+ 81 | pub struct ServoChannel {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0277`.
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=455aa3c3d76d35d9 -C extra-filename=-90eedb289af2c5ea --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib`
+error: could not compile `ap-servo` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b9e1bc22c34fd59e -C extra-filename=-0c170edf53bf4040 --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps/libap_math-28bd256dfed83426.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `ap-servo` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=455aa3c3d76d35d9 -C extra-filename=-90eedb289af2c5ea --out-dir /tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-d0KduV.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib` (exit status: 1)
+
+*** result: Failure(101)

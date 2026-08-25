@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace / with % in ServoChannel::output_norm
+@@ -184,17 +184,17 @@
+     /// Normalised output in `-1..1` about the midpoint of the travel,
+     /// upstream `get_output_norm`.
+     ///
+     /// Note the midpoint here is the mean of minimum and maximum, *not* the
+     /// trim — so a channel with an off-centre trim reports a non-zero
+     /// normalised output when it is sitting at its own neutral.
+     #[must_use]
+     pub fn output_norm(&self, output_pwm: u16) -> f32 {
+-        let mid = (self.servo_max + self.servo_min) / 2;
++        let mid = (self.servo_max + self.servo_min) % /* ~ changed by cargo-mutants ~ */ 2;
+         if mid <= self.servo_min {
+             return 0.0;
+         }
+         let ret = if output_pwm < mid {
+             f32::from(mid - output_pwm) / -f32::from(mid - self.servo_min)
+         } else if output_pwm > mid {
+             f32::from(output_pwm - mid) / f32::from(self.servo_max - mid)
+         } else {

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace - with / in ServoChannel::output_norm
+@@ -189,17 +189,17 @@
+     /// normalised output when it is sitting at its own neutral.
+     #[must_use]
+     pub fn output_norm(&self, output_pwm: u16) -> f32 {
+         let mid = (self.servo_max + self.servo_min) / 2;
+         if mid <= self.servo_min {
+             return 0.0;
+         }
+         let ret = if output_pwm < mid {
+-            f32::from(mid - output_pwm) / -f32::from(mid - self.servo_min)
++            f32::from(mid / /* ~ changed by cargo-mutants ~ */ output_pwm) / -f32::from(mid - self.servo_min)
+         } else if output_pwm > mid {
+             f32::from(output_pwm - mid) / f32::from(self.servo_max - mid)
+         } else {
+             0.0
+         };
+         if self.reversed {
+             -ret
+         } else {

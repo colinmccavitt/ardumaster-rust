@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace > with >= in OutputChannel::output_norm
+@@ -154,17 +154,17 @@
+         if mid <= min {
+             return 0.0;
+         }
+ 
+         let pwm = f32::from(self.output_pwm);
+         let midf = f32::from(mid);
+         let ret = if self.output_pwm < mid {
+             (pwm - midf) / f32::from(mid - min)
+-        } else if self.output_pwm > mid {
++        } else if self.output_pwm >= /* ~ changed by cargo-mutants ~ */ mid {
+             (pwm - midf) / f32::from(max - mid)
+         } else {
+             0.0
+         };
+ 
+         if self.config.reversed {
+             -ret
+         } else {

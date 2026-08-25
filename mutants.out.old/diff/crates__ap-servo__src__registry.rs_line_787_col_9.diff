@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::trimmed_mask -> ChannelMask with Default::default()
+@@ -779,17 +779,17 @@
+             ch.config.servo_trim = new_trim;
+             self.trimmed_mask |= 1u32 << i;
+         }
+     }
+ 
+     /// Which channels have had their trim nudged, upstream `trimmed_mask`.
+     #[must_use]
+     pub fn trimmed_mask(&self) -> ChannelMask {
+-        self.trimmed_mask
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Take the set of nudged channels and clear it, upstream `save_trim`.
+     ///
+     /// Upstream writes each one to storage here. Storage is not this type's
+     /// business, so the set is handed back and cleared — the caller saves.
+     /// Clearing regardless is upstream's behaviour: a save that fails is not
+     /// retried, and the alternative would be an unbounded set of pending

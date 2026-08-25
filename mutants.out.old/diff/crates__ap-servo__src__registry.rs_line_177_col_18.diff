@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace >= with < in Registry::update_aux_servo_function
+@@ -169,17 +169,17 @@
+     /// the channel, not the registry, so it is not done here.
+     pub fn update_aux_servo_function(&mut self, channel_functions: &[Function]) {
+         for f in &mut self.functions {
+             f.channel_mask = 0;
+         }
+         self.invalid_mask = 0;
+ 
+         for (i, &function) in channel_functions.iter().enumerate() {
+-            if i >= 32 {
++            if i < /* ~ changed by cargo-mutants ~ */ 32 {
+                 break;
+             }
+             let bit = 1_u32 << i;
+             if !function.valid() {
+                 self.invalid_mask |= bit;
+                 continue;
+             }
+             if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {

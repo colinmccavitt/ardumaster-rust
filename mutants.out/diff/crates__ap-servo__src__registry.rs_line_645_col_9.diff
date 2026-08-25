@@ -1,0 +1,25 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_trim_to_pwm_for with ()
+@@ -637,21 +637,17 @@
+                 ch.set_output_pwm(trim, false);
+             }
+         }
+     }
+ 
+     /// Move the trim of every channel with this function, upstream
+     /// `set_trim_to_pwm_for`.
+     pub fn set_trim_to_pwm_for(channels: &mut [OutputChannel], function: Function, pwm: u16) {
+-        for ch in channels.iter_mut() {
+-            if ch.function == function {
+-                ch.config.servo_trim = pwm;
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Trim every channel with this function to its minimum, upstream
+     /// `set_trim_to_min_for`.
+     ///
+     /// `ignore_reversed` decides which minimum. Honouring the reversal picks
+     /// the endpoint the *surface* treats as minimum, which for a reversed
+     /// channel is the larger pulse width; ignoring it picks the smaller width

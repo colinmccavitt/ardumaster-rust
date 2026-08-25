@@ -1,0 +1,23 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::assign with ()
+@@ -104,19 +104,17 @@
+     }
+ 
+     /// Assign a function to a set of channels.
+     ///
+     /// Upstream builds this from the `SERVOn_FUNCTION` parameters in
+     /// `update_aux_servo_function`; here it is set directly, because the
+     /// parameter sweep is a separate concern from the mapping it produces.
+     pub fn assign(&mut self, function: Function, channel_mask: ChannelMask) {
+-        if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+-            entry.channel_mask = channel_mask;
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The channels a function drives, upstream `get_output_channel_mask`.
+     ///
+     /// For a function this build does not define, the answer is
+     /// [`Self::invalid_mask`] — the channels whose own assignment is invalid.
+     /// That is a genuine set, not a sentinel: asking about a meaningless
+     /// function returns the channels that are themselves meaningless, which is

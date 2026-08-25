@@ -1,0 +1,90 @@
+
+*** crates/ap-servo/src/registry.rs:208:28: replace &= with |= in Registry::set_output_scaled
+
+*** mutation diff:
+--- crates/ap-servo/src/registry.rs
++++ replace &= with |= in Registry::set_output_scaled
+@@ -200,17 +200,17 @@
+     pub fn set_output_scaled(&mut self, function: Function, value: f32) {
+         if !function.valid() {
+             return;
+         }
+         let Some(entry) = self.functions.get_mut(usize::from(function.0)) else {
+             return;
+         };
+         entry.output_scaled = value;
+-        self.have_pwm_mask &= !entry.channel_mask;
++        self.have_pwm_mask |= /* ~ changed by cargo-mutants ~ */ !entry.channel_mask;
+     }
+ 
+     /// Read a function's scaled value, upstream `get_output_scaled`.
+     ///
+     /// Zero for an undefined function. Note this is a plain zero, not
+     /// [`INVALID_MASK`]'s equivalent — upstream distinguishes invalid from
+     /// unset for the channel mask but not for the value, and the port
+     /// reproduces that rather than tidying it.
+
+
+*** /root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=ap-servo@0.1.0
+       Fresh libm v0.2.16
+       Fresh ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/crates/ap-math)
+       Dirty ap-servo v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/crates/ap-servo): the file `crates/ap-servo/src/registry.rs` has changed (1787677443.472765596s, 2s after last build at 1787677441.715748348s)
+   Compiling ap-servo v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/crates/ap-servo)
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b9e1bc22c34fd59e -C extra-filename=-0c170edf53bf4040 --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rmeta`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_servo --edition=2021 crates/ap-servo/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=455aa3c3d76d35d9 -C extra-filename=-90eedb289af2c5ea --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name slew_parity --edition=2021 crates/ap-servo/tests/slew_parity.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=10b00557a1f6bfce -C extra-filename=-7b656dab69cd507e --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name servo_parity --edition=2021 crates/ap-servo/tests/servo_parity.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3f89cf3ab8ed13aa -C extra-filename=-313ebdf2bab8aecd --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name calc_pwm --edition=2021 crates/ap-servo/tests/calc_pwm.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=1a31146dd74fc750 -C extra-filename=-375705d37070d40e --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name setup_sweep --edition=2021 crates/ap-servo/tests/setup_sweep.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0ba401001e77a466 -C extra-filename=-8bad9699439ea039 --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name srv_functions --edition=2021 crates/ap-servo/tests/srv_functions.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=34300d022908e178 -C extra-filename=-0c3f81df589996ac --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name output_channel --edition=2021 crates/ap-servo/tests/output_channel.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=84cc9875e91f83d9 -C extra-filename=-f4f21020484d518b --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name classify --edition=2021 crates/ap-servo/tests/classify.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f3b94ffba97932a0 -C extra-filename=-07f28a1fa3d4f549 --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name default_output --edition=2021 crates/ap-servo/tests/default_output.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=7c1835cbfa7b3b6f -C extra-filename=-a50a98dcc17358d7 --out-dir /tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern ap_servo=/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/libap_servo-0c170edf53bf4040.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.32s
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/ap_servo-90eedb289af2c5ea`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/calc_pwm-375705d37070d40e`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/classify-07f28a1fa3d4f549`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/default_output-a50a98dcc17358d7`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/output_channel-f4f21020484d518b`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/servo_parity-313ebdf2bab8aecd`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/setup_sweep-8bad9699439ea039`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/slew_parity-7b656dab69cd507e`
+  Executable `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/srv_functions-0c3f81df589996ac`
+
+*** result: Success
+
+*** /root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=ap-servo@0.1.0
+       Fresh libm v0.2.16
+       Fresh ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/crates/ap-math)
+       Fresh ap-servo v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/crates/ap-servo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/ap_servo-90eedb289af2c5ea`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-plane-fw-rust-wSU1mC.tmp/target/debug/deps/calc_pwm-375705d37070d40e`
+
+running 1 test
+test the_calc_pwm_priority_matches_upstream ... FAILED
+
+failures:
+
+---- the_calc_pwm_priority_matches_upstream stdout ----
+
+thread 'the_calc_pwm_priority_matches_upstream' (1794159) panicked at crates/ap-servo/tests/calc_pwm.rs:124:13:
+assertion `left == right` failed: case 0 channel 0 (estop false, scaled 0): 0 != upstream 1000
+  left: 0
+ right: 1000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_calc_pwm_priority_matches_upstream
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p ap-servo --test calc_pwm`
+
+*** result: Failure(101)

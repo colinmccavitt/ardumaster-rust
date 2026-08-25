@@ -1,0 +1,25 @@
+# cargo-mutants configuration.
+#
+# Mutation testing is a gate on every slice: a mutant that survives means a
+# line of ported code no test can distinguish from a wrong one. That is the
+# same defect as an untested branch, and it has been the most productive
+# check in this port -- it has found zeroed harness gains, sequences that
+# never reached a clamp, and two guards whose necessity was not obvious.
+
+# Generated tables. Mutating a transcribed constant produces a "mutant" that
+# is really just a different table, and there are thousands of them; the
+# tables are verified against upstream wholesale by their own parity tests.
+exclude_globs = [
+    "crates/ap-motors/src/frames.rs",
+    "crates/ap-servo/src/function.rs",
+    "crates/ap-declination/src/tables.rs",
+    "**/tests/**",
+]
+
+# Parity tests read fixtures from disk and are fast; the build dominates.
+# Five times the baseline leaves room for a mutant that loops longer without
+# waiting on one that never terminates.
+timeout_multiplier = 5.0
+
+# A mutant that makes the code hang is a failure, not a pass.
+minimum_test_timeout = 30

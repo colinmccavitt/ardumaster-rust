@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ delete ! in Registry::apply_slew_limits
+@@ -332,17 +332,17 @@
+     /// everything that reads it afterwards.
+     ///
+     /// The history advances even when the limit is disabled — upstream's update
+     /// sits outside its `is_positive` check, and that is what makes installing
+     /// a rate later safe.
+     pub fn apply_slew_limits(&mut self) {
+         for slot in &mut self.slew {
+             let Some(entry) = slot else { continue };
+-            if !entry.func.valid() {
++            if  /* ~ changed by cargo-mutants ~ */entry.func.valid() {
+                 continue;
+             }
+             let Some(f) = self.functions.get_mut(usize::from(entry.func.0)) else {
+                 continue;
+             };
+             if is_positive(entry.max_change) {
+                 f.output_scaled = f.output_scaled.clamp(
+                     entry.last_scaled_output - entry.max_change,

@@ -1,0 +1,25 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace OutputChannel::set_output_pwm -> bool with true
+@@ -88,21 +88,17 @@
+ 
+     /// Set the pulse directly, upstream `set_output_pwm`.
+     ///
+     /// Returns whether it took. An active override refuses an unforced write,
+     /// and the caller needs to know, because upstream's version also sets this
+     /// channel's bit in the shared pulse-width mask — and only when the write
+     /// actually happened.
+     pub fn set_output_pwm(&mut self, pwm: u16, force: bool) -> bool {
+-        if self.override_active && !force {
+-            return false;
+-        }
+-        self.output_pwm = pwm;
+-        true
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Compute the pulse from a scaled value, upstream `calc_pwm`.
+     ///
+     /// Does nothing at all if this channel is in the context's pulse-width
+     /// mask: something wrote a pulse directly and that wins. See the module
+     /// docs for why that outranks even an emergency stop.
+     pub fn calc_pwm(&mut self, output_scaled: f32, ctx: &OutputContext) {

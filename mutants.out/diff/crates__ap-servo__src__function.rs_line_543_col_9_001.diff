@@ -1,0 +1,25 @@
+--- crates/ap-servo/src/function.rs
++++ replace Function::default_output -> Option<DefaultOutput> with Some(Default::default())
+@@ -535,21 +535,17 @@
+     /// whatever the channel already had -- its `default:` does nothing
+     /// rather than picking a fallback.
+     ///
+     /// Upstream applies this only when the channel has not already been
+     /// set up, and the caller is responsible for that check; this is the
+     /// table, not the guard.
+     #[must_use]
+     pub fn default_output(self) -> Option<DefaultOutput> {
+-        DEFAULT_OUTPUT
+-            .binary_search_by_key(&self.0, |&(f, _)| f)
+-            .ok()
+-            .and_then(|i| DEFAULT_OUTPUT.get(i))
+-            .map(|&(_, out)| out)
++        Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// Functions that move an aerodynamic surface, upstream
+ /// `SRV_Channel::is_control_surface`.
+ ///
+ /// Sorted, so the lookup can binary search.
+ const CONTROL_SURFACE: [u8; 16] = [2, 3, 4, 16, 17, 19, 21, 24, 25, 77, 78, 79, 80, 86, 87, 110];

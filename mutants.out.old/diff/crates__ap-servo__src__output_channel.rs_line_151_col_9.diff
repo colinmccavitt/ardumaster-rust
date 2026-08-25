@@ -1,0 +1,42 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace OutputChannel::output_norm -> f32 with 0.0
+@@ -143,38 +143,17 @@
+     /// into it, but nobody should read this as a deliberate asymmetric
+     /// mapping — a mutation collapsing the two branches passes every test
+     /// whose channels have an even span, which was all of them at first.
+     ///
+     /// A degenerate channel — one whose midpoint is at or below its minimum —
+     /// reads zero rather than dividing by it.
+     #[must_use]
+     pub fn output_norm(&self) -> f32 {
+-        let min = self.config.servo_min;
+-        let max = self.config.servo_max;
+-        let mid = (max + min) / 2;
+-        if mid <= min {
+-            return 0.0;
+-        }
+-
+-        let pwm = f32::from(self.output_pwm);
+-        let midf = f32::from(mid);
+-        let ret = if self.output_pwm < mid {
+-            (pwm - midf) / f32::from(mid - min)
+-        } else if self.output_pwm > mid {
+-            (pwm - midf) / f32::from(max - mid)
+-        } else {
+-            0.0
+-        };
+-
+-        if self.config.reversed {
+-            -ret
+-        } else {
+-            ret
+-        }
++        0.0 /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Set a normalised output, upstream `set_output_norm`.
+     ///
+     /// `-1` to `1` about the mid point. Goes through
+     /// [`Self::set_output_pwm`], so it is a direct pulse write and takes the
+     /// mask with it — not the scaled path.
+     pub fn set_output_norm(&mut self, value: f32) -> bool {

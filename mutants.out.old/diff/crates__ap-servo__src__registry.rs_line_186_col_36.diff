@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace |= with &= in Registry::update_aux_servo_function
+@@ -178,17 +178,17 @@
+                 break;
+             }
+             let bit = 1_u32 << i;
+             if !function.valid() {
+                 self.invalid_mask |= bit;
+                 continue;
+             }
+             if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+-                entry.channel_mask |= bit;
++                entry.channel_mask &= /* ~ changed by cargo-mutants ~ */ bit;
+             }
+         }
+ 
+         self.initialised = true;
+     }
+ 
+     /// Write a function's scaled value, upstream `set_output_scaled`.
+     ///

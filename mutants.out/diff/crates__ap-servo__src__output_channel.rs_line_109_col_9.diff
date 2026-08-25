@@ -1,0 +1,36 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace OutputChannel::calc_pwm with ()
+@@ -101,32 +101,17 @@
+     }
+ 
+     /// Compute the pulse from a scaled value, upstream `calc_pwm`.
+     ///
+     /// Does nothing at all if this channel is in the context's pulse-width
+     /// mask: something wrote a pulse directly and that wins. See the module
+     /// docs for why that outranks even an emergency stop.
+     pub fn calc_pwm(&mut self, output_scaled: f32, ctx: &OutputContext) {
+-        if self.ch_num < 32 && (ctx.have_pwm_mask & (1_u32 << self.ch_num)) != 0 {
+-            return;
+-        }
+-
+-        let mut output_scaled = output_scaled;
+-        let mut force = false;
+-        if ctx.emergency_stop && self.function.should_e_stop() {
+-            output_scaled = 0.0;
+-            force = true;
+-        }
+-
+-        if !force && self.override_active {
+-            return;
+-        }
+-
+-        self.output_pwm = self.config.pwm_from_scaled_value(output_scaled);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read the output as a normalised value, upstream `get_output_norm`.
+     ///
+     /// Minus one to plus one about the midpoint of the travel — the midpoint,
+     /// not the trim. A channel trimmed away from centre reads non-zero at
+     /// rest, which is correct: this reports where the surface sits within its
+     /// range, not how far it is from where it likes to sit.

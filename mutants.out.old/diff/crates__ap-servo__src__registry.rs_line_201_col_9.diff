@@ -1,0 +1,28 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_output_scaled with ()
+@@ -193,24 +193,17 @@
+     /// Write a function's scaled value, upstream `set_output_scaled`.
+     ///
+     /// Also clears this function's channels from the pulse-width mask. That
+     /// second effect is the load-bearing one: it records that these channels
+     /// are now driven by a scaled value, so whatever converts them to pulses
+     /// knows to do the conversion rather than pass through a stale width.
+     /// Dropping it leaves a channel holding the last pulse it was given.
+     pub fn set_output_scaled(&mut self, function: Function, value: f32) {
+-        if !function.valid() {
+-            return;
+-        }
+-        let Some(entry) = self.functions.get_mut(usize::from(function.0)) else {
+-            return;
+-        };
+-        entry.output_scaled = value;
+-        self.have_pwm_mask &= !entry.channel_mask;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read a function's scaled value, upstream `get_output_scaled`.
+     ///
+     /// Zero for an undefined function. Note this is a plain zero, not
+     /// [`INVALID_MASK`]'s equivalent — upstream distinguishes invalid from
+     /// unset for the channel mask but not for the value, and the port
+     /// reproduces that rather than tidying it.

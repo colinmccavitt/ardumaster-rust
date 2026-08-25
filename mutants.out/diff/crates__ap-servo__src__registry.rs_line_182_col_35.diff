@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace |= with &= in Registry::update_aux_servo_function
+@@ -174,17 +174,17 @@
+         self.invalid_mask = 0;
+ 
+         for (i, &function) in channel_functions.iter().enumerate() {
+             if i >= 32 {
+                 break;
+             }
+             let bit = 1_u32 << i;
+             if !function.valid() {
+-                self.invalid_mask |= bit;
++                self.invalid_mask &= /* ~ changed by cargo-mutants ~ */ bit;
+                 continue;
+             }
+             if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+                 entry.channel_mask |= bit;
+             }
+         }
+ 
+         self.initialised = true;

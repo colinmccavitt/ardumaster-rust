@@ -1,0 +1,32 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::output_pwm_for -> Option<u16> with Some(0)
+@@ -709,28 +709,17 @@
+     /// Recomputes first, for the same reason and with the same caveat as
+     /// [`Self::output_norm`].
+     pub fn output_pwm_for(
+         &self,
+         channels: &mut [OutputChannel],
+         function: Function,
+         emergency_stop: bool,
+     ) -> Option<u16> {
+-        let chan = self.find_channel(function)?;
+-        if !function.valid() {
+-            return None;
+-        }
+-        let ch = channels.get_mut(chan)?;
+-        let ctx = OutputContext {
+-            have_pwm_mask: self.have_pwm_mask,
+-            emergency_stop,
+-        };
+-        let scaled = self.output_scaled(function);
+-        ch.calc_pwm(scaled, &ctx);
+-        Some(ch.output_pwm())
++        Some(0) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Nudge the trim of every channel with this function, upstream
+     /// `adjust_trim`.
+     ///
+     /// Three things about this are surprising and all three are deliberate.
+     ///
+     /// **The magnitude of `v` is ignored.** Only its sign is read, and the

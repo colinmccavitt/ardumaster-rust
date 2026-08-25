@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace * with + in Registry::set_slew_rate
+@@ -243,17 +243,17 @@
+         function: Function,
+         slew_rate: f32,
+         range: u16,
+         dt: f32,
+     ) -> bool {
+         if !function.valid() {
+             return false;
+         }
+-        let max_change = f32::from(range) * slew_rate * 0.01 * dt;
++        let max_change = f32::from(range) + /* ~ changed by cargo-mutants ~ */ slew_rate * 0.01 * dt;
+ 
+         for entry in self.slew.iter_mut().flatten() {
+             if entry.func == function {
+                 entry.max_change = max_change;
+                 return true;
+             }
+         }
+ 

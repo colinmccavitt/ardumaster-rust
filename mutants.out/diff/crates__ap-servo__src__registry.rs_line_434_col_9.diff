@@ -1,0 +1,31 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::step_override_counters with ()
+@@ -426,27 +426,17 @@
+     }
+ 
+     /// Step the override counters, upstream the second half of `calc_pwm`.
+     ///
+     /// A channel with loops remaining stays overridden and spends one; a
+     /// channel at zero has its override cleared. Both happen in the same pass,
+     /// so a counter of one buys exactly one more loop.
+     fn step_override_counters(&mut self, channels: &mut [OutputChannel]) {
+-        for (chan, channel) in channels.iter_mut().enumerate() {
+-            let Some(counter) = self.override_counter.get_mut(chan) else {
+-                break;
+-            };
+-            if *counter == 0 {
+-                channel.set_override(false);
+-            } else {
+-                channel.set_override(true);
+-                *counter -= 1;
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Loops of override left on a channel, for callers that want to know.
+     #[must_use]
+     pub fn override_counter(&self, chan: usize) -> u16 {
+         self.override_counter.get(chan).copied().unwrap_or(0)
+     }
+ 

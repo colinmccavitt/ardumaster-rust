@@ -1,0 +1,44 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_slew_rate -> bool with true
+@@ -240,40 +240,17 @@
+     /// Returns false only for an invalid function or a full table.
+     pub fn set_slew_rate(
+         &mut self,
+         function: Function,
+         slew_rate: f32,
+         range: u16,
+         dt: f32,
+     ) -> bool {
+-        if !function.valid() {
+-            return false;
+-        }
+-        let max_change = f32::from(range) * slew_rate * 0.01 * dt;
+-
+-        for entry in self.slew.iter_mut().flatten() {
+-            if entry.func == function {
+-                entry.max_change = max_change;
+-                return true;
+-            }
+-        }
+-
+-        let current = self.output_scaled(function);
+-        for slot in &mut self.slew {
+-            if slot.is_none() {
+-                *slot = Some(SlewEntry {
+-                    func: function,
+-                    last_scaled_output: current,
+-                    max_change,
+-                });
+-                return true;
+-            }
+-        }
+-        false
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Force a function's slew history, upstream `set_slew_last_scaled_output`.
+     ///
+     /// For a caller that has moved the output by some route the slew limiter
+     /// did not see, and wants the next limited step measured from there rather
+     /// than from the stale value.
+     pub fn set_slew_last_scaled_output(&mut self, function: Function, value: f32) {

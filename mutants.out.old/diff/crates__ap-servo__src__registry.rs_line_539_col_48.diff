@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace && with || in Registry::set_output_pwm
+@@ -531,17 +531,17 @@
+     ) {
+         if self.output_channel_mask(function) == 0 {
+             return;
+         }
+         for ch in channels.iter_mut() {
+             if ch.function != function {
+                 continue;
+             }
+-            if ch.set_output_pwm(value, false) && ch.ch_num < 32 {
++            if ch.set_output_pwm(value, false) || /* ~ changed by cargo-mutants ~ */ ch.ch_num < 32 {
+                 self.have_pwm_mask |= 1_u32 << ch.ch_num;
+             }
+         }
+     }
+ 
+     /// Convert every channel's scaled value to a pulse, upstream
+     /// `SRV_Channels::calc_pwm`.
+     ///

@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace == with != in ServoChannel::pwm_from_angle
+@@ -145,17 +145,17 @@
+     /// Pulse width for a `-high_out..high_out` value, upstream
+     /// `pwm_from_angle`.
+     ///
+     /// The two halves are scaled independently, against `trim..max` above and
+     /// `min..trim` below, so a trim that is not centred still reaches both
+     /// endpoints at full deflection.
+     #[must_use]
+     pub fn pwm_from_angle(&self, scaled_value: f32) -> u16 {
+-        if self.high_out == 0 {
++        if self.high_out != /* ~ changed by cargo-mutants ~ */ 0 {
+             return self.servo_trim;
+         }
+         let mut v = scaled_value;
+         if self.reversed {
+             v = -v;
+         }
+         let high = f32::from(self.high_out);
+         v = constrain_value(v, -high, high);

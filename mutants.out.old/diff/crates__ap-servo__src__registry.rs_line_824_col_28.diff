@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::set_output_norm
+@@ -816,17 +816,17 @@
+ 
+     /// Drive every matching channel to a normalised value, upstream
+     /// `set_output_norm`.
+     pub fn set_output_norm(&self, channels: &mut [OutputChannel], function: Function, value: f32) {
+         if !self.function_assigned(function) {
+             return;
+         }
+         for ch in channels.iter_mut() {
+-            if ch.function == function {
++            if ch.function != /* ~ changed by cargo-mutants ~ */ function {
+                 ch.set_output_norm(value);
+             }
+         }
+     }
+ 
+     /// Visit each channel that should be given a failsafe pulse width,
+     /// upstream `set_failsafe_pwm` and `set_failsafe_limit`.
+     ///

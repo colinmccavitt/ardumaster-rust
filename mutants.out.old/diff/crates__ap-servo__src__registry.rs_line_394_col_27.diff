@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::set_output_pwm_chan_timeout
+@@ -386,17 +386,17 @@
+         loop_period_us: u32,
+     ) {
+         let Some(counter) = self.override_counter.get_mut(chan) else {
+             return;
+         };
+         let Some(channel) = channels.get_mut(chan) else {
+             return;
+         };
+-        if loop_period_us == 0 {
++        if loop_period_us != /* ~ changed by cargo-mutants ~ */ 0 {
+             return;
+         }
+ 
+         // Round up, so a non-zero request is never rounded away.
+         // Upstream spells the round-up out as `(x + period - 1) / period`;
+         // this is the same arithmetic with the intent on the surface.
+         let loop_count = (u32::from(timeout_ms) * 1000).div_ceil(loop_period_us);
+         *counter = u16::try_from(loop_count).unwrap_or(u16::MAX);

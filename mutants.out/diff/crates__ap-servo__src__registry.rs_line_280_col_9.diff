@@ -1,0 +1,26 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::set_slew_last_scaled_output with ()
+@@ -272,22 +272,17 @@
+     }
+ 
+     /// Force a function's slew history, upstream `set_slew_last_scaled_output`.
+     ///
+     /// For a caller that has moved the output by some route the slew limiter
+     /// did not see, and wants the next limited step measured from there rather
+     /// than from the stale value.
+     pub fn set_slew_last_scaled_output(&mut self, function: Function, value: f32) {
+-        for entry in self.slew.iter_mut().flatten() {
+-            if entry.func == function {
+-                entry.last_scaled_output = value;
+-                return;
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Read a function's output through its slew limit, upstream
+     /// `get_slew_limited_output_scaled`.
+     ///
+     /// Read-only, and that is the part worth knowing. It clamps against
+     /// `last_scaled_output` without advancing it and without writing the result
+     /// back — only [`Self::apply_slew_limits`] does either.

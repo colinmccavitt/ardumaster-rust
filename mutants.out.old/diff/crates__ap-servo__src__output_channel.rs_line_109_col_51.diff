@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/output_channel.rs
++++ replace & with | in OutputChannel::calc_pwm
+@@ -101,17 +101,17 @@
+     }
+ 
+     /// Compute the pulse from a scaled value, upstream `calc_pwm`.
+     ///
+     /// Does nothing at all if this channel is in the context's pulse-width
+     /// mask: something wrote a pulse directly and that wins. See the module
+     /// docs for why that outranks even an emergency stop.
+     pub fn calc_pwm(&mut self, output_scaled: f32, ctx: &OutputContext) {
+-        if self.ch_num < 32 && (ctx.have_pwm_mask & (1_u32 << self.ch_num)) != 0 {
++        if self.ch_num < 32 && (ctx.have_pwm_mask | /* ~ changed by cargo-mutants ~ */ (1_u32 << self.ch_num)) != 0 {
+             return;
+         }
+ 
+         let mut output_scaled = output_scaled;
+         let mut force = false;
+         if ctx.emergency_stop && self.function.should_e_stop() {
+             output_scaled = 0.0;
+             force = true;

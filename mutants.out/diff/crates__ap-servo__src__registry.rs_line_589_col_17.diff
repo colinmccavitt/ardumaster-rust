@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace == with != in Registry::find_channel
+@@ -581,17 +581,17 @@
+     /// callers that use this are asking a question with one answer (what is
+     /// this surface doing) rather than commanding all of them.
+     #[must_use]
+     pub fn find_channel(&self, function: Function) -> Option<usize> {
+         if !function.valid() {
+             return None;
+         }
+         let mask = self.output_channel_mask(function);
+-        if mask == 0 {
++        if mask != /* ~ changed by cargo-mutants ~ */ 0 {
+             None
+         } else {
+             Some(mask.trailing_zeros() as usize)
+         }
+     }
+ 
+     /// Drive every channel with this function to a named endpoint, upstream
+     /// `set_output_limit`.

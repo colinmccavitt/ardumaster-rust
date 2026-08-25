@@ -1,0 +1,19 @@
+--- crates/ap-servo/src/function.rs
++++ replace >= with < in Function::motor_num
+@@ -581,15 +581,15 @@
+     /// transcribed a second time -- a round-trip test pins the pair
+     /// together, which no amount of re-reading the three ranges would.
+     #[must_use]
+     pub const fn motor_num(self) -> Option<u8> {
+         if self.0 >= Self::MOTOR1.0 && self.0 <= Self::MOTOR8.0 {
+             Some(self.0 - Self::MOTOR1.0)
+         } else if self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0 {
+             Some(8 + (self.0 - Self::MOTOR9.0))
+-        } else if self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0 {
++        } else if self.0 < /* ~ changed by cargo-mutants ~ */ Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0 {
+             Some(12 + (self.0 - Self::MOTOR13.0))
+         } else {
+             None
+         }
+     }
+ }

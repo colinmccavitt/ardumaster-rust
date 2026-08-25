@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ delete ! in Registry::set_output_scaled
+@@ -200,17 +200,17 @@
+     pub fn set_output_scaled(&mut self, function: Function, value: f32) {
+         if !function.valid() {
+             return;
+         }
+         let Some(entry) = self.functions.get_mut(usize::from(function.0)) else {
+             return;
+         };
+         entry.output_scaled = value;
+-        self.have_pwm_mask &= !entry.channel_mask;
++        self.have_pwm_mask &=  /* ~ changed by cargo-mutants ~ */entry.channel_mask;
+     }
+ 
+     /// Read a function's scaled value, upstream `get_output_scaled`.
+     ///
+     /// Zero for an undefined function. Note this is a plain zero, not
+     /// [`INVALID_MASK`]'s equivalent — upstream distinguishes invalid from
+     /// unset for the channel mask but not for the value, and the port
+     /// reproduces that rather than tidying it.

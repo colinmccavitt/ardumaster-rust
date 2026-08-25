@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace != with == in Registry::set_aux_channel_default
+@@ -487,17 +487,17 @@
+     /// The same function on the same channel is `true` without complaint,
+     /// because that is not a conflict.
+     pub fn set_aux_channel_default(
+         &mut self,
+         channel_functions: &mut [Function],
+         function: Function,
+         channel: u8,
+     ) -> bool {
+-        if self.output_channel_mask(function) != 0 {
++        if self.output_channel_mask(function) == /* ~ changed by cargo-mutants ~ */ 0 {
+             return true;
+         }
+ 
+         let Some(current) = channel_functions.get_mut(usize::from(channel)) else {
+             return false;
+         };
+ 
+         if *current != Function::NONE {

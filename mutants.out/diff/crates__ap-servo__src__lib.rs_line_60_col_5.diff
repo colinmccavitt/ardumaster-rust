@@ -1,0 +1,32 @@
+--- crates/ap-servo/src/lib.rs
++++ replace truncate_to_u16 -> u16 with 0
+@@ -52,28 +52,17 @@
+ /// A negative float converted to an unsigned integer is undefined in C++.
+ /// Upstream does it anyway in `pwm_from_angle`, where an inverted channel
+ /// makes the span negative, and on x86-64 GCC the result wraps — which turns
+ /// out to be exactly the reversed deflection, so inverting the endpoints is a
+ /// working way to reverse a servo. Going through `i32` first reproduces that
+ /// value by defined means.
+ #[inline]
+ fn truncate_to_u16(v: f32) -> u16 {
+-    #[allow(
+-        clippy::cast_possible_truncation,
+-        reason = "upstream truncates here; a pulse-width offset is far inside i32"
+-    )]
+-    let as_int = v as i32;
+-    #[allow(
+-        clippy::cast_sign_loss,
+-        clippy::cast_possible_truncation,
+-        reason = "reproduces upstream's uint16_t conversion, wrap included"
+-    )]
+-    let out = as_int as u16;
+-    out
++    0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// One servo output channel, upstream `SRV_Channel`'s conversion state.
+ ///
+ /// The function assignment, the override and E-stop paths, and the parameter
+ /// plumbing are not here: this is the arithmetic that turns a demand into a
+ /// pulse width, which is what the control path needs and what can be compared
+ /// against upstream without standing up a vehicle.

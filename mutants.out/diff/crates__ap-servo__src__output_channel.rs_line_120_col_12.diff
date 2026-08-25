@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/output_channel.rs
++++ delete ! in OutputChannel::calc_pwm
+@@ -112,17 +112,17 @@
+ 
+         let mut output_scaled = output_scaled;
+         let mut force = false;
+         if ctx.emergency_stop && self.function.should_e_stop() {
+             output_scaled = 0.0;
+             force = true;
+         }
+ 
+-        if !force && self.override_active {
++        if  /* ~ changed by cargo-mutants ~ */force && self.override_active {
+             return;
+         }
+ 
+         self.output_pwm = self.config.pwm_from_scaled_value(output_scaled);
+     }
+ 
+     /// Read the output as a normalised value, upstream `get_output_norm`.
+     ///

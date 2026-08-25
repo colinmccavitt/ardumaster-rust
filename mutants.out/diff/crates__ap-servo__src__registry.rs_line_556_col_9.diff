@@ -1,0 +1,33 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::calc_pwm with ()
+@@ -548,29 +548,17 @@
+     /// Each channel reads the scaled value of its own function. A channel
+     /// whose function this build does not define is left alone: there is no
+     /// scaled value to convert, and writing a zero would drive an output on
+     /// the strength of a configuration error.
+     pub fn calc_pwm(&mut self, channels: &mut [OutputChannel], emergency_stop: bool) {
+         // Upstream's order: slew limits first, then the override counters,
+         // then the per-channel conversion. The slew pass rewrites the scaled
+         // values the conversion is about to read, so it has to come first.
+-        self.apply_slew_limits();
+-        self.step_override_counters(channels);
+-
+-        let ctx = OutputContext {
+-            have_pwm_mask: self.have_pwm_mask,
+-            emergency_stop,
+-        };
+-        for ch in channels.iter_mut() {
+-            if !ch.function.valid() {
+-                continue;
+-            }
+-            ch.calc_pwm(self.output_scaled(ch.function), &ctx);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Whether any channel carries this function, upstream
+     /// `function_assigned`.
+     #[must_use]
+     pub fn function_assigned(&self, function: Function) -> bool {
+         function.valid() && self.output_channel_mask(function) != 0
+     }

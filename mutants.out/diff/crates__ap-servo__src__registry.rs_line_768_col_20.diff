@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace <= with > in Registry::adjust_trim
+@@ -760,17 +760,17 @@
+         }
+         for (i, ch) in channels.iter_mut().enumerate() {
+             if ch.function != function {
+                 continue;
+             }
+             let change = if ch.config.reversed { -v } else { v };
+             let min = ch.config.servo_min;
+             let max = ch.config.servo_max;
+-            if max <= min {
++            if max > /* ~ changed by cargo-mutants ~ */ min {
+                 continue;
+             }
+             let trim_scaled = f32::from(ch.config.servo_trim - min) / f32::from(max - min);
+             let new_trim = if change > 0.0 && trim_scaled < 0.6 {
+                 ch.config.servo_trim + 1
+             } else if change < 0.0 && trim_scaled > 0.4 {
+                 ch.config.servo_trim - 1
+             } else {

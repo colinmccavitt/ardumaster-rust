@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/function.rs
++++ replace Function::is_control_surface -> bool with true
+@@ -566,17 +566,17 @@
+             || (self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0)
+             || (self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0)
+     }
+ 
+     /// Whether this moves an aerodynamic surface, upstream
+     /// `is_control_surface`.
+     #[must_use]
+     pub fn is_control_surface(self) -> bool {
+-        CONTROL_SURFACE.binary_search(&self.0).is_ok()
++        true /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The zero-based motor this function drives, upstream
+     /// `get_motor_num`. `None` for anything that is not a motor.
+     ///
+     /// The exact inverse of [`Self::motor`], written once rather than
+     /// transcribed a second time -- a round-trip test pins the pair
+     /// together, which no amount of re-reading the three ranges would.

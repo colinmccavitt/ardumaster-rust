@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ replace Registry::take_trimmed -> ChannelMask with Default::default()
+@@ -790,17 +790,17 @@
+     /// Take the set of nudged channels and clear it, upstream `save_trim`.
+     ///
+     /// Upstream writes each one to storage here. Storage is not this type's
+     /// business, so the set is handed back and cleared — the caller saves.
+     /// Clearing regardless is upstream's behaviour: a save that fails is not
+     /// retried, and the alternative would be an unbounded set of pending
+     /// writes.
+     pub fn take_trimmed(&mut self) -> ChannelMask {
+-        core::mem::take(&mut self.trimmed_mask)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Set every matching channel's trim to its current output, upstream
+     /// `set_trim_to_servo_out_for`.
+     ///
+     /// The "trim to where it is now" operation, for a pilot who has flown the
+     /// surface to where they want it to rest.
+     pub fn set_trim_to_servo_out_for(&self, channels: &mut [OutputChannel], function: Function) {

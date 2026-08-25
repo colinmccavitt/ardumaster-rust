@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/function.rs
++++ replace < with > in Function::valid
+@@ -373,17 +373,17 @@
+     ///
+     /// Upstream also tests the lower bound against `k_none`. That half is
+     /// vacuous here -- `k_none` is zero and the value is unsigned -- so it
+     /// is asserted at compile time below instead, which is stronger: if
+     /// `k_none` ever stopped being zero this would fail to build rather
+     /// than quietly accept every value.
+     #[must_use]
+     pub const fn valid(self) -> bool {
+-        (self.0 as usize) < NR_AUX_SERVO_FUNCTIONS
++        (self.0 as usize) > /* ~ changed by cargo-mutants ~ */ NR_AUX_SERVO_FUNCTIONS
+     }
+ 
+     /// The function driving a zero-based motor channel, upstream
+     /// `SRV_Channels::get_motor_function`.
+     ///
+     /// Three ranges, not one. Motors 1-8 are contiguous, then 9-12 sit
+     /// elsewhere in the enum, then 13 onward somewhere else again --
+     /// because the later motor functions were added long after the first

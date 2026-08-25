@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/registry.rs
++++ delete ! in Registry::for_each_failsafe_target
+@@ -838,17 +838,17 @@
+         channels: &[OutputChannel],
+         function: Function,
+         limit: Option<Limit>,
+         pwm: u16,
+         mut visit: F,
+     ) where
+         F: FnMut(u8, u16),
+     {
+-        if !self.function_assigned(function) {
++        if  /* ~ changed by cargo-mutants ~ */self.function_assigned(function) {
+             return;
+         }
+         for ch in channels {
+             if ch.function == function {
+                 let value = match limit {
+                     Some(l) => ch.config.limit_pwm(l),
+                     None => pwm,
+                 };

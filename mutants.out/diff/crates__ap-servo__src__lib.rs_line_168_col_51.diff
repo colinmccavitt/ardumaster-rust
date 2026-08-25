@@ -1,0 +1,21 @@
+--- crates/ap-servo/src/lib.rs
++++ replace - with + in ServoChannel::pwm_from_angle
+@@ -160,17 +160,17 @@
+         let high = f32::from(self.high_out);
+         v = constrain_value(v, -high, high);
+ 
+         if v > 0.0 {
+             let span = f32::from(self.servo_max) - f32::from(self.servo_trim);
+             self.servo_trim
+                 .wrapping_add(truncate_to_u16((v * span) / high))
+         } else {
+-            let span = f32::from(self.servo_trim) - f32::from(self.servo_min);
++            let span = f32::from(self.servo_trim) + /* ~ changed by cargo-mutants ~ */ f32::from(self.servo_min);
+             self.servo_trim
+                 .wrapping_sub(truncate_to_u16((-v * span) / high))
+         }
+     }
+ 
+     /// Pulse width for this channel's configured mapping, upstream
+     /// `pwm_from_scaled_value`.
+     #[must_use]
