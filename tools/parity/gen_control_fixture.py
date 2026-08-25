@@ -135,7 +135,10 @@ int main(void)
     // and the clamp never fires.
     static const float vels[]   = { -30.0f, -2.0f, -0.5f, -0.01f, 0.0f,
                                     0.01f, 0.5f, 2.0f, 30.0f };
-    static const float limits[] = { -1.0f, 0.0f, 1.0f };
+    // Not just -1, 0, 1: with a unit limit, multiplying by it and dividing
+    // by it give the same answer, so the sign tests cannot distinguish the
+    // two and a port using the wrong one passes.
+    static const float limits[] = { -2.0f, -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 2.0f };
     for (unsigned iv = 0; iv < ARRAY_SIZE(vels); iv++) {
         for (unsigned ia = 0; ia < ARRAY_SIZE(vels); ia++) {
             for (unsigned il = 0; il < ARRAY_SIZE(limits); il++) {
@@ -225,12 +228,43 @@ int main(void)
         }
     }
     {
+        // Asymmetric acceleration limits, so the gain selection's two
+        // branches compute different numbers, and a non-zero acceleration
+        // feedforward so adding it differs from subtracting it. With
+        // accel_min at exactly -accel_max and no feedforward -- which is what
+        // the loop above has -- neither is observable.
+        float vel = -6.0f, accel = 0.0f;
+        for (int i = 0; i < 500; i++) {
+            const float vel_des = (i < 250) ? 9.0f : -4.0f;
+            shape_vel_accel(vel_des, 1.75f, vel, accel,
+                            -2.5f, 8.0f, 12.0f, 0.01f, (i / 125) % 2 == 0);
+            update_vel_accel(vel, accel, 0.01f, 0.0f, 0.0f);
+            printf("loop_vel_asym,%d,0,0,0,0,0,%u,%u\n", i,
+                   fbits(vel), fbits(accel));
+        }
+    }
+    {
         postype_t pos = 0.0; float vel = 0.0f, accel = 0.0f;
         for (int i = 0; i < 1000; i++) {
             shape_pos_vel_accel(100.0, 0.0f, 0.0f, pos, vel, accel,
                                 -10.0f, 10.0f, -3.0f, 3.0f, 10.0f, 0.01f, true);
             update_pos_vel_accel(pos, vel, accel, 0.01f, 0.0f, 0.0f, 0.0f);
             printf("loop_pos,%d,0,0,0,0,0,%llu,%u\n", i,
+                   (unsigned long long)dbits(pos), fbits(accel));
+        }
+    }
+    {
+        // As above, plus a moving setpoint: with a stationary target the
+        // velocity feedforward is zero and the correction frame collapses
+        // onto the ground frame.
+        postype_t pos = -20.0; float vel = 0.0f, accel = 0.0f;
+        for (int i = 0; i < 1000; i++) {
+            const double target = 40.0 + 1.5 * (i * 0.01);
+            shape_pos_vel_accel(target, 1.5f, 0.8f, pos, vel, accel,
+                                -7.0f, 15.0f, -2.5f, 8.0f, 12.0f, 0.01f,
+                                (i / 250) % 2 == 0);
+            update_pos_vel_accel(pos, vel, accel, 0.01f, 0.0f, 0.0f, 0.0f);
+            printf("loop_pos_asym,%d,0,0,0,0,0,%llu,%u\n", i,
                    (unsigned long long)dbits(pos), fbits(accel));
         }
     }

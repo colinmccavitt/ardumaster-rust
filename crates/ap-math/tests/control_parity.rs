@@ -70,6 +70,14 @@ fn the_control_shaping_matches_upstream() {
     let mut loop_pos = (0.0_f64, 0.0_f32, 0.0_f32);
     let mut loop_angle = (3.0_f32, 0.0_f32, 0.0_f32);
 
+    // Loop state, carried across rows: these sections replay a
+    // trajectory, so resetting per row would compare every step
+    // against the first one.
+    let mut asym_vel = -6.0_f32;
+    let mut asym_vel_accel = 0.0_f32;
+    let mut asym_pos: Postype = -20.0;
+    let mut asym_pos_vel = 0.0_f32;
+    let mut asym_pos_accel = 0.0_f32;
     for line in text.lines() {
         if line.is_empty() || line.starts_with('#') || line.starts_with("kind,") {
             continue;
@@ -113,6 +121,73 @@ fn the_control_shaping_matches_upstream() {
                 let mut vel = f(r[1]);
                 update_vel_accel(&mut vel, f(r[2]), 0.02, f(r[3]), f(r[4]));
                 pairs.push(("update_vel_accel", vel, f(r[7])));
+            }
+            "loop_vel_asym" => {
+                // Asymmetric acceleration limits and a real feedforward: the
+                // symmetric, unfed loop cannot distinguish the gain
+                // selection's two branches, nor adding the feedforward from
+                // subtracting it.
+                let i: usize = r[1].parse().expect("index");
+                if i == 0 {
+                    asym_vel = -6.0;
+                    asym_vel_accel = 0.0;
+                }
+                let vel_des = if i < 250 { 9.0 } else { -4.0 };
+                shape_vel_accel(
+                    vel_des,
+                    1.75,
+                    asym_vel,
+                    &mut asym_vel_accel,
+                    -2.5,
+                    8.0,
+                    12.0,
+                    0.01,
+                    (i / 125).is_multiple_of(2),
+                )
+                .expect("valid");
+                update_vel_accel(&mut asym_vel, asym_vel_accel, 0.01, 0.0, 0.0);
+                pairs.push(("loop_vel_asym_vel", asym_vel, f(r[7])));
+                pairs.push(("loop_vel_asym_accel", asym_vel_accel, f(r[8])));
+            }
+            "loop_pos_asym" => {
+                let i: usize = r[1].parse().expect("index");
+                if i == 0 {
+                    asym_pos = -20.0;
+                    asym_pos_vel = 0.0;
+                    asym_pos_accel = 0.0;
+                }
+                let target = 40.0 + 1.5 * (i as f64 * 0.01);
+                shape_pos_vel_accel(
+                    target,
+                    1.5,
+                    0.8,
+                    asym_pos,
+                    asym_pos_vel,
+                    &mut asym_pos_accel,
+                    -7.0,
+                    15.0,
+                    -2.5,
+                    8.0,
+                    12.0,
+                    0.01,
+                    (i / 250).is_multiple_of(2),
+                )
+                .expect("valid");
+                update_pos_vel_accel(
+                    &mut asym_pos,
+                    &mut asym_pos_vel,
+                    asym_pos_accel,
+                    0.01,
+                    0.0,
+                    0.0,
+                    0.0,
+                );
+                let want = f64::from_bits(r[7].trim().parse::<u64>().expect("pos bits"));
+                assert!(
+                    (asym_pos - want).abs() < 1e-12,
+                    "loop_pos_asym position: {asym_pos} != upstream {want}"
+                );
+                pairs.push(("loop_pos_asym_accel", asym_pos_accel, f(r[8])));
             }
             "upd_pos" => {
                 // Position is compared as Postype, not as a float: it
@@ -259,6 +334,8 @@ fn the_control_shaping_matches_upstream() {
         "sqrt_accel",
         "upd_vel",
         "upd_pos",
+        "loop_vel_asym",
+        "loop_pos_asym",
         "shape_accel",
         "loop_vel",
         "loop_pos",
