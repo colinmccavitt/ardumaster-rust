@@ -1071,3 +1071,47 @@ board, where it is 27 and does not divide by 2. The port uses checked lookups
 throughout, so it cannot occur regardless — that is a property of the
 implementation rather than a behavioural divergence, and no configuration
 reachable on the target platform behaves differently.
+
+## D-022 — `ap_mktime` computes the year term in 32 bits and wraps after 2106
+
+**Upstream:** `AP_Common/time.cpp:6-45`.
+
+```cpp
+const unsigned MINUTE = 60;
+const unsigned HOUR = 60*MINUTE;
+const unsigned DAY = 24*HOUR;
+const unsigned YEAR = 365*DAY;
+...
+epoch = (t->tm_year - 70) * YEAR + ...;
+```
+
+`YEAR` is `unsigned`, so `(t->tm_year - 70) * YEAR` converts the `int` operand
+to `unsigned` and takes the product modulo 2^32, before it is widened into the
+64-bit `time_t` it is assigned to. The intermediate overflows once
+`(tm_year - 70) * 31536000` exceeds `UINT32_MAX`, which happens in 2107.
+
+**Measured, not inferred.** `tools/parity/gen_common_fixture.py` drives
+upstream's own compiled `ap_mktime` at three far-future dates:
+
+| date | upstream | correct |
+|---|---|---|
+| 2106-01-01 | 4291747200 | 4291747200 |
+| 2107-01-01 | **28315904** | 4323283200 |
+| 2150-01-01 | **1385314304** | wrapped |
+
+2107-01-01 comes back as 28,315,904 — which is the correct value minus exactly
+2^32. Upstream reports that date as 1970-11-25, a hundred and thirty-seven
+years early.
+
+**Consequence:** none before 2107, and this port targets SITL. It is recorded
+because it is a real defect with a clean cause, and because the port cannot
+reproduce it without deliberately narrowing an intermediate — which would mean
+writing a bug in on purpose.
+
+**Port:** `ap_mktime` computes in `i64` throughout. The two agree on every date
+in the fixture up to and including 2106.
+
+Pinned by `common_parity::the_common_helpers_match_upstream`, which asserts
+that any disagreement is a clean multiple of 2^32 and occurs only at
+`tm_year >= 207`. That makes it a statement about ArduPilot rather than about
+the port, and it will start failing the day upstream widens the constants.
