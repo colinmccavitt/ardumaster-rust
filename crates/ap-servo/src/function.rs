@@ -547,3 +547,49 @@ impl Function {
             .map(|&(_, out)| out)
     }
 }
+
+/// Functions that move an aerodynamic surface, upstream
+/// `SRV_Channel::is_control_surface`.
+///
+/// Sorted, so the lookup can binary search.
+const CONTROL_SURFACE: [u8; 16] = [2, 3, 4, 16, 17, 19, 21, 24, 25, 77, 78, 79, 80, 86, 87, 110];
+
+impl Function {
+    /// Whether this drives a multicopter motor, upstream `is_motor`.
+    ///
+    /// The same three ranges as [`Self::motor`], expressed against the
+    /// generated constants so they move together if upstream
+    /// renumbers.
+    #[must_use]
+    pub const fn is_motor(self) -> bool {
+        (self.0 >= Self::MOTOR1.0 && self.0 <= Self::MOTOR8.0)
+            || (self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0)
+            || (self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0)
+    }
+
+    /// Whether this moves an aerodynamic surface, upstream
+    /// `is_control_surface`.
+    #[must_use]
+    pub fn is_control_surface(self) -> bool {
+        CONTROL_SURFACE.binary_search(&self.0).is_ok()
+    }
+
+    /// The zero-based motor this function drives, upstream
+    /// `get_motor_num`. `None` for anything that is not a motor.
+    ///
+    /// The exact inverse of [`Self::motor`], written once rather than
+    /// transcribed a second time -- a round-trip test pins the pair
+    /// together, which no amount of re-reading the three ranges would.
+    #[must_use]
+    pub const fn motor_num(self) -> Option<u8> {
+        if self.0 >= Self::MOTOR1.0 && self.0 <= Self::MOTOR8.0 {
+            Some(self.0 - Self::MOTOR1.0)
+        } else if self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0 {
+            Some(8 + (self.0 - Self::MOTOR9.0))
+        } else if self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0 {
+            Some(12 + (self.0 - Self::MOTOR13.0))
+        } else {
+            None
+        }
+    }
+}

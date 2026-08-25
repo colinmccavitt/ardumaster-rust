@@ -226,6 +226,73 @@ L.append("    }")
 L.append("}")
 L.append("")
 
+
+# --- is_control_surface, is_motor, motor_num ----------------------------
+surf_body = cpp[cpp.index("bool SRV_Channel::is_control_surface"):]
+surf_body = surf_body[:surf_body.index("default:")]
+
+surfaces = []
+for m in re.finditer(r"case Function::(k_\w+)(?:\s*\.\.\.\s*Function::(k_\w+))?\s*:",
+                     surf_body):
+    lo_name, hi_name = m.group(1), m.group(2)
+    assert lo_name in by_name, "unknown surface function %s" % lo_name
+    if hi_name is None:
+        surfaces.append(by_name[lo_name])
+    else:
+        assert hi_name in by_name, "unknown surface function %s" % hi_name
+        surfaces.extend(range(by_name[lo_name], by_name[hi_name] + 1))
+
+assert surfaces, "no control-surface functions found"
+surfaces = sorted(set(surfaces))
+
+L.append("/// Functions that move an aerodynamic surface, upstream")
+L.append("/// `SRV_Channel::is_control_surface`.")
+L.append("///")
+L.append("/// Sorted, so the lookup can binary search.")
+L.append("const CONTROL_SURFACE: [u8; %d] = %s;"
+         % (len(surfaces), "[" + ", ".join(str(v) for v in surfaces) + "]"))
+L.append("")
+L.append("impl Function {")
+L.append("    /// Whether this drives a multicopter motor, upstream `is_motor`.")
+L.append("    ///")
+L.append("    /// The same three ranges as [`Self::motor`], expressed against the")
+L.append("    /// generated constants so they move together if upstream")
+L.append("    /// renumbers.")
+L.append("    #[must_use]")
+L.append("    pub const fn is_motor(self) -> bool {")
+L.append("        (self.0 >= Self::MOTOR1.0 && self.0 <= Self::MOTOR8.0)")
+L.append("            || (self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0)")
+L.append("            || (self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0)")
+L.append("    }")
+L.append("")
+L.append("    /// Whether this moves an aerodynamic surface, upstream")
+L.append("    /// `is_control_surface`.")
+L.append("    #[must_use]")
+L.append("    pub fn is_control_surface(self) -> bool {")
+L.append("        CONTROL_SURFACE.binary_search(&self.0).is_ok()")
+L.append("    }")
+L.append("")
+L.append("    /// The zero-based motor this function drives, upstream")
+L.append("    /// `get_motor_num`. `None` for anything that is not a motor.")
+L.append("    ///")
+L.append("    /// The exact inverse of [`Self::motor`], written once rather than")
+L.append("    /// transcribed a second time -- a round-trip test pins the pair")
+L.append("    /// together, which no amount of re-reading the three ranges would.")
+L.append("    #[must_use]")
+L.append("    pub const fn motor_num(self) -> Option<u8> {")
+L.append("        if self.0 >= Self::MOTOR1.0 && self.0 <= Self::MOTOR8.0 {")
+L.append("            Some(self.0 - Self::MOTOR1.0)")
+L.append("        } else if self.0 >= Self::MOTOR9.0 && self.0 <= Self::MOTOR12.0 {")
+L.append("            Some(8 + (self.0 - Self::MOTOR9.0))")
+L.append("        } else if self.0 >= Self::MOTOR13.0 && self.0 <= Self::MOTOR32.0 {")
+L.append("            Some(12 + (self.0 - Self::MOTOR13.0))")
+L.append("        } else {")
+L.append("            None")
+L.append("        }")
+L.append("    }")
+L.append("}")
+L.append("")
+
 OUT.write_text("\n".join(L))
-print("wrote %s: %d functions, %d e-stop, %d defaults, NR_AUX_SERVO_FUNCTIONS = %d"
-      % (OUT.name, len(entries), len(estop), len(setup), count))
+print("wrote %s: %d functions, %d e-stop, %d defaults, %d surfaces, NR_AUX_SERVO_FUNCTIONS = %d"
+      % (OUT.name, len(entries), len(estop), len(setup), len(surfaces), count))

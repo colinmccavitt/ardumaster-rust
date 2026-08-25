@@ -198,3 +198,51 @@ impl ServoChannel {
         }
     }
 }
+
+/// A named endpoint of a channel's travel, upstream `SRV_Channel::Limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Limit {
+    /// The neutral position.
+    Trim,
+    /// The low end of the *commanded* range.
+    Min,
+    /// The high end of the *commanded* range.
+    Max,
+    /// No pulse at all.
+    ZeroPwm,
+}
+
+impl ServoChannel {
+    /// The pulse width for a named endpoint, upstream `get_limit_pwm`.
+    ///
+    /// `Min` and `Max` are the ends of the commanded range, not of the pulse
+    /// range — so on a reversed channel they swap, and asking for `Min` gives
+    /// the *larger* pulse. That is the point: a caller asking for "minimum
+    /// deflection" wants the surface at one end, not the servo at one end.
+    ///
+    /// Trim does not swap. It is a single configured position rather than one
+    /// end of a pair, so reversing has nothing to exchange it with — and a
+    /// port that reversed it too would move the neutral point of every
+    /// reversed channel.
+    #[must_use]
+    pub fn limit_pwm(&self, limit: Limit) -> u16 {
+        match limit {
+            Limit::Trim => self.servo_trim,
+            Limit::Min => {
+                if self.reversed {
+                    self.servo_max
+                } else {
+                    self.servo_min
+                }
+            }
+            Limit::Max => {
+                if self.reversed {
+                    self.servo_min
+                } else {
+                    self.servo_max
+                }
+            }
+            Limit::ZeroPwm => 0,
+        }
+    }
+}
