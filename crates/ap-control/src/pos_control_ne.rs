@@ -6,10 +6,11 @@
 //! multirotor's authority in the two is not remotely the same.
 
 use ap_math::control::{
-    shape_accel_xy, shape_pos_vel_accel_xy, shape_vel_accel_xy, stopping_distance,
-    update_pos_vel_accel_xy, update_vel_accel_xy, Postype,
+    shape_accel, shape_accel_xy, shape_pos_vel_accel, shape_pos_vel_accel_xy, shape_vel_accel,
+    shape_vel_accel_xy, stopping_distance, update_pos_vel_accel, update_pos_vel_accel_xy,
+    update_vel_accel, update_vel_accel_xy, Postype,
 };
-use ap_math::scalar::is_positive;
+use ap_math::scalar::{is_positive, is_zero};
 use ap_math::vector2::{Vector2, Vector2f};
 
 /// Default horizontal jerk, upstream `POSCONTROL_JERK_NE_MSSS`.
@@ -347,4 +348,318 @@ pub fn stopping_point_ne(
     stopping_point.x += Postype::from(vel.x * stopping_time_s);
     stopping_point.y += Postype::from(vel.y * stopping_time_s);
     stopping_point
+}
+
+/// Gain applied to acceleration and jerk when already over speed, upstream
+/// `POSCONTROL_OVERSPEED_GAIN_U`.
+pub const OVERSPEED_GAIN_D: f32 = 2.0;
+
+/// Largest upward stopping distance the vertical controller will plan,
+/// upstream `POSCONTROL_STOPPING_DIST_UP_MAX_M`.
+pub const STOPPING_DIST_UP_MAX_M: f32 = 3.0;
+
+/// Largest downward stopping distance, upstream
+/// `POSCONTROL_STOPPING_DIST_DOWN_MAX_M`.
+pub const STOPPING_DIST_DOWN_MAX_M: f32 = 2.0;
+
+/// The largest downward acceleration the vertical shaper will command,
+/// regardless of what the limits say.
+///
+/// Upstream writes it inline as `constrain_float(accel_max, 0.0, 7.5)`. A
+/// multirotor can push *up* with everything the motors have, but it can only
+/// accelerate *down* by unloading them — and past free fall there is nothing
+/// left to give. Seven and a half leaves margin below `g` so the aircraft
+/// keeps some authority while descending hard.
+const ACCEL_DOWN_MAX_MSS: f32 = 7.5;
+
+/// The vertical limits.
+#[derive(Debug, Clone, Copy)]
+pub struct DLimits {
+    /// Maximum descent speed, metres per second, positive.
+    pub vel_max_down_ms: f32,
+    /// Maximum climb speed, metres per second, positive.
+    pub vel_max_up_ms: f32,
+    /// Maximum vertical acceleration, metres per second squared.
+    pub accel_max_d_mss: f32,
+    /// Maximum vertical jerk, metres per second cubed.
+    pub jerk_max_d_msss: f32,
+}
+
+impl DLimits {
+    /// Derive the vertical limits, upstream `D_set_max_speed_accel_m`.
+    ///
+    /// Zero means *leave unchanged*, not "no limit" — the opposite of the
+    /// horizontal setter, which takes whatever it is given. So this needs the
+    /// previous limits to update rather than replacing them, and a caller
+    /// wanting to change only the climb rate passes zero for the others.
+    ///
+    /// The jerk bound is a filter-bandwidth argument. The acceleration PID
+    /// low-passes its target and its error, and commanding jerk faster than
+    /// those filters can follow buys nothing — the command is smoothed away
+    /// and all that remains is phase lag. So the jerk is capped at
+    /// `min(g, accel_max) * 2π·f / 5`, one fifth of the filter's own corner
+    /// rate. The `min` with gravity is there because a jerk budget derived
+    /// from an acceleration the aircraft cannot reach is not a real budget.
+    #[must_use]
+    pub fn derive(
+        previous: Self,
+        descent_speed_max_ms: f32,
+        climb_speed_max_ms: f32,
+        accel_max_d_mss: f32,
+        shaping_jerk_d_msss: f32,
+        accel_pid_filt_t_hz: f32,
+        accel_pid_filt_e_hz: f32,
+    ) -> Self {
+        let mut out = previous;
+        if !is_zero(descent_speed_max_ms) {
+            out.vel_max_down_ms = descent_speed_max_ms.abs();
+        }
+        if !is_zero(climb_speed_max_ms) {
+            out.vel_max_up_ms = climb_speed_max_ms.abs();
+        }
+        if !is_zero(accel_max_d_mss) {
+            out.accel_max_d_mss = accel_max_d_mss.abs();
+        }
+
+        out.jerk_max_d_msss = shaping_jerk_d_msss;
+        let ceiling = GRAVITY_MSS.min(out.accel_max_d_mss);
+        for filt_hz in [accel_pid_filt_t_hz, accel_pid_filt_e_hz] {
+            if is_positive(filt_hz) {
+                let bound = ceiling * (core::f32::consts::TAU * filt_hz) / 5.0;
+                out.jerk_max_d_msss = out.jerk_max_d_msss.min(bound);
+            }
+        }
+        out
+    }
+
+    /// Scale acceleration and jerk when already exceeding a speed limit,
+    /// upstream `calculate_overspeed_gain`.
+    ///
+    /// A vehicle travelling faster than it is supposed to needs more authority
+    /// than usual, not less — it has further to slow down and the same
+    /// distance to do it in. The gain grows in proportion to the overspeed, so
+    /// twice the permitted speed gets four times the acceleration budget.
+    ///
+    /// Both branches guard against a zero limit, which would otherwise divide.
+    /// A zero limit means unconfigured, and an unconfigured axis should not be
+    /// told it is over speed.
+    #[must_use]
+    pub fn overspeed_gain(&self, vel_desired_d_ms: f32) -> f32 {
+        if vel_desired_d_ms > self.vel_max_down_ms && !is_zero(self.vel_max_down_ms) {
+            return OVERSPEED_GAIN_D * vel_desired_d_ms / self.vel_max_down_ms;
+        }
+        if vel_desired_d_ms < -self.vel_max_up_ms && !is_zero(self.vel_max_up_ms) {
+            return -OVERSPEED_GAIN_D * vel_desired_d_ms / self.vel_max_up_ms;
+        }
+        1.0
+    }
+}
+
+/// The vertical controller's kinematic state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PosControlD {
+    /// Desired position along down, upstream `_pos_desired_ned_m.z`.
+    pub pos_desired_m: Postype,
+    /// Desired velocity along down.
+    pub vel_desired_ms: f32,
+    /// Desired acceleration along down.
+    pub accel_desired_mss: f32,
+    /// Directional limit from the last controller run.
+    pub limit: f32,
+}
+
+impl Default for PosControlD {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PosControlD {
+    /// Everything at zero.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pos_desired_m: 0.0,
+            vel_desired_ms: 0.0,
+            accel_desired_mss: 0.0,
+            limit: 0.0,
+        }
+    }
+
+    fn advance(&mut self, dt: f32, pos_error: f32, vel_error: f32) {
+        update_pos_vel_accel(
+            &mut self.pos_desired_m,
+            &mut self.vel_desired_ms,
+            self.accel_desired_mss,
+            dt,
+            self.limit,
+            pos_error,
+            vel_error,
+        );
+    }
+
+    /// The asymmetric acceleration bounds this axis shapes against.
+    ///
+    /// Down is positive, so the *lower* bound is upward acceleration and gets
+    /// the full budget, while the upper is capped at [`ACCEL_DOWN_MAX_MSS`].
+    fn accel_bounds(accel_max: f32) -> (f32, f32) {
+        (-accel_max, accel_max.clamp(0.0, ACCEL_DOWN_MAX_MSS))
+    }
+
+    /// Command a vertical acceleration, upstream `input_accel_D_m`.
+    pub fn input_accel(
+        &mut self,
+        accel_d_mss: f32,
+        limits: &DLimits,
+        dt: f32,
+        pos_error: f32,
+        vel_error: f32,
+    ) {
+        // Read before advancing: the gain describes the state the command is
+        // being issued against.
+        let jerk_max = limits.jerk_max_d_msss * limits.overspeed_gain(self.vel_desired_ms);
+        self.advance(dt, pos_error, vel_error);
+        let _ = shape_accel(accel_d_mss, &mut self.accel_desired_mss, jerk_max, dt);
+    }
+
+    /// Command a vertical velocity, upstream `input_vel_accel_D_m`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "upstream's signature plus the errors it reads from members \
+this port does not own"
+    )]
+    pub fn input_vel_accel(
+        &mut self,
+        vel_d_ms: &mut f32,
+        accel_d_mss: f32,
+        limits: &DLimits,
+        dt: f32,
+        limit_output: bool,
+        pos_error: f32,
+        vel_error: f32,
+    ) {
+        let gain = limits.overspeed_gain(self.vel_desired_ms);
+        let accel_max = limits.accel_max_d_mss * gain;
+        let jerk_max = limits.jerk_max_d_msss * gain;
+        let (accel_min, accel_up_max) = Self::accel_bounds(accel_max);
+
+        self.advance(dt, pos_error, vel_error);
+
+        let _ = shape_vel_accel(
+            *vel_d_ms,
+            accel_d_mss,
+            self.vel_desired_ms,
+            &mut self.accel_desired_mss,
+            accel_min,
+            accel_up_max,
+            jerk_max,
+            dt,
+            limit_output,
+        );
+
+        update_vel_accel(vel_d_ms, accel_d_mss, dt, 0.0, 0.0);
+    }
+
+    /// Command a vertical position, upstream `input_pos_vel_accel_D_m`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "upstream's signature plus the errors it reads from members \
+this port does not own"
+    )]
+    pub fn input_pos_vel_accel(
+        &mut self,
+        pos_d_m: &mut f32,
+        vel_d_ms: &mut f32,
+        accel_d_mss: f32,
+        limits: &DLimits,
+        dt: f32,
+        limit_output: bool,
+        pos_error: f32,
+        vel_error: f32,
+    ) {
+        let gain = limits.overspeed_gain(self.vel_desired_ms);
+        let accel_max = limits.accel_max_d_mss * gain;
+        let jerk_max = limits.jerk_max_d_msss * gain;
+        let (accel_min, accel_up_max) = Self::accel_bounds(accel_max);
+
+        self.advance(dt, pos_error, vel_error);
+
+        let _ = shape_pos_vel_accel(
+            Postype::from(*pos_d_m),
+            *vel_d_ms,
+            accel_d_mss,
+            self.pos_desired_m,
+            self.vel_desired_ms,
+            &mut self.accel_desired_mss,
+            // Velocity bounds are the *climb* limit downward-negated and the
+            // descent limit: up is negative in this frame.
+            -limits.vel_max_up_ms,
+            limits.vel_max_down_ms,
+            accel_min,
+            accel_up_max,
+            jerk_max,
+            dt,
+            limit_output,
+        );
+
+        let mut pos = Postype::from(*pos_d_m);
+        update_pos_vel_accel(&mut pos, vel_d_ms, accel_d_mss, dt, 0.0, 0.0, 0.0);
+        *pos_d_m = pos as f32;
+    }
+
+    /// Fly a climb rate, upstream `D_set_pos_target_from_climb_rate_ms`.
+    ///
+    /// The sign flip is the whole function: a climb rate is positive upward
+    /// and this axis is positive downward.
+    ///
+    /// `ignore_descent_limit` clamps the stored limit to at most zero, which
+    /// removes any *downward* restriction while leaving an upward one intact.
+    /// Used on landing, where the vehicle must be allowed to keep descending
+    /// even though something has reported it cannot.
+    pub fn set_pos_target_from_climb_rate(
+        &mut self,
+        climb_rate_ms: f32,
+        ignore_descent_limit: bool,
+        limits: &DLimits,
+        dt: f32,
+        pos_error: f32,
+        vel_error: f32,
+    ) {
+        if ignore_descent_limit {
+            self.limit = self.limit.min(0.0);
+        }
+        let mut vel_d_ms = -climb_rate_ms;
+        self.input_vel_accel(&mut vel_d_ms, 0.0, limits, dt, true, pos_error, vel_error);
+    }
+}
+
+/// Where the vehicle would come to rest vertically, upstream
+/// `get_stopping_point_D_m`.
+///
+/// Bounded asymmetrically, and the asymmetry is not arbitrary: three metres up
+/// against two metres down. Overshooting upward costs altitude the vehicle can
+/// recover; overshooting downward may cost the vehicle. The tighter bound is
+/// on the direction where being wrong is unrecoverable.
+///
+/// An unconfigured axis — no position gain or no acceleration limit — reports
+/// the current position rather than guessing.
+#[must_use]
+pub fn stopping_point_d(
+    pos_estimate_m: f32,
+    pos_offset_m: f32,
+    vel_estimate_ms: f32,
+    vel_offset_ms: f32,
+    kp: f32,
+    limits: &DLimits,
+) -> f32 {
+    let curr_pos_d_m = pos_estimate_m - pos_offset_m;
+    let curr_vel_d_ms = vel_estimate_ms - vel_offset_ms;
+
+    if !is_positive(kp) || !is_positive(limits.accel_max_d_mss) {
+        return curr_pos_d_m;
+    }
+
+    curr_pos_d_m
+        + stopping_distance(curr_vel_d_ms, kp, limits.accel_max_d_mss)
+            .clamp(-STOPPING_DIST_UP_MAX_M, STOPPING_DIST_DOWN_MAX_M)
 }

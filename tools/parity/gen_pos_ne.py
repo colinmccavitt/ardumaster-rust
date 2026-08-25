@@ -74,6 +74,14 @@ public:
     using AC_PosControl::_jerk_max_ne_msss;
     using AC_PosControl::_shaping_jerk_ne_msss;
     using AC_PosControl::_p_pos_ne_m;
+    using AC_PosControl::_p_pos_d_m;
+    using AC_PosControl::_pid_accel_d_m;
+    using AC_PosControl::_vel_max_down_ms;
+    using AC_PosControl::_vel_max_up_ms;
+    using AC_PosControl::_accel_max_d_mss;
+    using AC_PosControl::_jerk_max_d_msss;
+    using AC_PosControl::_shaping_jerk_d_msss;
+    using AC_PosControl::calculate_overspeed_gain;
 };
 
 int main()
@@ -131,6 +139,102 @@ int main()
                            fbits(pos._accel_max_ne_mss),
                            fbits(pos._jerk_max_ne_msss));
                   }
+    }
+
+    // ---- the vertical limit derivation ----
+    //
+    // Zero means leave unchanged here, the opposite of the horizontal setter,
+    // so the sweep passes zeros deliberately and carries state between rows.
+    // The jerk bound comes from the acceleration PID's filter cutoffs, so
+    // those are swept too.
+    printf("#dlimits\n");
+    printf("idx,descent,climb,accel,shaping_jerk,filt_t,filt_e,"
+           "vel_down,vel_up,accel_max,jerk_max\n");
+    {
+        pos._vel_max_down_ms = 2.0f;
+        pos._vel_max_up_ms = 2.5f;
+        pos._accel_max_d_mss = 2.5f;
+
+        const float speeds[] = {0.0f, -3.5f, 6.0f};
+        const float accels[] = {0.0f, -1.5f, 12.0f};
+        const float jerks[] = {1.0f, 5.0f, 100.0f};
+        const float filts[] = {0.0f, 0.5f, 5.0f, 40.0f};
+        int idx = 0;
+        for (unsigned a = 0; a < 3; a++)
+          for (unsigned b = 0; b < 3; b++)
+            for (unsigned c = 0; c < 3; c++)
+              for (unsigned j = 0; j < 3; j++)
+                for (unsigned ft = 0; ft < 4; ft++)
+                  for (unsigned fe = 0; fe < 4; fe++) {
+                    pos._shaping_jerk_d_msss.set(jerks[j]);
+                    pos._pid_accel_d_m.filt_T_hz().set(filts[ft]);
+                    pos._pid_accel_d_m.filt_E_hz().set(filts[fe]);
+
+                    const float in_down = pos._vel_max_down_ms;
+                    const float in_up = pos._vel_max_up_ms;
+                    const float in_accel = pos._accel_max_d_mss;
+
+                    pos.D_set_max_speed_accel_m(speeds[a], speeds[b], accels[c]);
+
+                    printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", idx++,
+                           fbits(speeds[a]), fbits(speeds[b]), fbits(accels[c]),
+                           fbits(jerks[j]), fbits(filts[ft]), fbits(filts[fe]),
+                           fbits(pos._vel_max_down_ms), fbits(pos._vel_max_up_ms),
+                           fbits(pos._accel_max_d_mss), fbits(pos._jerk_max_d_msss));
+
+                    // Put them back, so each row starts from the same state
+                    // and the leave-unchanged behaviour stays legible.
+                    pos._vel_max_down_ms = in_down;
+                    pos._vel_max_up_ms = in_up;
+                    pos._accel_max_d_mss = in_accel;
+                  }
+    }
+
+    // ---- the overspeed gain ----
+    printf("#overspeed\n");
+    printf("idx,vel_desired,vel_down,vel_up,gain\n");
+    {
+        const float downs[] = {0.0f, 1.5f, 4.0f};
+        const float ups[] = {0.0f, 2.0f, 5.0f};
+        int idx = 0;
+        for (unsigned a = 0; a < 3; a++)
+          for (unsigned b = 0; b < 3; b++)
+            for (int v = -20; v <= 20; v++) {
+                const float vd = v * 0.75f;
+                pos._vel_max_down_ms = downs[a];
+                pos._vel_max_up_ms = ups[b];
+                pos._vel_desired_ned_ms.z = vd;
+                printf("%d,%u,%u,%u,%u\n", idx++,
+                       fbits(vd), fbits(downs[a]), fbits(ups[b]),
+                       fbits(pos.calculate_overspeed_gain()));
+            }
+    }
+
+    // ---- the vertical stopping point ----
+    printf("#dstop\n");
+    printf("idx,pos,pos_off,vel,vel_off,kp,accel_max,stop\n");
+    {
+        const float vels[] = {-9.0f, -2.0f, 0.0f, 1.0f, 9.0f};
+        const float kps[] = {0.0f, 1.0f, 3.0f};
+        const float accels[] = {0.0f, 2.5f, 10.0f};
+        int idx = 0;
+        for (unsigned a = 0; a < 5; a++)
+          for (unsigned b = 0; b < 3; b++)
+            for (unsigned c = 0; c < 3; c++) {
+                pos._pos_estimate_ned_m.z = -12.5f;
+                pos._pos_offset_ned_m.z = 1.5f;
+                pos._vel_estimate_ned_ms.z = vels[a];
+                pos._vel_offset_ned_ms.z = 0.25f;
+                pos._p_pos_d_m.kP().set(kps[b]);
+                pos._accel_max_d_mss = accels[c];
+
+                postype_t stop = 0.0;
+                pos.get_stopping_point_D_m(stop);
+
+                printf("%d,%u,%u,%u,%u,%u,%u,%.17g\n", idx++,
+                       fbits(-12.5f), fbits(1.5f), fbits(vels[a]), fbits(0.25f),
+                       fbits(kps[b]), fbits(accels[c]), (double)stop);
+            }
     }
 
     return 0;
