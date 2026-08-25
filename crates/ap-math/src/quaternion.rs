@@ -24,7 +24,7 @@
 use core::ops::Mul;
 
 use crate::matrix3::Matrix3;
-use crate::scalar::{is_zero, safe_asin, Real};
+use crate::scalar::{is_zero, safe_asin, wrap_pi, Real};
 use crate::vector3::Vector3;
 
 /// Quaternion with the scalar part first. Upstream `QuaternionT<T>`.
@@ -200,8 +200,11 @@ impl<T: Real> QuaternionT<T> {
         )
     }
 
-    /// The equivalent rotation matrix. Upstream `rotation_matrix()`, which
-    /// fills an out-parameter.
+    /// The equivalent rotation matrix, upstream `rotation_matrix`.
+    ///
+    /// Not the way to rotate a single vector -- `rotate` is cheaper and is
+    /// what upstream uses there -- but a matrix is what the attitude and
+    /// navigation code wants when it needs the whole basis at once.
     #[inline]
     pub fn rotation_matrix(self) -> Matrix3<T> {
         let (q1, q2, q3, q4) = (self.q1, self.q2, self.q3, self.q4);
@@ -227,6 +230,87 @@ impl<T: Real> QuaternionT<T> {
             two * (q2q4 - q1q3),
             two * (q3q4 + q1q2),
             one - two * (q2q2 + q3q3),
+        )
+    }
+
+    /// Build from an axis and an angle, upstream `from_axis_angle(axis, theta)`.
+    ///
+    /// The axis must already be a unit vector: upstream does not check, and
+    /// normalising here would make this disagree with it for a caller that
+    /// passed something else. Use [`Self::from_rotation_vector`] when the
+    /// length carries the angle.
+    ///
+    /// A zero angle gives the identity rather than a quaternion built from
+    /// `sin(0)`, which would be the zero vector part with an unnormalised
+    /// scalar.
+    #[must_use]
+    pub fn from_axis_angle(axis: Vector3<T>, theta: T) -> Self {
+        if is_zero(theta) {
+            return Self::identity();
+        }
+        let half = theta * T::from_f64(0.5);
+        let st2 = half.sin();
+        Self {
+            q1: half.cos(),
+            q2: axis.x * st2,
+            q3: axis.y * st2,
+            q4: axis.z * st2,
+        }
+    }
+
+    /// Build from a rotation vector, upstream `from_axis_angle(Vector3)`.
+    ///
+    /// The vector's direction is the axis and its length is the angle. A zero
+    /// vector gives the identity.
+    #[must_use]
+    pub fn from_rotation_vector(v: Vector3<T>) -> Self {
+        let theta = v.length();
+        if is_zero(theta) {
+            return Self::identity();
+        }
+        Self::from_axis_angle(v / theta, theta)
+    }
+
+    /// The rotation as an axis scaled by its angle, upstream `to_axis_angle`.
+    ///
+    /// The angle is wrapped to ±pi, so a rotation of 350 degrees comes back as
+    /// −10 rather than +350. That matters wherever the result is used as an
+    /// error to be driven to zero: the unwrapped form would command the long
+    /// way round.
+    ///
+    /// A zero rotation gives the vector part unchanged, which for a normalised
+    /// identity quaternion is the zero vector.
+    #[must_use]
+    pub fn to_axis_angle(self) -> Vector3<T> {
+        let v = Vector3::new(self.q2, self.q3, self.q4);
+        let l = (self.q2 * self.q2 + self.q3 * self.q3 + self.q4 * self.q4).sqrt();
+        if is_zero(l) {
+            return v;
+        }
+        v / l * wrap_pi(T::from_f64(2.0) * l.atan2(self.q1))
+    }
+
+    /// Rotate a vector by this quaternion, upstream `operator*(Vector3)`.
+    ///
+    /// Written as upstream writes it — `v + 2 q1 (qv x v) + 2 qv x (qv x v)`,
+    /// with the cross products inlined — rather than via the rotation matrix.
+    /// The two are algebraically equal and not bit-equal, and this is the one
+    /// the attitude controller's arithmetic is built on.
+    #[must_use]
+    pub fn rotate(self, v: Vector3<T>) -> Vector3<T> {
+        let mut uv = [
+            self.q3 * v.z - self.q4 * v.y,
+            self.q4 * v.x - self.q2 * v.z,
+            self.q2 * v.y - self.q3 * v.x,
+        ];
+        uv[0] = uv[0] + uv[0];
+        uv[1] = uv[1] + uv[1];
+        uv[2] = uv[2] + uv[2];
+
+        Vector3::new(
+            v.x + self.q1 * uv[0] + self.q3 * uv[2] - self.q4 * uv[1],
+            v.y + self.q1 * uv[1] + self.q4 * uv[0] - self.q2 * uv[2],
+            v.z + self.q1 * uv[2] + self.q2 * uv[1] - self.q3 * uv[0],
         )
     }
 
