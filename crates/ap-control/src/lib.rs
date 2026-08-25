@@ -21,6 +21,7 @@
 
 #![no_std]
 
+pub mod attitude_kinematics;
 mod steer;
 mod yaw;
 
