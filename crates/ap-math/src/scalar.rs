@@ -55,6 +55,8 @@ pub trait Real:
     fn sin(self) -> Self;
     /// Tangent.
     fn tan(self) -> Self;
+    /// Arctangent.
+    fn atan(self) -> Self;
     /// Two-argument arctangent, upstream `atan2F(y, x)`.
     fn atan2(self, x: Self) -> Self;
     /// True if this is positive or negative infinity.
@@ -106,6 +108,10 @@ impl Real for f32 {
     #[inline]
     fn tan(self) -> Self {
         libm::tanf(self)
+    }
+    #[inline]
+    fn atan(self) -> Self {
+        libm::atanf(self)
     }
     #[inline]
     fn atan2(self, x: Self) -> Self {
@@ -176,6 +182,10 @@ impl Real for f64 {
     #[inline]
     fn tan(self) -> Self {
         libm::tan(self)
+    }
+    #[inline]
+    fn atan(self) -> Self {
+        libm::atan(self)
     }
     #[inline]
     fn atan2(self, x: Self) -> Self {
@@ -470,6 +480,37 @@ pub fn linear_interpolate<T: Real>(
     let p =
         (input_value.to_f64() - input_low.to_f64()) / (input_high.to_f64() - input_low.to_f64());
     T::from_f64(output_low.to_f64() + p * (output_high.to_f64() - output_low.to_f64()))
+}
+
+/// Wrap an angle in centidegrees to `0..35999`, upstream's INTEGER
+/// `wrap_360_cd`.
+///
+/// A separate function from the floating point overload rather than a wrapper:
+/// upstream's integer version uses `%`, which truncates toward zero, where the
+/// float version uses `fmodf`. The correction for a negative remainder is what
+/// makes both land in the same range.
+#[inline]
+#[must_use]
+pub const fn wrap_360_cd(angle: i32) -> i32 {
+    let res = angle % 36000;
+    if res < 0 {
+        res + 36000
+    } else {
+        res
+    }
+}
+
+/// Wrap an angle in centidegrees to `-17999..18000`, upstream's INTEGER
+/// `wrap_180_cd`.
+#[inline]
+#[must_use]
+pub const fn wrap_180_cd(angle: i32) -> i32 {
+    let res = wrap_360_cd(angle);
+    if res > 18000 {
+        res - 36000
+    } else {
+        res
+    }
 }
 
 #[cfg(test)]

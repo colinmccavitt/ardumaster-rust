@@ -1,0 +1,16 @@
+[package]
+name = "ap-nav"
+description = "Port of ArduPilot libraries/AP_L1_Control and AP_Navigation (Plane-4.7.0). Tracked as FW-016."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[dev-dependencies]
+ap-replay = { workspace = true }
+
+[lints]
+workspace = true

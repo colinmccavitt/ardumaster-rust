@@ -21,6 +21,7 @@ ap-filter = { path = "crates/ap-filter" }
 ap-pid = { path = "crates/ap-pid" }
 ap-control = { path = "crates/ap-control" }
 ap-param = { path = "crates/ap-param" }
+ap-nav = { path = "crates/ap-nav" }
 ap-scheduler = { path = "crates/ap-scheduler" }
 ap-replay = { path = "crates/ap-replay" }
 ap-tecs = { path = "crates/ap-tecs" }
