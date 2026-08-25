@@ -32,6 +32,7 @@
 
 use ap_math::scalar::{is_zero, radians, Real};
 
+pub mod arming;
 pub mod current_limit;
 mod frames;
 pub mod output;
