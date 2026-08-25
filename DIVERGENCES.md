@@ -159,6 +159,40 @@ Status counts: **9 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   `tools/parity/gen_notch_fixture.py` declares its filters `static` for the same
   reason the biquad harness does.
 
+  **Fifth occurrence, and the first with a measured consequence.** `SplineCurve`
+  (`AP_Math/SplineCurve.h:53-70`) has **no constructor and no member
+  initialisers** — every scalar member is indeterminate for a non-static
+  instance.
+
+  It matters because `set_origin_and_destination` *reads* one of them before
+  writing it. Its first act after solving the spline is
+
+  ```cpp
+  calc_dt_speed_max(0.0f, ..., _origin_speed_max, accel_max);
+  ```
+
+  and `calc_dt_speed_max` ends with
+
+  ```cpp
+  speed_max = MIN(speed_max, safe_sqrt(2*accel_max*(dist + sq(_destination_speed_max)/(2*accel_max))));
+  ```
+
+  `_destination_speed_max` has not been assigned for this segment yet. On a
+  statically stored curve it is zero and the answer is well defined; on the
+  stack it is whatever was there.
+
+  This was measured rather than reasoned about. The first version of
+  `tools/parity/gen_spline_fixture.py` created each `SplineCurve` as a local in
+  a loop, and upstream returned an `origin_speed_max` of **218.1241** for the
+  `short_leg` scenario — a number determined by the previous scenario's stack
+  frame. With the same curves in static storage it returns **158.11388**, which
+  is exactly `sqrt(2 · 125 · 100)`: the braking clamp binding against a
+  destination speed of zero. Same code, same inputs, two different answers.
+
+  The port initialises every field, so it matches the static case, which is
+  what a real vehicle gets — `AC_WPNav` holds its splines as members of a
+  statically stored vehicle object.
+
   Note the port does **not** diverge on the related early-return path:
   `compute_params` leaves `a1`..`b2` untouched when the cutoff is not positive, so
   retuning a live filter to zero keeps the previous tuning's coefficients. Those are

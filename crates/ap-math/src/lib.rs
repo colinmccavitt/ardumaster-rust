@@ -30,6 +30,7 @@ pub mod quaternion;
 pub mod rotations_gen;
 pub mod scalar;
 pub mod scurve;
+pub mod spline;
 pub mod vector2;
 pub mod vector3;
 pub mod vector_n;
