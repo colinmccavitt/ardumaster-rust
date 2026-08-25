@@ -53,6 +53,8 @@ pub trait Real:
     fn cos(self) -> Self;
     /// Sine.
     fn sin(self) -> Self;
+    /// Tangent.
+    fn tan(self) -> Self;
     /// Two-argument arctangent, upstream `atan2F(y, x)`.
     fn atan2(self, x: Self) -> Self;
     /// True if this is positive or negative infinity.
@@ -100,6 +102,10 @@ impl Real for f32 {
     #[inline]
     fn sin(self) -> Self {
         libm::sinf(self)
+    }
+    #[inline]
+    fn tan(self) -> Self {
+        libm::tanf(self)
     }
     #[inline]
     fn atan2(self, x: Self) -> Self {
@@ -166,6 +172,10 @@ impl Real for f64 {
     #[inline]
     fn sin(self) -> Self {
         libm::sin(self)
+    }
+    #[inline]
+    fn tan(self) -> Self {
+        libm::tan(self)
     }
     #[inline]
     fn atan2(self, x: Self) -> Self {
@@ -315,6 +325,12 @@ pub fn wrap_pi<T: Real>(radian: T) -> T {
     }
     res
 }
+
+/// Standard gravity, m/s2. Upstream `GRAVITY_MSS` in `AP_Math/definitions.h`.
+///
+/// Single-precision upstream, and single-precision here: under D-015 the
+/// unsuffixed literals it is combined with are floats too.
+pub const GRAVITY_MSS: f32 = 9.806_65;
 
 /// Constrain a value to `[low, high]`, mapping NaN to the midpoint.
 ///

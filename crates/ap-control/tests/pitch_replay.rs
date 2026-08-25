@@ -1,10 +1,10 @@
-//! Log-replay test for the ported roll controller (ADR-0008).
+//! Log-replay test for the ported pitch controller (ADR-0008).
 //!
-//! `AP_RollController` cannot be driven by a linked harness the way `AC_PID`
-//! was: the rate loop reaches into `AP::ahrs()` and `AP::scheduler()`, and
-//! standing those up outside a vehicle means linking most of the firmware. So
-//! this replays a real flight instead, driven by the inputs upstream actually
-//! saw — recorded by the `RCTI`/`RCTO` reference-build patch.
+//! `AP_PitchController` cannot be driven by a linked harness the way `AC_PID`
+//! was: the rate loop and the turn-coordination offset both reach into
+//! `AP::ahrs()`, and standing that up outside a vehicle means linking most of
+//! the firmware. So this replays a real flight instead, driven by the inputs
+//! upstream actually saw — recorded by the `PCTI`/`PCTO` reference-build patch.
 //!
 //! # The replay runs continuously, and the integrator is the state check
 //!
@@ -13,7 +13,7 @@
 //! constructing a fresh controller per row makes every call take the reset path
 //! and the D term comes out zero every time. The steps have to run in order.
 //!
-//! `RCTI` records the integrator as it stood entering each call, and the replay
+//! `PCTI` records the integrator as it stood entering each call, and the replay
 //! never reseeds it inside a segment. Agreeing with that value across thousands
 //! of consecutive steps is what proves the state evolved identically, rather
 //! than merely producing the right output from a seeded one.
@@ -33,7 +33,7 @@ index fault is a test failure, which is the desired outcome"
     reason = "comparing against upstream's recorded values is the point"
 )]
 
-use ap_control::{RateGains, RollController, RollInputs};
+use ap_control::{PitchController, PitchInputs, RateGains};
 use ap_pid::PidGains;
 use ap_replay::{Comparison, Fixture, Params};
 
@@ -46,34 +46,34 @@ fn fixtures_dir() -> std::path::PathBuf {
 }
 
 /// Build the controller from the reference flight's own parameters.
-fn controller_from_params(p: &Params) -> RollController {
+fn controller_from_params(p: &Params) -> PitchController {
     let pid = PidGains {
-        p: p.f32("RLL_RATE_P"),
-        i: p.f32("RLL_RATE_I"),
-        d: p.f32("RLL_RATE_D"),
-        ff: p.f32("RLL_RATE_FF"),
+        p: p.f32("PTCH_RATE_P"),
+        i: p.f32("PTCH_RATE_I"),
+        d: p.f32("PTCH_RATE_D"),
+        ff: p.f32("PTCH_RATE_FF"),
         dff: 0.0,
-        imax: p.f32("RLL_RATE_IMAX"),
+        imax: p.f32("PTCH_RATE_IMAX"),
         pdmax: 0.0,
-        filt_t_hz: p.f32("RLL_RATE_FLTT"),
-        filt_e_hz: p.f32("RLL_RATE_FLTE"),
-        filt_d_hz: p.f32("RLL_RATE_FLTD"),
-        srmax: p.f32("RLL_RATE_SMAX"),
+        filt_t_hz: p.f32("PTCH_RATE_FLTT"),
+        filt_e_hz: p.f32("PTCH_RATE_FLTE"),
+        filt_d_hz: p.f32("PTCH_RATE_FLTD"),
+        srmax: p.f32("PTCH_RATE_SMAX"),
         srtau: 1.0,
     };
     let gains = RateGains {
-        tau: p.f32("RLL2SRV_TCONST"),
-        rmax_pos: p.f32("RLL2SRV_RMAX"),
-        rmax_neg: p.f32("RLL2SRV_RMAX"),
+        tau: p.f32("PTCH2SRV_TCONST"),
+        rmax_pos: p.f32("PTCH2SRV_RMAX_UP"),
+        rmax_neg: p.f32("PTCH2SRV_RMAX_DN"),
     };
-    RollController::new(pid, gains)
+    PitchController::new(pid, gains, p.f32("PTCH2SRV_RLL"))
 }
 
 #[test]
-fn roll_controller_replay_against_upstream_flight() {
+fn pitch_controller_replay_against_upstream_flight() {
     let dir = fixtures_dir();
-    let fx_path = dir.join("roll_replay.csv");
-    let pm_path = dir.join("roll_replay_params.csv");
+    let fx_path = dir.join("pitch_replay.csv");
+    let pm_path = dir.join("pitch_replay_params.csv");
     if !fx_path.exists() || !pm_path.exists() {
         eprintln!("skipping: fixture or parameter set not present");
         return;
@@ -86,14 +86,18 @@ fn roll_controller_replay_against_upstream_flight() {
         fx.len()
     );
 
-    // AP_Int16 upstream; the log records it as a float.
+    // AP_Int16 upstream; the log records them as floats.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "an int16 parameter round-tripped through the log as a float"
+        reason = "int16 parameters round-tripped through the log as floats"
     )]
-    let airspeed_min = params.f32("AIRSPEED_MIN") as i16;
+    let (airspeed_min, airspeed_max) = (
+        params.f32("AIRSPEED_MIN") as i16,
+        params.f32("AIRSPEED_MAX") as i16,
+    );
+    let roll_limit_deg = params.f32("ROLL_LIMIT_DEG");
 
-    let mut out = Comparison::new("servo out (centidegrees)", 1.0);
+    let mut out = Comparison::new("elevator out (centidegrees)", 1.0);
     let mut tgt = Comparison::new("demanded rate (deg/s)", 0.01);
     let mut act = Comparison::new("measured rate (deg/s)", 0.001);
     let mut p_term = Comparison::new("P", 0.01);
@@ -105,12 +109,6 @@ fn roll_controller_replay_against_upstream_flight() {
     /// Steps to skip after a reseed, while the unlogged filter state converges.
     const WARMUP_STEPS: usize = 50;
 
-    // Continuous replay, segmented at holes. The controller carries filter
-    // state -- the PID's target, error and derivative low-passes -- so a row
-    // cannot be replayed in isolation: constructing a fresh controller per row
-    // makes every call take the reset path and the D term is always zero.
-    // Seeding only the integrator is not enough, and the filter state is not
-    // logged, so the replay must run the steps in order.
     let mut c = controller_from_params(&params);
     let mut prev_us: Option<u64> = None;
     let mut segments = 1usize;
@@ -123,14 +121,11 @@ fn roll_controller_replay_against_upstream_flight() {
         // A gap of more than about one loop period means upstream ran calls
         // that were never recorded, and the filters cannot be carried across
         // it. The threshold is generous because the scheduler jitters by up to
-        // a millisecond: an exact comparison treated 112 jittery timestamps as
+        // a millisecond: an exact comparison treated jittery timestamps as
         // holes and threw away half the flight to warm-up.
         let hole = match prev_us {
             None => true,
-            Some(p) => {
-                let gap = (row.time_us - p) as f64 * 1e-6;
-                gap > f64::from(dt) * 1.5
-            }
+            Some(p) => (row.time_us - p) as f64 * 1e-6 > f64::from(dt) * 1.5,
         };
         prev_us = Some(row.time_us);
 
@@ -141,19 +136,26 @@ fn roll_controller_replay_against_upstream_flight() {
             warmup_left = WARMUP_STEPS;
         }
 
-        let inp = RollInputs {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "attitudes in centidegrees, and milliseconds since boot, \
+are logged as floats but are integral"
+        )]
+        let inp = PitchInputs {
             scaler: row.input("sc") as f32,
             disable_integrator: row.input("di") != 0.0,
             ground_mode: row.input("gm") != 0.0,
-            roll_rate_rad: row.input("gy") as f32,
+            pitch_rate_rad: row.input("gy") as f32,
             airspeed_eas: Some(row.input("as") as f32),
             airspeed_min,
+            airspeed_max,
+            roll_limit_deg,
+            roll_rad: row.input("rr") as f32,
+            pitch_rad: row.input("pr") as f32,
+            roll_sensor_cd: row.input("rs") as i32,
+            pitch_sensor_cd: row.input("ps") as i32,
             eas2tas: row.input("e2t") as f32,
             dt,
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "milliseconds since boot fits a u32 for any flight"
-            )]
             now_ms: (row.time_us / 1000) as u32,
         };
 
@@ -163,7 +165,7 @@ fn roll_controller_replay_against_upstream_flight() {
         )]
         let angle_err_cd = row.input("ae") as i32;
 
-        // RCTI records the integrator as it stood ENTERING the call, so it must
+        // PCTI records the integrator as it stood ENTERING the call, so it must
         // be sampled before the port integrates, not after.
         let integrator_before = c.controller.rate_pid.integrator();
 
@@ -184,9 +186,6 @@ fn roll_controller_replay_against_upstream_flight() {
         i_term.sample(row.time_us, row.output("I"), info.i.into());
         d_term.sample(row.time_us, row.output("D"), info.d.into());
         ff_term.sample(row.time_us, row.output("F"), info.ff.into());
-
-        // The integrator is never reseeded inside a segment, so agreeing with
-        // upstream's recorded value proves the state evolved identically.
         integ.sample(row.time_us, row.input("ig"), integrator_before.into());
 
         compared += 1;

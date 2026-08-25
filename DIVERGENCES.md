@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **7 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **8 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -589,6 +589,49 @@ diagonal, so this is an API difference rather than a behavioural one.
   rejecting, and always outside the true bound — rather than hard-coding the
   window, so the assertion stays correct if upstream changes the constant. Also
   `location::tests::d016_latitude_bound_is_checked_as_an_integer`.
+
+## D-017 — transcendental functions come from `libm`, not the platform C library
+
+- **status**: `applied` — forced by `no_std`, and it bounds achievable parity
+- **upstream**: calls `sinf`, `cosf`, `tanf`, `atan2f` and friends from whatever
+  libm the target links. On SITL that is glibc.
+- **ported**: calls the Rust `libm` crate through the `Real` trait, because
+  ADR-0004 rules out `std` and there is no C library on the firmware target.
+- **why**: not a choice about behaviour. A `no_std` binary has no glibc to call.
+- **risk**: **Bounded and measured.** Over a full reference flight the two
+  libraries disagree on the pitch controller's turn-coordination offset for 616
+  of 11,203 samples, by at most **4 ulp**, and by at most 7.629e-6 in absolute
+  terms on values of order 30 — the two worst cases are different samples. That is five orders of magnitude below any control
+  authority the term has, and it is the entire residual in the pitch replay:
+  every quantity that reaches no transcendental, including the measured rate, is
+  bit-exact.
+- **sitl_impact**: A `sitl-diff` comparison of any module using transcendentals
+  cannot be held to bit-exactness. ADR-0004 already declines bit-exact float
+  parity as a goal; this entry records the actual size of the gap so a future
+  divergence of this magnitude is recognised as expected rather than
+  investigated as a defect.
+- **pinned by**: `trig_library_parity::libm_and_glibc_agree_to_within_four_ulp`,
+  which recomputes the offset both ways over the reference flight and fails if
+  the disagreement ever exceeds 4 ulp — so a toolchain change that widens it is
+  caught rather than absorbed.
+
+### The trap this exposed
+
+Under `cfg(test)` the test harness links `std`, and `std`'s inherent
+`f32::sin`/`cos`/`tan` **shadow the `Real` trait methods** — inherent methods win
+name resolution. So `bank_angle.tan()` compiled to glibc in unit tests and to
+`libm` in the firmware build, from identical source. The unit tests were
+exercising different mathematics than the code they were meant to verify, and
+the only visible symptom was an `unused import: Real` warning in the `lib test`
+target alone.
+
+Integration tests were unaffected: they link the ordinary `no_std` rlib, where
+no inherent method exists and the trait is the only candidate. That is why the
+pitch replay's numbers did not move when this was fixed.
+
+Concrete-typed float code therefore calls the trait explicitly —
+`Real::tan(x)`, not `x.tan()`. Generic code over `T: Real` is safe as written,
+since there is no inherent method to shadow it.
 
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
