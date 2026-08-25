@@ -323,6 +323,54 @@ Status counts: **7 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   against values produced by compiling and running upstream's own `crc.cpp` on
   this (little-endian) host — so the equivalence is measured, not assumed.
 
+## D-011 — `Polygon_closest_distance_line` iterates its edges with a `uint8_t`
+
+- **status**: `applied`
+- **upstream**: `AP_Math/polygon.cpp`, in `Polygon_closest_distance_line`:
+
+  ```cpp
+  float Polygon_closest_distance_line(const Vector2f *V, unsigned N, ...)
+  {
+      ...
+      for (uint8_t i=0; i<N-1; i++) {
+          const Vector2f &v1 = V[i];
+          const Vector2f &v2 = V[i+1];
+  ```
+
+  `N` is `unsigned`; `i` is `uint8_t`. Two ways that goes wrong:
+
+  1. **`N == 0`** makes `N-1` wrap to `UINT_MAX`. The loop reads past the end
+     of the array and cannot terminate.
+  2. **`N >= 257`** makes `i` wrap from 255 back to 0 before it ever reaches
+     `N-1`, so the loop cannot terminate. At `N == 256` it happens to be
+     correct, which is what makes this easy to miss.
+- **ported**: iterates the slice's consecutive pairs. Neither wrap exists, and
+  with fewer than two points there are simply no edges.
+- **why**: an infinite loop in the flight path. `AP_OABendyRuler::calc_margin_
+  from_inclusion_and_exclusion_polygons` reads its count as
+  `uint16_t num_points` straight from `AC_PolyFence_loader::get_inclusion_
+  polygon()` and passes it here, so a boundary of more than 256 points is
+  representable by the types involved rather than being ruled out upstream.
+  Whether a given airframe's fence storage can hold one is a separate question
+  — the point is that nothing between the fence loader and this loop prevents
+  it, and the failure mode is a hang rather than a wrong answer.
+- **risk**: **None for any input upstream handles correctly.** For
+  `2 <= N <= 256` the port walks exactly the same edges in the same order and
+  returns bit-identical results — confirmed across the whole parity fixture.
+  The divergence exists only where upstream hangs or reads out of bounds.
+- **sitl_impact**: None. Reference fences are far below 256 points.
+- **pinned by**: `polygon::tests::d011_closest_distance_line_terminates_without_edges`
+  and `polygon::tests::d011_closest_distance_line_handles_more_than_256_points`,
+  which cover `N == 0`, `N == 1` and `N == 400`. Both would hang under
+  upstream's loop rather than fail, which is the point.
+
+### Related, not separately registered
+
+`Polygon_intersects` has the same `uint8_t` counter against an `unsigned N`, so
+it too cannot terminate for `N >= 257`. The port's slice iteration fixes it by
+construction, and it is covered by the same reasoning and the same fixture, so
+it is recorded here rather than given its own id.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change

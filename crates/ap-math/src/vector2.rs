@@ -312,6 +312,115 @@ impl<T: Real> DivAssign<T> for Vector2<T> {
     }
 }
 
+impl<T: Real> Vector2<T> {
+    /// Where two line segments cross, upstream `segment_intersection`.
+    ///
+    /// Returns `None` when the segments are parallel, collinear, or simply do
+    /// not meet. Upstream returns a `bool` and writes through an out-parameter,
+    /// leaving it untouched on failure; `Option` says the same thing without
+    /// the caller having to know that.
+    pub fn segment_intersection(
+        seg1_start: Self,
+        seg1_end: Self,
+        seg2_start: Self,
+        seg2_end: Self,
+    ) -> Option<Self> {
+        let r1 = seg1_end - seg1_start;
+        let r2 = seg2_end - seg2_start;
+        let ss2_ss1 = seg2_start - seg1_start;
+        let r1xr2 = r1.cross(r2);
+        let q_pxr = ss2_ss1.cross(r1);
+
+        if is_zero(r1xr2) {
+            // collinear, or parallel and non-intersecting
+            return None;
+        }
+
+        let t = ss2_ss1.cross(r2) / r1xr2;
+        let u = q_pxr / r1xr2;
+        if u >= T::zero() && u <= T::one() && t >= T::zero() && t <= T::one() {
+            Some(seg1_start + r1 * t)
+        } else {
+            None
+        }
+    }
+
+    /// The point on segment `v`..`w` closest to `p`, upstream `closest_point`.
+    ///
+    /// A degenerate segment (`v == w`) returns `v`.
+    pub fn closest_point(p: Self, v: Self, w: Self) -> Self {
+        let l2 = (v - w).length_squared();
+        if l2 < T::from_f64(crate::scalar::FLT_EPSILON) {
+            return v;
+        }
+        // projection of p onto the line through v and w, clamped to the segment
+        let t = (p - v).dot(w - v) / l2;
+        if t <= T::zero() {
+            v
+        } else if t >= T::one() {
+            w
+        } else {
+            v + (w - v) * t
+        }
+    }
+
+    /// The point on the segment from the origin to `w` closest to `p`.
+    ///
+    /// Upstream's two-argument `closest_point`, a simplification of the
+    /// three-argument form with `v` at the origin. Note it returns `w` rather
+    /// than the origin for a degenerate segment, where the three-argument form
+    /// returns `v` — the two agree, since there `v == w`.
+    pub fn closest_point_radial(p: Self, w: Self) -> Self {
+        let l2 = w.length_squared();
+        if l2 < T::from_f64(crate::scalar::FLT_EPSILON) {
+            return w;
+        }
+        let t = p.dot(w) / l2;
+        if t <= T::zero() {
+            Self::zero()
+        } else if t >= T::one() {
+            w
+        } else {
+            w * t
+        }
+    }
+
+    /// Squared distance from the segment origin..`w` to point `p`.
+    pub fn closest_distance_between_radial_and_point_squared(w: Self, p: Self) -> T {
+        (Self::closest_point_radial(p, w) - p).length_squared()
+    }
+
+    /// Squared distance from segment `w1`..`w2` to point `p`.
+    pub fn closest_distance_between_line_and_point_squared(w1: Self, w2: Self, p: Self) -> T {
+        Self::closest_distance_between_radial_and_point_squared(w2 - w1, p - w1)
+    }
+
+    /// Distance from segment `w1`..`w2` to point `p`.
+    pub fn closest_distance_between_line_and_point(w1: Self, w2: Self, p: Self) -> T {
+        Self::closest_distance_between_line_and_point_squared(w1, w2, p).sqrt()
+    }
+
+    /// Squared distance between two line segments.
+    ///
+    /// The minimum over each endpoint against the opposite segment. That is
+    /// exact only when the segments do not cross; upstream accepts this,
+    /// because its callers test for crossing separately before asking for a
+    /// distance.
+    pub fn closest_distance_between_lines_squared(a1: Self, a2: Self, b1: Self, b2: Self) -> T {
+        let d1 = Self::closest_distance_between_line_and_point_squared(b1, b2, a1);
+        let d2 = Self::closest_distance_between_line_and_point_squared(b1, b2, a2);
+        let d3 = Self::closest_distance_between_line_and_point_squared(a1, a2, b1);
+        let d4 = Self::closest_distance_between_line_and_point_squared(a1, a2, b2);
+        let m1 = if d1 < d2 { d1 } else { d2 };
+        let m2 = if d3 < d4 { d3 } else { d4 };
+        if m1 < m2 {
+            m1
+        } else {
+            m2
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // assert_eq! on Vector2 uses the epsilon-based PartialEq above, which is

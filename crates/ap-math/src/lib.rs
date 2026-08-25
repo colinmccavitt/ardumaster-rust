@@ -17,6 +17,7 @@ pub mod crc;
 /// Generated CRC lookup tables. See `tools/parity/gen_crc_tables.py`.
 pub mod crc_tables;
 pub mod matrix3;
+pub mod polygon;
 pub mod quaternion;
 pub mod scalar;
 pub mod vector2;
