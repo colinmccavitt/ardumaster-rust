@@ -33,6 +33,8 @@
 
 #![no_std]
 
+pub mod slope_stage;
+
 use ap_math::location::{AltContext, AltFrame, Location};
 use ap_math::scalar::{constrain_value, is_zero};
 
