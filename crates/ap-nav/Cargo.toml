@@ -10,7 +10,18 @@ rust-version.workspace = true
 ap-math = { workspace = true }
 
 [dev-dependencies]
+# self-dependency so the crate's own tests get the `replay` feature
+ap-nav = { path = ".", features = ["replay"] }
+# SITL builds with HAL_WITH_EKF_DOUBLE, so the Location geodesics compute in
+# double there. Without this the tests run at single precision and disagree
+# with the reference build on every bearing.
+ap-math = { workspace = true, features = ["ekf-double"] }
 ap-replay = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Exposes `L1Control::state_for_replay` and `seed_for_replay`, used only by the
+# log-replay test. Never enabled in a flight build.
+replay = []

@@ -93,6 +93,32 @@ struct LastLoiter {
     center: Location,
 }
 
+/// L1's internal state, for log replay only.
+///
+/// Upstream exposes some of this through accessors that round to centidegrees.
+/// The replay wants the underlying values, so it can tell a real divergence
+/// from a rounding boundary.
+#[cfg(feature = "replay")]
+#[derive(Debug, Clone, Copy)]
+pub struct NavState {
+    /// Demanded lateral acceleration, m/s2.
+    pub lat_acc_dem: f32,
+    /// Bearing to the L1 reference point, radians.
+    pub nav_bearing: f32,
+    /// Angle between demanded and achieved velocity, radians.
+    pub bearing_error: f32,
+    /// Distance from track, metres.
+    pub crosstrack_error: f32,
+    /// Bearing to the target, centidegrees, before wrapping.
+    pub target_bearing_cd: i32,
+    /// L1 tracking distance, metres.
+    pub l1_dist: f32,
+    /// Previous `Nu`, kept to break turning indecision.
+    pub last_nu: f32,
+    /// Crosstrack integrator.
+    pub xtrack_i: f32,
+}
+
 /// Fixed-wing lateral navigation, upstream `AP_L1_Control`.
 #[derive(Debug, Clone, Copy)]
 pub struct L1Control {
@@ -152,6 +178,39 @@ impl L1Control {
         }
     }
 
+    /// A snapshot of the internal state, for log replay.
+    ///
+    /// Not available in a flight build: see the `replay` feature.
+    #[cfg(feature = "replay")]
+    #[must_use]
+    pub const fn state_for_replay(&self) -> NavState {
+        NavState {
+            lat_acc_dem: self.lat_acc_dem,
+            nav_bearing: self.nav_bearing,
+            bearing_error: self.bearing_error,
+            crosstrack_error: self.crosstrack_error,
+            target_bearing_cd: self.target_bearing_cd,
+            l1_dist: self.l1_dist,
+            last_nu: self.last_nu,
+            xtrack_i: self.xtrack_i,
+        }
+    }
+
+    /// Put the state upstream carried into a call back where it was.
+    ///
+    /// Needed because only `update_waypoint` is logged while all four entry
+    /// points share `_last_Nu` and the crosstrack integrator: when the vehicle
+    /// loitered or held a heading between two waypoint calls, the replay has
+    /// to be put back on upstream's trajectory rather than continuing from a
+    /// state upstream never had.
+    ///
+    /// Not available in a flight build: see the `replay` feature.
+    #[cfg(feature = "replay")]
+    pub fn seed_for_replay(&mut self, last_nu: f32, xtrack_i: f32) {
+        self.last_nu = last_nu;
+        self.xtrack_i = xtrack_i;
+    }
+
     /// Fly the track backwards, upstream `set_reverse`.
     pub fn set_reverse(&mut self, reverse: bool) {
         self.reverse = reverse;
@@ -192,13 +251,20 @@ impl L1Control {
     /// than to the configured pitch limits, and notes the choice could be
     /// revisited.
     #[must_use]
-    pub fn nav_roll_cd(&self, inp: &NavInputs) -> f32 {
+    pub fn nav_roll_cd(&self, inp: &NavInputs) -> i32 {
         let pitch_lim = radians(PITCH_LIMIT_DEG);
         let pitch = constrain_value(inp.pitch_rad, -pitch_lim, pitch_lim);
         let ret = degrees(Real::atan(
             self.lat_acc_dem * (1.0 / (GRAVITY_MSS * Real::cos(pitch))),
         )) * 100.0;
-        constrain_value(ret, -9000.0, 9000.0)
+        // Upstream returns int32_t, so the fraction is thrown away on return
+        // and the roll controller receives whole centidegrees.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream's implicit conversion on return; the value is already constrained to +-9000"
+        )]
+        let out = constrain_value(ret, -9000.0, 9000.0) as i32;
+        out
     }
 
     /// Bearing to the L1 reference point, centidegrees. Upstream

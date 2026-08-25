@@ -163,6 +163,16 @@ mod tests {
     }
 }
 
+/// Radians to centidegrees in single precision, upstream `rad_to_cd`.
+///
+/// Upstream declares it `float rad_to_cd(float)`. That signature matters:
+/// callers holding a double narrow on the call rather than scaling at full
+/// precision.
+#[inline]
+fn rad_to_cd_f32(rad: f32) -> f32 {
+    rad * (18000.0_f32 / core::f32::consts::PI)
+}
+
 /// Metres per 1e-7 degree of latitude, upstream `LOCATION_SCALING_FACTOR`.
 ///
 /// Upstream declares it `constexpr float` from a double literal, so the value
@@ -312,8 +322,20 @@ upstream's and reproducing it is the point"
     /// unlike most of its centidegree conversions.
     #[must_use]
     pub fn get_bearing_to(self, other: Self) -> i32 {
-        let cd =
-            self.get_bearing(other) * (Ftype::from_f64(18000.0) / Ftype::PI) + Ftype::from_f64(0.5);
-        cd.to_f64() as i32
+        // rad_to_cd is declared `float rad_to_cd(float)`, so a caller
+        // holding a double narrows on the call and the scaling happens in
+        // single precision. Doing it in Ftype put a third of the bearings one
+        // centidegree out, always at a rounding boundary -- and this bearing
+        // is what the indecision guard compares against 120 degrees, so a
+        // boundary case can flip a turn decision.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream narrows to float and then truncates to int32; \
+both are upstream's and reproducing them is the point"
+        )]
+        let cd = rad_to_cd_f32(self.get_bearing(other).to_f64() as f32) + 0.5_f32;
+        #[allow(clippy::cast_possible_truncation, reason = "upstream's int32_t() cast")]
+        let out = cd as i32;
+        out
     }
 }
