@@ -74,6 +74,7 @@ CHANNELS_OUT = ROOT / "fixtures/motors_channels.csv"
 SRVFN_OUT = ROOT / "fixtures/srv_functions.csv"
 AUX_OUT = ROOT / "fixtures/srv_aux_function.csv"
 CALC_OUT = ROOT / "fixtures/srv_calc_pwm.csv"
+MASKMAP_OUT = ROOT / "fixtures/motor_mask_map.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -238,6 +239,7 @@ public:
     using AP_MotorsMulticopter::_throttle_hover;
     using AP_Motors::_throttle_in;
     using AP_Motors::_throttle_slew_rate;
+    using AP_Motors::motor_mask_to_srv_channel_mask;
     using AP_MotorsMulticopter::update_throttle_range;
     using AP_MotorsMulticopter::output_boost_throttle;
     using AP_MotorsMulticopter::output_rpyt;
@@ -1007,6 +1009,41 @@ int main(void)
         SRV_Channels::set_emergency_stop(false);
     }
 
+    // ---- motor numbers, functions and channels ----
+    printf("#maskmap\n");
+    printf("case,kind,a,b\n");
+    {
+        Probe &m = motors;
+
+        // Read-only from here: record the assignment as found, then ask the
+        // real function what it makes of it. `ch` rows are the assignment
+        // (-1 where this build defines no such function), `mm` rows are a
+        // motor mask and the channel mask it maps to, and `gm` is the frame's
+        // own get_motor_mask.
+        for (unsigned ch = 0; ch < 32; ch++) {
+            int found = -1;
+            for (unsigned fn = 0; fn < 190; fn++) {
+                const uint32_t mask = SRV_Channels::get_output_channel_mask(
+                    (SRV_Channel::Function)fn);
+                if (mask & (1u << ch)) {
+                    found = (int)fn;
+                    break;
+                }
+            }
+            printf("0,ch,%u,%d\n", ch, found);
+        }
+
+        static const uint32_t MASKS[] = {
+            0u, 0x1u, 0x3u, 0xFu, 0xFFu, 0x101u, 0xF0Fu, 0xFFFFFFFFu,
+        };
+        for (unsigned i = 0; i < sizeof(MASKS) / sizeof(MASKS[0]); i++) {
+            printf("0,mm,%u,%u\n", MASKS[i],
+                   (unsigned)m.motor_mask_to_srv_channel_mask(MASKS[i]));
+        }
+
+        printf("0,gm,0,%u\n", (unsigned)m.get_motor_mask());
+    }
+
     return 0;
 }
 '''
@@ -1044,6 +1081,16 @@ def main():
                                 calc_marker = "#calcpwm\n"
                                 if calc_marker in eighth:
                                     eighth, ninth = eighth.split(calc_marker, 1)
+                                    mm_marker = "#maskmap\n"
+                                    if mm_marker in ninth:
+                                        ninth, tenth = ninth.split(mm_marker, 1)
+                                        MASKMAP_OUT.write_text(mm_marker + tenth)
+                                        rows = sum(
+                                            1 for l in tenth.splitlines()
+                                            if l and not l.startswith("#")
+                                            and "," in l and not l[0].isalpha())
+                                        print("wrote %s: %d rows"
+                                              % (MASKMAP_OUT.name, rows))
                                     CALC_OUT.write_text(calc_marker + ninth)
                                     rows = sum(1 for l in ninth.splitlines()
                                                if l and not l.startswith("#")
