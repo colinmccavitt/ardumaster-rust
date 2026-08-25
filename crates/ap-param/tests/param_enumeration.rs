@@ -1,0 +1,296 @@
+//! Parity test for the descriptor traversal (FW-004 slice 2, ADR-0010).
+//!
+//! Two fixtures, and keeping them apart is what makes this test worth running:
+//!
+//! - `param_structure.csv` is the `var_info` tree as the reference build holds
+//!   it — names, indices, types, flags, nesting. This is the *input*.
+//! - `param_enumeration.csv` is upstream's own `first()`/`next()` walk of that
+//!   tree — full name, key, `token.idx`, `group_element`, type. This is the
+//!   *oracle*.
+//!
+//! Building the port's table from the enumeration would only prove that a
+//! lookup finds what was put into it. Building it from the structure and
+//! comparing against the enumeration tests the traversal order, the name
+//! concatenation and truncation, and the `group_id` encoding — which is what
+//! decides where each parameter is stored, and so what ADR-0010 is about.
+//!
+//! # Why the port enumerates more than the vehicle
+//!
+//! A group reached through a null pointer contributes no parameters to a
+//! running vehicle, and 135 of the tree's top-level entries include several
+//! such. The port has no object graph yet — that is a later slice — so it walks
+//! everything the tables describe. The test therefore requires that every
+//! parameter upstream produced is reproduced exactly, and reports the extras
+//! rather than demanding there be none.
+
+#![allow(
+    clippy::indexing_slicing,
+    reason = "indexes fixture fields whose count is checked first; in a test an \
+index fault is a test failure, which is the desired outcome"
+)]
+
+use std::collections::HashMap;
+
+use ap_param::{enumerate, GroupInfo, ParamInfo, ParamRef};
+
+fn fixtures_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures"))
+        .expect("workspace root")
+}
+
+/// One row of the structure fixture.
+struct Row {
+    parent_path: String,
+    pos: usize,
+    key: u16,
+    idx: u8,
+    ptype: u8,
+    flags: u16,
+    name: String,
+}
+
+fn load_structure() -> Option<Vec<Row>> {
+    let text = std::fs::read_to_string(fixtures_dir().join("param_structure.csv")).ok()?;
+    let mut rows = Vec::new();
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.splitn(7, ',').collect();
+        if f.len() != 7 {
+            continue;
+        }
+        rows.push(Row {
+            parent_path: f[0].to_owned(),
+            pos: f[1].parse().expect("pos"),
+            key: f[2].parse().expect("key"),
+            idx: f[3].parse().expect("idx"),
+            ptype: f[4].parse().expect("type"),
+            flags: f[5].parse().expect("flags"),
+            name: f[6].to_owned(),
+        });
+    }
+    Some(rows)
+}
+
+/// Rebuild the nested tables.
+///
+/// The port's tables borrow rather than owning, so the test leaks each level as
+/// it is built. Children are built before their parent can reference them, so
+/// the construction runs bottom up.
+fn build_groups(
+    by_parent: &HashMap<String, Vec<&Row>>,
+    path: &str,
+) -> Option<&'static [GroupInfo<'static>]> {
+    let children = by_parent.get(path)?;
+    let mut out: Vec<GroupInfo<'static>> = Vec::with_capacity(children.len());
+    for (i, r) in children.iter().enumerate() {
+        let child_path = format!("{path}.{i}");
+        out.push(GroupInfo {
+            name: Box::leak(r.name.clone().into_boxed_str()),
+            idx: r.idx,
+            ptype: r.ptype,
+            flags: r.flags,
+            group: build_groups(by_parent, &child_path),
+        });
+    }
+    Some(Box::leak(out.into_boxed_slice()))
+}
+
+fn build_table(rows: &[Row]) -> Vec<ParamInfo<'static>> {
+    let mut by_parent: HashMap<String, Vec<&Row>> = HashMap::new();
+    for r in rows {
+        by_parent.entry(r.parent_path.clone()).or_default().push(r);
+    }
+    for v in by_parent.values_mut() {
+        v.sort_by_key(|r| r.pos);
+    }
+
+    let top = by_parent.get("").cloned().unwrap_or_default();
+    top.iter()
+        .enumerate()
+        .map(|(i, r)| ParamInfo {
+            name: Box::leak(r.name.clone().into_boxed_str()),
+            key: r.key,
+            ptype: r.ptype,
+            flags: r.flags,
+            group: build_groups(&by_parent, &i.to_string()),
+        })
+        .collect()
+}
+
+#[test]
+fn the_traversal_reproduces_upstreams_enumeration() {
+    let Some(rows) = load_structure() else {
+        eprintln!("skipping: param_structure.csv not present");
+        return;
+    };
+    let Ok(oracle_text) = std::fs::read_to_string(fixtures_dir().join("param_enumeration.csv"))
+    else {
+        eprintln!("skipping: param_enumeration.csv not present");
+        return;
+    };
+
+    // The mask the oracle was produced under. It is zero, because
+    // set_frame_type_flags() runs later in vehicle init than load_all() does,
+    // so every entry carrying frame bits is excluded -- which is what the 231
+    // "extras" turned out to be, rather than the null pointers I first assumed.
+    let frame_type_flags: u16 = std::fs::read_to_string(fixtures_dir().join("param_frame.csv"))
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .nth(1)
+                .and_then(|l| l.split(',').nth(1).map(str::to_owned))
+        })
+        .and_then(|v| v.trim().parse().ok())
+        .expect("param_frame.csv should record frame_type_flags");
+
+    let table = build_table(&rows);
+    assert!(table.len() > 100, "table looks empty: {}", table.len());
+
+    // `ParamToken::key` is, despite its name, an INDEX into var_info -- first()
+    // and next() walk it as one and never put the storage key there. The oracle
+    // therefore carries indices where the port carries keys, and the two
+    // coincide only where an entry's index happens to equal its key.
+    let vindex_to_key: Vec<u16> = table.iter().map(|i| i.key).collect();
+
+    // key, token_idx, group_element -> (name, type), as the port computes them
+    let mut produced: HashMap<(u16, u8, u32), (String, u8, bool)> = HashMap::new();
+    let mut count = 0usize;
+    enumerate(&table, frame_type_flags, &mut |p: &ParamRef| {
+        produced.insert(
+            (p.key, p.token_idx, p.group_element),
+            (p.name.as_str().to_owned(), p.ptype, p.behind_pointer),
+        );
+        count += 1;
+    });
+
+    let mut matched = 0usize;
+    let mut missing = Vec::new();
+    let mut wrong_name = Vec::new();
+    let mut wrong_type = Vec::new();
+
+    for line in oracle_text.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 6 {
+            continue;
+        }
+        let want_name = f[0];
+        let vindex: usize = f[1].parse().expect("var_info index");
+        let Some(&key) = vindex_to_key.get(vindex) else {
+            panic!("oracle names var_info index {vindex}, beyond the {} entries the structure fixture describes", vindex_to_key.len());
+        };
+        let token_idx: u8 = f[2].parse().expect("idx");
+        let group_element: u32 = f[3].parse().expect("group_element");
+        let want_type: u8 = f[4].parse().expect("type");
+
+        match produced.get(&(key, token_idx, group_element)) {
+            None => {
+                if missing.len() < 10 {
+                    missing.push(format!(
+                        "{want_name} (key={key} idx={token_idx} group={group_element})"
+                    ));
+                }
+            }
+            Some((name, ptype, _)) => {
+                if name != want_name && wrong_name.len() < 10 {
+                    wrong_name.push(format!(
+                        "key={key} idx={token_idx} group={group_element}: upstream {want_name:?}, port {name:?}"
+                    ));
+                }
+                if *ptype != want_type && wrong_type.len() < 10 {
+                    wrong_type.push(format!(
+                        "{want_name}: upstream type {want_type}, port {ptype}"
+                    ));
+                }
+                if name == want_name && *ptype == want_type {
+                    matched += 1;
+                }
+            }
+        }
+    }
+
+    let oracle_count = oracle_text.lines().count() - 1;
+
+    // Everything the port produced that upstream did not. These should all be
+    // groups the running vehicle never allocated; naming them precisely needs
+    // the object graph, which is a later slice, so they are reported and
+    // bounded rather than explained here.
+    let mut oracle_keys = std::collections::HashSet::new();
+    for line in oracle_text.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 6 {
+            continue;
+        }
+        let vindex: usize = f[1].parse().expect("var_info index");
+        if let Some(&key) = vindex_to_key.get(vindex) {
+            oracle_keys.insert((
+                key,
+                f[2].parse::<u8>().expect("idx"),
+                f[3].parse::<u32>().expect("group_element"),
+            ));
+        }
+    }
+    // Extras are only legitimate where a pointer is involved: the vehicle
+    // allocated no object, so upstream's walk found nothing to enumerate.
+    let mut extras: Vec<&str> = Vec::new();
+    let mut unexplained: Vec<&str> = Vec::new();
+    for (k, (name, _, behind_pointer)) in &produced {
+        if oracle_keys.contains(k) {
+            continue;
+        }
+        extras.push(name.as_str());
+        if !behind_pointer {
+            unexplained.push(name.as_str());
+        }
+    }
+    extras.sort_unstable();
+    unexplained.sort_unstable();
+    println!(
+        "  {} extra, all behind pointer groups; first few: {:?}",
+        extras.len(),
+        &extras[..extras.len().min(6)]
+    );
+    println!(
+        "port enumerated {count} parameters from {} table entries",
+        table.len()
+    );
+    println!("upstream enumerated {oracle_count}; {matched} matched exactly");
+    println!(
+        "  {} extra in the port, with frame mask {frame_type_flags:#x}",
+        count.saturating_sub(oracle_count)
+    );
+
+    assert!(
+        missing.is_empty(),
+        "{} parameter(s) upstream produced were not produced by the port; \
+         first few:\n  {}",
+        missing.len(),
+        missing.join("\n  ")
+    );
+    assert!(
+        wrong_name.is_empty(),
+        "name mismatch on {} parameter(s); first few:\n  {}",
+        wrong_name.len(),
+        wrong_name.join("\n  ")
+    );
+    assert!(
+        wrong_type.is_empty(),
+        "type mismatch on {} parameter(s); first few:\n  {}",
+        wrong_type.len(),
+        wrong_type.join("\n  ")
+    );
+    assert_eq!(
+        matched, oracle_count,
+        "every parameter upstream enumerated must be reproduced exactly"
+    );
+    assert!(
+        unexplained.is_empty(),
+        "{} parameter(s) the port enumerated and upstream did not sit behind \
+         no pointer, so an unallocated object cannot explain them: either the \
+         traversal visits something upstream skips or a filter is missing. \
+         First few: {:?}",
+        unexplained.len(),
+        &unexplained[..unexplained.len().min(8)]
+    );
+}
