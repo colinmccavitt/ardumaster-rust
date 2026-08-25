@@ -520,3 +520,119 @@ fn the_position_loop_refuses_a_degenerate_limit_set() {
         "a zero velocity limit means unlimited, not invalid"
     );
 }
+
+/// Pilot stick input to lean angles, over the full square of stick positions.
+///
+/// The mapping works in *thrust* rather than in angle: the sticks become
+/// `tan(angle_max · stick)` and only return to angles at the end. Scaling
+/// angles directly would let full diagonal stick ask for `angle_max` on each
+/// axis and so more than `angle_max` of total lean; in thrust space the limit
+/// is one vector length and the diagonal is bounded like every other
+/// direction.
+///
+/// Because the limit is on the vector's length, the stick's *direction*
+/// survives it — a pilot at the limit still steers, they just cannot lean
+/// further. Clamping the two angles separately would swing the commanded
+/// direction toward the diagonal as one axis saturated first, which is the
+/// mistake this test is shaped to catch.
+#[test]
+fn the_stick_to_lean_angle_map_matches_upstream() {
+    use ap_math::control::rc_input_to_roll_pitch_rad;
+
+    let s = sections();
+    let rows = s.get("rcinput").expect("rcinput section");
+    assert!(!rows.is_empty(), "no rcinput rows");
+
+    let mut largest = 0.0_f32;
+    let mut limited = 0_usize;
+
+    for r in rows {
+        assert_eq!(r.len(), 7, "malformed rcinput row");
+        let idx: usize = r[0].parse().expect("idx");
+
+        let mut roll_out = 0.0_f32;
+        let mut pitch_out = 0.0_f32;
+        rc_input_to_roll_pitch_rad(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            f(&r[4]),
+            &mut roll_out,
+            &mut pitch_out,
+        );
+
+        for (label, value, want) in [
+            ("roll_out", roll_out, f(&r[5])),
+            ("pitch_out", pitch_out, f(&r[6])),
+        ] {
+            let diff = (value - want).abs();
+            largest = largest.max(diff);
+            assert!(
+                diff < 3e-5,
+                "row {idx} {label}: {value} != upstream {want} (diff {diff})"
+            );
+        }
+
+        // Did the length limit actually bind on this row?
+        let angle_max = f(&r[3]).min(85.0_f32.to_radians());
+        let unlimited = (angle_max * f(&r[2]))
+            .tan()
+            .hypot(angle_max * f(&r[1]).tan());
+        // Upstream's constrain, not `clamp`: with angle_max below ten
+        // degrees the bounds cross, and constrain returns the low bound
+        // where clamp is ill-formed.
+        let floor = 10.0_f32.to_radians();
+        let requested = f(&r[4]);
+        let limit = if requested < floor {
+            floor
+        } else if requested > angle_max {
+            angle_max
+        } else {
+            requested
+        }
+        .tan();
+        if unlimited > limit {
+            limited += 1;
+        }
+    }
+
+    assert!(
+        limited > 100,
+        "the length limit bound on only {limited} of {} rows",
+        rows.len()
+    );
+
+    // Full diagonal stick must not exceed the limit on the vector, which is
+    // the whole reason for working in thrust space.
+    let mut roll = 0.0_f32;
+    let mut pitch = 0.0_f32;
+    let angle_max = 30.0_f32.to_radians();
+    rc_input_to_roll_pitch_rad(1.0, 1.0, angle_max, angle_max, &mut roll, &mut pitch);
+    let total_lean = (pitch.tan().hypot(roll.tan() / pitch.cos())).atan();
+    assert!(
+        total_lean <= angle_max + 1e-4,
+        "full diagonal stick leaned {total_lean} against a limit of {angle_max}"
+    );
+
+    // With angle_max below the ten-degree floor the bounds cross, and
+    // upstream's constrain returns the floor — so the limit ends up LARGER
+    // than the maximum lean and stops binding at all. Worth pinning: it reads
+    // like a bug and is the documented behaviour of the constrain it uses.
+    let tiny = 0.1_f32; // well under ten degrees
+    let mut roll_a = 0.0_f32;
+    let mut pitch_a = 0.0_f32;
+    rc_input_to_roll_pitch_rad(1.0, 0.0, tiny, 0.0, &mut roll_a, &mut pitch_a);
+    let mut roll_b = 0.0_f32;
+    let mut pitch_b = 0.0_f32;
+    rc_input_to_roll_pitch_rad(1.0, 0.0, tiny, 2.0, &mut roll_b, &mut pitch_b);
+    assert!(
+        (roll_a - roll_b).abs() < 1e-6,
+        "below the floor the limit cannot bind, so requesting 0 or 2 radians \
+         of limit must give the same answer: {roll_a} against {roll_b}"
+    );
+
+    println!(
+        "{} stick rows, largest difference {largest:e}, the limit bound on {limited}",
+        rows.len()
+    );
+}

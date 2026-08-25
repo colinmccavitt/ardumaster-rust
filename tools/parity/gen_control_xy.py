@@ -273,6 +273,37 @@ int main()
         }
     }
 
+    // ---- pilot stick input to lean angles ----
+    //
+    // Swept over the full square of stick positions, because the interesting
+    // behaviour is on the diagonal: the limit applies to the thrust vector's
+    // length, so full diagonal stick is bounded like every other direction
+    // rather than asking for angle_max on each axis independently.
+    //
+    // angle_limit is swept below its 10-degree floor and above angle_max, so
+    // both ends of its clamp appear, and angle_max past 85 degrees so its cap
+    // does too.
+    printf("#rcinput\n");
+    printf("idx,roll_in,pitch_in,angle_max,angle_limit,roll_out,pitch_out\n");
+    {
+        const float sticks[] = {-1.0f, -0.7f, -0.25f, 0.0f, 0.25f, 0.7f, 1.0f};
+        const float maxes[] = {0.1f, 0.5f, 1.05f, 1.6f};
+        const float limits[] = {0.0f, 0.1f, 0.35f, 0.9f, 2.0f};
+        int idx = 0;
+        for (unsigned a = 0; a < 7; a++)
+          for (unsigned b = 0; b < 7; b++)
+            for (unsigned c = 0; c < 4; c++)
+              for (unsigned d = 0; d < 5; d++) {
+                  float roll_out = 0.0f, pitch_out = 0.0f;
+                  rc_input_to_roll_pitch_rad(sticks[a], sticks[b], maxes[c],
+                                             limits[d], roll_out, pitch_out);
+                  printf("%d,%u,%u,%u,%u,%u,%u\n", idx++,
+                         fbits(sticks[a]), fbits(sticks[b]),
+                         fbits(maxes[c]), fbits(limits[d]),
+                         fbits(roll_out), fbits(pitch_out));
+              }
+    }
+
     return 0;
 }
 '''

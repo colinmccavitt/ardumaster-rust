@@ -585,6 +585,64 @@ pub fn accel_mss_to_angle_deg(accel_mss: f32) -> f32 {
     degrees(accel_mss_to_angle_rad(accel_mss))
 }
 
+/// Turn pilot stick input into a lean attitude, upstream
+/// `rc_input_to_roll_pitch_rad`.
+///
+/// Every manual multirotor mode goes through here, and it does considerably
+/// more than scale two numbers.
+///
+/// # It works in thrust, not in angle
+///
+/// The sticks map to `tan(angle_max · stick)` — a horizontal *thrust*
+/// component — and only come back to angles at the end. Scaling the angles
+/// directly would mean full diagonal stick asked for `angle_max` on each axis
+/// and therefore more than `angle_max` of total lean. In thrust space the
+/// limit is a single vector length, so the diagonal is bounded like every
+/// other direction.
+///
+/// # Two limits that do different jobs
+///
+/// `angle_max` sets the scale — how much lean full stick asks for. It is
+/// capped at 85 degrees because `tan` runs away toward 90 and the thrust
+/// components would stop being meaningful.
+///
+/// `angle_limit` bounds the *result* without changing that scale, and is
+/// clamped to at least 10 degrees so a caller cannot pin the aircraft level.
+/// Because the limit is applied to the thrust vector's length, the stick's
+/// *direction* survives it: a pilot at a limit still steers, they just cannot
+/// lean further. Clamping the two angles separately would swing the commanded
+/// direction toward the diagonal as one axis saturated first.
+///
+/// # The roll term carries a `cos(pitch)`
+///
+/// Euler angles apply in sequence, so by the time roll acts the aircraft is
+/// already pitched and its roll axis is no longer horizontal. The same
+/// correction appears in the position controller's lean-angle conversion, for
+/// the same reason.
+pub fn rc_input_to_roll_pitch_rad(
+    roll_in_norm: f32,
+    pitch_in_norm: f32,
+    angle_max_rad: f32,
+    angle_limit_rad: f32,
+    roll_out_rad: &mut f32,
+    pitch_out_rad: &mut f32,
+) {
+    let angle_max_rad = angle_max_rad.min(radians(85.0));
+
+    let mut thrust = Vector2f::new(
+        -libm::tanf(angle_max_rad * pitch_in_norm),
+        libm::tanf(angle_max_rad * roll_in_norm),
+    );
+
+    let angle_limit_rad = constrain_value(angle_limit_rad, radians(10.0), angle_max_rad);
+    let thrust_limit = libm::tanf(angle_limit_rad);
+
+    thrust.limit_length(thrust_limit);
+
+    *pitch_out_rad = -libm::atanf(thrust.x);
+    *roll_out_rad = libm::atanf(libm::cosf(*pitch_out_rad) * thrust.y);
+}
+
 /// Project velocity forward, suppressing motion that would worsen a limited
 /// error — upstream `update_vel_accel_xy`.
 ///
