@@ -9,6 +9,8 @@
 
 use ap_math::scalar::is_positive;
 
+use crate::{MotorMatrix, MAX_NUM_MOTORS};
+
 use crate::spool::SpoolState;
 
 /// The pulse widths the ESCs are configured for, upstream `MOT_PWM_MIN` and
@@ -299,5 +301,57 @@ pub fn rc_write(chan: u8, pwm: u16, scaled: &MotorPwmScaled) -> RcWrite {
         RcWrite::Scaled(f32::from(pwm) - scaled.offset)
     } else {
         RcWrite::Pwm(pwm)
+    }
+}
+
+/// Translate a mask of motor numbers into a mask of output channels, upstream
+/// `AP_Motors::motor_mask_to_srv_channel_mask`.
+///
+/// Two levels of indirection, and both matter. A motor number names a
+/// *function*, and a function may drive several *channels* — so a four-motor
+/// frame does not necessarily produce four bits, and the bit positions need
+/// not match the motor numbers at all. A port that treated the motor mask as
+/// an output mask would work on the common case where motor N sits on channel
+/// N, and quietly address the wrong outputs on any vehicle where an operator
+/// moved one.
+pub fn motor_mask_to_channel_mask(motor_mask: u32, registry: &ap_servo::registry::Registry) -> u32 {
+    let mut channels = 0_u32;
+    for motor in 0..32_u8 {
+        if (motor_mask & (1_u32 << motor)) == 0 {
+            continue;
+        }
+        channels |= registry.output_channel_mask(ap_servo::function::Function::motor(motor));
+    }
+    channels
+}
+
+impl MotorMatrix {
+    /// The motors this frame has fitted, as a bit per motor number.
+    ///
+    /// Motor numbers, not output channels. Pass it through
+    /// [`motor_mask_to_channel_mask`] to get the outputs.
+    #[must_use]
+    pub fn motor_mask(&self) -> u32 {
+        let mut mask = 0_u32;
+        for i in 0..MAX_NUM_MOTORS {
+            if self.is_enabled(i) && i < 32 {
+                mask |= 1_u32 << i;
+            }
+        }
+        mask
+    }
+
+    /// Every output channel this frame drives, upstream
+    /// `AP_MotorsMatrix::get_motor_mask`.
+    ///
+    /// The fitted motors' channels, plus the boost throttle's. The boost
+    /// channel is included because the callers of this are asking "which
+    /// outputs does the motor library own" — for setting update rates and
+    /// output modes — and a boost motor needs the same treatment as the rest
+    /// even though it is not part of the mixing table.
+    #[must_use]
+    pub fn output_channel_mask(&self, registry: &ap_servo::registry::Registry) -> u32 {
+        motor_mask_to_channel_mask(self.motor_mask(), registry)
+            | registry.output_channel_mask(ap_servo::function::Function::BOOST_THROTTLE)
     }
 }

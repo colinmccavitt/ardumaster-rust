@@ -204,6 +204,50 @@ impl Registry {
         self.have_pwm_mask |= channel_mask;
     }
 
+    /// Claim a channel for a function if nothing else wants either, upstream
+    /// `set_aux_channel_default`.
+    ///
+    /// Returns whether the function ended up assigned. Three outcomes, and the
+    /// distinction between the last two is the point:
+    ///
+    /// - The function already drives some channel: nothing to do, `true`.
+    ///   Upstream checks this first, so a second call for the same function is
+    ///   a no-op rather than a second assignment.
+    /// - The channel is free (holding `k_none`): assigned, `true`.
+    /// - The channel already holds a *different* function: refused, `false`.
+    ///   Upstream prints the conflict and leaves the existing assignment
+    ///   alone — the operator configured that channel deliberately, and a
+    ///   default has no business overwriting it.
+    ///
+    /// The same function on the same channel is `true` without complaint,
+    /// because that is not a conflict.
+    pub fn set_aux_channel_default(
+        &mut self,
+        channel_functions: &mut [Function],
+        function: Function,
+        channel: u8,
+    ) -> bool {
+        if self.output_channel_mask(function) != 0 {
+            return true;
+        }
+
+        let Some(current) = channel_functions.get_mut(usize::from(channel)) else {
+            return false;
+        };
+
+        if *current != Function::NONE {
+            return *current == function;
+        }
+
+        *current = function;
+        if function.valid() && channel < 32 {
+            if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
+                entry.channel_mask |= 1_u32 << channel;
+            }
+        }
+        true
+    }
+
     /// Write a pulse to every channel a function drives, upstream
     /// `SRV_Channels::set_output_pwm`.
     ///
