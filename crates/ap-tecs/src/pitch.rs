@@ -104,14 +104,35 @@ impl PitchDemand {
         Self::default()
     }
 
+    /// Seed the rate-limit history, upstream `_last_pitch_dem`.
+    ///
+    /// Called on reset so the first demand is rate limited from the aircraft's
+    /// actual pitch rather than from zero.
+    pub fn seed_last_demand(&mut self, value: f32) {
+        self.last_pitch_dem = value;
+        self.pitch_dem = value;
+    }
+
     /// Whether a bad descent is latched.
     pub fn bad_descent(&self) -> bool {
         self.bad_descent
     }
 
+    /// Overwrite both integrators, for log replay seeding.
+    #[cfg(feature = "replay")]
+    pub fn seed_integrators(&mut self, integ_sebdot: f32, integ_ke: f32) {
+        self.integ_sebdot = integ_sebdot;
+        self.integ_ke = integ_ke;
+    }
+
     /// The energy balance rate integrator, upstream `_integSEBdot`.
     pub fn integ_sebdot(&self) -> f32 {
         self.integ_sebdot
+    }
+
+    /// The kinetic energy trim integrator, upstream `_integKE`.
+    pub fn integ_ke(&self) -> f32 {
+        self.integ_ke
     }
 
     /// One `_detect_bad_descent` step.

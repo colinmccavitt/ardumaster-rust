@@ -26,6 +26,10 @@
 //! of skew, over which the aircraft genuinely rotates. Such a comparison
 //! measures the skew, not the port.
 
+mod params;
+
+pub use params::Params;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -187,6 +191,14 @@ impl Comparison {
             self.worst_expected = expected;
             self.worst_actual = actual;
         }
+    }
+
+    /// How many samples were compared.
+    ///
+    /// Callers should assert this is non-trivial: a comparison that saw no
+    /// samples reports `passed()` as true, which is vacuous.
+    pub fn compared(&self) -> usize {
+        self.compared
     }
 
     /// Whether every sample stayed inside tolerance.

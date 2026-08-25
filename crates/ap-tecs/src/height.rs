@@ -130,6 +130,16 @@ impl HeightDemand {
         self.flare_initialised
     }
 
+    /// Height above field elevation when the flare began, upstream
+    /// `_hgt_at_start_of_flare`.
+    ///
+    /// Set on flare entry by the height stage and read by the pitch-limit
+    /// stage, which blends the minimum pitch toward the touchdown value as
+    /// the aircraft descends through it.
+    pub fn hgt_at_start_of_flare(&self) -> f32 {
+        self.hgt_at_start_of_flare
+    }
+
     /// Clear the flare latch, so a re-entered flare re-seeds its profile.
     pub fn reset_flare(&mut self) {
         self.flare_initialised = false;

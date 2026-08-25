@@ -108,8 +108,113 @@ pub struct TecsInputs {
     pub thr_max_ext: f32,
     /// External minimum throttle, -1..1.
     pub thr_min_ext: f32,
+    /// External maximum pitch for this iteration, **degrees**.
+    ///
+    /// Upstream `_PITCHmaxf_ext`, set by `set_pitch_max()` and consumed once.
+    /// 90.0 means unconstrained.
+    pub pitch_max_ext: f32,
+    /// External minimum pitch for this iteration, **degrees**.
+    ///
+    /// Upstream `_PITCHminf_ext`, set by `set_pitch_min()` and consumed once.
+    /// -90.0 means unconstrained.
+    pub pitch_min_ext: f32,
     /// Current time, for the underspeed detector's hysteresis timer.
     pub now_ms: ap_hal::time::Millis,
+}
+
+/// A read-only view of `Tecs` internal state, for logging and for
+/// field-by-field comparison against a recorded upstream flight.
+///
+/// The field set mirrors upstream's `TECS` log message.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TecsSnapshot {
+    /// Height demand after filtering and rate limiting, upstream `_hgt_dem`.
+    pub hgt_dem: f32,
+    /// Low-pass filtered height demand, upstream `_hgt_dem_lpf`.
+    pub hgt_dem_lpf: f32,
+    /// Rate-limited height demand, upstream `_hgt_dem_rate_ltd`.
+    pub hgt_dem_rate_ltd: f32,
+    /// Demanded climb rate, upstream `_hgt_rate_dem`.
+    pub hgt_rate_dem: f32,
+    /// Demanded potential energy, upstream `_SPE_dem`.
+    pub spe_dem: f32,
+    /// Demanded kinetic energy, upstream `_SKE_dem`.
+    pub ske_dem: f32,
+    /// Estimated potential energy, upstream `_SPE_est`.
+    pub spe_est: f32,
+    /// Estimated kinetic energy, upstream `_SKE_est`.
+    pub ske_est: f32,
+    /// Rate of change of potential energy, upstream `_SPEdot`.
+    pub spedot: f32,
+    /// Rate of change of kinetic energy, upstream `_SKEdot`.
+    pub skedot: f32,
+    /// Demanded rate of change of kinetic energy, upstream `_SKEdot_dem`.
+    pub skedot_dem: f32,
+    /// Kinetic energy weighting in the balance, upstream `_SKE_weighting`.
+    pub ske_weighting: f32,
+    /// Pitch demand before limiting, upstream `_pitch_dem_unc`.
+    pub pitch_dem_unc: f32,
+    /// Applied minimum pitch, radians.
+    pub pitch_min: f32,
+    /// Applied maximum pitch, radians.
+    pub pitch_max: f32,
+    /// Applied maximum throttle, 0..1.
+    pub thr_max: f32,
+    /// Applied minimum throttle, 0..1.
+    pub thr_min: f32,
+    /// Adjusted true airspeed demand, upstream `_TAS_dem_adj`.
+    pub tas_dem_adj: f32,
+    /// Whether the underspeed condition is latched.
+    pub underspeed: bool,
+    /// Specific energy balance error integrator, upstream `_integSEBdot`.
+    pub integ_sebdot: f32,
+    /// Kinetic energy trim integrator, upstream `_integKE`.
+    pub integ_ke: f32,
+    /// Height demand input after the saturation freeze, upstream `_hgt_dem_in`.
+    pub hgt_dem_in: f32,
+    /// Previous height demand input, upstream `_hgt_dem_in_prev`.
+    pub hgt_dem_in_prev: f32,
+    /// Adaptive climb rate scaler, upstream `_max_climb_scaler`.
+    pub max_climb_scaler: f32,
+    /// Adaptive sink rate scaler, upstream `_max_sink_scaler`.
+    pub max_sink_scaler: f32,
+    /// Applied climb rate limit, upstream `_climb_rate_limit`.
+    pub climb_rate_limit: f32,
+    /// Applied sink rate limit, upstream `_sink_rate_limit`.
+    pub sink_rate_limit: f32,
+    /// Post-takeoff height offset, upstream `_post_TO_hgt_offset`.
+    pub post_to_hgt_offset: f32,
+}
+
+/// Controller state to start a log replay from, mirroring `TecsSnapshot`.
+///
+/// Only the fields that carry between calls: everything else is recomputed
+/// from the inputs each iteration.
+#[cfg(feature = "replay")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReplaySeed {
+    /// Upstream `_integSEBdot`.
+    pub integ_sebdot: f32,
+    /// Upstream `_integKE`.
+    pub integ_ke: f32,
+    /// Upstream `_hgt_dem_lpf`.
+    pub hgt_dem_lpf: f32,
+    /// Upstream `_hgt_dem_rate_ltd`.
+    pub hgt_dem_rate_ltd: f32,
+    /// Upstream `_hgt_dem_in_prev`.
+    pub hgt_dem_in_prev: f32,
+    /// Upstream `_hgt_dem` and `_hgt_dem_prev`.
+    pub hgt_dem: f32,
+    /// Upstream `_max_climb_scaler`.
+    pub max_climb_scaler: f32,
+    /// Upstream `_max_sink_scaler`.
+    pub max_sink_scaler: f32,
+    /// Upstream `_post_TO_hgt_offset`.
+    pub post_to_hgt_offset: f32,
+    /// Upstream `_last_pitch_dem`.
+    pub last_pitch_dem: f32,
+    /// Upstream `_last_throttle_dem`.
+    pub last_throttle_dem: f32,
 }
 
 /// The TECS controller.
@@ -140,7 +245,6 @@ pub struct Tecs {
     reached_speed_takeoff: bool,
     have_reset_after_takeoff: bool,
     need_reset: bool,
-    flare_initialised: bool,
     /// Whether the last call took the airspeed throttle path.
     using_airspeed_for_throttle: bool,
 }
@@ -175,7 +279,6 @@ impl Default for Tecs {
             reached_speed_takeoff: false,
             have_reset_after_takeoff: false,
             need_reset: true,
-            flare_initialised: false,
             using_airspeed_for_throttle: false,
         }
     }
@@ -206,6 +309,69 @@ impl Tecs {
         self.eas_dem
     }
 
+    /// A read-only view of the controller's internal state.
+    ///
+    /// Mirrors the fields upstream writes to the `TECS` log message in
+    /// `AP_TECS::log_data`, so a port run can be compared field-by-field
+    /// against a recorded upstream flight.
+    pub fn snapshot(&self) -> TecsSnapshot {
+        TecsSnapshot {
+            hgt_dem: self.height.hgt_dem,
+            hgt_dem_lpf: self.height.hgt_dem_lpf,
+            hgt_dem_rate_ltd: self.height.hgt_dem_rate_ltd,
+            hgt_rate_dem: self.height.hgt_rate_dem,
+            spe_dem: self.energies.spe_dem,
+            ske_dem: self.energies.ske_dem,
+            spe_est: self.energies.spe_est,
+            ske_est: self.energies.ske_est,
+            spedot: self.energies.spedot,
+            skedot: self.energies.skedot,
+            skedot_dem: self.energies.skedot_dem,
+            ske_weighting: self.pitch.ske_weighting,
+            pitch_dem_unc: self.pitch.pitch_dem_unc,
+            pitch_min: self.pitch_limits.pitch_min,
+            pitch_max: self.pitch_limits.pitch_max,
+            thr_max: self.throttle_limits.thr_max,
+            thr_min: self.throttle_limits.thr_min,
+            tas_dem_adj: self.demand.tas_dem_adj,
+            underspeed: self.underspeed.is_underspeed(),
+            integ_sebdot: self.pitch.integ_sebdot(),
+            integ_ke: self.pitch.integ_ke(),
+            hgt_dem_in: self.hgt_dem_in,
+            hgt_dem_in_prev: self.height.hgt_dem_in_prev,
+            max_climb_scaler: self.height.max_climb_scaler,
+            max_sink_scaler: self.height.max_sink_scaler,
+            climb_rate_limit: self.height.climb_rate_limit,
+            sink_rate_limit: self.height.sink_rate_limit,
+            post_to_hgt_offset: self.height.post_to_hgt_offset,
+        }
+    }
+
+    /// Overwrite the carried state, to start a log replay from the state
+    /// upstream actually had.
+    ///
+    /// A replay is open loop, so an integrator seeded differently keeps that
+    /// offset for the whole run rather than converging. Seeding is what makes
+    /// the comparison a test of the update law instead of of the starting
+    /// conditions.
+    ///
+    /// Not available in a flight build: see the `replay` feature.
+    #[cfg(feature = "replay")]
+    pub fn seed_for_replay(&mut self, s: &ReplaySeed) {
+        self.pitch.seed_integrators(s.integ_sebdot, s.integ_ke);
+        self.pitch.seed_last_demand(s.last_pitch_dem);
+        self.throttle.seed_last_demand(s.last_throttle_dem);
+
+        self.height.hgt_dem_lpf = s.hgt_dem_lpf;
+        self.height.hgt_dem_rate_ltd = s.hgt_dem_rate_ltd;
+        self.height.hgt_dem_in_prev = s.hgt_dem_in_prev;
+        self.height.hgt_dem = s.hgt_dem;
+        self.height.hgt_dem_prev = s.hgt_dem;
+        self.height.max_climb_scaler = s.max_climb_scaler;
+        self.height.max_sink_scaler = s.max_sink_scaler;
+        self.height.post_to_hgt_offset = s.post_to_hgt_offset;
+    }
+
     /// Request a full state reset on the next call.
     pub fn request_reset(&mut self) {
         self.need_reset = true;
@@ -218,12 +384,27 @@ impl Tecs {
         let mut reset = false;
 
         if dt > 0.2 || self.need_reset {
-            self.pitch.ske_weighting = 1.0;
             self.throttle = ThrottleDemand::new();
             self.pitch = PitchDemand::new();
             self.height = HeightDemand::new();
-            self.height.hgt_dem_in_prev = inp.hgt_afe;
             self.underspeed = UnderspeedDetector::new();
+            self.pitch.ske_weighting = 1.0;
+
+            // Seed the height states to the CURRENT height, not zero. Leaving
+            // them at zero against a real height creates a large false
+            // potential-energy surplus, and the controller responds by diving
+            // with the throttle closed.
+            self.height.hgt_dem_in_prev = inp.hgt_afe;
+            self.height.hgt_dem_lpf = inp.hgt_afe;
+            self.height.hgt_dem_rate_ltd = inp.hgt_afe;
+            self.height.hgt_dem_prev = inp.hgt_afe;
+            self.height.hgt_dem = inp.hgt_afe;
+
+            // Seed the rate/slew histories so the first demand is limited from
+            // a sensible starting point rather than from zero.
+            self.throttle.seed_last_demand(self.throttle_cruise * 0.01);
+            self.pitch.seed_last_demand(inp.pitch_measured);
+
             self.demand.tas_dem_adj = inp.tas_dem;
             reset = true;
             self.need_reset = false;
@@ -233,6 +414,7 @@ impl Tecs {
             // a cutoff derived from the time constant
             let fc = 1.0 / (core::f32::consts::PI * 2.0 * self.params.time_const);
             self.throttle.set_pitch_filter_cutoff(fc);
+            self.throttle.seed_pitch_filters(inp.pitch_measured);
         } else if matches!(
             inp.flight_stage,
             FlightStage::Takeoff | FlightStage::AbortLanding
@@ -330,16 +512,26 @@ impl Tecs {
             is_on_approach: inp.is_on_approach,
             landing_pitch_cd: inp.landing_pitch_cd,
             hgt_afe: inp.hgt_afe,
-            hgt_at_start_of_flare: 0.0,
-            flare_initialised: self.flare_initialised,
+            // Upstream reads its single `_hgt_at_start_of_flare` and
+            // `_flare_initialised` here. Both live on the height stage, which
+            // sets them on flare entry; this stage runs first, so it sees last
+            // iteration's values exactly as upstream does.
+            hgt_at_start_of_flare: self.height.hgt_at_start_of_flare(),
+            flare_initialised: self.height.flare_initialised(),
             pitch_min_climbout_cd: inp.pitch_min_climbout_cd,
-            pitch_max_ext: 90.0,
-            pitch_min_ext: -90.0,
+            pitch_max_ext: inp.pitch_max_ext,
+            pitch_min_ext: inp.pitch_min_ext,
             flight_stage: inp.flight_stage,
         };
-        self.flare_initialised =
+        // Upstream's `_update_pitch_limits` clears `_flare_initialised` when
+        // neither flaring nor on approach, so the next flare re-arms. Applied
+        // back to the height stage, which owns the flag.
+        let still_flaring =
             self.pitch_limits
                 .update(&self.params, &self.airframe_pitch, &limit_inputs, dt);
+        if !still_flaring {
+            self.height.reset_flare();
+        }
         self.throttle_limits.pitch_max = self.pitch_limits.pitch_max;
         self.throttle_limits.pitch_min = self.pitch_limits.pitch_min;
 
@@ -564,6 +756,9 @@ mod tests {
             land_throttle_slewrate: 0,
             throttle_slewrate: 0,
             path_proportion: 0.0,
+            // neutral: unconstrained, matching upstream's reset values
+            pitch_max_ext: 90.0,
+            pitch_min_ext: -90.0,
             thr_max_ext: 1.0,
             thr_min_ext: 0.0,
             now_ms: ap_hal::time::Millis(0),

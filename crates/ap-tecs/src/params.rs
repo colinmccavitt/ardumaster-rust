@@ -128,21 +128,29 @@ impl Default for TecsParams {
 
 /// Flight stage, ported from `AP_FixedWing::FlightStage`.
 ///
-/// Discriminants match upstream's enum so the value logged in the `TECI`
-/// fixture round-trips without a lookup table.
+/// Discriminants are upstream's, from `AP_Vehicle/AP_FixedWing.h:48`:
+///
+/// ```text
+/// TAKEOFF = 1, VTOL = 2, NORMAL = 3, LAND = 4, ABORT_LANDING = 7
+/// ```
+///
+/// They are **not** sequential and there is no zero variant. The logged `stg`
+/// field carries the raw discriminant, so these must match exactly — an
+/// earlier version of this enum invented sequential values, which decoded
+/// NORMAL (3) as takeoff and would have engaged climbout logic during cruise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FlightStage {
-    /// Normal cruise.
-    Normal = 0,
-    /// Landing approach or flare.
-    Land = 1,
+    /// Takeoff climb-out.
+    Takeoff = 1,
     /// VTOL flight.
     Vtol = 2,
-    /// Takeoff climb-out.
-    Takeoff = 3,
-    /// Abort of a landing.
-    AbortLanding = 4,
+    /// Normal cruise.
+    Normal = 3,
+    /// Landing approach or flare.
+    Land = 4,
+    /// Abort of a landing. Note the gap: upstream skips 5 and 6.
+    AbortLanding = 7,
 }
 
 impl FlightStage {
@@ -154,11 +162,11 @@ impl FlightStage {
     /// enum has drifted from upstream's.
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
-            0 => Some(Self::Normal),
-            1 => Some(Self::Land),
+            1 => Some(Self::Takeoff),
             2 => Some(Self::Vtol),
-            3 => Some(Self::Takeoff),
-            4 => Some(Self::AbortLanding),
+            3 => Some(Self::Normal),
+            4 => Some(Self::Land),
+            7 => Some(Self::AbortLanding),
             _ => None,
         }
     }
@@ -224,21 +232,39 @@ mod tests {
         assert_eq!(p.integ_gain_land, 0.0);
     }
 
-    /// Discriminants must match upstream so the logged TECI `stg` field maps
-    /// straight through.
+    /// Discriminants must match upstream, since the logged `stg` field carries
+    /// the raw value.
+    ///
+    /// The literals below are quoted from `AP_Vehicle/AP_FixedWing.h:48` —
+    /// TAKEOFF=1, VTOL=2, NORMAL=3, LAND=4, ABORT_LANDING=7 — deliberately as
+    /// numbers rather than through the port's own constants.
+    ///
+    /// An earlier version of this test asserted `FlightStage::Takeoff as u8 ==
+    /// 3` using the port's own definition, so it checked the port against
+    /// itself and passed while every value was wrong. The replay against real
+    /// logged data is what exposed it.
     #[test]
     fn flight_stage_discriminants_match_upstream() {
-        assert_eq!(FlightStage::from_u8(0), Some(FlightStage::Normal));
-        assert_eq!(FlightStage::from_u8(1), Some(FlightStage::Land));
+        assert_eq!(FlightStage::Takeoff as u8, 1);
+        assert_eq!(FlightStage::Vtol as u8, 2);
+        assert_eq!(FlightStage::Normal as u8, 3);
+        assert_eq!(FlightStage::Land as u8, 4);
+        assert_eq!(FlightStage::AbortLanding as u8, 7);
+
+        assert_eq!(FlightStage::from_u8(1), Some(FlightStage::Takeoff));
         assert_eq!(FlightStage::from_u8(2), Some(FlightStage::Vtol));
-        assert_eq!(FlightStage::from_u8(3), Some(FlightStage::Takeoff));
-        assert_eq!(FlightStage::from_u8(4), Some(FlightStage::AbortLanding));
-        assert_eq!(FlightStage::Takeoff as u8, 3);
+        assert_eq!(FlightStage::from_u8(3), Some(FlightStage::Normal));
+        assert_eq!(FlightStage::from_u8(4), Some(FlightStage::Land));
+        assert_eq!(FlightStage::from_u8(7), Some(FlightStage::AbortLanding));
     }
 
-    /// An unknown stage is reported, not silently treated as cruise.
+    /// The values are not contiguous: 0, 5 and 6 are not stages, and must be
+    /// reported rather than decoded as something.
     #[test]
     fn unknown_flight_stage_is_none() {
+        assert_eq!(FlightStage::from_u8(0), None, "there is no zero stage");
+        assert_eq!(FlightStage::from_u8(5), None, "gap before ABORT_LANDING");
+        assert_eq!(FlightStage::from_u8(6), None, "gap before ABORT_LANDING");
         assert_eq!(FlightStage::from_u8(9), None);
         assert_eq!(FlightStage::from_u8(255), None);
     }

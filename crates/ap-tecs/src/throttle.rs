@@ -95,6 +95,20 @@ impl ThrottleDemand {
         Self::default()
     }
 
+    /// Seed the slew-limit history, upstream `_last_throttle_dem`.
+    ///
+    /// Called on reset so the first demand is slew limited from the nominal
+    /// cruise setting rather than from zero.
+    pub fn seed_last_demand(&mut self, value: f32) {
+        self.last_throttle_dem = value;
+    }
+
+    /// Seed both pitch blending filters, upstream's `reset(ahrs pitch)`.
+    pub fn seed_pitch_filters(&mut self, pitch: f32) {
+        self.pitch_demand_lpf.reset_to(pitch);
+        self.pitch_measured_lpf.reset_to(pitch);
+    }
+
     /// Set the cutoff of both pitch blending filters, in Hz.
     pub fn set_pitch_filter_cutoff(&mut self, hz: f32) {
         self.pitch_demand_lpf.set_cutoff_frequency(hz);

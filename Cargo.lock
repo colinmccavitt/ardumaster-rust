@@ -39,6 +39,8 @@ dependencies = [
  "ap-filter",
  "ap-hal",
  "ap-math",
+ "ap-replay",
+ "ap-tecs",
  "libm",
 ]
 

@@ -12,5 +12,15 @@ ap-math = { workspace = true }
 ap-filter = { workspace = true }
 libm = { workspace = true }
 
+[dev-dependencies]
+# self-dependency so the crate's own tests get the `replay` feature
+ap-tecs = { path = ".", features = ["replay"] }
+ap-replay = { workspace = true }
+
 [lints]
 workspace = true
+
+[features]
+# Exposes `Tecs::seed_for_replay`, used only by the log-replay tests to start a
+# segment from the state upstream actually had. Never enabled in a flight build.
+replay = []
