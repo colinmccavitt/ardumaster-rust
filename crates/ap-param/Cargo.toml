@@ -1,0 +1,12 @@
+[package]
+name = "ap-param"
+description = "Port of ArduPilot libraries/AP_Param (Plane-4.7.0). Tracked as FW-004."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

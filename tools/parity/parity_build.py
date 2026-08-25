@@ -78,15 +78,27 @@ def make_archive(path):
     return path
 
 
-def build(harness_src, objects, out_path, source_suffix):
-    """Compile `harness_src` with upstream's flags and link `objects`."""
+def build(harness_src, objects, out_path, source_suffix, link_flags=()):
+    """Compile `harness_src` with upstream's flags and link `objects`.
+
+    `link_flags` is for harnesses that link a single translation unit rather
+    than the whole archive. AP_Param.cpp, for instance, references the
+    filesystem, the GCS, the logger and the HAL, none of which its pure
+    encoding functions touch -- and linking the full archive to satisfy them
+    drags in the vehicle, and then the Lua bindings, and fails.
+
+    Passing `-Wl,--unresolved-symbols=ignore-all` there leaves those references
+    dangling. That is safe only because the harness never calls them: if it
+    ever did, the process would die immediately rather than return a wrong
+    answer, which is the same guarantee the aborting stubs elsewhere give.
+    """
     cwd, flags = flags_for(source_suffix)
     src = Path(str(out_path) + ".cpp")
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text(harness_src)
 
     resolved = [o if Path(o).is_absolute() else str(ROOT / o) for o in objects]
-    cmd = ["g++"] + flags + [str(src)] + resolved + ["-o", str(out_path)]
+    cmd = ["g++"] + flags + [str(src)] + resolved + list(link_flags) + ["-o", str(out_path)]
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("harness compile failed:" + "\n" + r.stderr[-4000:])
