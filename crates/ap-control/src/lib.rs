@@ -21,6 +21,7 @@
 
 #![no_std]
 
+pub mod attitude_controller;
 pub mod attitude_error;
 pub mod attitude_kinematics;
 mod steer;

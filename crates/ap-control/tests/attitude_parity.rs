@@ -70,20 +70,21 @@ fn fixture() -> Fixture {
 
     for line in text.lines() {
         if let Some(tag) = line.strip_prefix('#') {
-            section = match tag {
-                "gains" => "gains",
-                "rows" => "rows",
-                other => panic!("unknown section {other}"),
-            };
+            // Sections this test does not read are skipped rather than
+            // rejected: the fixture is shared, and one added for another test
+            // is not an error here.
+            section = tag;
             continue;
         }
-        if line.is_empty() || line.starts_with("angle_p_roll") || line.starts_with("body_r") {
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
             continue;
         }
         let c: Vec<&str> = line.split(',').collect();
         match section {
             "gains" => {
-                assert_eq!(c.len(), 9, "malformed gains row");
+                // The row carries the shaping config too; this test needs
+                // only the first nine columns.
+                assert!(c.len() >= 9, "malformed gains row: {} columns", c.len());
                 gains = c[..7].iter().map(|s| f(s)).collect();
                 use_sqrt = c[7] == "1";
                 gains.push(f(c[8])); // dt
@@ -92,7 +93,7 @@ fn fixture() -> Fixture {
                 assert_eq!(c.len(), 14, "malformed row: {line}");
                 rows.push(c.iter().map(|s| (*s).to_owned()).collect());
             }
-            _ => panic!("row outside any section"),
+            _ => {}
         }
     }
 
@@ -182,3 +183,156 @@ fn the_attitude_controller_matches_upstream() {
         fx.rows.len()
     );
 }
+
+/// Parity: 400 steps of a scripted stick sequence through the euler entry
+/// point.
+///
+/// The entry point is stateful — the target is carried between calls and
+/// shaped toward the stick over many iterations — so a single call proves
+/// almost nothing. A shaping error converges to the same place either way and
+/// differs only in how it gets there, which is visible only step by step.
+///
+/// The sequence is a step in roll, a ramp in pitch, and a yaw rate that
+/// reverses part-way: between them the shaper is made to settle, to track, and
+/// to turn around.
+///
+/// Everything the C++ side ran with is read from the fixture rather than
+/// copied from parameter defaults — the gains, the shaping constants, and the
+/// body attitude the controller took from its AHRS. Guessing any of them is
+/// the habit that has produced wrong answers all through this port.
+#[test]
+fn the_stick_sequence_matches_upstream() {
+    use ap_control::attitude_controller::{AttitudeController, ShapingConfig};
+    use ap_math::vector3::Vector3f;
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/attitude_error.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).expect("fixture");
+
+    let mut section = "";
+    let mut gains: Vec<f32> = Vec::new();
+    let mut ff_enabled = false;
+    let mut sticks: Vec<Vec<String>> = Vec::new();
+
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix('#') {
+            section = tag;
+            continue;
+        }
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        match section {
+            "gains" => {
+                assert_eq!(c.len(), 15, "malformed gains row");
+                gains = c
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != 7 && *i != 11)
+                    .map(|(_, s)| f(s))
+                    .collect();
+                ff_enabled = c[11] == "1";
+            }
+            "sticks" => {
+                assert_eq!(c.len(), 16, "malformed stick row: {line}");
+                sticks.push(c.iter().map(|s| (*s).to_owned()).collect());
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!sticks.is_empty(), "no stick rows in the fixture");
+    assert!(ff_enabled, "the fixture must run with feedforward on");
+
+    // gains, with the two flag columns removed: angle P x3, accel x3,
+    // rate_yaw_kp, dt, input_tc, rate_y_tc, vel maxes x3.
+    let shaping = ShapingConfig {
+        input_tc: gains[8],
+        rate_y_tc: gains[9],
+        rate_bf_ff_enabled: ff_enabled,
+        ang_vel_roll_max_degs: gains[10],
+        ang_vel_pitch_max_degs: gains[11],
+        ang_vel_yaw_max_degs: gains[12],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+    };
+    let yaw_gains = YawLimitGains {
+        accel_yaw_max_radss: gains[5],
+        rate_yaw_kp: gains[6],
+        angle_yaw_kp: gains[2],
+        ..YawLimitGains::default()
+    };
+    let angle_gains = AngleGains {
+        angle_p_roll: gains[0],
+        angle_p_pitch: gains[1],
+        angle_p_yaw: gains[2],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+        use_sqrt_controller: true,
+    };
+    let dt = gains[7];
+
+    let mut controller = AttitudeController::new();
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &sticks {
+        let step: usize = r[0].parse().expect("step");
+        let (roll_cmd, pitch_cmd, yaw_rate_cmd) = (f(&r[1]), f(&r[2]), f(&r[3]));
+        let body = Quaternion::from_euler(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        let out = controller.input_euler_angle_roll_pitch_euler_rate_yaw(
+            roll_cmd,
+            pitch_cmd,
+            yaw_rate_cmd,
+            body,
+            &shaping,
+            &yaw_gains,
+            &angle_gains,
+            Vector3f::new(0.0, 0.0, 0.0),
+            dt,
+        );
+
+        let target = controller.euler_angle_target_rad();
+        let ang_vel = controller.ang_vel_target_rads();
+
+        for (label, got, want) in [
+            ("targ_r", target.x, f(&r[7])),
+            ("targ_p", target.y, f(&r[8])),
+            ("targ_y", target.z, f(&r[9])),
+            ("ang_vel_x", ang_vel.x, f(&r[10])),
+            ("ang_vel_y", ang_vel.y, f(&r[11])),
+            ("ang_vel_z", ang_vel.z, f(&r[12])),
+            ("rate_x", out.ang_vel_body_rads.x, f(&r[13])),
+            ("rate_y", out.ang_vel_body_rads.y, f(&r[14])),
+            ("rate_z", out.ang_vel_body_rads.z, f(&r[15])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < STEP_TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    println!(
+        "{} steps, {checked} values, largest difference {largest:e}",
+        sticks.len()
+    );
+}
+
+/// Looser than the single-shot tolerance, and deliberately so.
+///
+/// Four hundred iterations of a shaper that feeds its own output back in
+/// accumulate transcendental disagreement rather than merely exhibiting it. A
+/// structural error still shows: it diverges rather than drifting, and the
+/// sequence is long enough that divergence is unmistakable.
+const STEP_TOL: f32 = 1e-4;
