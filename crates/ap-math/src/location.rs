@@ -537,12 +537,28 @@ impl Location {
     /// Raise or lower by metres, leaving the frame alone. Upstream
     /// `offset_up_m`.
     pub fn offset_up_m(&mut self, alt_offset_m: f32) {
+        // Upstream is `alt += alt_offset_m * 100` on an int32 `alt`, so C++
+        // promotes the altitude to float, adds, and truncates the SUM. Doing
+        // the arithmetic in integers instead truncates the OFFSET, which
+        // differs by a centimetre for every negative fractional offset — and
+        // a descending glide slope offsets by a negative number every time.
+        //
+        // The float promotion loses precision above 2^24 cm, about 167 km.
+        // That is upstream's behaviour too, and reproducing the conversion
+        // means reproducing its range.
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "upstream adds alt_offset_m * 100 to an int32 the same way"
+            clippy::cast_precision_loss,
+            reason = "reproduces upstream's int32 += float promotion exactly"
         )]
-        let d = (alt_offset_m * 100.0) as i32;
-        self.alt = self.alt.saturating_add(d);
+        let sum = self.alt as f32 + alt_offset_m * 100.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "reproduces upstream's float-to-int32 conversion"
+        )]
+        {
+            self.alt = sum as i32;
+        }
     }
 
     /// This location's altitude expressed in another frame, upstream

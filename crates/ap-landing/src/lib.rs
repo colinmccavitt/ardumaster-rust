@@ -216,12 +216,20 @@ pub fn setup_landing_glide_slope(
         f64::from(land_bearing_cd) as ap_math::Ftype * 0.01,
         -flare_distance as ap_math::Ftype,
     );
+    // Upstream is `loc.alt += aim_height*100` on an int32, so the truncation
+    // is on the sum rather than on the offset -- the same promotion as
+    // Location::offset_up_m. Converting the offset first differs by a
+    // centimetre for negative fractional offsets, and while aim_height is
+    // never negative, matching the arithmetic exactly costs nothing and stops
+    // this becoming the one place that rounds differently.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "upstream adds `aim_height*100` to an int32 alt the same way"
+        clippy::cast_precision_loss,
+        reason = "reproduces upstream's int32 += float promotion exactly"
     )]
-    let aim_cm = (aim_height * 100.0) as i32;
-    loc.alt = loc.alt.saturating_add(aim_cm);
+    {
+        loc.alt = (loc.alt as f32 + aim_height * 100.0) as i32;
+    }
 
     let first_calculation = is_zero(*slope);
     *slope = (sink_height - aim_height) / (total_distance - flare_distance);
