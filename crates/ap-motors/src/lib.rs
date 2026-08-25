@@ -32,6 +32,8 @@
 
 use ap_math::scalar::{is_zero, radians, Real};
 
+mod frames;
+
 /// Motors a frame may have, upstream `AP_MOTORS_MAX_NUM_MOTORS`.
 ///
 /// 32 where scripting is enabled and 12 where it is not, then clamped to the
@@ -158,6 +160,84 @@ impl MotorMatrix {
             yaw_factor,
             testing_order,
         );
+    }
+
+    /// Clear one motor, upstream `remove_motor`.
+    ///
+    /// The throttle factor goes to zero here, not to one. An empty slot is not
+    /// "a motor that contributes nothing but full thrust" — it is not a motor,
+    /// and `add_motor_raw` is what puts the factor back to one.
+    pub fn remove_motor(&mut self, motor_num: usize) {
+        let Some(factors) = self.factors.get_mut(motor_num) else {
+            return;
+        };
+        *factors = MotorFactors {
+            roll: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            throttle: 0.0,
+        };
+        if let Some(enabled) = self.enabled.get_mut(motor_num) {
+            *enabled = false;
+        }
+    }
+
+    /// Build the mixing table for a frame, upstream `setup_motors`.
+    ///
+    /// Returns whether the class and type are a combination upstream supports.
+    /// Both are plain integers because that is what `FRAME_CLASS` and
+    /// `FRAME_TYPE` hold: a vehicle can be booted with a value outside the
+    /// enum, and the Y6 class deliberately answers for every one of them.
+    ///
+    /// The normalisation runs whether or not the frame was recognised, which
+    /// is upstream's order. On an unsupported frame there is nothing left to
+    /// normalise, so it makes no difference today — but the order is kept
+    /// because it is the order the reference has, and a frame that ever
+    /// half-populates before failing should inherit that behaviour rather
+    /// than a tidier one this port invented.
+    pub fn setup_motors(&mut self, frame_class: u8, frame_type: u8) -> bool {
+        for i in 0..MAX_NUM_MOTORS {
+            self.remove_motor(i);
+        }
+
+        let Some(frame) = frames::layout(frame_class, frame_type) else {
+            self.normalise_rpy_factors();
+            return false;
+        };
+
+        match frame.layout {
+            frames::Layout::Angle(rows) => {
+                for (i, &(angle, yaw, order)) in rows.iter().enumerate() {
+                    self.add_motor(i as i8, angle, yaw, order);
+                }
+            }
+            frames::Layout::Raw(rows) => {
+                for (i, &(roll, pitch, yaw, order)) in rows.iter().enumerate() {
+                    self.add_motor_raw(i as i8, roll, pitch, yaw, order, 1.0);
+                }
+            }
+            frames::Layout::ByAngles(rows) => {
+                for &(num, roll, pitch, yaw, order) in rows {
+                    self.add_motor_by_angles(num, roll, pitch, yaw, order);
+                }
+            }
+        }
+
+        if let Some((limit, step, scale)) = frame.top_layer_scale {
+            // Single precision throughout. `0.9` in the C++ reads as a double
+            // and would promote the multiply under ordinary rules, but
+            // ArduPilot builds with `-fsingle-precision-constant`, so it is a
+            // float. Promoting here puts this frame two ulp out.
+            for f in self.factors.iter_mut().take(limit).step_by(step) {
+                f.roll *= scale;
+                f.pitch *= scale;
+                f.yaw *= scale;
+                f.throttle *= scale;
+            }
+        }
+
+        self.normalise_rpy_factors();
+        true
     }
 
     /// Scale each axis so its largest factor is 0.5, upstream

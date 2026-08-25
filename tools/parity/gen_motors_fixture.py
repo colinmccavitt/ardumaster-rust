@@ -385,7 +385,7 @@ int main(void)
     printf("class,type,ok,motor,roll,pitch,yaw,throttle,order\n");
 
     for (int cls = 0; cls <= 17; cls++) {
-        for (int typ = 0; typ <= 20; typ++) {
+        for (int typ = 0; typ <= 25; typ++) {
             Probe &m = motors;
             m.clear_motors();
 
