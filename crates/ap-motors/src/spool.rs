@@ -115,6 +115,20 @@ impl Limits {
         self.throttle_lower = flag;
         self.throttle_upper = flag;
     }
+
+    /// Merge limits a script has asserted, upstream `update_external_limits`.
+    ///
+    /// A logical OR in every axis, never an assignment. A script can say "I
+    /// have run out of authority here" and be believed, but cannot clear a
+    /// limit the mixer set -- the mixer knows something about the frame the
+    /// script does not.
+    pub fn merge_external(&mut self, external: Self) {
+        self.roll |= external.roll;
+        self.pitch |= external.pitch;
+        self.yaw |= external.yaw;
+        self.throttle_lower |= external.throttle_lower;
+        self.throttle_upper |= external.throttle_upper;
+    }
 }
 
 /// The tunables the machine reads, upstream's `AP_Float` parameters.

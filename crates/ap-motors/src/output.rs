@@ -227,3 +227,77 @@ pub fn rpyt_outputs(
         throttle * 1000.0,
     )
 }
+
+impl PwmType {
+    /// Whether this protocol is digital, upstream `is_digital_pwm_type`.
+    ///
+    /// Only the DShot rates. Brushed is a duty cycle rather than a pulse, and
+    /// the two scaled types hand a normalised value to the servo layer, but
+    /// neither is a digital ESC protocol and upstream does not treat them as
+    /// one -- which is why `update_throttle_range` tests them separately
+    /// rather than reusing this.
+    pub fn is_digital(self) -> bool {
+        matches!(
+            self,
+            Self::DShot150 | Self::DShot300 | Self::DShot600 | Self::DShot1200
+        )
+    }
+
+    /// The PWM-to-scaled offset for the scaled output types, upstream's
+    /// `_motor_pwm_scaled.offset`.
+    ///
+    /// These two types honour each channel's own `SERVOn_MIN`/`MAX`, so the
+    /// motor library hands the servo layer a *scaled* value rather than a
+    /// pulse width. Motor PWM is fixed at 1000-2000 for them, so subtracting
+    /// 1000 gives a range type its 0..1000, and subtracting 1500 gives an
+    /// angle type its -500..500.
+    ///
+    /// `None` for every other type, which is written as a pulse width.
+    pub fn scaled_offset(self) -> Option<f32> {
+        match self {
+            Self::PwmRange => Some(1000.0),
+            Self::PwmAngle => Some(1500.0),
+            _ => None,
+        }
+    }
+}
+
+/// Which channels are written as scaled values rather than pulse widths,
+/// upstream's `_motor_pwm_scaled`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MotorPwmScaled {
+    /// Bit per motor channel. Upstream accumulates this with `|=` as channels
+    /// are configured, and never clears it.
+    pub mask: u32,
+    /// The offset subtracted from the pulse width. See
+    /// [`PwmType::scaled_offset`].
+    pub offset: f32,
+}
+
+/// What `rc_write` should hand the servo layer for one channel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RcWrite {
+    /// A scaled value, for channels the servo layer maps itself.
+    Scaled(f32),
+    /// A pulse width in microseconds.
+    Pwm(u16),
+}
+
+/// Route one motor output, upstream `rc_write`.
+///
+/// The channel number selects between the two forms; it is not a property of
+/// the output type alone, because a vehicle can have some motors on scaled
+/// channels and others not.
+///
+/// The `chan < 32` guard has no counterpart upstream, where `1U << chan` would
+/// be undefined for a channel past the width of the mask. It is unreachable
+/// either way -- `MAX_NUM_MOTORS` is 32, so the caller only ever passes 0..31
+/// -- so this is a guard against a future caller rather than a behavioural
+/// difference.
+pub fn rc_write(chan: u8, pwm: u16, scaled: &MotorPwmScaled) -> RcWrite {
+    if chan < 32 && (scaled.mask & (1_u32 << chan)) != 0 {
+        RcWrite::Scaled(f32::from(pwm) - scaled.offset)
+    } else {
+        RcWrite::Pwm(pwm)
+    }
+}
