@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ap-math = { workspace = true }
 
 [dev-dependencies]
 # The first test that composes ported modules rather than checking one alone.

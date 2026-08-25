@@ -11,6 +11,10 @@
 
 #![no_std]
 
+use ap_math::scalar::constrain_int32;
+
+pub mod mode;
+
 /// The roll demand handed to the attitude controller, upstream's
 /// `Plane::nav_roll_cd`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,14 +33,7 @@ impl RollDemand {
     /// matters.
     #[must_use]
     pub const fn from_navigation(commanded_roll_cd: i32, roll_limit_cd: i32) -> Self {
-        let limit = roll_limit_cd;
-        let nav_roll_cd = if commanded_roll_cd < -limit {
-            -limit
-        } else if commanded_roll_cd > limit {
-            limit
-        } else {
-            commanded_roll_cd
-        };
+        let nav_roll_cd = constrain_int32(commanded_roll_cd, -roll_limit_cd, roll_limit_cd);
         Self { nav_roll_cd }
     }
 
@@ -86,13 +83,8 @@ impl PitchDemand {
         pitch_limit_min_cd: i32,
         pitch_limit_max_cd: i32,
     ) -> Self {
-        let nav_pitch_cd = if commanded_pitch_cd < pitch_limit_min_cd {
-            pitch_limit_min_cd
-        } else if commanded_pitch_cd > pitch_limit_max_cd {
-            pitch_limit_max_cd
-        } else {
-            commanded_pitch_cd
-        };
+        let nav_pitch_cd =
+            constrain_int32(commanded_pitch_cd, pitch_limit_min_cd, pitch_limit_max_cd);
         Self { nav_pitch_cd }
     }
 

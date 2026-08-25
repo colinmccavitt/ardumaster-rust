@@ -392,6 +392,28 @@ pub fn wrap_pi<T: Real>(radian: T) -> T {
 /// unsuffixed literals it is combined with are floats too.
 pub const GRAVITY_MSS: f32 = 9.806_65;
 
+/// Upstream `constrain_int32`, `AP_Math.h:201`.
+///
+/// Upstream defines it as `constrain_value` instantiated for `int32_t`, and
+/// so it inherits that function's order of tests: `amt < low` is checked
+/// first, so when the bounds cross the *floor* wins and the ceiling is never
+/// consulted.
+///
+/// That is not [`i32::clamp`], which panics when `min > max`. Crossed bounds
+/// are reachable in this codebase — a limit computed from two parameters can
+/// invert when one is misconfigured — and upstream's answer in that case is a
+/// defined value rather than a crash, so the difference is not academic.
+#[must_use]
+pub const fn constrain_int32(amt: i32, low: i32, high: i32) -> i32 {
+    if amt < low {
+        return low;
+    }
+    if amt > high {
+        return high;
+    }
+    amt
+}
+
 /// Constrain a value to `[low, high]`, mapping NaN to the midpoint.
 ///
 /// Upstream `AP_Math.cpp:283`. The NaN case is deliberate: it stops floating

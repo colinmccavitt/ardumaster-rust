@@ -1,6 +1,7 @@
 //! The slope landing's stage machine and the decisions that hang off it,
 //! upstream `AP_Landing`'s `type_slope_*` predicates.
 
+use ap_math::scalar::constrain_int32;
 use ap_math::scalar::{constrain_value, degrees};
 
 /// Where the aircraft is in a slope landing, upstream `SlopeStage`.
@@ -167,28 +168,11 @@ pub fn target_airspeed_cm(
         params.airspeed_cruise_ms * 100.0
     } as i32;
 
-    constrain_i32(
+    constrain_int32(
         target_airspeed_cm + head_wind_compensation_cm,
         target_airspeed_cm,
         max_airspeed_cm,
     )
-}
-
-/// Upstream `constrain_int32`, which is not `i32::clamp`.
-///
-/// The low bound is tested first, so with the bounds crossed this returns the
-/// *low* one where `clamp` would panic. That is not a hypothetical here: if
-/// TECS supplies a landing airspeed above cruise and the maximum is not
-/// allowed on landing, the target exceeds its own ceiling and upstream flies
-/// the target.
-fn constrain_i32(amount: i32, low: i32, high: i32) -> i32 {
-    if amount < low {
-        return low;
-    }
-    if amount > high {
-        return high;
-    }
-    amount
 }
 
 /// What the stage machine looks at, upstream's locals in

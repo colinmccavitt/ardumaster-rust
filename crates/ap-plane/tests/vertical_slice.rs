@@ -421,3 +421,38 @@ fn navigation_through_to_the_servo_matches_the_flight() {
         aileron.report()
     );
 }
+
+/// Exactly level counts as right side up.
+///
+/// `adjust_for_inverted` adds half a turn to the demand and, when the measured
+/// roll is negative, takes a full turn back off so both end up the same side
+/// of zero. At exactly zero the measurement is not negative, so the full turn
+/// is not taken -- and the difference between reading that boundary one way or
+/// the other is 36000 centidegrees, a complete reversal of the demand.
+///
+/// Upstream is `if (ahrs.roll_sensor < 0)`, Attitude.cpp:140.
+#[test]
+fn exactly_level_is_not_inverted() {
+    let mut at_zero = RollDemand { nav_roll_cd: 1000 };
+    at_zero.adjust_for_inverted(0);
+
+    let mut just_positive = RollDemand { nav_roll_cd: 1000 };
+    just_positive.adjust_for_inverted(1);
+
+    let mut just_negative = RollDemand { nav_roll_cd: 1000 };
+    just_negative.adjust_for_inverted(-1);
+
+    assert_eq!(
+        at_zero.nav_roll_cd, just_positive.nav_roll_cd,
+        "a level aircraft should be treated as right side up"
+    );
+    assert_ne!(
+        at_zero.nav_roll_cd, just_negative.nav_roll_cd,
+        "a fraction of a degree the other way should take the full turn off"
+    );
+    assert_eq!(
+        at_zero.nav_roll_cd - just_negative.nav_roll_cd,
+        36000,
+        "the two sides should differ by exactly one turn"
+    );
+}
