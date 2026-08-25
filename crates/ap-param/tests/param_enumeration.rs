@@ -31,7 +31,9 @@ index fault is a test failure, which is the desired outcome"
 
 use std::collections::HashMap;
 
-use ap_param::{enumerate, GroupInfo, ParamInfo, ParamRef};
+use ap_param::{enumerate, EnumFilter, ParamRef};
+
+mod table;
 
 fn fixtures_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -41,87 +43,9 @@ fn fixtures_dir() -> std::path::PathBuf {
         .expect("workspace root")
 }
 
-/// One row of the structure fixture.
-struct Row {
-    parent_path: String,
-    pos: usize,
-    key: u16,
-    idx: u8,
-    ptype: u8,
-    flags: u16,
-    name: String,
-}
-
-fn load_structure() -> Option<Vec<Row>> {
-    let text = std::fs::read_to_string(fixtures_dir().join("param_structure.csv")).ok()?;
-    let mut rows = Vec::new();
-    for line in text.lines().skip(1) {
-        let f: Vec<&str> = line.splitn(7, ',').collect();
-        if f.len() != 7 {
-            continue;
-        }
-        rows.push(Row {
-            parent_path: f[0].to_owned(),
-            pos: f[1].parse().expect("pos"),
-            key: f[2].parse().expect("key"),
-            idx: f[3].parse().expect("idx"),
-            ptype: f[4].parse().expect("type"),
-            flags: f[5].parse().expect("flags"),
-            name: f[6].to_owned(),
-        });
-    }
-    Some(rows)
-}
-
-/// Rebuild the nested tables.
-///
-/// The port's tables borrow rather than owning, so the test leaks each level as
-/// it is built. Children are built before their parent can reference them, so
-/// the construction runs bottom up.
-fn build_groups(
-    by_parent: &HashMap<String, Vec<&Row>>,
-    path: &str,
-) -> Option<&'static [GroupInfo<'static>]> {
-    let children = by_parent.get(path)?;
-    let mut out: Vec<GroupInfo<'static>> = Vec::with_capacity(children.len());
-    for (i, r) in children.iter().enumerate() {
-        let child_path = format!("{path}.{i}");
-        out.push(GroupInfo {
-            name: Box::leak(r.name.clone().into_boxed_str()),
-            idx: r.idx,
-            ptype: r.ptype,
-            flags: r.flags,
-            group: build_groups(by_parent, &child_path),
-        });
-    }
-    Some(Box::leak(out.into_boxed_slice()))
-}
-
-fn build_table(rows: &[Row]) -> Vec<ParamInfo<'static>> {
-    let mut by_parent: HashMap<String, Vec<&Row>> = HashMap::new();
-    for r in rows {
-        by_parent.entry(r.parent_path.clone()).or_default().push(r);
-    }
-    for v in by_parent.values_mut() {
-        v.sort_by_key(|r| r.pos);
-    }
-
-    let top = by_parent.get("").cloned().unwrap_or_default();
-    top.iter()
-        .enumerate()
-        .map(|(i, r)| ParamInfo {
-            name: Box::leak(r.name.clone().into_boxed_str()),
-            key: r.key,
-            ptype: r.ptype,
-            flags: r.flags,
-            group: build_groups(&by_parent, &i.to_string()),
-        })
-        .collect()
-}
-
 #[test]
 fn the_traversal_reproduces_upstreams_enumeration() {
-    let Some(rows) = load_structure() else {
+    let Some(rows) = table::load_structure(&fixtures_dir()) else {
         eprintln!("skipping: param_structure.csv not present");
         return;
     };
@@ -135,17 +59,9 @@ fn the_traversal_reproduces_upstreams_enumeration() {
     // set_frame_type_flags() runs later in vehicle init than load_all() does,
     // so every entry carrying frame bits is excluded -- which is what the 231
     // "extras" turned out to be, rather than the null pointers I first assumed.
-    let frame_type_flags: u16 = std::fs::read_to_string(fixtures_dir().join("param_frame.csv"))
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .nth(1)
-                .and_then(|l| l.split(',').nth(1).map(str::to_owned))
-        })
-        .and_then(|v| v.trim().parse().ok())
-        .expect("param_frame.csv should record frame_type_flags");
+    let frame_type_flags = table::load_frame_flags(&fixtures_dir());
 
-    let table = build_table(&rows);
+    let table = table::build_table(&rows);
     assert!(table.len() > 100, "table looks empty: {}", table.len());
 
     // `ParamToken::key` is, despite its name, an INDEX into var_info -- first()
@@ -157,13 +73,17 @@ fn the_traversal_reproduces_upstreams_enumeration() {
     // key, token_idx, group_element -> (name, type), as the port computes them
     let mut produced: HashMap<(u16, u8, u32), (String, u8, bool)> = HashMap::new();
     let mut count = 0usize;
-    enumerate(&table, frame_type_flags, &mut |p: &ParamRef| {
-        produced.insert(
-            (p.key, p.token_idx, p.group_element),
-            (p.name.as_str().to_owned(), p.ptype, p.behind_pointer),
-        );
-        count += 1;
-    });
+    enumerate(
+        &table,
+        EnumFilter::for_frame(frame_type_flags),
+        &mut |p: &ParamRef| {
+            produced.insert(
+                (p.key, p.token_idx, p.group_element),
+                (p.name.as_str().to_owned(), p.ptype, p.behind_pointer),
+            );
+            count += 1;
+        },
+    );
 
     let mut matched = 0usize;
     let mut missing = Vec::new();

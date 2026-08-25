@@ -14,8 +14,14 @@ Two sections, and the difference between them is what makes the test honest:
                the input the port is given.
 
   P lines      the RESULT: upstream's own first()/next() enumeration, giving the
-               full name, key, idx and group_element of every parameter. This is
-               the oracle the port has to reproduce.
+               full name, key, idx and group_element of every parameter, plus
+               its default and its current value. This is the oracle the port
+               has to reproduce.
+
+The current value matters because eeprom.bin is written by the same boot: it
+makes storage and values a self-consistent pair, where comparing storage against
+a flight log meant comparing two different boots and disagreeing on the baro
+calibration.
 
 Generating the port's tables from the flattened enumeration would make the test
 circular -- it would check that a lookup finds what was put in it. Generating
@@ -73,7 +79,8 @@ static void ap_param_dump_group(const struct AP_Param::GroupInfo *gi,
 bool AP_Param::load_all()
 {
     // ---- reference-build-only ----
-    if (getenv("AP_PARAM_DUMP") != nullptr) {
+    if (getenv("AP_PARAM_DUMP_NOW") != nullptr) {
+        printf("U,%u\n", (unsigned)AP_HAL::millis());
         printf("F,%u\n", (unsigned)_frame_type_flags);
         printf("BEGIN_STRUCTURE\n");
         for (uint16_t i = 0; i < _num_vars; i++) {
@@ -108,13 +115,14 @@ bool AP_Param::load_all()
             char name[AP_MAX_NAME_SIZE + 1];
             name[AP_MAX_NAME_SIZE] = 0;
             ap->copy_name_token(token, name, AP_MAX_NAME_SIZE, true);
-            printf("P,%s,%u,%u,%u,%u,%.9g\n",
+            printf("P,%s,%u,%u,%u,%u,%.9g,%.9g\n",
                    name,
                    (unsigned)token.key,
                    (unsigned)token.idx,
                    (unsigned)token.group_element,
                    (unsigned)type,
-                   def);
+                   def,
+                   ap->cast_to_float(type));
         }
         printf("END_PARAMS\n");
         fflush(stdout);

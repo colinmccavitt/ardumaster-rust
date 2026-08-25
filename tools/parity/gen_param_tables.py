@@ -47,9 +47,11 @@ for line in DUMP.read_text(errors="replace").splitlines():
     elif line.startswith("P,"):
         # P,<name>,<key>,<idx>,<group_element>,<type>,<default>
         f = line.split(",")
-        if len(f) < 7:
+        if len(f) < 8:
             continue
-        enumeration.append([f[1], int(f[2]), int(f[3]), int(f[4]), int(f[5]), f[6]])
+        enumeration.append(
+            [f[1], int(f[2]), int(f[3]), int(f[4]), int(f[5]), f[6], f[7].strip()]
+        )
 
 if not structure or not enumeration:
     sys.exit("dump did not contain both sections")
@@ -79,7 +81,7 @@ print("wrote %s (frame_type_flags=%d)" % (fp.name, frame_type_flags))
 ep = OUT_DIR / "param_enumeration.csv"
 with open(ep, "w", newline="") as fh:
     w = csv.writer(fh)
-    w.writerow(["name", "key", "idx", "group_element", "type", "default"])
+    w.writerow(["name", "key", "idx", "group_element", "type", "default", "value"])
     for row in enumeration:
         w.writerow(row)
 print("wrote %s (%d parameters)" % (ep.name, len(enumeration)))

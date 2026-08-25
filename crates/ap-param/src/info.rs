@@ -151,6 +151,51 @@ pub const fn check_frame_type(flags: u16, frame_type_flags: u16) -> bool {
     frame_flags == 0 || (frame_flags & frame_type_flags) != 0
 }
 
+/// What to include when walking a descriptor table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnumFilter {
+    /// The vehicle's frame mask, upstream `_frame_type_flags`.
+    pub frame_type_flags: u16,
+    /// Whether to include entries flagged [`FLAG_HIDDEN`].
+    ///
+    /// Upstream never does — `check_frame_type` rejects them, so they never
+    /// reach `first()`/`next()`. But `save_sync` writes them to storage like
+    /// any other parameter; the flag only suppresses the announcement to a
+    /// GCS. So anything that has to account for what is *in* storage needs
+    /// them, and anything reproducing upstream's parameter list does not.
+    pub include_hidden: bool,
+}
+
+impl EnumFilter {
+    /// Upstream's behaviour: this frame, no hidden entries.
+    #[must_use]
+    pub const fn for_frame(frame_type_flags: u16) -> Self {
+        Self {
+            frame_type_flags,
+            include_hidden: false,
+        }
+    }
+
+    /// Everything on this frame, hidden entries included.
+    #[must_use]
+    pub const fn including_hidden(frame_type_flags: u16) -> Self {
+        Self {
+            frame_type_flags,
+            include_hidden: true,
+        }
+    }
+
+    /// Whether an entry passes this filter.
+    #[must_use]
+    pub const fn admits(self, flags: u16) -> bool {
+        if flags & FLAG_HIDDEN != 0 && !self.include_hidden {
+            return false;
+        }
+        let frame_flags = flags >> FRAME_TYPE_SHIFT;
+        frame_flags == 0 || (frame_flags & self.frame_type_flags) != 0
+    }
+}
+
 /// A fixed-capacity parameter name, built by truncating concatenation.
 ///
 /// Reproduces upstream's `strncpy` into a 16-byte buffer: appending past the
@@ -304,7 +349,7 @@ fn emit_leaf(
 /// What stays fixed for the length of one top-level variable's walk.
 struct Walk<'v> {
     key: u16,
-    frame_type_flags: u16,
+    filter: EnumFilter,
     visit: &'v mut dyn FnMut(&ParamRef),
 }
 
@@ -319,7 +364,7 @@ struct Position {
 
 fn walk_group(group: &[GroupInfo<'_>], at: Position, w: &mut Walk<'_>) {
     for entry in group {
-        if !check_frame_type(entry.flags, w.frame_type_flags) {
+        if !w.filter.admits(entry.flags) {
             continue;
         }
         let mut here = Position {
@@ -357,17 +402,19 @@ fn walk_group(group: &[GroupInfo<'_>], at: Position, w: &mut Walk<'_>) {
 /// The order matches upstream's `first()`/`next()`: table order, depth first,
 /// with a vector immediately followed by its components.
 ///
-/// `frame_type_flags` is the vehicle's frame mask, upstream's
-/// `_frame_type_flags`. Entries carrying frame bits that do not intersect it
-/// are skipped, along with everything below them.
+/// The filter carries the vehicle's frame mask, upstream's
+/// `_frame_type_flags`: entries whose frame bits do not intersect it are
+/// skipped, along with everything below them. It also decides whether hidden
+/// entries are included — see [`EnumFilter::include_hidden`], which is the one
+/// place this deliberately offers something upstream does not.
 ///
 /// A running vehicle can still enumerate fewer parameters than this, because a
 /// group reached through a null pointer contributes nothing. Reaching the
 /// objects is a later slice; what this settles is the naming and the storage
 /// identifier.
-pub fn enumerate(table: &[ParamInfo<'_>], frame_type_flags: u16, visit: &mut dyn FnMut(&ParamRef)) {
+pub fn enumerate(table: &[ParamInfo<'_>], filter: EnumFilter, visit: &mut dyn FnMut(&ParamRef)) {
     for info in table {
-        if !check_frame_type(info.flags, frame_type_flags) {
+        if !filter.admits(info.flags) {
             continue;
         }
         let mut name = ParamName::new();
@@ -386,7 +433,7 @@ pub fn enumerate(table: &[ParamInfo<'_>], frame_type_flags: u16, visit: &mut dyn
                     },
                     &mut Walk {
                         key: info.key,
-                        frame_type_flags,
+                        filter,
                         visit,
                     },
                 );

@@ -33,7 +33,7 @@ with open(OUT, "wb") as fo, open(ERR, "wb") as fe:
     )
 
 sock = None
-deadline = time.time() + 40
+deadline = time.time() + 90
 while time.time() < deadline:
     if sock is None:
         try:

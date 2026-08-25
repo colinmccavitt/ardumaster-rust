@@ -43,11 +43,14 @@
 #![no_std]
 
 pub mod info;
+pub mod storage;
+
+pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 
 pub use info::{
-    enumerate, group_id, GroupInfo, ParamInfo, ParamName, ParamRef, FLAG_DEFAULT_POINTER,
-    FLAG_ENABLE, FLAG_HIDDEN, FLAG_INFO_POINTER, FLAG_INTERNAL_USE_ONLY, FLAG_NESTED_OFFSET,
-    FLAG_NO_SHIFT, FLAG_POINTER, MAX_NAME_SIZE,
+    check_frame_type, enumerate, group_id, EnumFilter, GroupInfo, ParamInfo, ParamName, ParamRef,
+    FLAG_DEFAULT_POINTER, FLAG_ENABLE, FLAG_HIDDEN, FLAG_INFO_POINTER, FLAG_INTERNAL_USE_ONLY,
+    FLAG_NESTED_OFFSET, FLAG_NO_SHIFT, FLAG_POINTER, MAX_NAME_SIZE,
 };
 
 /// Parameter type tags, upstream `enum ap_var_type`.
