@@ -16,6 +16,7 @@
 #![no_std]
 
 pub mod alt_hold;
+pub mod altitude;
 pub mod land;
 pub mod pilot_input;
 pub mod stick_nav;
