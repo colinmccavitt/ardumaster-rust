@@ -71,6 +71,7 @@ SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"
 OUTPUT_OUT = ROOT / "fixtures/motors_output.csv"
 THROTTLE_OUT = ROOT / "fixtures/motors_throttle.csv"
 CHANNELS_OUT = ROOT / "fixtures/motors_channels.csv"
+SRVFN_OUT = ROOT / "fixtures/srv_functions.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -802,6 +803,53 @@ int main(void)
         }
     }
 
+    // ---- the servo function registry ----
+    printf("#srvfn\n");
+
+    // get_motor_function across every motor slot the frame tables can fill,
+    // and past it: the third range has no upper bound in the source, so the
+    // sweep goes beyond MAX_NUM_MOTORS to pin what it does there too.
+    printf("#motorfn\n");
+    printf("channel,function\n");
+    for (int ch = 0; ch < 40; ch++) {
+        printf("%d,%d\n", ch,
+               (int)SRV_Channels::get_motor_function((uint8_t)ch));
+    }
+
+    // have_digital_outputs, called rather than recomputed. digital_mask only
+    // accumulates (set_digital_outputs uses |=), so this grows it in steps and
+    // re-tests every mask against each state.
+    printf("#digital\n");
+    printf("step,digital,mask,result\n");
+    {
+        static const uint32_t MASKS[] = {
+            0u, 1u, 3u, 0xFu, 0xF0u, 0xFFu, 0x10000u, 0xFFFFFFFFu,
+        };
+        static const uint32_t ADD[] = { 0u, 0x1u, 0x2u, 0xCu, 0xF0u };
+        const unsigned n = sizeof(MASKS) / sizeof(MASKS[0]);
+        const unsigned steps = sizeof(ADD) / sizeof(ADD[0]);
+
+        for (unsigned s = 0; s < steps; s++) {
+            if (ADD[s] != 0) {
+                SRV_Channels::set_digital_outputs(ADD[s], 0);
+            }
+            // Probe the accumulated mask back out, one bit at a time. The
+            // static is private and earlier sections have already added to
+            // it, so this is the only honest way to say what state the rows
+            // below were taken in.
+            uint32_t probed = 0;
+            for (unsigned i = 0; i < 32; i++) {
+                if (SRV_Channels::have_digital_outputs(1u << i)) {
+                    probed |= 1u << i;
+                }
+            }
+            for (unsigned a = 0; a < n; a++) {
+                printf("%u,%u,%u,%d\n", s, probed, MASKS[a],
+                       SRV_Channels::have_digital_outputs(MASKS[a]) ? 1 : 0);
+            }
+        }
+    }
+
     return 0;
 }
 '''
@@ -830,6 +878,14 @@ def main():
                     ch_marker = "#channels\n"
                     if ch_marker in fifth:
                         fifth, sixth = fifth.split(ch_marker, 1)
+                        fn_marker = "#srvfn\n"
+                        if fn_marker in sixth:
+                            sixth, seventh = sixth.split(fn_marker, 1)
+                            SRVFN_OUT.write_text(fn_marker + seventh)
+                            rows = sum(1 for l in seventh.splitlines()
+                                       if l and not l.startswith("#")
+                                       and "," in l and not l[0].isalpha())
+                            print("wrote %s: %d rows" % (SRVFN_OUT.name, rows))
                         CHANNELS_OUT.write_text(ch_marker + sixth)
                         rows = sum(1 for l in sixth.splitlines()
                                    if l and not l.startswith("#") and "," in l

@@ -24,6 +24,9 @@
 
 use ap_math::scalar::constrain_value;
 
+pub mod function;
+pub mod registry;
+
 /// How a channel maps a scaled value onto pulse widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputType {
