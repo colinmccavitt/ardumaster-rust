@@ -12,6 +12,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cd "$(dirname "$0")/.."
 
 if [ $# -gt 0 ]; then
-    exec cargo mutants --package "$1" --no-shuffle -j 4 "$@"
+    pkg=$1
+    shift
+    exec cargo mutants --package "$pkg" --no-shuffle -j 4 "$@"
 fi
 exec cargo mutants --no-shuffle -j 4

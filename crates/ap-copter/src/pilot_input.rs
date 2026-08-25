@@ -5,26 +5,17 @@
 //! them return neutral when the radio has no valid input — a failsafe with a
 //! stale stick position is worse than one with none.
 //!
-//! # Not parity-tested, and why
+//! # Bringing a Copter harness up
 //!
-//! These are the first ported functions in this port with no recording behind
-//! them, so the reason is worth stating.
+//! These were briefly ported without a recording, because the hover throttle
+//! is read through `copter.motors` — a pointer assigned during the vehicle's
+//! `setup()`, which a parity harness does not run.
 //!
-//! A harness can reach the real methods — Copter's `Mode` instances are in the
-//! linked firmware, and the RC channels can be pointed at the singleton's own
-//! array. What it cannot do is read the hover throttle: `copter.motors` is a
-//! pointer assigned during the vehicle's `setup()`, which a parity harness
-//! does not run, and dereferencing it crashes.
-//!
-//! The tempting shortcut is to transcribe the arithmetic into the harness and
-//! sweep that. It would produce a fixture, and the fixture would be worthless:
-//! it would compare this port against a C++ copy of itself rather than against
-//! the firmware.
-//!
-//! So the tests below are derived from upstream's source and reason about what
-//! it does, which is weaker and is labelled as such. What would fix it is a
-//! way to bring a Copter harness far enough up that `motors` is live —
-//! `AP_Landing` was in exactly this position until `plane_link` existed.
+//! `Copter::allocate_motors()` turns out to be the one function in `setup()`
+//! that assigns it, along with the attitude and position controllers. Calling
+//! it directly, after the scheduler is up so it can read the loop rate, gives
+//! a vehicle whose controllers are the firmware's own — which unblocks
+//! recording for the `Mode` layer generally, not only for these.
 
 use ap_math::control::input_expo;
 use ap_math::scalar::{constrain_value, radians};
@@ -76,17 +67,25 @@ pub fn pilot_desired_yaw_rate_rads(
 /// a marginal one cannot afford much sharpening before the stick becomes
 /// twitchy at exactly the point it needs to be precise.
 ///
-/// # The divide-by-zero guard
+/// # The divide-by-zero guards
 ///
 /// A mid-stick at or below zero falls back to 500. Upstream calls it unlikely
 /// rather than impossible, and the fallback is the default rather than
 /// something derived — there is nothing sensible to derive it from.
+///
+/// There is a second such case upstream does not guard, at the other end: a
+/// mid-stick of 1000 leaves the upper span no width to divide by. This port
+/// closes it, at no cost to any other input. See DIVERGENCES.md D-026.
 #[must_use]
 pub fn pilot_desired_throttle(throttle_control: i16, mid_stick: i16, throttle_hover: f32) -> f32 {
     let mid_stick = if mid_stick <= 0 { 500 } else { mid_stick };
     let throttle_control = throttle_control.clamp(0, 1000);
 
-    let throttle_in = if throttle_control < mid_stick {
+    // Upstream writes `<` here, which sends a stick sitting exactly at mid
+    // through the branch below. The two agree at that point — both are
+    // exactly 0.5 — for every mid-stick but 1000, where the branch below
+    // divides by zero and returns NaN. See DIVERGENCES.md D-026.
+    let throttle_in = if throttle_control <= mid_stick {
         f32::from(throttle_control) * 0.5 / f32::from(mid_stick)
     } else {
         0.5 + f32::from(throttle_control - mid_stick) * 0.5 / f32::from(1000 - mid_stick)

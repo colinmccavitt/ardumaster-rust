@@ -1,18 +1,171 @@
 //! Pilot conversions, tested against what upstream's source does.
 //!
-//! Not parity tests — see the module documentation on
-//! `ap_copter::pilot_input` for why there is no recording behind these, and
-//! what would be needed to get one. They are written to pin the *decisions* in
-//! the code rather than to restate its arithmetic, so that a port which
-//! computed the right numbers by a different route would still pass and one
-//! that lost a decision would not.
+//! The first test compares against a recording of the real firmware. The
+//! rest pin the *decisions* in the code rather than restating its arithmetic,
+//! so that a port computing the right numbers by a different route still
+//! passes and one that lost a decision does not.
 
 #![allow(
     clippy::float_cmp,
     reason = "these comparisons are exact on purpose: a clamped stick must give bit-identical output to the value it clamps to, and a fallback must be indistinguishable from the value it falls back on. A tolerance would let a near-miss through, which is the defect."
 )]
+#![allow(
+    clippy::indexing_slicing,
+    reason = "indexes fixture rows whose field count is asserted; in a test an \
+index fault is a test failure, which is the desired outcome"
+)]
 
 use ap_copter::pilot_input::{pilot_desired_throttle, pilot_desired_yaw_rate_rads};
+
+fn f(s: &str) -> f32 {
+    f32::from_bits(s.trim().parse::<u32>().expect("float bits"))
+}
+
+fn rows(section: &str) -> Vec<Vec<String>> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/pilot_input.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).expect("fixture");
+
+    let mut out = Vec::new();
+    let mut current = "";
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix('#') {
+            current = tag;
+            continue;
+        }
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        if current == section {
+            out.push(line.split(',').map(str::to_owned).collect());
+        }
+    }
+    out
+}
+
+/// Both conversions against the real firmware.
+///
+/// The hover throttle is recorded as the value the motors *report*, not the
+/// one written: `get_throttle_hover` constrains to an eighth and eleven
+/// sixteenths, so the extremes in the sweep come back clamped. Comparing
+/// against the written value would be comparing against a number the firmware
+/// never used.
+#[test]
+fn the_pilot_conversions_match_upstream() {
+    let throttle = rows("throttle");
+    let yaw = rows("yaw");
+    assert!(!throttle.is_empty() && !yaw.is_empty(), "no recorded rows");
+
+    let mut largest = 0.0_f32;
+
+    for r in &throttle {
+        assert_eq!(r.len(), 5, "malformed throttle row");
+        let idx: usize = r[0].parse().expect("idx");
+        let got = pilot_desired_throttle(
+            r[1].trim().parse().expect("control"),
+            r[2].trim().parse().expect("mid"),
+            f(&r[3]),
+        );
+        let want = f(&r[4]);
+        let diff = (got - want).abs();
+        largest = largest.max(diff);
+        assert!(
+            diff < 3e-6,
+            "throttle row {idx}: {got} != upstream {want} (diff {diff})"
+        );
+    }
+
+    for r in &yaw {
+        assert_eq!(r.len(), 5, "malformed yaw row");
+        let idx: usize = r[0].parse().expect("idx");
+        let got = pilot_desired_yaw_rate_rads(f(&r[1]), f(&r[2]), f(&r[3]), true);
+        let want = f(&r[4]);
+        let diff = (got - want).abs();
+        largest = largest.max(diff);
+        assert!(
+            diff < 3e-6,
+            "yaw row {idx}: {got} != upstream {want} (diff {diff})"
+        );
+    }
+
+    // The mid must have moved, or the piecewise split is only ever tested at
+    // one hinge point.
+    let mids: std::collections::BTreeSet<i16> = throttle
+        .iter()
+        .map(|r| r[2].trim().parse().expect("mid"))
+        .collect();
+    assert!(mids.len() > 1, "the control mid never moved: {mids:?}");
+
+    println!(
+        "{} throttle rows and {} yaw rows, largest difference {largest:e}, \
+         {} distinct control mids",
+        throttle.len(),
+        yaw.len(),
+        mids.len()
+    );
+}
+
+/// The repaired divide-by-zero, against the recording that motivated it.
+///
+/// Upstream returns NaN for a stick at full travel on a channel whose
+/// calibration has collapsed. This asserts both halves of D-026: that the port
+/// returns the continuous value there, and that it still matches upstream at
+/// every other stick position in the same degenerate configuration — the fix
+/// is meant to be invisible everywhere else, including here.
+#[test]
+fn the_degenerate_calibration_is_repaired() {
+    let rows = rows("throttle_degenerate");
+    assert!(!rows.is_empty(), "no recorded degenerate rows");
+
+    let mut nan_rows = 0;
+    for r in &rows {
+        assert_eq!(r.len(), 5, "malformed degenerate row");
+        let idx: usize = r[0].parse().expect("idx");
+        let mid: i16 = r[2].trim().parse().expect("mid");
+        assert_eq!(mid, 1000, "row {idx} is not the degenerate configuration");
+
+        let got = pilot_desired_throttle(r[1].trim().parse().expect("control"), mid, f(&r[3]));
+        let want = f(&r[4]);
+
+        if want.is_nan() {
+            nan_rows += 1;
+            // Half stick *travel*, not half throttle: the expo shaping still
+            // applies, so the value depends on the hover throttle. The
+            // reference is what mid-stick gives on a sound calibration, which
+            // is the thing the collapsed one has degenerated into.
+            let reference = pilot_desired_throttle(500, 500, f(&r[3]));
+            assert!(
+                got.is_finite(),
+                "row {idx}: the port inherited upstream's NaN"
+            );
+            assert!(
+                (got - reference).abs() < 1e-6,
+                "row {idx}: upstream is NaN; the port should give what \
+                 mid-stick gives on a sound calibration ({reference}), got {got}"
+            );
+        } else {
+            assert!(
+                (got - want).abs() < 3e-6,
+                "row {idx}: the repair changed a well-defined value, \
+                 {got} against upstream {want}"
+            );
+        }
+    }
+
+    assert!(
+        nan_rows > 0,
+        "no row reached the divide by zero, so this pins nothing — the \
+         recording no longer covers the case D-026 is about"
+    );
+    println!(
+        "{} of {} recorded rows are NaN upstream",
+        nan_rows,
+        rows.len()
+    );
+}
 
 /// Mid-stick is half throttle wherever mid-stick physically sits.
 ///

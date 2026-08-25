@@ -1292,3 +1292,61 @@ Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.
   with `dt == _dt_s`, where the two agree; `the_rate_predictor_honours_its_dt`
   asserts that a differing `dt` changes the result, and records that upstream
   would have returned the `_dt_s` answer.
+
+## D-026 — a collapsed throttle calibration yields NaN throttle
+
+- **status**: `applied`
+- **upstream**: `ArduCopter/mode.cpp:968`, `Mode::get_pilot_desired_throttle()`.
+  The stick is mapped by two straight lines meeting at mid-stick:
+
+  ```cpp
+  if (throttle_control < mid_stick) {
+      throttle_in = ((float)throttle_control)*0.5f/(float)mid_stick;
+  } else {
+      throttle_in = 0.5f + ((float)(throttle_control-mid_stick)) * 0.5f / (float)(1000-mid_stick);
+  }
+  ```
+
+  The function opens by guarding `mid_stick <= 0` — "protect against unlikely
+  divide by zero" — and does not guard the symmetric case at the other end. A
+  `mid_stick` of 1000 leaves the second divisor zero, and the only stick
+  position that reaches it is full throttle, where the numerator is zero too:
+  `0.0f/0.0f` is NaN, not an infinity.
+
+  `mid_stick` comes from `RC_Channel::get_control_mid()`, which scales the
+  midpoint of the radio range against that range. It returns 1000 when
+  `radio_min == radio_max` — a channel whose calibration has collapsed, from an
+  aborted or corrupted RC calibration. Recorded from the firmware rather than
+  argued from the source:
+
+  ```
+  mid with min==max==2000: 1000
+    out at full stick: -nan
+    out at 999:        0.499500
+  ```
+
+- **ported**: the comparison is `<=` rather than `<`, so a stick at exactly
+  mid-stick takes the first branch. The result is 0.5 — the value the second
+  branch gives at that point in every non-degenerate case, and the value the
+  first branch approaches from below (0.4995 at 999).
+- **why**: NaN throttle is worse than any number. It does not stay contained:
+  `mode.cpp:385` gates a mode change on
+  `new_flightmode->get_pilot_desired_throttle() > copter.get_non_takeoff_throttle()`,
+  and every comparison against NaN is false, so the check silently reads as
+  "throttle is low" with the stick held at maximum. Downstream the value reaches
+  the motors' throttle input.
+
+  Upstream already decided this class of input deserves a guard; it guarded one
+  end. This is the same guard at the other end.
+- **risk**: None. At `throttle_control == mid_stick` the two branches are
+  bit-identical for every `mid_stick` in 1..=999 — the first computes
+  `(m*0.5)/m`, exact in IEEE-754, and the second computes `0.5 + 0.0`. The
+  branch chosen therefore cannot be observed except at the degenerate point.
+  Above 1000 the constrained stick can never reach mid-stick at all, so only the
+  first branch is live and it stays well defined.
+- **pinned by**: `crates/ap-copter/tests/pilot_input.rs`
+  — `the_pilot_conversions_match_upstream` covers the 180 well-formed rows
+  bit-exactly; `the_degenerate_calibration_is_repaired` reads the recorded
+  `throttle_degenerate` rows, asserts upstream is NaN exactly where the port
+  returns 0.5, and asserts the two agree everywhere else in that section. If a
+  later upstream fixes this itself, the recording changes and that test fails.
