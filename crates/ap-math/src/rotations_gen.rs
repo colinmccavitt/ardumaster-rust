@@ -504,3 +504,29 @@ pub fn rotate<T: Real>(v: &mut Vector3<T>, rotation: Rotation) -> Result<(), Bad
     }
     Ok(())
 }
+
+/// Undo a rotation, upstream `Vector3<T>::rotate_inverse`.
+///
+/// Builds the rotation matrix by applying `rotation` to the three basis
+/// vectors, then multiplies by its transpose -- which for an orthonormal
+/// matrix is its inverse. Reproduced as upstream writes it rather than
+/// inverted analytically, so the arithmetic matches.
+///
+/// # Errors
+///
+/// As [`rotate`].
+pub fn rotate_inverse<T: Real>(v: &mut Vector3<T>, rotation: Rotation) -> Result<(), BadRotation> {
+    let mut x_vec = Vector3::new(T::one(), T::zero(), T::zero());
+    let mut y_vec = Vector3::new(T::zero(), T::one(), T::zero());
+    let mut z_vec = Vector3::new(T::zero(), T::zero(), T::one());
+
+    rotate(&mut x_vec, rotation)?;
+    rotate(&mut y_vec, rotation)?;
+    rotate(&mut z_vec, rotation)?;
+
+    let m = crate::matrix3::Matrix3::new(
+        x_vec.x, y_vec.x, z_vec.x, x_vec.y, y_vec.y, z_vec.y, x_vec.z, y_vec.z, z_vec.z,
+    );
+    *v = m.mul_transpose(*v);
+    Ok(())
+}

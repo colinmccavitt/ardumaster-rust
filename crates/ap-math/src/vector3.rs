@@ -22,7 +22,10 @@
 
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use crate::scalar::{is_equal, is_positive, is_zero, norm2, norm3, radians, Real};
+use crate::matrix3::Matrix3;
+use crate::scalar::{
+    constrain_value, is_equal, is_positive, is_zero, norm2, norm3, radians, safe_sqrt, Real,
+};
 use crate::vector2::Vector2;
 
 /// Three-dimensional vector. Upstream `Vector3<T>`.
@@ -341,6 +344,209 @@ impl<T: Real> DivAssign<T> for Vector3<T> {
     #[inline]
     fn div_assign(&mut self, num: T) {
         *self = *self / num;
+    }
+}
+
+impl<T: Real> Vector3<T> {
+    /// Rotate about the z axis by `angle_rad`, upstream `rotate_xy`.
+    pub fn rotate_xy(&mut self, angle_rad: T) {
+        let cs = angle_rad.cos();
+        let sn = angle_rad.sin();
+        let rx = self.x * cs - self.y * sn;
+        let ry = self.x * sn + self.y * cs;
+        self.x = rx;
+        self.y = ry;
+    }
+
+    /// This vector as a row, times a matrix. Upstream `row_times_mat`.
+    #[must_use]
+    pub fn row_times_mat(&self, m: &Matrix3<T>) -> Self {
+        Self::new(self.dot(m.colx()), self.dot(m.coly()), self.dot(m.colz()))
+    }
+
+    /// Column vector times row vector, giving a matrix. Upstream
+    /// `mul_rowcol`, the outer product.
+    #[must_use]
+    pub fn mul_rowcol(&self, v2: Self) -> Matrix3<T> {
+        Matrix3::new(
+            self.x * v2.x,
+            self.x * v2.y,
+            self.x * v2.z,
+            self.y * v2.x,
+            self.y * v2.y,
+            self.y * v2.z,
+            self.z * v2.x,
+            self.z * v2.y,
+            self.z * v2.z,
+        )
+    }
+
+    /// Perpendicular distance from this point to the segment `seg_start`..`seg_end`.
+    ///
+    /// Computed from the triangle's area by Heron's formula, as upstream does.
+    /// A degenerate segment returns zero rather than dividing by its length.
+    #[must_use]
+    pub fn distance_to_segment(&self, seg_start: Self, seg_end: Self) -> T {
+        let a = (*self - seg_start).length();
+        let b = (seg_start - seg_end).length();
+        let c = (seg_end - *self).length();
+
+        if is_zero(b) {
+            return T::zero();
+        }
+
+        let s = (a + b + c) * T::from_f64(0.5);
+        let mut area_squared = s * (s - a) * (s - b) * (s - c);
+        // Three collinear points give a true area of zero, and rounding can
+        // push the product just below it. Upstream clamps for that reason.
+        if area_squared < T::zero() {
+            area_squared = T::zero();
+        }
+        let area = safe_sqrt(area_squared);
+        T::from_f64(2.0) * area / b
+    }
+
+    /// The point on segment `w1`..`w2` closest to `p`, upstream
+    /// `point_on_line_closest_to_other_point`.
+    ///
+    /// A degenerate segment returns `w1`.
+    #[must_use]
+    pub fn point_on_line_closest_to_other_point(w1: Self, w2: Self, p: Self) -> Self {
+        let line_vec = w2 - w1;
+        let p_vec = p - w1;
+
+        let line_vec_len = line_vec.length();
+        if is_zero(line_vec_len) {
+            return w1;
+        }
+
+        // Upstream scales both vectors by 1/len and dots them, which yields the
+        // fraction along the segment directly. Reproduced rather than
+        // simplified: dividing the dot product once instead would change the
+        // rounding.
+        let scale = T::one() / line_vec_len;
+        let unit_vec = line_vec * scale;
+        let scaled_p_vec = p_vec * scale;
+
+        let dot_product = constrain_value(unit_vec.dot(scaled_p_vec), T::zero(), T::one());
+        line_vec * dot_product + w1
+    }
+
+    /// Distance from `p` to the segment `w1`..`w2`, upstream
+    /// `closest_distance_between_line_and_point`.
+    #[must_use]
+    pub fn closest_distance_between_line_and_point(w1: Self, w2: Self, p: Self) -> T {
+        (Self::point_on_line_closest_to_other_point(w1, w2, p) - p).length()
+    }
+
+    /// Whether the segment `seg_start`..`seg_end` meets the plane through
+    /// `plane_point` with normal `plane_normal`. Upstream
+    /// `segment_plane_intersect`.
+    ///
+    /// A segment lying entirely in the plane counts as intersecting.
+    #[must_use]
+    pub fn segment_plane_intersect(
+        seg_start: Self,
+        seg_end: Self,
+        plane_normal: Self,
+        plane_point: Self,
+    ) -> bool {
+        let u = seg_end - seg_start;
+        let w = seg_start - plane_point;
+
+        let d = plane_normal.dot(u);
+        let n = -(plane_normal.dot(w));
+
+        if is_zero(d) {
+            // parallel to the plane: either lying in it, or missing it entirely
+            return is_zero(n);
+        }
+        let s_i = n / d;
+        (T::zero()..=T::one()).contains(&s_i)
+    }
+
+    /// The point on segment 2 closest to segment 1, upstream
+    /// `segment_to_segment_closest_point`.
+    ///
+    /// Upstream writes through an out-parameter; this returns the point.
+    #[must_use]
+    pub fn segment_to_segment_closest_point(
+        seg1_start: Self,
+        seg1_end: Self,
+        seg2_start: Self,
+        seg2_end: Self,
+    ) -> Self {
+        let line1 = seg1_end - seg1_start;
+        let line2 = seg2_end - seg2_start;
+        let diff = seg1_start - seg2_start;
+
+        let a = line1.dot(line1);
+        let b = line1.dot(line2);
+        let c = line2.dot(line2);
+        let d = line1.dot(diff);
+        let e = line2.dot(diff);
+
+        let discriminant = a * c - b * b;
+        let mut s_n;
+        let mut s_d = discriminant;
+        let mut t_n;
+        let mut t_d = discriminant;
+
+        if discriminant < T::from_f64(crate::scalar::FLT_EPSILON) {
+            // the segments are near parallel: pin to seg1_start rather than
+            // divide by something close to zero
+            s_n = T::zero();
+            s_d = T::one();
+            t_n = e;
+            t_d = c;
+        } else {
+            // closest points on the infinite lines
+            s_n = b * e - c * d;
+            t_n = a * e - b * d;
+            if s_n < T::zero() {
+                // the s = 0 edge is the visible one
+                s_n = T::zero();
+                t_n = e;
+                t_d = c;
+            } else if s_n > s_d {
+                // the s = 1 edge is the visible one
+                s_n = s_d;
+                t_n = e + b;
+                t_d = c;
+            }
+        }
+
+        if t_n < T::zero() {
+            // the t = 0 edge is visible, so recompute s against it
+            t_n = T::zero();
+            if -d < T::zero() {
+                s_n = T::zero();
+            } else if -d > a {
+                s_n = s_d;
+            } else {
+                s_n = -d;
+                s_d = a;
+            }
+        } else if t_n > t_d {
+            // the t = 1 edge is visible
+            t_n = t_d;
+            if (-d + b) < T::zero() {
+                s_n = T::zero();
+            } else if (-d + b) > a {
+                s_n = s_d;
+            } else {
+                s_n = -d + b;
+                s_d = a;
+            }
+        }
+
+        // Upstream computes sN/sD as well but only uses tc, since it returns
+        // the point on segment 2. The s values are kept because the branches
+        // above update them and dropping them would change which branch runs.
+        let _ = (s_n, s_d);
+
+        let tc = if is_zero(t_n) { T::zero() } else { t_n / t_d };
+        seg2_start + line2 * tc
     }
 }
 
