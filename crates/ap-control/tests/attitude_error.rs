@@ -515,3 +515,227 @@ mod rate_target {
         assert!(out.z < 0.0, "yaw {}", out.z);
     }
 }
+
+mod yaw_limiting {
+    use ap_control::attitude_error::{thrust_heading_rotation_angles, YawLimitGains};
+    use ap_math::quaternion::Quaternion;
+    use ap_math::vector3::Vector3f;
+
+    fn att(roll: f32, pitch: f32, yaw: f32) -> Quaternion {
+        Quaternion::from_euler(roll, pitch, yaw)
+    }
+
+    fn gains() -> YawLimitGains {
+        YawLimitGains {
+            accel_yaw_max_radss: 2.0,
+            rate_yaw_kp: 0.2,
+            angle_yaw_kp: 4.0,
+            ..YawLimitGains::default()
+        }
+    }
+
+    /// Without a yaw rate gain there is nothing to derive a limit from.
+    ///
+    /// Upstream skips the whole block, leaving the error as the decomposition
+    /// produced it. A port that fell back to the 45-degree cap instead would
+    /// start limiting a vehicle upstream leaves alone.
+    #[test]
+    fn no_rate_gain_means_no_limiting() {
+        let mut g = gains();
+        g.rate_yaw_kp = 0.0;
+
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 2.5); // a large heading error
+
+        let (out_target, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        assert!(
+            libm::fabsf(e.error_rad.z) > 1.0,
+            "the error should be untouched, got {}",
+            e.error_rad.z
+        );
+        assert_eq!(out_target, target, "and the target should not be rebuilt");
+    }
+
+    /// Without an angle gain the limit is computed but not applied.
+    #[test]
+    fn no_angle_gain_means_no_limiting() {
+        let mut g = gains();
+        g.angle_yaw_kp = 0.0;
+
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 2.5);
+
+        let (out_target, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        assert!(libm::fabsf(e.error_rad.z) > 1.0, "got {}", e.error_rad.z);
+        assert_eq!(out_target, target);
+    }
+
+    /// A small heading error passes through untouched.
+    #[test]
+    fn a_small_heading_error_is_not_limited() {
+        let g = gains();
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 0.05);
+
+        let (out_target, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        assert!(
+            libm::fabsf(libm::fabsf(e.error_rad.z) - 0.05) < 1e-3,
+            "got {}",
+            e.error_rad.z
+        );
+        assert_eq!(out_target, target, "no rebuild for an unlimited error");
+    }
+
+    /// A large heading error is capped, and the target is rebuilt to match.
+    ///
+    /// Rebuilding is the part worth pinning. Clamping only the error would
+    /// leave the target unreachable, so the same oversized error would
+    /// reappear on the next iteration and the aircraft would sit against the
+    /// limit indefinitely.
+    #[test]
+    fn a_large_heading_error_is_capped_and_the_target_rebuilt() {
+        let g = gains();
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 2.5);
+
+        let (out_target, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        let capped = libm::fabsf(e.error_rad.z);
+        assert!(
+            capped < 1.0,
+            "a 2.5 rad error should be capped well below it, got {capped}"
+        );
+        assert_ne!(out_target, target, "the target must be rebuilt");
+
+        // And the rebuilt target must actually produce the capped error, or
+        // the next iteration would see something different again.
+        let (_, again) = thrust_heading_rotation_angles(out_target, body, &g);
+        assert!(
+            libm::fabsf(libm::fabsf(again.error_rad.z) - capped) < 1e-3,
+            "the rebuilt target should reproduce the capped error: {} vs {capped}",
+            again.error_rad.z
+        );
+    }
+
+    /// The cap never exceeds 45 degrees however generous the gains.
+    #[test]
+    fn the_cap_is_never_looser_than_forty_five_degrees() {
+        let mut g = gains();
+        // Absurdly capable yaw axis.
+        g.rate_yaw_kp = 100.0;
+        g.angle_yaw_kp = 100.0;
+        g.accel_yaw_max_radss = 1000.0;
+
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 3.0);
+
+        let (_, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        let forty_five = 45.0_f32.to_radians();
+        assert!(
+            libm::fabsf(e.error_rad.z) <= forty_five + 1e-3,
+            "cap should hold at 45 degrees, got {} rad",
+            e.error_rad.z
+        );
+    }
+
+    /// The thrust error is untouched by yaw limiting.
+    ///
+    /// The point of the cap is to protect thrust authority, so it would be
+    /// self-defeating if capping yaw disturbed the thrust correction.
+    #[test]
+    fn limiting_yaw_leaves_the_thrust_correction_alone() {
+        let g = gains();
+        let body = att(0.2, -0.1, 0.0);
+        let target = att(0.5, 0.3, 2.5);
+
+        let unlimited = {
+            let mut g = g;
+            g.rate_yaw_kp = 0.0; // disables limiting
+            thrust_heading_rotation_angles(target, body, &g).1
+        };
+        let limited = thrust_heading_rotation_angles(target, body, &g).1;
+
+        assert!(
+            libm::fabsf(limited.thrust_error_angle_rad - unlimited.thrust_error_angle_rad) < 1e-5,
+            "thrust error changed: {} vs {}",
+            limited.thrust_error_angle_rad,
+            unlimited.thrust_error_angle_rad
+        );
+        assert!(
+            libm::fabsf(limited.error_rad.x - unlimited.error_rad.x) < 1e-5
+                && libm::fabsf(limited.error_rad.y - unlimited.error_rad.y) < 1e-5,
+            "roll or pitch error moved"
+        );
+    }
+
+    /// A more capable yaw axis gets a *tighter* cap, not a looser one.
+    ///
+    /// This reads backwards at first. The cap is the heading error that would
+    /// just saturate the yaw output, and a more aggressive controller reaches
+    /// that output at a smaller error — so more authority means a smaller
+    /// cap. Which is right, once you notice what the cap is for: carrying more
+    /// error than saturates the output buys nothing.
+    ///
+    /// The rate gain here is 3.0 rather than the 0.2 used elsewhere in this
+    /// module, because at 0.2 both derived caps (71.6 and 6.3 rad) sit far
+    /// above the 45-degree ceiling, the ceiling binds for both, and the test
+    /// would compare two identical numbers and pass on any implementation.
+    #[test]
+    fn a_more_capable_yaw_axis_is_capped_tighter() {
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.0, 0.0, 2.5);
+
+        let cap_for = |accel: f32| {
+            let mut g = gains();
+            g.rate_yaw_kp = 3.0;
+            g.accel_yaw_max_radss = accel;
+            libm::fabsf(
+                thrust_heading_rotation_angles(target, body, &g)
+                    .1
+                    .error_rad
+                    .z,
+            )
+        };
+
+        let weak = cap_for(0.3);
+        let strong = cap_for(4.0);
+
+        let forty_five = 45.0_f32.to_radians();
+        assert!(
+            weak < forty_five && strong < forty_five,
+            "both caps must be below the ceiling or this compares nothing: \
+             {weak} and {strong}"
+        );
+        assert!(
+            strong < weak,
+            "more authority should cap tighter: {strong} vs {weak}"
+        );
+    }
+
+    /// The rebuilt target is reachable: applying the capped error to the body
+    /// attitude gives it back.
+    #[test]
+    fn the_rebuilt_target_is_consistent_with_the_body() {
+        let g = gains();
+        let body = att(0.3, -0.2, 0.4);
+        let target = att(0.3, -0.2, 3.0);
+
+        let (out_target, e) = thrust_heading_rotation_angles(target, body, &g);
+
+        let heading = Quaternion::from_rotation_vector(Vector3f::new(0.0, 0.0, e.error_rad.z));
+        let rebuilt = body * e.thrust_vector_correction * heading;
+
+        let (rr, rp, ry) = rebuilt.to_euler();
+        let (tr, tp, ty) = out_target.to_euler();
+        assert!(
+            libm::fabsf(rr - tr) < 1e-3
+                && libm::fabsf(rp - tp) < 1e-3
+                && libm::fabsf(ry - ty) < 1e-3,
+            "rebuilt {rr},{rp},{ry} != target {tr},{tp},{ty}"
+        );
+    }
+}

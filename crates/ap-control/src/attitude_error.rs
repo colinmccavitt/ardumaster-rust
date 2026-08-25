@@ -350,3 +350,98 @@ pub fn update_ang_vel_target_from_att_error(
         ),
     )
 }
+
+/// The largest heading error the controller will act on, upstream
+/// `AC_ATTITUDE_YAW_MAX_ERROR_ANGLE_RAD`.
+///
+/// 45 degrees. Beyond that the yaw correction is capped, because a large
+/// heading error asks for a yaw rate that would consume the authority the
+/// aircraft needs to hold its thrust vector — and holding thrust matters more
+/// than facing the right way.
+const YAW_MAX_ERROR_ANGLE_DEG: f32 = 45.0;
+
+/// What the yaw limiting needs to know.
+#[derive(Debug, Clone, Copy)]
+pub struct YawLimitGains {
+    /// Maximum yaw acceleration, rad/s².
+    pub accel_yaw_max_radss: f32,
+    /// The yaw *rate* controller's proportional gain, `ATC_RAT_YAW_P`.
+    pub rate_yaw_kp: f32,
+    /// The yaw *angle* controller's proportional gain, `ATC_ANG_YAW_P`.
+    pub angle_yaw_kp: f32,
+    /// Lower clamp on the acceleration used for the limit, in degrees.
+    pub accel_y_min_degss: f32,
+    /// Upper clamp, in degrees.
+    pub accel_y_max_degss: f32,
+}
+
+impl Default for YawLimitGains {
+    fn default() -> Self {
+        Self {
+            accel_yaw_max_radss: 0.0,
+            rate_yaw_kp: 0.0,
+            angle_yaw_kp: 0.0,
+            accel_y_min_degss: ACCEL_Y_MIN_DEGSS,
+            accel_y_max_degss: ACCEL_Y_MAX_DEGSS,
+        }
+    }
+}
+
+/// Decompose the attitude error and cap the heading part, upstream
+/// `thrust_heading_rotation_angles`.
+///
+/// The cap is the whole addition over
+/// [`thrust_vector_rotation_angles`]. It is derived rather than fixed: the
+/// limit is whatever heading error would just saturate the yaw output with the
+/// yaw rate at zero, found by running the rate gain backwards through
+/// `inv_sqrt_controller`, and then capped at 45 degrees regardless.
+///
+/// Deriving it from the gains rather than fixing it means a vehicle with a
+/// weak yaw authority gets a tighter cap automatically, which is the point: the
+/// limit exists to stop the yaw loop asking for more than the aircraft has.
+///
+/// When the cap binds, the *target attitude itself* is rebuilt from the capped
+/// error, not merely the error clamped. That matters because the target is
+/// what the next iteration compares against — clamping only the error would
+/// leave the target unreachable and the error re-appearing every iteration.
+///
+/// Returns the possibly-updated target alongside the error.
+pub fn thrust_heading_rotation_angles(
+    attitude_target: Quaternion,
+    attitude_body: Quaternion,
+    gains: &YawLimitGains,
+) -> (Quaternion, AttitudeError) {
+    use ap_math::control::inv_sqrt_controller;
+    use ap_math::scalar::{radians, wrap_pi};
+
+    let mut error = thrust_vector_rotation_angles(attitude_target, attitude_body);
+    let mut target = attitude_target;
+
+    // Half the axis maximum, for the same reason as the rate target: leave
+    // headroom for the loop underneath.
+    let heading_accel_max = (gains.accel_yaw_max_radss / 2.0).clamp(
+        radians(gains.accel_y_min_degss),
+        radians(gains.accel_y_max_degss),
+    );
+
+    if is_zero(gains.rate_yaw_kp) {
+        return (target, error);
+    }
+
+    let heading_error_max = inv_sqrt_controller(
+        1.0 / gains.rate_yaw_kp,
+        gains.angle_yaw_kp,
+        heading_accel_max,
+    )
+    .min(radians(YAW_MAX_ERROR_ANGLE_DEG));
+
+    if !is_zero(gains.angle_yaw_kp) && libm::fabsf(error.error_rad.z) > heading_error_max {
+        error.error_rad.z = wrap_pi(error.error_rad.z).clamp(-heading_error_max, heading_error_max);
+
+        let heading_correction =
+            Quaternion::from_rotation_vector(Vector3f::new(0.0, 0.0, error.error_rad.z));
+        target = attitude_body * error.thrust_vector_correction * heading_correction;
+    }
+
+    (target, error)
+}
