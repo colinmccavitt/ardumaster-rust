@@ -19,6 +19,7 @@
 
 use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 use crate::output_channel::{OutputChannel, OutputContext};
+use ap_math::scalar::is_positive;
 
 /// A mask of output channels, upstream `SRV_Channel::servo_mask_t`.
 pub type ChannelMask = u32;
@@ -50,6 +51,28 @@ pub struct Registry {
     /// Whether the masks have been built at least once, upstream
     /// `initialised`.
     initialised: bool,
+    /// Per-function slew limits, upstream's `_slew` linked list.
+    slew: [Option<SlewEntry>; MAX_SLEW_ENTRIES],
+}
+
+/// How many functions may carry a slew limit at once.
+///
+/// Upstream keeps a heap-allocated linked list with no bound. Plane installs
+/// five — throttle, its left and right variants, and the two flap functions —
+/// so this has room to spare for a vehicle that wants more.
+///
+/// Overflow is not a new failure mode. Upstream already has a "cannot record
+/// this one" path: `NEW_NOTHROW` returning null, after which it returns
+/// without adding the entry and that function simply goes unlimited. A full
+/// table does the same thing, reached by a different route.
+pub const MAX_SLEW_ENTRIES: usize = 16;
+
+/// One function's slew state, upstream `slew_list`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SlewEntry {
+    func: Function,
+    last_scaled_output: f32,
+    max_change: f32,
 }
 
 impl Default for Registry {
@@ -67,6 +90,7 @@ impl Registry {
             have_pwm_mask: 0,
             invalid_mask: 0,
             initialised: false,
+            slew: [None; MAX_SLEW_ENTRIES],
         }
     }
 
@@ -190,6 +214,141 @@ impl Registry {
         } else {
             0.0
         }
+    }
+
+    /// Install or update a slew limit, upstream `set_slew_rate`.
+    ///
+    /// `slew_rate` is a percentage of `range` per second, so a step may move by
+    /// `range * rate * 0.01 * dt`.
+    ///
+    /// An entry is created even when the rate is zero, which upstream calls out
+    /// in a comment. Zero means no limiting, but the entry keeps tracking the
+    /// output, so a rate installed later starts slewing from where the output
+    /// actually is rather than from wherever it stood when limiting was last
+    /// switched off. Without that, enabling a slew limit mid-flight would begin
+    /// with a jump — the one thing a slew limit exists to prevent.
+    ///
+    /// Returns false only for an invalid function or a full table.
+    pub fn set_slew_rate(
+        &mut self,
+        function: Function,
+        slew_rate: f32,
+        range: u16,
+        dt: f32,
+    ) -> bool {
+        if !function.valid() {
+            return false;
+        }
+        let max_change = f32::from(range) * slew_rate * 0.01 * dt;
+
+        for entry in self.slew.iter_mut().flatten() {
+            if entry.func == function {
+                entry.max_change = max_change;
+                return true;
+            }
+        }
+
+        let current = self.output_scaled(function);
+        for slot in &mut self.slew {
+            if slot.is_none() {
+                *slot = Some(SlewEntry {
+                    func: function,
+                    last_scaled_output: current,
+                    max_change,
+                });
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Force a function's slew history, upstream `set_slew_last_scaled_output`.
+    ///
+    /// For a caller that has moved the output by some route the slew limiter
+    /// did not see, and wants the next limited step measured from there rather
+    /// than from the stale value.
+    pub fn set_slew_last_scaled_output(&mut self, function: Function, value: f32) {
+        for entry in self.slew.iter_mut().flatten() {
+            if entry.func == function {
+                entry.last_scaled_output = value;
+                return;
+            }
+        }
+    }
+
+    /// Read a function's output through its slew limit, upstream
+    /// `get_slew_limited_output_scaled`.
+    ///
+    /// Read-only, and that is the part worth knowing. It clamps against
+    /// `last_scaled_output` without advancing it and without writing the result
+    /// back — only [`Self::apply_slew_limits`] does either.
+    ///
+    /// So two calls in one cycle give the same answer, and a caller who used
+    /// this every cycle but never ran `calc_pwm` would clamp forever against a
+    /// value that never moves. Both follow from what this is: a question about
+    /// what the output *would* be, not a step of the filter.
+    ///
+    /// The `&self` is load-bearing: folding the peek and the step together is
+    /// not a bug this port can express. Upstream's equivalent is a non-const
+    /// static method and relies on the author not writing the assignment.
+    #[must_use]
+    pub fn slew_limited_output_scaled(&self, function: Function) -> f32 {
+        if !function.valid() {
+            return 0.0;
+        }
+        let value = self.output_scaled(function);
+        for entry in self.slew.iter().flatten() {
+            if entry.func == function {
+                if !is_positive(entry.max_change) {
+                    // Zero or negative reads as disabled. Upstream breaks
+                    // rather than continuing the search, which would only
+                    // differ if a function could appear twice — it cannot,
+                    // because `set_slew_rate` updates in place.
+                    break;
+                }
+                return value.clamp(
+                    entry.last_scaled_output - entry.max_change,
+                    entry.last_scaled_output + entry.max_change,
+                );
+            }
+        }
+        value
+    }
+
+    /// Enforce every slew limit and advance the history, upstream the first
+    /// half of `calc_pwm`.
+    ///
+    /// The counterpart to the read-only peek above: this writes the clamped
+    /// value back into the function's scaled output, so the limit binds on
+    /// everything that reads it afterwards.
+    ///
+    /// The history advances even when the limit is disabled — upstream's update
+    /// sits outside its `is_positive` check, and that is what makes installing
+    /// a rate later safe.
+    pub fn apply_slew_limits(&mut self) {
+        for slot in &mut self.slew {
+            let Some(entry) = slot else { continue };
+            if !entry.func.valid() {
+                continue;
+            }
+            let Some(f) = self.functions.get_mut(usize::from(entry.func.0)) else {
+                continue;
+            };
+            if is_positive(entry.max_change) {
+                f.output_scaled = f.output_scaled.clamp(
+                    entry.last_scaled_output - entry.max_change,
+                    entry.last_scaled_output + entry.max_change,
+                );
+            }
+            entry.last_scaled_output = f.output_scaled;
+        }
+    }
+
+    /// How many slew entries are in use, so a caller can tell it has not
+    /// silently exhausted the table.
+    #[must_use]
+    pub fn slew_entries(&self) -> usize {
+        self.slew.iter().flatten().count()
     }
 
     /// Channels last written as a pulse width, upstream `have_pwm_mask`.
