@@ -428,3 +428,122 @@ impl Function {
         E_STOP.binary_search(&self.0).is_ok()
     }
 }
+
+/// A channel's default output shape, upstream's `set_range` and
+/// `set_angle`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultOutput {
+    /// One-sided: 0 to this value.
+    Range(u16),
+    /// Two-sided about the trim: plus and minus this value.
+    Angle(i16),
+}
+
+/// Sorted by function, so the lookup can binary search.
+#[allow(
+    clippy::type_complexity,
+    reason = "a generated lookup table; naming the tuple would not make it clearer"
+)]
+const DEFAULT_OUTPUT: [(u8, DefaultOutput); 80] = [
+    (2, DefaultOutput::Range(100)),
+    (3, DefaultOutput::Range(100)),
+    (4, DefaultOutput::Angle(4500)),
+    (11, DefaultOutput::Range(100)),
+    (16, DefaultOutput::Angle(4500)),
+    (17, DefaultOutput::Angle(4500)),
+    (18, DefaultOutput::Angle(4500)),
+    (19, DefaultOutput::Angle(4500)),
+    (20, DefaultOutput::Angle(4500)),
+    (21, DefaultOutput::Angle(4500)),
+    (24, DefaultOutput::Angle(4500)),
+    (25, DefaultOutput::Angle(4500)),
+    (26, DefaultOutput::Angle(4500)),
+    (31, DefaultOutput::Range(1000)),
+    (32, DefaultOutput::Range(1000)),
+    (41, DefaultOutput::Range(1000)),
+    (45, DefaultOutput::Angle(4500)),
+    (46, DefaultOutput::Angle(4500)),
+    (47, DefaultOutput::Angle(4500)),
+    (70, DefaultOutput::Range(100)),
+    (73, DefaultOutput::Range(100)),
+    (74, DefaultOutput::Range(100)),
+    (75, DefaultOutput::Angle(4500)),
+    (76, DefaultOutput::Angle(4500)),
+    (77, DefaultOutput::Angle(4500)),
+    (78, DefaultOutput::Angle(4500)),
+    (79, DefaultOutput::Angle(4500)),
+    (80, DefaultOutput::Angle(4500)),
+    (81, DefaultOutput::Range(1000)),
+    (86, DefaultOutput::Angle(4500)),
+    (87, DefaultOutput::Angle(4500)),
+    (92, DefaultOutput::Range(1000)),
+    (94, DefaultOutput::Angle(4500)),
+    (95, DefaultOutput::Angle(4500)),
+    (96, DefaultOutput::Angle(4500)),
+    (97, DefaultOutput::Angle(4500)),
+    (98, DefaultOutput::Angle(4500)),
+    (99, DefaultOutput::Angle(4500)),
+    (100, DefaultOutput::Angle(4500)),
+    (101, DefaultOutput::Angle(4500)),
+    (102, DefaultOutput::Angle(4500)),
+    (103, DefaultOutput::Angle(4500)),
+    (104, DefaultOutput::Angle(4500)),
+    (105, DefaultOutput::Angle(4500)),
+    (106, DefaultOutput::Angle(4500)),
+    (107, DefaultOutput::Angle(4500)),
+    (108, DefaultOutput::Angle(4500)),
+    (109, DefaultOutput::Angle(4500)),
+    (110, DefaultOutput::Range(100)),
+    (124, DefaultOutput::Angle(4500)),
+    (125, DefaultOutput::Angle(4500)),
+    (126, DefaultOutput::Range(1000)),
+    (127, DefaultOutput::Angle(4500)),
+    (140, DefaultOutput::Angle(4500)),
+    (141, DefaultOutput::Angle(4500)),
+    (142, DefaultOutput::Angle(4500)),
+    (143, DefaultOutput::Angle(4500)),
+    (144, DefaultOutput::Angle(4500)),
+    (145, DefaultOutput::Angle(4500)),
+    (146, DefaultOutput::Angle(4500)),
+    (147, DefaultOutput::Angle(4500)),
+    (148, DefaultOutput::Angle(4500)),
+    (149, DefaultOutput::Angle(4500)),
+    (150, DefaultOutput::Angle(4500)),
+    (151, DefaultOutput::Angle(4500)),
+    (152, DefaultOutput::Angle(4500)),
+    (153, DefaultOutput::Angle(4500)),
+    (154, DefaultOutput::Angle(4500)),
+    (155, DefaultOutput::Angle(4500)),
+    (156, DefaultOutput::Range(100)),
+    (180, DefaultOutput::Range(1000)),
+    (181, DefaultOutput::Range(1000)),
+    (182, DefaultOutput::Range(1000)),
+    (183, DefaultOutput::Range(1000)),
+    (184, DefaultOutput::Angle(1)),
+    (185, DefaultOutput::Angle(1)),
+    (186, DefaultOutput::Angle(1)),
+    (187, DefaultOutput::Angle(1)),
+    (188, DefaultOutput::Angle(1)),
+    (189, DefaultOutput::Angle(1)),
+];
+
+impl Function {
+    /// The output shape this function defaults to, upstream
+    /// `aux_servo_function_setup`.
+    ///
+    /// `None` for a function with no default, which upstream leaves at
+    /// whatever the channel already had -- its `default:` does nothing
+    /// rather than picking a fallback.
+    ///
+    /// Upstream applies this only when the channel has not already been
+    /// set up, and the caller is responsible for that check; this is the
+    /// table, not the guard.
+    #[must_use]
+    pub fn default_output(self) -> Option<DefaultOutput> {
+        DEFAULT_OUTPUT
+            .binary_search_by_key(&self.0, |&(f, _)| f)
+            .ok()
+            .and_then(|i| DEFAULT_OUTPUT.get(i))
+            .map(|&(_, out)| out)
+    }
+}

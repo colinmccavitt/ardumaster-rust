@@ -148,6 +148,84 @@ L.append("    }")
 L.append("}")
 L.append("")
 
+
+# --- aux_servo_function_setup -------------------------------------------
+AUX_CPP = SRC.parent / "SRV_Channel_aux.cpp"
+aux = AUX_CPP.read_text()
+setup_body = aux[aux.index("void SRV_Channel::aux_servo_function_setup"):]
+setup_body = setup_body[:setup_body.index("default:")]
+
+setup = []          # (function value, "Range"|"Angle", amount)
+pending = []
+for line in setup_body.splitlines():
+    s = line.strip()
+    m = re.match(r"case (k_\w+)(?:\s*\.\.\.\s*(k_\w+))?\s*:", s)
+    if m:
+        lo_name, hi_name = m.group(1), m.group(2)
+        assert lo_name in by_name, "unknown setup function %s" % lo_name
+        if hi_name is None:
+            pending.append(by_name[lo_name])
+        else:
+            # GCC case-range, as in `case k_actuator1 ... k_actuator6:`.
+            assert hi_name in by_name, "unknown setup function %s" % hi_name
+            lo, hi = by_name[lo_name], by_name[hi_name]
+            assert lo <= hi, "inverted case range %s ... %s" % (lo_name, hi_name)
+            pending.extend(range(lo, hi + 1))
+        continue
+    m = re.match(r"set_(range|angle)\((-?\d+)\);", s)
+    if m:
+        assert pending, "set_%s with no cases above it" % m.group(1)
+        kind = "Range" if m.group(1) == "range" else "Angle"
+        for v in pending:
+            setup.append((v, kind, int(m.group(2))))
+        pending = []
+
+assert setup, "no setup entries found"
+assert not pending, "case labels with no set_range/set_angle after them"
+setup.sort()
+
+L.append("/// A channel's default output shape, upstream's `set_range` and")
+L.append("/// `set_angle`.")
+L.append("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
+L.append("pub enum DefaultOutput {")
+L.append("    /// One-sided: 0 to this value.")
+L.append("    Range(u16),")
+L.append("    /// Two-sided about the trim: plus and minus this value.")
+L.append("    Angle(i16),")
+L.append("}")
+L.append("")
+L.append("/// Sorted by function, so the lookup can binary search.")
+L.append("#[allow(")
+L.append("    clippy::type_complexity,")
+L.append('    reason = "a generated lookup table; naming the tuple would not make it clearer"')
+L.append(")]")
+L.append("const DEFAULT_OUTPUT: [(u8, DefaultOutput); %d] = [" % len(setup))
+for value, kind, amount in setup:
+    L.append("    (%d, DefaultOutput::%s(%d))," % (value, kind, amount))
+L.append("];")
+L.append("")
+L.append("impl Function {")
+L.append("    /// The output shape this function defaults to, upstream")
+L.append("    /// `aux_servo_function_setup`.")
+L.append("    ///")
+L.append("    /// `None` for a function with no default, which upstream leaves at")
+L.append("    /// whatever the channel already had -- its `default:` does nothing")
+L.append("    /// rather than picking a fallback.")
+L.append("    ///")
+L.append("    /// Upstream applies this only when the channel has not already been")
+L.append("    /// set up, and the caller is responsible for that check; this is the")
+L.append("    /// table, not the guard.")
+L.append("    #[must_use]")
+L.append("    pub fn default_output(self) -> Option<DefaultOutput> {")
+L.append("        DEFAULT_OUTPUT")
+L.append("            .binary_search_by_key(&self.0, |&(f, _)| f)")
+L.append("            .ok()")
+L.append("            .and_then(|i| DEFAULT_OUTPUT.get(i))")
+L.append("            .map(|&(_, out)| out)")
+L.append("    }")
+L.append("}")
+L.append("")
+
 OUT.write_text("\n".join(L))
-print("wrote %s: %d functions, %d e-stop, NR_AUX_SERVO_FUNCTIONS = %d"
-      % (OUT.name, len(entries), len(estop), count))
+print("wrote %s: %d functions, %d e-stop, %d defaults, NR_AUX_SERVO_FUNCTIONS = %d"
+      % (OUT.name, len(entries), len(estop), len(setup), count))
