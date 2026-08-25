@@ -228,6 +228,39 @@ impl<T: Real> Matrix3<T> {
 
     /// True if any element is NaN. Upstream `is_nan()`.
     #[inline]
+    /// Apply a small-angle rotation, upstream `Matrix3::rotate`.
+    ///
+    /// This is the first-order update the DCM estimator integrates with: each
+    /// row is crossed with the rotation vector and the result added, which is
+    /// `M += M x g` written out. It is deliberately not a proper rotation --
+    /// the result is not orthonormal, and DCM renormalises afterwards to put
+    /// that right. Using an exact rotation here would be slower and would not
+    /// remove the need to renormalise, because the drift being corrected comes
+    /// from accumulated rounding rather than from this approximation.
+    pub fn rotate(&mut self, g: Vector3<T>) {
+        let delta = Self {
+            a: Vector3::new(
+                self.a.y * g.z - self.a.z * g.y,
+                self.a.z * g.x - self.a.x * g.z,
+                self.a.x * g.y - self.a.y * g.x,
+            ),
+            b: Vector3::new(
+                self.b.y * g.z - self.b.z * g.y,
+                self.b.z * g.x - self.b.x * g.z,
+                self.b.x * g.y - self.b.y * g.x,
+            ),
+            c: Vector3::new(
+                self.c.y * g.z - self.c.z * g.y,
+                self.c.z * g.x - self.c.x * g.z,
+                self.c.x * g.y - self.c.y * g.x,
+            ),
+        };
+        self.a += delta.a;
+        self.b += delta.b;
+        self.c += delta.c;
+    }
+
+    /// True if any component is NaN, upstream `Matrix3::is_nan`.
     pub fn is_nan(self) -> bool {
         self.a.is_nan() || self.b.is_nan() || self.c.is_nan()
     }

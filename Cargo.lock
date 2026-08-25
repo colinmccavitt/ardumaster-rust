@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "ap-ahrs"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "ap-replay",
+]
+
+[[package]]
 name = "ap-control"
 version = "0.1.0"
 dependencies = [
