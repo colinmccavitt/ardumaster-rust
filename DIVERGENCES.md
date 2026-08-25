@@ -1350,3 +1350,80 @@ Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.
   `throttle_degenerate` rows, asserts upstream is NaN exactly where the port
   returns 0.5, and asserts the two agree everywhere else in that section. If a
   later upstream fixes this itself, the recording changes and that test fails.
+
+## D-027 — pilot velocity: the square-to-circle transform is applied in the wrong frame
+
+- **status**: `proposed` — reproduced, not corrected. Awaiting a decision,
+  because unlike every other entry here this one changes handling a pilot
+  feels in normal flight rather than in a degenerate configuration.
+- **upstream**: `ArduCopter/mode.cpp:572`, `Mode::get_pilot_desired_velocity`:
+
+  ```cpp
+  vel_ne_ms = Vector2f(-pitch_out_norm, roll_out_norm);
+  if (vel_ne_ms.is_zero()) { return vel_ne_ms; }
+  vel_ne_ms = copter.ahrs.body_to_earth2D(vel_ne_ms);
+
+  // Transform square input range to circular output
+  Vector2f vel_scalar = vel_ne_ms / MAX(fabsf(vel_ne_ms.x), fabsf(vel_ne_ms.y));
+  vel_ne_ms *= vel_max / vel_scalar.length();
+  ```
+
+  The sticks describe a square: full deflection on both axes is √2 further from
+  centre than full deflection on one, and without correction the aircraft would
+  fly half again as fast on a diagonal stick as on a straight one. The scaling
+  removes that by dividing by the distance to the edge of the ±1 square in the
+  direction of travel.
+
+  But the rotation to earth frame happens first, so the square it divides
+  against is axis-aligned to north and east — not to the sticks. The two
+  coincide only when the aircraft points along a cardinal. Recorded from the
+  firmware at `vel_max` 5 m/s with full roll stick and pitch centred:
+
+  ```
+    heading     speed
+      0 deg     5.0000
+     45 deg     3.5355     = vel_max / sqrt(2)
+     90 deg     5.0000
+    135 deg     3.5355
+   -180 deg     5.0000
+    -45 deg     3.5355
+   -115 deg     4.5465
+  ```
+
+  A pilot holding full stick loses 29% of their commanded speed by yawing 45
+  degrees, with no other input changing. Upstream's own comment states the
+  intent — "Transform square input range to circular output" — and in this
+  order the code does not achieve it: the input range being squared off is the
+  earth frame's, and the pilot's input range is the one that is square.
+
+- **ported**: reproduced exactly. `stick_nav::pilot_desired_velocity_ne` is
+  bit-identical to the firmware across all 1029 recorded rows, and the
+  behaviour above is pinned by
+  `the_speed_envelope_is_square_in_earth_frame` so that it is visible rather
+  than incidental.
+- **proposed correction**: normalise before rotating — scale the stick vector
+  against its own square, then rotate the result. Two lines swapped. The
+  output magnitude becomes `vel_max` for any full-deflection stick regardless
+  of heading, and the two versions agree exactly whenever the yaw is a
+  multiple of 90 degrees.
+- **why it is not applied**: every other divergence in this register either
+  fires only in a configuration the aircraft should not be in (D-026's
+  collapsed calibration), or produces identical numbers for every call that
+  exists today (D-025). This one fires on every diagonal heading in normal
+  flight and changes the speed the aircraft flies at by up to 41%.
+
+  That is a handling change, and a handling change is the user's call rather
+  than the porter's — even though the standing instruction is to fix inherited
+  bugs, because the instruction assumes the thing being fixed is agreed to be a
+  bug. A reviewer could argue the earth-frame square is deliberate: it makes
+  the maximum ground speed along north and east exactly `vel_max`, which is
+  what a `WPNAV_SPEED`-style limit is usually taken to mean, and correcting it
+  would let the aircraft exceed that limit along those axes by up to √2 when
+  the stick is on a diagonal.
+
+  Both readings are defensible, and they are defensible for different reasons:
+  one is about what the pilot feels, the other about what the speed parameter
+  promises. Recorded here in full so the choice can be made on the evidence.
+- **pinned by**: `crates/ap-copter/tests/stick_nav.rs`
+  — `the_pilot_velocity_matches_upstream` (1029 rows, bit-exact) and
+  `the_speed_envelope_is_square_in_earth_frame`.

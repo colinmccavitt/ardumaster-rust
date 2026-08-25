@@ -17,3 +17,4 @@
 
 pub mod alt_hold;
 pub mod pilot_input;
+pub mod stick_nav;
