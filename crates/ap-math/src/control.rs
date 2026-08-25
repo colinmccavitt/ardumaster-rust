@@ -68,6 +68,16 @@ pub enum ShapeError {
 /// The point is that a controller which has hit a limit should not keep
 /// pushing into it, but should still be allowed to unwind.
 pub fn update_vel_accel(vel: &mut f32, accel: f32, dt: f32, limit: f32, vel_error: f32) {
+    // The three products below are sign tests, and multiplying by `limit` or
+    // dividing by it cannot be told apart -- mutation testing keeps offering
+    // the swap, so the reasoning is recorded here rather than rediscovered.
+    //
+    // For any non-zero `limit` the two agree in sign, which is all
+    // `is_positive` reads. At `limit == 0` they genuinely differ, zero against
+    // an infinity, but never observably: whichever product is left unmutated
+    // still evaluates `is_positive(0.0)`, which is false, and the `&&`
+    // short-circuits before the mutated half can matter. The third product
+    // sits inside that guard and so is only reached when `limit` is non-zero.
     let mut delta_vel = accel * dt;
     if is_positive(delta_vel * limit) && is_positive(vel_error * limit) {
         if is_negative(*vel * limit) {
