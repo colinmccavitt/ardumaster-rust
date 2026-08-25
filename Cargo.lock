@@ -34,6 +34,14 @@ name = "ap-hal"
 version = "0.1.0"
 
 [[package]]
+name = "ap-ins"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "ap-sim",
+]
+
+[[package]]
 name = "ap-math"
 version = "0.1.0"
 dependencies = [

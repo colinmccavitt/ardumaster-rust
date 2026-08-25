@@ -1,0 +1,16 @@
+[package]
+name = "ap-ins"
+description = "Port of ArduPilot libraries/AP_InertialSensor: sample accumulation, coning correction, delta angle/velocity (Plane-4.7.0). Tracked as FW-011."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[dev-dependencies]
+ap-sim = { workspace = true }
+
+[lints]
+workspace = true

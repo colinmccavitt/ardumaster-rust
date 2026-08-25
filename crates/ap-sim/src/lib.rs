@@ -164,6 +164,51 @@ impl M3 {
         }
     }
 
+    /// The transpose, which for a rotation matrix is also its inverse.
+    #[must_use]
+    pub const fn transposed(self) -> Self {
+        Self {
+            a: V3::new(self.a.x, self.b.x, self.c.x),
+            b: V3::new(self.a.y, self.b.y, self.c.y),
+            c: V3::new(self.a.z, self.b.z, self.c.z),
+        }
+    }
+
+    /// The rotation vector this matrix represents -- the inverse of
+    /// [`M3::from_rotation_vector`].
+    ///
+    /// This is what makes the coning tests possible: it turns "the rotation
+    /// that actually occurred over this window" into a vector that can be
+    /// compared directly against an accumulated delta angle, without ever
+    /// summing a rate.
+    ///
+    /// # Domain
+    ///
+    /// Valid for rotations under a half turn. The axis is extracted from the
+    /// antisymmetric part, which vanishes as the angle approaches pi, so the
+    /// result is meaningless there. Every window a flight loop measures is
+    /// far smaller than that, and the assertion below says so out loud rather
+    /// than returning a quietly wrong vector.
+    #[must_use]
+    pub fn to_rotation_vector(self) -> V3 {
+        let trace = self.a.x + self.b.y + self.c.z;
+        let theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+        if theta < 1e-15 {
+            return V3::zero();
+        }
+        assert!(
+            theta < 3.0,
+            "to_rotation_vector is ill-conditioned near a half turn; got {theta} rad"
+        );
+        let s = theta.sin();
+        V3::new(
+            self.c.y - self.b.z,
+            self.a.z - self.c.x,
+            self.b.x - self.a.y,
+        )
+        .scaled(theta / (2.0 * s))
+    }
+
     /// Roll, pitch and yaw in radians, from a body-to-earth matrix.
     #[must_use]
     pub fn to_euler(self) -> (f64, f64, f64) {
@@ -287,6 +332,64 @@ impl AttitudeSim {
         }
     }
 
+    /// Advance by `dt` along a *continuously varying* rate, and return the
+    /// sample a real IMU would produce -- the instantaneous rate at the end of
+    /// the interval.
+    ///
+    /// # When to use this rather than [`AttitudeSim::step`]
+    ///
+    /// `step` holds the rate constant across the interval, which makes the
+    /// true rotation exactly `rate * dt` and the truth trivially checkable.
+    /// That is what the attitude tests want.
+    ///
+    /// It is the wrong model for anything that integrates *between* samples.
+    /// A trapezoidal integrator assumes its samples are points on a smooth
+    /// curve; against a staircase it is a half-step lag, and on a sweeping
+    /// rate that lag is a rotating phase error large enough to swamp the
+    /// effect being measured. Ask for this mode instead: truth advances in
+    /// `substeps` sub-intervals using the rate at each sub-interval's
+    /// midpoint, so the composed rotation approaches the true continuous one,
+    /// and the reported gyro is a genuine point sample of the curve.
+    ///
+    /// `substeps` trades cost against how exact the truth is. The residual is
+    /// second order in the sub-interval, so 64 leaves the truth several orders
+    /// below anything an f32 integrator can resolve.
+    ///
+    /// # Panics
+    ///
+    /// If `substeps` is zero.
+    pub fn step_continuous(&mut self, profile: RateProfile, dt: f64, substeps: usize) -> ImuSample {
+        assert!(substeps > 0, "substeps must be positive");
+        let sub = dt / substeps as f64;
+        for i in 0..substeps {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "substeps is a small loop count chosen by the caller"
+            )]
+            let midpoint = self.time_s + sub * (i as f64 + 0.5);
+            let rates = profile(midpoint);
+            self.truth = self
+                .truth
+                .times(M3::from_rotation_vector(rates.scaled(sub)));
+        }
+        self.time_s += dt;
+
+        let rates = profile(self.time_s);
+        let scale = 1.0 + self.errors.gyro_scale_error;
+        let measured_rate = rates.scaled(scale).plus(self.errors.gyro_bias);
+
+        ImuSample {
+            // Reported for completeness. An integrator being tested on this
+            // mode should be using `gyro`; the delta angle here is the same
+            // rectangular approximation the sensor would report, and carries
+            // the sampling error this mode exists to expose.
+            delta_angle: measured_rate.scaled(dt),
+            delta_angle_dt: dt,
+            gyro: measured_rate,
+            accel: self.gravity_in_body().plus(self.errors.accel_bias),
+        }
+    }
+
     /// Gravity as the accelerometer sees it, body frame.
     fn gravity_in_body(&self) -> V3 {
         // The truth is body-to-earth, so its transpose takes earth to body.
@@ -338,5 +441,24 @@ pub fn tumbling(t: f64) -> V3 {
         0.4 * (t * 0.7).sin(),
         0.3 * (t * 1.1).cos(),
         0.2 * (t * 0.5).sin(),
+    )
+}
+
+/// A rate vector of constant magnitude sweeping around the body x axis at
+/// 30 Hz -- the classic coning motion.
+///
+/// Nothing here is rotating "about" a fixed axis: the axis itself turns, which
+/// is precisely the condition under which the integral of the rate stops being
+/// the rotation that occurred. Vibration through a compliant airframe mount
+/// produces the same thing at similar frequencies, which is why the correction
+/// is worth having on a real vehicle and not only in a paper.
+#[must_use]
+pub fn coning(t: f64) -> V3 {
+    let sweep = 2.0 * PI * 30.0;
+    let amplitude = 4.0;
+    V3::new(
+        0.0,
+        amplitude * (sweep * t).cos(),
+        amplitude * (sweep * t).sin(),
     )
 }

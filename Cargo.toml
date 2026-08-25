@@ -25,6 +25,7 @@ ap-nav = { path = "crates/ap-nav" }
 ap-plane = { path = "crates/ap-plane" }
 ap-servo = { path = "crates/ap-servo" }
 ap-ahrs = { path = "crates/ap-ahrs" }
+ap-ins = { path = "crates/ap-ins" }
 ap-sim = { path = "crates/ap-sim" }
 ap-scheduler = { path = "crates/ap-scheduler" }
 ap-replay = { path = "crates/ap-replay" }

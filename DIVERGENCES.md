@@ -840,3 +840,57 @@ because they weaken the unit-parity oracle.
   singular matrix and `non_invertible[]` holds the invertible ones, with the
   `INSTANTIATE_TEST_CASE_P` names swapped to match. The logic branches on `det == 0`, so it
   still tests the right thing.
+
+## D-019 — a stalled gyro leaves a coning correction behind
+
+**Upstream:** `AP_InertialSensor_Backend::_notify_new_gyro_raw_sample`,
+`libraries/AP_InertialSensor/AP_InertialSensor_Backend.cpp:334-369`.
+
+The coning correction is computed *before* the unhealthy-gap check, from
+`_delta_angle_acc` and `_last_delta_angle`:
+
+```cpp
+Vector3f delta_angle = (gyro + _last_raw_gyro[i]) * 0.5f * dt;
+Vector3f delta_coning = (_delta_angle_acc[i] + _last_delta_angle[i] * (1.0f/6.0f));
+delta_coning = delta_coning % delta_angle;
+delta_coning *= 0.5f;
+{
+    WITH_SEMAPHORE(_sem);
+    if (sample_us - last_sample_us > 100000U) {
+        _delta_angle_acc[i].zero();      // <- the state delta_coning came from
+        _delta_angle_acc_dt[i] = 0;
+        dt = 0;
+        delta_angle.zero();              // <- and the vector it was crossed with
+    }
+    _delta_angle_acc[i] += delta_angle + delta_coning;   // <- delta_coning is stale
+```
+
+The gap branch discards `_delta_angle_acc` and zeroes `delta_angle`, but
+`delta_coning` was already computed from both and is not recomputed. So the
+freshly cleared accumulator is immediately seeded with a rotation derived
+entirely from data the code has just declared invalid, while
+`_delta_angle_acc_dt` stays at zero.
+
+**Reachable?** Yes. `_publish_gyro` only drains the accumulator when
+`_new_gyro_data` is set, so during a sensor stall nothing drains it and it
+holds its pre-stall contents for the whole gap. A vehicle manoeuvring when its
+IMU stalls has a non-zero accumulator and a non-zero last delta angle, and the
+two are generally not parallel.
+
+**Consequence:** the next `_publish_gyro` hands the AHRS a delta angle that is
+pure artefact, paired with a `_delta_angle_dt` of zero. `get_delta_angle`
+returns the artefact (`_delta_angle_valid` is true) with the loop interval
+substituted for the zero dt, and `AP_AHRS_DCM::matrix_update` divides one by
+the other -- so a spurious rotation rate is injected into the attitude at
+exactly the moment the vehicle is recovering from a sensor fault.
+
+**The accelerometer path does not have this.** There, zeroing `dt` is
+sufficient because it multiplies the only term (`_delta_velocity_acc += accel *
+dt`). The asymmetry is why this reads as an oversight rather than a decision.
+
+**Port:** the gap check is hoisted above the coning computation, so the
+correction is formed from post-check state. In the healthy case nothing between
+the two points touches either input, so the port is identical to upstream;
+after a stall the accumulator is genuinely empty.
+
+Covered by `a_stall_leaves_nothing_behind` in `crates/ap-ins/src/lib.rs`.
