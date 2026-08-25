@@ -34,6 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-copter"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "libm",
+]
+
+[[package]]
 name = "ap-declination"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,17 @@
+[package]
+name = "ap-copter"
+description = "Port of ArduPilot ArduCopter: the vehicle-level multirotor code, flight modes first (Copter-4.7.0). Tracked as COP-013 and COP-014."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+libm = { workspace = true }
+
+[features]
+ekf-double = ["ap-math/ekf-double"]
+
+[lints]
+workspace = true
