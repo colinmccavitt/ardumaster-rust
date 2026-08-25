@@ -12,7 +12,11 @@ approximate implementation through"
 index fault is a test failure, which is the desired outcome"
 )]
 
-use ap_control::pos_control_ne::{stopping_point_d, AttitudeCapability, DLimits, NeLimits};
+use ap_control::pos_control_ne::{
+    accel_ne_to_lean_angles, lean_angles_to_accel_ned, stopping_point_d, thrust_vector,
+    AttitudeCapability, DLimits, NeLimits,
+};
+use ap_math::vector3::Vector3f;
 
 fn f(s: &str) -> f32 {
     f32::from_bits(s.trim().parse::<u32>().expect("float bits"))
@@ -357,6 +361,229 @@ fn the_vertical_stopping_point_matches_upstream() {
     println!(
         "{} stopping-point rows, largest difference {largest:e}; clamped up on \
          {clamped_up}, down on {clamped_down}, unconfigured on {unconfigured}",
+        rows.len()
+    );
+}
+
+/// Lean angles to horizontal acceleration, swept past the divisor's floor.
+///
+/// The divisor `cos(roll)·cos(pitch)` is the vertical component of the thrust
+/// axis; dividing by it turns "where the aircraft points" into "what a vehicle
+/// holding altitude actually accelerates at", since a leaning aircraft must
+/// push harder to stay level and pushes harder horizontally too.
+///
+/// Floored at a tenth, capping implied thrust at ten times hover. Past about
+/// 84 degrees the true value diverges — an aircraft on its side cannot hold
+/// altitude at any horizontal acceleration — and the floor turns that into a
+/// large finite number the limits downstream can bound. 132 of the 256
+/// recorded rows are past it.
+#[test]
+fn the_lean_to_accel_map_matches_upstream() {
+    let rows = rows("leanaccel");
+    assert!(!rows.is_empty(), "no leanaccel rows");
+
+    let mut largest = 0.0_f32;
+    let mut floored = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 7, "malformed leanaccel row");
+        let idx: usize = r[0].parse().expect("idx");
+        let euler = Vector3f::new(f(&r[1]), f(&r[2]), f(&r[3]));
+
+        let got = lean_angles_to_accel_ned(euler);
+        for (label, value, want) in [
+            ("acc_n", got.x, f(&r[4])),
+            ("acc_e", got.y, f(&r[5])),
+            ("acc_d", got.z, f(&r[6])),
+        ] {
+            let diff = (value - want).abs();
+            largest = largest.max(diff);
+            assert!(
+                diff < 3e-5,
+                "row {idx} {label}: {value} != upstream {want} (diff {diff})"
+            );
+        }
+
+        if libm::cosf(euler.x) * libm::cosf(euler.y) < 0.1 {
+            floored += 1;
+        }
+    }
+
+    assert!(
+        floored > 50 && floored < rows.len() - 50,
+        "the divisor floor must both bind and not: it bound on {floored} of {}",
+        rows.len()
+    );
+
+    println!(
+        "{} lean-to-accel rows, largest difference {largest:e}, floor bound on \
+         {floored}",
+        rows.len()
+    );
+}
+
+/// Acceleration to lean angles, against the recorded heading.
+///
+/// The recorded heading is due north — the harness AHRS cannot be driven — so
+/// every row here has an identity rotation into the body frame. The rotation
+/// itself is covered by [`the_body_rotation_uses_the_heading`] below; this
+/// checks the conversion and the `cos(pitch)` correction.
+#[test]
+fn the_accel_to_lean_map_matches_upstream() {
+    let rows = rows("accellean");
+    assert!(!rows.is_empty(), "no accellean rows");
+
+    let mut largest = 0.0_f32;
+    for r in &rows {
+        assert_eq!(r.len(), 7, "malformed accellean row");
+        let idx: usize = r[0].parse().expect("idx");
+
+        let (roll, pitch) = accel_ne_to_lean_angles(f(&r[1]), f(&r[2]), f(&r[3]), f(&r[4]));
+
+        for (label, value, want) in [("roll", roll, f(&r[5])), ("pitch", pitch, f(&r[6]))] {
+            let diff = (value - want).abs();
+            largest = largest.max(diff);
+            assert!(
+                diff < 3e-5,
+                "row {idx} {label}: {value} != upstream {want} (diff {diff})"
+            );
+        }
+    }
+
+    println!(
+        "{} accel-to-lean rows, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// The heading rotation, which the recording cannot exercise.
+///
+/// The harness AHRS reports due north, so `cos_yaw` is one and `sin_yaw` zero
+/// in every recorded row and the rotation into forward-right is the identity.
+/// A port that dropped it entirely would pass the parity test above.
+///
+/// Checked here against the property rather than a recorded value: a pure
+/// north demand must become pure pitch when heading north, and pure roll when
+/// heading east.
+#[test]
+fn the_body_rotation_uses_the_heading() {
+    // Heading north: a northward demand is straight ahead, so pitch only.
+    let (roll, pitch) = accel_ne_to_lean_angles(4.0, 0.0, 1.0, 0.0);
+    assert!(
+        roll.abs() < 1e-6 && pitch < -0.1,
+        "heading north, a northward demand is pure pitch: got roll {roll}, \
+         pitch {pitch}"
+    );
+
+    // Heading east: the same demand is now off the left wing, so roll only.
+    let (roll, pitch) = accel_ne_to_lean_angles(4.0, 0.0, 0.0, 1.0);
+    assert!(
+        pitch.abs() < 1e-6 && roll < -0.1,
+        "heading east, a northward demand is pure roll: got roll {roll}, \
+         pitch {pitch}"
+    );
+
+    // And the cos(pitch) correction: with the aircraft pitched hard, the same
+    // lateral demand needs more roll than it would when level, because rolling
+    // while pitched moves the thrust sideways by only cos(pitch)·sin(roll).
+    let (roll_level, _) = accel_ne_to_lean_angles(0.0, 3.0, 1.0, 0.0);
+    let (roll_pitched, _) = accel_ne_to_lean_angles(25.0, 3.0, 1.0, 0.0);
+    assert!(
+        roll_pitched.abs() < roll_level.abs(),
+        "the cos(pitch) correction should shrink the roll demand when pitched: \
+         level {roll_level}, pitched {roll_pitched}"
+    );
+}
+
+/// The thrust vector hands the attitude controller a direction, not a force.
+///
+/// The vertical component is replaced by `-g` regardless of what the vertical
+/// controller is doing. That is not an approximation: only the ratio of
+/// horizontal to vertical sets the lean angle, so passing the real vertical
+/// acceleration would make the commanded bank depend on the climb rate — the
+/// aircraft would lean differently through the same horizontal manoeuvre while
+/// climbing than while descending. Fixing it at gravity decouples the axes,
+/// which is what allows them separate controllers at all.
+#[test]
+fn the_thrust_vector_is_independent_of_the_vertical_command() {
+    let horizontal = Vector3f::new(2.5, -1.5, 0.0);
+
+    let climbing = thrust_vector(Vector3f::new(horizontal.x, horizontal.y, -4.0));
+    let descending = thrust_vector(Vector3f::new(horizontal.x, horizontal.y, 6.0));
+
+    assert_eq!(
+        (climbing.x, climbing.y, climbing.z),
+        (descending.x, descending.y, descending.z),
+        "the commanded direction must not depend on the vertical command"
+    );
+    assert!(
+        (climbing.z + 9.80665).abs() < 1e-6,
+        "the vertical component is fixed at gravity, got {}",
+        climbing.z
+    );
+}
+
+/// The scalar angle/acceleration pair and `input_expo`.
+///
+/// The expo guard is on `expo` alone, so a negative expo is allowed and
+/// inverts the shaping — coarse near centre, fine at the stops. Unusual but
+/// well defined, and the sweep includes it.
+#[test]
+fn the_angle_conversions_match_upstream() {
+    use ap_math::control::{
+        accel_mss_to_angle_deg, accel_mss_to_angle_rad, angle_deg_to_accel_mss,
+        angle_rad_to_accel_mss, input_expo,
+    };
+
+    let rows = rows("angleconv");
+    assert!(!rows.is_empty(), "no angleconv rows");
+
+    let mut largest = 0.0_f32;
+    let mut passthrough = 0_usize;
+    let mut inverted = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 8, "malformed angleconv row");
+        let idx: usize = r[0].parse().expect("idx");
+        let x = f(&r[1]);
+        let expo = f(&r[6]);
+
+        for (label, value, want) in [
+            ("accel_from_rad", angle_rad_to_accel_mss(x), f(&r[2])),
+            ("accel_from_deg", angle_deg_to_accel_mss(x), f(&r[3])),
+            ("rad_from_accel", accel_mss_to_angle_rad(x), f(&r[4])),
+            ("deg_from_accel", accel_mss_to_angle_deg(x), f(&r[5])),
+            ("shaped", input_expo(x, expo), f(&r[7])),
+        ] {
+            let diff = (value - want).abs();
+            largest = largest.max(diff);
+            assert!(
+                diff < 3e-4,
+                "row {idx} {label}: {value} != upstream {want} (diff {diff})"
+            );
+        }
+
+        if expo >= 0.95 {
+            passthrough += 1;
+        }
+        if expo < 0.0 {
+            inverted += 1;
+        }
+    }
+
+    assert!(
+        passthrough > 50,
+        "the expo passthrough guard is barely covered ({passthrough} rows)"
+    );
+    assert!(
+        inverted > 50,
+        "negative expo is allowed and inverts the shaping; only {inverted} \
+         rows cover it"
+    );
+
+    println!(
+        "{} angle-conversion rows, largest difference {largest:e}; \
+         {passthrough} passthrough, {inverted} inverted",
         rows.len()
     );
 }

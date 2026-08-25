@@ -6,12 +6,14 @@
 //! multirotor's authority in the two is not remotely the same.
 
 use ap_math::control::{
-    shape_accel, shape_accel_xy, shape_pos_vel_accel, shape_pos_vel_accel_xy, shape_vel_accel,
-    shape_vel_accel_xy, stopping_distance, update_pos_vel_accel, update_pos_vel_accel_xy,
-    update_vel_accel, update_vel_accel_xy, Postype,
+    accel_mss_to_angle_rad, shape_accel, shape_accel_xy, shape_pos_vel_accel,
+    shape_pos_vel_accel_xy, shape_vel_accel, shape_vel_accel_xy, stopping_distance,
+    update_pos_vel_accel, update_pos_vel_accel_xy, update_vel_accel, update_vel_accel_xy, Postype,
+    GRAVITY_MSS,
 };
 use ap_math::scalar::{is_positive, is_zero};
 use ap_math::vector2::{Vector2, Vector2f};
+use ap_math::vector3::Vector3f;
 
 /// Default horizontal jerk, upstream `POSCONTROL_JERK_NE_MSSS`.
 pub const JERK_NE_MSSS: f32 = 5.0;
@@ -22,9 +24,6 @@ pub const JERK_NE_MSSS: f32 = 5.0;
 /// that a pilot does not feel the controller still fighting, slow enough not
 /// to be a step.
 pub const RELAX_TC: f32 = 0.16;
-
-/// Gravity, upstream `GRAVITY_MSS`.
-const GRAVITY_MSS: f32 = 9.80665;
 
 /// What the attitude controller can deliver, which bounds what the position
 /// controller may ask for.
@@ -662,4 +661,94 @@ pub fn stopping_point_d(
     curr_pos_d_m
         + stopping_distance(curr_vel_d_ms, kp, limits.accel_max_d_mss)
             .clamp(-STOPPING_DIST_UP_MAX_M, STOPPING_DIST_DOWN_MAX_M)
+}
+
+/// Convert a lean attitude into the horizontal acceleration it produces,
+/// upstream `lean_angles_rad_to_accel_NED_mss`.
+///
+/// The forward map: given where the aircraft is pointed, where does it go.
+///
+/// The numerator is the thrust axis rotated into NED and scaled by gravity;
+/// the divisor `cos(roll)·cos(pitch)` is the *vertical* component of that same
+/// axis. Dividing by it is what makes the result the acceleration of a vehicle
+/// holding altitude rather than one merely pointed that way — a leaning
+/// aircraft must push harder to stay level, and pushes harder horizontally
+/// too.
+///
+/// That divisor is floored at a tenth, capping the implied thrust at ten times
+/// hover. Past about 84 degrees of tilt the true value diverges: an aircraft
+/// on its side cannot hold altitude at all, and the honest answer is infinite.
+/// The floor turns that into a large finite number, which the acceleration
+/// limits downstream can then bound.
+///
+/// The vertical component is returned as exactly `-g` regardless of attitude.
+/// This function answers "what horizontal acceleration comes from this lean",
+/// and the vertical axis has its own controller; reporting anything else here
+/// would be reporting a quantity this caller has no say over.
+#[must_use]
+pub fn lean_angles_to_accel_ned(euler_rad: Vector3f) -> Vector3f {
+    let (sin_roll, cos_roll) = (libm::sinf(euler_rad.x), libm::cosf(euler_rad.x));
+    let (sin_pitch, cos_pitch) = (libm::sinf(euler_rad.y), libm::cosf(euler_rad.y));
+    let (sin_yaw, cos_yaw) = (libm::sinf(euler_rad.z), libm::cosf(euler_rad.z));
+
+    let divisor = (cos_roll * cos_pitch).max(0.1);
+
+    Vector3f::new(
+        GRAVITY_MSS * (-cos_yaw * sin_pitch * cos_roll - sin_yaw * sin_roll) / divisor,
+        GRAVITY_MSS * (-sin_yaw * sin_pitch * cos_roll + cos_yaw * sin_roll) / divisor,
+        -GRAVITY_MSS,
+    )
+}
+
+/// Convert a horizontal acceleration demand into the lean angles that produce
+/// it, upstream `accel_NE_mss_to_lean_angles_rad`.
+///
+/// The inverse of the map above, and not its algebraic inverse: it goes
+/// through the body frame instead.
+///
+/// The demand is rotated into forward-right by the *current* heading, then
+/// each axis is converted independently — except that roll is scaled by
+/// `cos(pitch)` first. That correction is the whole subtlety. Pitch and roll
+/// are applied in sequence, not simultaneously, so by the time roll acts the
+/// aircraft is already pitched and its roll axis is no longer horizontal.
+/// Rolling by θ while pitched by φ moves the thrust sideways by only
+/// `cos(φ)·sin(θ)`, so the roll demand has to be divided up by `cos(pitch)` to
+/// compensate — which is what scaling the *acceleration* by `cos(pitch)`
+/// before the conversion achieves.
+///
+/// Forward acceleration is negated because a nose-down pitch is negative and
+/// produces forward acceleration.
+#[must_use]
+pub fn accel_ne_to_lean_angles(
+    accel_n_mss: f32,
+    accel_e_mss: f32,
+    cos_yaw: f32,
+    sin_yaw: f32,
+) -> (f32, f32) {
+    let accel_forward_mss = accel_n_mss * cos_yaw + accel_e_mss * sin_yaw;
+    let accel_right_mss = -accel_n_mss * sin_yaw + accel_e_mss * cos_yaw;
+
+    let pitch_target_rad = accel_mss_to_angle_rad(-accel_forward_mss);
+    let cos_pitch_target = libm::cosf(pitch_target_rad);
+    let roll_target_rad = accel_mss_to_angle_rad(accel_right_mss * cos_pitch_target);
+
+    (roll_target_rad, pitch_target_rad)
+}
+
+/// The thrust direction the attitude controller should be given, upstream
+/// `get_thrust_vector`.
+///
+/// The horizontal components of the acceleration target, with the vertical
+/// replaced by `-g`.
+///
+/// The substitution is not an approximation. The attitude controller takes a
+/// *direction*, and only the ratio of horizontal to vertical sets the lean
+/// angle. Passing the real vertical acceleration would make the commanded lean
+/// depend on the climb rate — the aircraft would bank differently while
+/// climbing than while descending through the same horizontal manoeuvre.
+/// Fixing the vertical at gravity decouples the two axes, which is what lets
+/// them have separate controllers at all.
+#[must_use]
+pub fn thrust_vector(accel_target_ned_mss: Vector3f) -> Vector3f {
+    Vector3f::new(accel_target_ned_mss.x, accel_target_ned_mss.y, -GRAVITY_MSS)
 }

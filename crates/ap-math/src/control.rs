@@ -26,7 +26,9 @@
 //! `kinematic_limit` are not here. They are the same ideas applied to a
 //! direction rather than a sign, and they are their own slice.
 
-use crate::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq, wrap_pi};
+use crate::scalar::{
+    constrain_value, degrees, is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi,
+};
 use crate::vector2::{Vector2, Vector2f};
 use crate::vector3::Vector3f;
 
@@ -514,6 +516,73 @@ pub fn kinematic_limit(direction: Vector3f, max_xy: f32, max_z_neg: f32, max_z_p
     }
     let segment_length_xy = safe_sqrt(sq(direction.x) + sq(direction.y));
     kinematic_limit_xyz(segment_length_xy, direction.z, max_xy, max_z_neg, max_z_pos)
+}
+
+/// Gravity, upstream `GRAVITY_MSS`.
+pub const GRAVITY_MSS: f32 = 9.80665;
+
+/// Shape a normalised stick input, upstream `input_expo`.
+///
+/// Softens the response near centre and steepens it toward the stops, so a
+/// pilot gets fine authority around neutral without losing the extremes.
+///
+/// The `expo < 0.95` guard is not arbitrary caution. As `expo` approaches one
+/// the denominator `1 - expo·|input|` goes to zero at full deflection, so the
+/// curve becomes infinitely steep at the stops. Above the threshold the
+/// input is returned untouched rather than being run through an expression
+/// about to divide by nothing.
+///
+/// Note the guard is on `expo` alone, so a *negative* expo is allowed and
+/// inverts the shaping — coarse near centre, fine at the stops. Unusual, but
+/// well defined, and the denominator only grows.
+#[must_use]
+pub fn input_expo(input: f32, expo: f32) -> f32 {
+    let input = input.clamp(-1.0, 1.0);
+    if expo < 0.95 {
+        return (1.0 - expo) * input / (1.0 - expo * input.abs());
+    }
+    input
+}
+
+/// Horizontal acceleration from a lean angle, upstream
+/// `angle_rad_to_accel_mss`.
+///
+/// `g·tan θ`, which is exact rather than a small-angle approximation: the
+/// thrust vector's horizontal component divided by its vertical one is
+/// precisely the tangent, and holding altitude fixes the vertical at `g`.
+///
+/// It diverges at ninety degrees, correctly — an aircraft on its side
+/// produces no vertical thrust and cannot hold altitude at any horizontal
+/// acceleration. Callers bound the angle before converting rather than
+/// bounding the result after.
+#[must_use]
+pub fn angle_rad_to_accel_mss(angle_rad: f32) -> f32 {
+    GRAVITY_MSS * libm::tanf(angle_rad)
+}
+
+/// Horizontal acceleration from a lean angle in degrees, upstream
+/// `angle_deg_to_accel_mss`.
+#[must_use]
+pub fn angle_deg_to_accel_mss(angle_deg: f32) -> f32 {
+    angle_rad_to_accel_mss(radians(angle_deg))
+}
+
+/// Lean angle from a horizontal acceleration, upstream
+/// `accel_mss_to_angle_rad`.
+///
+/// `atan(a/g)`, the exact inverse of [`angle_rad_to_accel_mss`], and total:
+/// every finite acceleration maps to an angle below ninety degrees, so unlike
+/// the forward map this one needs no bounding.
+#[must_use]
+pub fn accel_mss_to_angle_rad(accel_mss: f32) -> f32 {
+    libm::atanf(accel_mss / GRAVITY_MSS)
+}
+
+/// Lean angle in degrees from a horizontal acceleration, upstream
+/// `accel_mss_to_angle_deg`.
+#[must_use]
+pub fn accel_mss_to_angle_deg(accel_mss: f32) -> f32 {
+    degrees(accel_mss_to_angle_rad(accel_mss))
 }
 
 /// Project velocity forward, suppressing motion that would worsen a limited

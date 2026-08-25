@@ -24,6 +24,7 @@ HARNESS = r'''
 #include <AP_Motors/AP_MotorsMatrix.h>
 #include <AC_AttitudeControl/AC_AttitudeControl_Multi.h>
 #include <AC_AttitudeControl/AC_PosControl.h>
+#include <AP_Math/control.h>
 #include <cstdarg>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +83,8 @@ public:
     using AC_PosControl::_jerk_max_d_msss;
     using AC_PosControl::_shaping_jerk_d_msss;
     using AC_PosControl::calculate_overspeed_gain;
+    using AC_PosControl::lean_angles_rad_to_accel_NED_mss;
+    using AC_PosControl::accel_NE_mss_to_lean_angles_rad;
 };
 
 int main()
@@ -235,6 +238,69 @@ int main()
                        fbits(-12.5f), fbits(1.5f), fbits(vels[a]), fbits(0.25f),
                        fbits(kps[b]), fbits(accels[c]), (double)stop);
             }
+    }
+
+    // ---- lean angles to acceleration ----
+    //
+    // Swept past the 84-degree knee where the cos(roll)*cos(pitch) divisor
+    // hits its floor, because that is where the map stops being the honest
+    // answer and starts being a bounded one.
+    printf("#leanaccel\n");
+    printf("idx,roll,pitch,yaw,acc_n,acc_e,acc_d\n");
+    {
+        const float angles[] = {-1.5f, -1.0f, -0.35f, 0.0f, 0.35f, 1.0f, 1.45f, 1.55f};
+        const float yaws[] = {0.0f, 0.9f, 2.4f, -1.7f};
+        int idx = 0;
+        for (unsigned a = 0; a < 8; a++)
+          for (unsigned b = 0; b < 8; b++)
+            for (unsigned c = 0; c < 4; c++) {
+                const Vector3f e{angles[a], angles[b], yaws[c]};
+                const Vector3f out = pos.lean_angles_rad_to_accel_NED_mss(e);
+                printf("%d,%u,%u,%u,%u,%u,%u\n", idx++,
+                       fbits(e.x), fbits(e.y), fbits(e.z),
+                       fbits(out.x), fbits(out.y), fbits(out.z));
+            }
+    }
+
+    // ---- acceleration to lean angles ----
+    //
+    // The heading is the AHRS's, which cannot be driven here, so it is
+    // recorded alongside each row rather than assumed.
+    printf("#accellean\n");
+    printf("idx,acc_n,acc_e,cos_yaw,sin_yaw,roll,pitch\n");
+    {
+        const float accs[] = {-40.0f, -9.0f, -2.5f, 0.0f, 2.5f, 9.0f, 40.0f};
+        int idx = 0;
+        for (unsigned a = 0; a < 7; a++)
+          for (unsigned b = 0; b < 7; b++) {
+              float roll = 0.0f, pitch = 0.0f;
+              pos.accel_NE_mss_to_lean_angles_rad(accs[a], accs[b], roll, pitch);
+              printf("%d,%u,%u,%u,%u,%u,%u\n", idx++,
+                     fbits(accs[a]), fbits(accs[b]),
+                     fbits(AP::ahrs().cos_yaw()), fbits(AP::ahrs().sin_yaw()),
+                     fbits(roll), fbits(pitch));
+          }
+    }
+
+    // ---- the scalar angle/acceleration pair and input_expo ----
+    printf("#angleconv\n");
+    printf("idx,x,accel_from_rad,accel_from_deg,rad_from_accel,deg_from_accel,expo,shaped\n");
+    {
+        int idx = 0;
+        for (int i = -30; i <= 30; i++) {
+            const float x = i * 0.05f;
+            for (int e = -4; e <= 12; e += 2) {
+                const float expo = e * 0.1f;
+                printf("%d,%u,%u,%u,%u,%u,%u,%u\n", idx++,
+                       fbits(x),
+                       fbits(angle_rad_to_accel_mss(x)),
+                       fbits(angle_deg_to_accel_mss(x)),
+                       fbits(accel_mss_to_angle_rad(x)),
+                       fbits(accel_mss_to_angle_deg(x)),
+                       fbits(expo),
+                       fbits(input_expo(x, expo)));
+            }
+        }
     }
 
     return 0;
