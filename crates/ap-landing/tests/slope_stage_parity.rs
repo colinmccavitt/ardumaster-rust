@@ -9,7 +9,9 @@
 index fault is a test failure, which is the desired outcome"
 )]
 
-use ap_landing::slope_stage::{target_airspeed_cm, LandingAirspeedParams, SlopeStage};
+use ap_landing::slope_stage::{
+    target_airspeed_cm, FlareConfig, LandingAirspeedParams, SlopeStage, TransitionInputs,
+};
 
 /// Bit-exact float from the fixture's `%u` column.
 fn f(s: &str) -> f32 {
@@ -360,5 +362,182 @@ fn a_target_above_its_ceiling_is_constrained_not_clamped() {
     assert_eq!(
         target_airspeed_cm(SlopeStage::Approach, &allowed, 0.0),
         2500
+    );
+}
+
+/// The stage machine, over 86016 recorded transitions.
+///
+/// All ten reachable stage pairs appear, including Normal straight to
+/// Preflare in a single call — which only happens because the flare test
+/// reads the stage *after* the approach transition, so a leg that enters the
+/// approach this cycle can also leave it this cycle.
+///
+/// # Three inputs the harness cannot drive
+///
+/// The navigation controller reports a stale solution in every recorded row,
+/// which makes `heading_lined_up` and `on_flight_line` false throughout. So
+/// every Normal-to-Approach transition here came through the
+/// `wp_proportion > 0.5` backstop, and the two quality paths are not covered.
+/// Neither is the loiter-to-altitude entry, since the mission has no previous
+/// command. All three have port-side tests in
+/// [`the_uncovered_approach_entries_behave`].
+#[test]
+fn the_stage_transitions_match_upstream() {
+    let rows = rows("transition");
+    assert!(!rows.is_empty(), "no transition rows");
+
+    let mut seen: std::collections::BTreeSet<(u8, u8)> = Default::default();
+
+    for r in &rows {
+        assert_eq!(r.len(), 18, "malformed transition row");
+        let from_n: u8 = r[0].trim().parse().expect("from");
+        let to_n: u8 = r[17].trim().parse().expect("to");
+
+        let inp = TransitionInputs {
+            wp_proportion: f(&r[1]),
+            height: f(&r[2]),
+            sink_rate: f(&r[3]),
+            bearing_error_cd: r[12].trim().parse().expect("bearing"),
+            crosstrack_error_m: f(&r[13]),
+            nav_data_is_stale: r[14].trim() == "1",
+            below_prev_wp: r[16].trim() == "1",
+            prev_cmd_is_loiter_to_alt: r[15].trim() == "1",
+            rangefinder_in_range: r[9].trim() == "1",
+            is_flying: r[10].trim() == "1",
+            crash_detection_enable: r[11].trim() == "1",
+        };
+        let cfg = FlareConfig {
+            flare_alt: f(&r[4]),
+            flare_sec: f(&r[5]),
+            pre_flare_alt: f(&r[6]),
+            pre_flare_sec: f(&r[7]),
+            pre_flare_airspeed: f(&r[8]),
+        };
+
+        let got = stage_of(from_n).next(&inp, &cfg);
+        assert_eq!(
+            got,
+            stage_of(to_n),
+            "from stage {from_n}: inputs {inp:?}, config {cfg:?}"
+        );
+
+        seen.insert((from_n, to_n));
+    }
+
+    // Every reachable pair must appear, or the machine could be wrong in a
+    // direction the sweep never asks about.
+    assert_eq!(
+        seen.len(),
+        10,
+        "expected all ten reachable stage pairs, saw {seen:?}"
+    );
+    assert!(
+        seen.contains(&(0, 2)),
+        "Normal straight to Preflare must appear; it is what shows the flare \
+         test reads the stage after the approach transition"
+    );
+
+    println!(
+        "{} transitions, all {} reachable stage pairs covered",
+        rows.len(),
+        seen.len()
+    );
+}
+
+/// The three ways into the approach that the recording cannot reach.
+///
+/// The harness navigation solution is stale on every row, so `heading_lined_up`
+/// and `on_flight_line` are false throughout and only the `wp_proportion > 0.5`
+/// backstop fires. The mission has no previous command, so the
+/// loiter-to-altitude entry is never taken either.
+///
+/// That backstop is worth its own note. It has no quality test at all: past
+/// the midpoint the aircraft is committed whether or not it ever lined up, and
+/// refusing to enter the approach would leave it descending with the approach
+/// logic switched off.
+#[test]
+fn the_uncovered_approach_entries_behave() {
+    let base = TransitionInputs {
+        // Below the backstop, so only the quality paths can fire.
+        wp_proportion: 0.3,
+        height: 100.0,
+        sink_rate: 1.0,
+        bearing_error_cd: 0,
+        crosstrack_error_m: 0.0,
+        nav_data_is_stale: true,
+        below_prev_wp: false,
+        prev_cmd_is_loiter_to_alt: false,
+        rangefinder_in_range: true,
+        is_flying: true,
+        crash_detection_enable: false,
+    };
+    let cfg = FlareConfig {
+        flare_alt: 3.0,
+        flare_sec: 2.0,
+        pre_flare_alt: 0.0,
+        pre_flare_sec: 0.0,
+        pre_flare_airspeed: 0.0,
+    };
+
+    // Stale navigation: neither quality path fires.
+    assert_eq!(SlopeStage::Normal.next(&base, &cfg), SlopeStage::Normal);
+
+    // Fresh, lined up and on the flight line: in.
+    let fresh = TransitionInputs {
+        nav_data_is_stale: false,
+        ..base
+    };
+    assert_eq!(SlopeStage::Normal.next(&fresh, &cfg), SlopeStage::Approach);
+
+    // Lined up but off the flight line, and not below the previous waypoint:
+    // still out.
+    let off_line = TransitionInputs {
+        crosstrack_error_m: 20.0,
+        ..fresh
+    };
+    assert_eq!(SlopeStage::Normal.next(&off_line, &cfg), SlopeStage::Normal);
+
+    // Off the line but below the previous waypoint, past fifteen percent: in.
+    let descending = TransitionInputs {
+        below_prev_wp: true,
+        ..off_line
+    };
+    assert_eq!(
+        SlopeStage::Normal.next(&descending, &cfg),
+        SlopeStage::Approach
+    );
+
+    // ...but not before fifteen percent.
+    let too_early = TransitionInputs {
+        wp_proportion: 0.1,
+        ..descending
+    };
+    assert_eq!(
+        SlopeStage::Normal.next(&too_early, &cfg),
+        SlopeStage::Normal
+    );
+
+    // A loiter-to-altitude beforehand counts on its own, stale or not: the
+    // aircraft has already been positioned deliberately.
+    let loitered = TransitionInputs {
+        prev_cmd_is_loiter_to_alt: true,
+        ..base
+    };
+    assert_eq!(
+        SlopeStage::Normal.next(&loitered, &cfg),
+        SlopeStage::Approach
+    );
+
+    // And the heading test needs fresh data even when the error is zero.
+    let stale_but_aligned = TransitionInputs {
+        crosstrack_error_m: 0.0,
+        below_prev_wp: true,
+        wp_proportion: 0.3,
+        ..base
+    };
+    assert_eq!(
+        SlopeStage::Normal.next(&stale_but_aligned, &cfg),
+        SlopeStage::Normal,
+        "a stale solution must not satisfy the heading test however good it looks"
     );
 }

@@ -177,6 +177,75 @@ int main()
         }
     }
 
+    // ---- the stage transitions ----
+    //
+    // Everything the machine reads is either a parameter of verify_land or a
+    // setting, except the navigation controller's bearing error, crosstrack
+    // error and staleness, and the previous mission command. Those cannot be
+    // driven from here, so they are recorded per row and the port is handed
+    // the same values.
+    printf("#transition\n");
+    printf("from,wp_proportion,height,sink_rate,flare_alt,flare_sec,"
+           "pre_flare_alt,pre_flare_sec,pre_flare_airspeed,"
+           "rangefinder_in_range,is_flying,crash_detect,"
+           "bearing_error_cd,crosstrack_m,nav_stale,prev_is_loiter,below_prev,to\n");
+    {
+        const float proportions[] = {-0.2f, 0.0f, 0.1f, 0.3f, 0.6f, 1.0f, 1.4f};
+        const float heights[] = {-1.0f, 0.5f, 4.0f, 30.0f};
+        const float sinks[] = {0.05f, 1.5f, 6.0f};
+        const float flare_alts[] = {0.0f, 3.0f};
+        const float flare_secs[] = {0.0f, 2.0f};
+        const float pf_alts[] = {0.0f, 8.0f};
+        const float pf_secs[] = {0.0f, 4.0f};
+        const float pf_airspeeds[] = {0.0f, 20.0f};
+
+        Location prev(-353632621, 1491652374, 12000, Location::AltFrame::ABSOLUTE);
+        Location next(-353600000, 1491700000, 4000, Location::AltFrame::ABSOLUTE);
+        Location cur(-353620000, 1491680000, 8000, Location::AltFrame::ABSOLUTE);
+
+        for (int s = 0; s <= 3; s++)
+          for (unsigned a = 0; a < 7; a++)
+            for (unsigned b = 0; b < 4; b++)
+              for (unsigned c = 0; c < 3; c++)
+                for (unsigned d = 0; d < 2; d++)
+                  for (unsigned e = 0; e < 2; e++)
+                    for (unsigned g = 0; g < 2; g++)
+                      for (unsigned h = 0; h < 2; h++)
+                        for (unsigned i = 0; i < 2; i++)
+                          for (int rf = 0; rf <= 1; rf++)
+                            for (int fly = 0; fly <= 1; fly++)
+                              for (int cd = 0; cd <= 1; cd++) {
+                                  land->flare_alt.set(flare_alts[d]);
+                                  land->flare_sec.set(flare_secs[e]);
+                                  land->pre_flare_alt.set(pf_alts[g]);
+                                  land->pre_flare_sec.set(pf_secs[h]);
+                                  land->pre_flare_airspeed.set(pf_airspeeds[i]);
+                                  plane.aparm.crash_detection_enable.set(cd ? 1 : 0);
+
+                                  land->type_slope_stage = (decltype(land->type_slope_stage))s;
+
+                                  land->type_slope_verify_land(prev, next, cur,
+                                      heights[b], sinks[c], proportions[a],
+                                      0, true, fly != 0, rf != 0);
+
+                                  const int32_t prev_alt = land->loc_alt_AMSL_cm(prev);
+                                  printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,"
+                                         "%d,%u,%d,%d,%d,%d\n", s,
+                                         fbits(proportions[a]), fbits(heights[b]),
+                                         fbits(sinks[c]),
+                                         fbits(flare_alts[d]), fbits(flare_secs[e]),
+                                         fbits(pf_alts[g]), fbits(pf_secs[h]),
+                                         fbits(pf_airspeeds[i]),
+                                         rf, fly, cd,
+                                         (int)plane.nav_controller->bearing_error_cd(),
+                                         fbits(plane.nav_controller->crosstrack_error()),
+                                         plane.nav_controller->data_is_stale() ? 1 : 0,
+                                         0,
+                                         cur.alt < prev_alt ? 1 : 0,
+                                         (int)land->type_slope_stage);
+                              }
+    }
+
     return 0;
 }
 '''
