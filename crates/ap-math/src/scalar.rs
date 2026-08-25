@@ -340,13 +340,19 @@ pub fn constrain_value<T: Real>(amt: T, low: T, high: T) -> T {
 /// Degrees to radians. Upstream `AP_Math.h:227`.
 #[inline]
 pub fn radians<T: Real>(deg: T) -> T {
-    deg * T::from_f64(core::f64::consts::PI / 180.0)
+    // Upstream `DEG_TO_RAD` is `(M_PI / 180.0f)`, and with
+    // -fsingle-precision-constant (D-015) `M_PI` is a float -- so the division
+    // happens in single precision and the constant is NOT the correctly
+    // rounded pi/180. Dividing in `T` reproduces that exactly.
+    deg * (T::PI / T::from_f64(180.0))
 }
 
 /// Radians to degrees. Upstream `AP_Math.h:255`.
 #[inline]
 pub fn degrees<T: Real>(rad: T) -> T {
-    rad * T::from_f64(180.0 / core::f64::consts::PI)
+    // Upstream `RAD_TO_DEG` is `(180.0f / M_PI)`; see `radians` above for why
+    // the division must be done in `T` rather than folded at full precision.
+    rad * (T::from_f64(180.0) / T::PI)
 }
 
 /// Square of a value. Upstream `AP_Math.h:261`.
