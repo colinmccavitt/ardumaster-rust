@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "ap-control"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "ap-pid",
+ "ap-replay",
+]
+
+[[package]]
 name = "ap-filter"
 version = "0.1.0"
 dependencies = [

@@ -19,6 +19,7 @@ ap-math = { path = "crates/ap-math" }
 ap-hal = { path = "crates/ap-hal" }
 ap-filter = { path = "crates/ap-filter" }
 ap-pid = { path = "crates/ap-pid" }
+ap-control = { path = "crates/ap-control" }
 ap-scheduler = { path = "crates/ap-scheduler" }
 ap-replay = { path = "crates/ap-replay" }
 ap-tecs = { path = "crates/ap-tecs" }

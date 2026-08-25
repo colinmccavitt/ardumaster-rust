@@ -1,0 +1,18 @@
+[package]
+name = "ap-control"
+description = "Port of ArduPilot libraries/APM_Control fixed-wing controllers (Plane-4.7.0). Tracked as FW-017."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+ap-pid = { workspace = true }
+
+[dev-dependencies]
+ap-replay = { workspace = true }
+ap-pid = { workspace = true }
+
+[lints]
+workspace = true

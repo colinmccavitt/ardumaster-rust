@@ -464,7 +464,6 @@ mod tests {
     #![allow(clippy::float_cmp, clippy::manual_clamp)]
 
     use super::*;
-    use crate::Ftype;
 
     // Cases below are ported from upstream
     // libraries/AP_Math/tests/test_math.cpp at Plane-4.7.0.
@@ -649,8 +648,15 @@ mod tests {
 
     #[test]
     fn degrees_radians_roundtrip() {
-        near(radians(180.0_f32) as f64, core::f64::consts::PI);
-        near(degrees(core::f32::consts::PI as Ftype) as f64, 180.0);
+        // Both precisions, rather than whichever the feature selects: the
+        // conversion is generic, so pinning it to Ftype tested only half of it.
+        near(f64::from(radians(180.0_f32)), core::f64::consts::PI);
+        near(f64::from(degrees(core::f32::consts::PI)), 180.0);
+        near(
+            radians(core::f64::consts::PI.to_degrees()),
+            core::f64::consts::PI,
+        );
+        near(degrees(core::f64::consts::PI), 180.0);
     }
 
     /// PORT-DERIVED: upstream has no unit test for calc_lowpass_alpha_dt.
