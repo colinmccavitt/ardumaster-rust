@@ -439,6 +439,40 @@ impl AttitudeController {
         );
     }
 
+    /// The attitude half of `relax_attitude_controllers`.
+    ///
+    /// Called when the controller must stop fighting whatever just happened —
+    /// touching down, being caught, a mode that had been flying the aircraft
+    /// handing back. Everything is initialised to *what the vehicle is
+    /// currently doing* rather than to zero.
+    ///
+    /// The rate target becomes the measured gyro, not zero. Zero would be a
+    /// demand to stop rotating right now, which on the ground means the motors
+    /// fighting whatever is holding the airframe. Setting it to the gyro asks
+    /// for exactly the rotation already happening, so the error is zero and
+    /// the loop asks for nothing.
+    ///
+    /// Returns the body rate to hand the rate controller — the same gyro,
+    /// because that is what upstream leaves in `_ang_vel_body_rads`.
+    ///
+    /// The PID half lives on [`crate::rate_loop::RateLoop::relax`]; upstream
+    /// does both in one call because one object owns both.
+    pub fn relax(&mut self, attitude_body: Quaternion, gyro_rads: Vector3f) -> Vector3f {
+        self.attitude_target = attitude_body;
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+        self.attitude_ang_error = Quaternion::identity();
+
+        self.ang_vel_target_rads = gyro_rads;
+        if let Some(euler_rate) =
+            body_to_euler_derivative(self.attitude_target, self.ang_vel_target_rads)
+        {
+            self.euler_rate_target_rads = euler_rate;
+        }
+
+        gyro_rads
+    }
+
     /// Point the target at the vehicle — upstream `reset_target_and_rate`.
     ///
     /// `reset_rate` false leaves the feedforward vectors alone so the rate
@@ -506,6 +540,12 @@ impl AttitudeController {
         self.attitude_target = attitude_body * self.attitude_ang_error;
         let (r, p, y) = self.attitude_target.to_euler();
         self.euler_angle_target_rad = Vector3f::new(r, p, y);
+    }
+
+    /// The Euler-rate target, upstream `_euler_rate_target_rads`.
+    #[must_use]
+    pub fn euler_rate_target_rads(&self) -> Vector3f {
+        self.euler_rate_target_rads
     }
 
     /// The integrated attitude error, upstream `_attitude_ang_error`.

@@ -238,6 +238,51 @@ impl ThrottleMix {
         throttle_in.max(blended)
     }
 
+    /// Hand a throttle demand to the mixer, upstream `set_throttle_out`.
+    ///
+    /// Returns what the mixer should be given: the throttle itself, the
+    /// average-maximum, and the filter cutoff to install.
+    ///
+    /// The last line is the one worth reading twice. Upstream computes the
+    /// average-maximum from `MAX(throttle_in, _throttle_in)` — the larger of
+    /// the *boosted* throttle and the *original*. Normally the boost only
+    /// raises, so the boosted value wins and the `MAX` looks redundant. It is
+    /// not: past 84 degrees of tilt `inverted_factor` fades the boost toward
+    /// zero, and there the original wins instead.
+    ///
+    /// So an inverted vehicle still reports the average-maximum its pilot
+    /// asked for, even while the boost has been withdrawn from what the motors
+    /// are actually given. The mixer needs the demand to size its headroom
+    /// against; feeding it the faded value would tell it the vehicle wants
+    /// almost nothing, exactly when that is least true.
+    pub fn set_throttle_out(
+        &mut self,
+        throttle_in: f32,
+        apply_angle_boost: bool,
+        filter_cutoff: f32,
+        state: &VehicleThrottleState,
+        config: &ThrottleMixConfig,
+        dt: f32,
+    ) -> ThrottleOutput {
+        let requested = throttle_in;
+        self.update_althold_lean_angle_max(throttle_in, state, config, dt);
+
+        let throttle = if apply_angle_boost {
+            self.get_throttle_boosted(throttle_in, state, config)
+        } else {
+            // Cleared rather than left stale: it is a logging field, and a
+            // stale one would read as a boost that did not happen.
+            self.angle_boost = 0.0;
+            throttle_in
+        };
+
+        ThrottleOutput {
+            throttle,
+            avg_max: self.get_throttle_avg_max(throttle.max(requested), state),
+            filter_cutoff,
+        }
+    }
+
     /// Boost the gains through a fast throttle change, upstream
     /// `update_throttle_gain_boost`.
     ///
@@ -362,4 +407,15 @@ pub fn parameter_sanity_check(man: f32, min: f32, max: f32) -> (f32, f32, f32) {
         max_out = THR_MIX_MAX_DEFAULT;
     }
     (man, min_out, max_out)
+}
+
+/// What `set_throttle_out` gives the mixer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThrottleOutput {
+    /// The throttle itself, boosted if asked for.
+    pub throttle: f32,
+    /// The average-maximum, upstream `set_throttle_avg_max`.
+    pub avg_max: f32,
+    /// The cutoff to install on the mixer's throttle filter.
+    pub filter_cutoff: f32,
 }

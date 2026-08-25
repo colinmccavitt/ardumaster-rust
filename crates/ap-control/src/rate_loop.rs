@@ -204,6 +204,17 @@ impl RateLoop {
         self.yaw.reset_filter();
     }
 
+    /// The rate loop's half of `relax_attitude_controllers`.
+    ///
+    /// Filters first, then integrators. Upstream's order, and it is the right
+    /// one: `reset_filter` reseeds from the next sample, so clearing the
+    /// integrators afterwards cannot be undone by a filter that was still
+    /// carrying the old error.
+    pub fn relax(&mut self) {
+        self.reset_filters();
+        self.reset_i_terms();
+    }
+
     /// One iteration, upstream `rate_controller_run_dt`.
     ///
     /// The throttle housekeeping runs from here because upstream puts it here,

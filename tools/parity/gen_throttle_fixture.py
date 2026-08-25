@@ -70,6 +70,8 @@ public:
     using AP_Motors::_throttle_out;
     using AP_Motors::_throttle_filter;
     using AP_Motors::_throttle_slew_rate;
+    using AP_Motors::_throttle_avg_max;
+    using AP_Motors::_throttle_in;
 };
 
 class Probe : public AC_AttitudeControl_Multi {
@@ -96,6 +98,13 @@ public:
     using AC_AttitudeControl::_rate_gyro_rads;
     using AC_AttitudeControl::_pd_scale_used;
     using AC_AttitudeControl::_pd_scale;
+    using AC_AttitudeControl::_throttle_in;
+    using AC_AttitudeControl::_euler_angle_target_rad;
+    using AC_AttitudeControl::_euler_rate_target_rads;
+    using AC_AttitudeControl::_ang_vel_target_rads;
+    using AC_AttitudeControl::_attitude_ang_error;
+    using AC_AttitudeControl::_attitude_target;
+    using AC_AttitudeControl::_thrust_error_angle_rad;
     using AC_AttitudeControl::_i_scale;
 };
 
@@ -347,6 +356,95 @@ int main()
             // infinity within a second -- which is what the first recording
             // of this sequence did.
             att.rate_controller_target_reset();
+        }
+    }
+
+    // ---- set_throttle_out ----
+    //
+    // Swept over the boost flag as well as the throttle, because the flag does
+    // not merely skip the boost: it also clears the logged angle_boost, and a
+    // port that left it stale would report a boost that did not happen.
+    //
+    // The lean-angle limit is filtered state, so this runs as a sequence
+    // rather than independent rows.
+    printf("#throttleout\n");
+    printf("step,throttle_in,apply_boost,thrust_angle,"
+           "throttle_out,avg_max,angle_boost,lean_max\n");
+    {
+        att._althold_lean_angle_max_rad = 0.0f;
+        att._throttle_rpy_mix = 0.45f;
+        att._throttle_rpy_mix_desired = 0.45f;
+
+        const int STEPS = 500;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+            const float thr = 0.05f + 0.85f * (ts < 0.625f ? ts / 0.625f : 1.0f);
+            const bool boost = (i / 125) % 2 == 0;
+
+            // Past 84 degrees the fade would matter, but the AHRS reports
+            // level here; the target lean still drives boost_factor.
+            att._thrust_angle_rad = 1.4f * (ts / 1.25f);
+
+            att.set_throttle_out(thr, boost, 10.0f);
+
+            printf("%d,%u,%d,%u,%u,%u,%u,%u\n", i,
+                   fbits(thr), boost ? 1 : 0, fbits(att._thrust_angle_rad),
+                   fbits(motors._throttle_in),
+                   fbits(motors._throttle_avg_max),
+                   fbits(att._angle_boost),
+                   fbits(att._althold_lean_angle_max_rad));
+        }
+    }
+
+    // ---- relax_attitude_controllers ----
+    //
+    // State assignment rather than arithmetic, so what is recorded is the
+    // state afterwards. Run from a controller carrying real state, or the
+    // reset would be indistinguishable from construction.
+    printf("#relax\n");
+    printf("idx,gyro_x,gyro_y,gyro_z,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,err_w,err_x,err_y,err_z,"
+           "avt_x,avt_y,avt_z,ert_x,ert_y,ert_z,thrust_err\n");
+    {
+        for (int k = 0; k < 6; k++) {
+            const float s = 0.2f * (k + 1);
+
+            // Put the controller somewhere first, so the relax has something
+            // to undo.
+            Quaternion offset;
+            offset.from_euler(0.3f * s, -0.25f * s, 0.9f * s);
+            att._attitude_target = offset;
+            att._ang_vel_target_rads = Vector3f{1.5f * s, -1.1f * s, 0.7f * s};
+            att._euler_rate_target_rads = Vector3f{0.9f * s, 0.4f * s, -0.6f * s};
+            att._thrust_error_angle_rad = 0.5f * s;
+            Quaternion err;
+            err.from_euler(0.1f * s, 0.2f * s, -0.15f * s);
+            att._attitude_ang_error = err;
+
+            const Vector3f gyro{0.35f * s, -0.22f * s, 0.11f * s};
+            att._rate_gyro_rads = gyro;
+
+            att.relax_attitude_controllers();
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f te = att._euler_angle_target_rad;
+            const Quaternion ae = att._attitude_ang_error;
+            const Vector3f avt = att._ang_vel_target_rads;
+            const Vector3f ert = att._euler_rate_target_rads;
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
+                   "%u,%u,%u,%u,%u,%u,%u\n", k,
+                   fbits(gyro.x), fbits(gyro.y), fbits(gyro.z),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(te.x), fbits(te.y), fbits(te.z),
+                   fbits(ae.q1), fbits(ae.q2), fbits(ae.q3), fbits(ae.q4),
+                   fbits(avt.x), fbits(avt.y), fbits(avt.z),
+                   fbits(ert.x), fbits(ert.y), fbits(ert.z),
+                   fbits(att._thrust_error_angle_rad));
         }
     }
 

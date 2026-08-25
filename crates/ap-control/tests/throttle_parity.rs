@@ -568,3 +568,241 @@ fn the_cycle_scales_compound_until_reset() {
     assert_eq!(fresh.angle_p_scale_used(), Vector3f::new(1.0, 1.0, 1.0));
     assert_eq!(fresh.i_scale_used(), Vector3f::new(1.0, 1.0, 1.0));
 }
+
+/// `set_throttle_out`, as a sequence because the lean limit is filtered state.
+///
+/// Swept over the boost flag as well as the throttle: the flag does not merely
+/// skip the boost, it also clears the logged `angle_boost`, and a port that
+/// left that stale would report a boost which did not happen.
+#[test]
+fn the_throttle_output_matches_upstream() {
+    let fx = fixture();
+    let rows = fx.sections.get("throttleout").expect("throttleout section");
+
+    let mut mix = ThrottleMix::new();
+    mix.set_throttle_mix_value(0.45);
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+    let mut with_boost = 0_usize;
+    let mut without = 0_usize;
+
+    for r in rows {
+        assert_eq!(r.len(), 8, "malformed throttle-out row");
+        let step: usize = r[0].parse().expect("step");
+        let apply_boost = r[2].trim() == "1";
+        if apply_boost {
+            with_boost += 1;
+        } else {
+            without += 1;
+        }
+
+        let state = VehicleThrottleState {
+            thrust_angle_rad: f(&r[3]),
+            ..fx.state
+        };
+        let out = mix.set_throttle_out(f(&r[1]), apply_boost, 10.0, &state, &fx.config, fx.dt);
+
+        for (label, got, want) in [
+            ("throttle_out", out.throttle, f(&r[4])),
+            // Upstream clamps this inside the motors' setter, not in the
+            // controller, so the port's raw value is compared against the
+            // stored one and they agree while it stays in range.
+            ("avg_max", out.avg_max.clamp(0.0, 1.0), f(&r[5])),
+            ("angle_boost", mix.angle_boost(), f(&r[6])),
+            ("lean_max", mix.althold_lean_angle_max_rad(), f(&r[7])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        with_boost > 50 && without > 50,
+        "both settings of the boost flag must be covered ({with_boost} on, {without} off)"
+    );
+    println!(
+        "{} throttle-out steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// The `MAX` in `set_throttle_out`'s last line, which the recording cannot reach.
+///
+/// Upstream sizes the average-maximum from the larger of the boosted throttle
+/// and the original. With a level AHRS the boost only ever raises, so the
+/// recording has no row where the two differ and the `MAX` is untestable
+/// there — every recorded row would pass with it removed.
+///
+/// It matters when the vehicle is past 84 degrees of tilt and the fade has
+/// pulled the boost toward zero. Then the original wins, and the mixer is told
+/// the demand the pilot actually made rather than the faded one it is being
+/// given — which is exactly when the mixer most needs to know.
+#[test]
+fn the_avg_max_uses_the_larger_of_boosted_and_requested() {
+    let fx = fixture();
+    let mut mix = ThrottleMix::new();
+    mix.set_throttle_mix_value(0.45);
+
+    // Nearly inverted: cos_tilt 0.02 fades the boost to a fifth.
+    let faded = VehicleThrottleState {
+        cos_tilt: 0.02,
+        thrust_angle_rad: 0.0,
+        ..fx.state
+    };
+    let requested = 0.8_f32;
+    let out = mix.set_throttle_out(requested, true, 10.0, &faded, &fx.config, fx.dt);
+
+    assert!(
+        out.throttle < requested,
+        "the fade should have cut the throttle below the request, got {}",
+        out.throttle
+    );
+
+    // The average-maximum must reflect the request, not the faded throttle.
+    let from_request = mix.get_throttle_avg_max(requested, &faded);
+    let from_faded = mix.get_throttle_avg_max(out.throttle, &faded);
+    assert!(
+        from_request > from_faded,
+        "this case cannot distinguish the two ({from_request} vs {from_faded})"
+    );
+    assert!(
+        libm::fabsf(out.avg_max - from_request) < 1e-6,
+        "avg_max should follow the request ({from_request}), not the faded \
+         throttle ({from_faded}); got {}",
+        out.avg_max
+    );
+}
+
+/// `relax_attitude_controllers`, the attitude half.
+///
+/// Every field is initialised to what the vehicle is currently doing rather
+/// than to zero. The rate target especially: zero would be a demand to stop
+/// rotating right now, which on the ground means the motors fighting whatever
+/// is holding the airframe.
+#[test]
+fn the_relax_path_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+    use ap_math::quaternion::Quaternion;
+    use ap_math::vector3::Vector3f;
+
+    let fx = fixture();
+    let rows = fx.sections.get("relax").expect("relax section");
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in rows {
+        assert_eq!(r.len(), 21, "malformed relax row");
+        let idx: usize = r[0].parse().expect("idx");
+
+        // Put the controller somewhere first, so the relax has work to do.
+        let s = 0.2 * (idx as f32 + 1.0);
+        let mut controller = AttitudeController::new();
+        controller.set_attitude_target(Quaternion::from_euler(0.3 * s, -0.25 * s, 0.9 * s));
+
+        let gyro = Vector3f::new(f(&r[1]), f(&r[2]), f(&r[3]));
+        let body = Quaternion::from_euler(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        // Half a second of real cycles, so the integrated error is something
+        // other than identity when relax is asked to clear it. One cycle is
+        // not enough: the error grows from zero at the rate the airframe is
+        // failing to deliver, so after 2.5 ms it is still within 5e-9 of
+        // identity and the test cannot tell clearing it from leaving it.
+        // The gains are arbitrary; only the resulting state matters.
+        for _ in 0..200 {
+            controller.input_rate_bf_roll_pitch_yaw_3(
+                0.4,
+                -0.3,
+                0.2,
+                Quaternion::from_euler(-0.4, 0.5, -1.1),
+                &relax_shaping(),
+                &relax_angle_gains(),
+                Vector3f::new(0.05, -0.02, 0.01),
+                0.0025,
+            );
+        }
+        let before = controller.attitude_ang_error();
+        assert!(
+            libm::fabsf(before.q1 - 1.0) > 1e-6,
+            "the integrated error is still identity, so this row cannot \
+             distinguish clearing it from leaving it"
+        );
+
+        let body_rate = controller.relax(body, gyro);
+
+        let err = controller.attitude_ang_error();
+        let target = controller.euler_angle_target_rad();
+        let avt = controller.ang_vel_target_rads();
+        let ert = controller.euler_rate_target_rads();
+
+        for (label, got, want) in [
+            ("targ_r", target.x, f(&r[7])),
+            ("targ_p", target.y, f(&r[8])),
+            ("targ_y", target.z, f(&r[9])),
+            ("err_w", err.q1, f(&r[10])),
+            ("err_x", err.q2, f(&r[11])),
+            ("err_y", err.q3, f(&r[12])),
+            ("err_z", err.q4, f(&r[13])),
+            ("avt_x", avt.x, f(&r[14])),
+            ("avt_y", avt.y, f(&r[15])),
+            ("avt_z", avt.z, f(&r[16])),
+            ("ert_x", ert.x, f(&r[17])),
+            ("ert_y", ert.y, f(&r[18])),
+            ("ert_z", ert.z, f(&r[19])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < TOL,
+                "row {idx} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+
+        assert_eq!(
+            body_rate, gyro,
+            "the body rate handed to the rate loop is the gyro itself"
+        );
+    }
+
+    println!(
+        "{} relax rows, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// Arbitrary but plausible gains, for tests that only need the controller to
+/// take a step and leave state behind.
+fn relax_shaping() -> ap_control::attitude_controller::ShapingConfig {
+    ap_control::attitude_controller::ShapingConfig {
+        input_tc: 0.15,
+        rate_y_tc: 0.25,
+        rate_rp_tc: 0.15,
+        rate_bf_ff_enabled: true,
+        ang_vel_roll_max_degs: 220.0,
+        ang_vel_pitch_max_degs: 140.0,
+        ang_vel_yaw_max_degs: 120.0,
+        accel_roll_max_radss: 18.9,
+        accel_pitch_max_radss: 18.9,
+        accel_yaw_max_radss: 4.7,
+        slew_yaw_max_rads: 1.05,
+    }
+}
+
+fn relax_angle_gains() -> ap_control::attitude_error::AngleGains {
+    ap_control::attitude_error::AngleGains {
+        angle_p_roll: 4.5,
+        angle_p_pitch: 4.5,
+        angle_p_yaw: 4.5,
+        accel_roll_max_radss: 18.9,
+        accel_pitch_max_radss: 18.9,
+        accel_yaw_max_radss: 4.7,
+        use_sqrt_controller: true,
+    }
+}
