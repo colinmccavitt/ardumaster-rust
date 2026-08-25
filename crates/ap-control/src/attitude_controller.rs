@@ -53,6 +53,13 @@ pub struct ShapingConfig {
     pub accel_pitch_max_radss: f32,
     /// Maximum yaw acceleration, rad/s².
     pub accel_yaw_max_radss: f32,
+    /// `ATC_SLEW_YAW`, radians per second.
+    ///
+    /// A *separate*, usually much slower yaw limit used when a heading is
+    /// commanded as an angle rather than a rate — an autonomous heading change
+    /// should be sedate where a pilot's yaw stick should not. Zero disables
+    /// the limit entirely rather than freezing the heading.
+    pub slew_yaw_max_rads: f32,
 }
 
 /// The controller's target state, upstream's `_attitude_target` and the
@@ -108,6 +115,175 @@ impl AttitudeController {
         self.attitude_target = target;
         let (r, p, y) = target.to_euler();
         self.euler_angle_target_rad = Vector3f::new(r, p, y);
+    }
+
+    /// All three as angles — upstream `input_euler_angle_roll_pitch_yaw_rad`.
+    ///
+    /// The autonomous entry point: a mode that knows where it wants to point
+    /// commands a heading, not a rate.
+    ///
+    /// `slew_yaw` swaps the ordinary yaw rate limit for `ATC_SLEW_YAW`, which
+    /// is much slower. That is the difference between a pilot spinning the
+    /// aircraft and a mission turning it: the same command path, a different
+    /// idea of how fast is reasonable.
+    ///
+    /// Yaw uses the *roll and pitch* time constant here, not the yaw-rate one.
+    /// That is not an oversight in upstream — a commanded angle is shaped like
+    /// the other angles, while a commanded rate is shaped like a rate.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one upstream entry point; see the sibling below"
+    )]
+    pub fn input_euler_angle_roll_pitch_yaw(
+        &mut self,
+        euler_roll_angle_rad: f32,
+        euler_pitch_angle_rad: f32,
+        euler_yaw_angle_rad: f32,
+        slew_yaw: bool,
+        attitude_body: Quaternion,
+        shaping: &ShapingConfig,
+        yaw_gains: &YawLimitGains,
+        angle_gains: &AngleGains,
+        gyro_rads: Vector3f,
+        dt: f32,
+    ) -> ControllerOutput {
+        self.attitude_target =
+            update_attitude_target(self.attitude_target, self.ang_vel_target_rads, dt);
+
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        let yaw_rate_max_rads = if slew_yaw {
+            shaping.slew_yaw_max_rads
+        } else {
+            radians(shaping.ang_vel_yaw_max_degs)
+        };
+
+        if shaping.rate_bf_ff_enabled {
+            let euler_accel_radss = body_to_euler_limit(
+                self.attitude_target,
+                Vector3f::new(
+                    shaping.accel_roll_max_radss,
+                    shaping.accel_pitch_max_radss,
+                    shaping.accel_yaw_max_radss,
+                ),
+            );
+            let euler_rate_max_rads = body_to_euler_limit(
+                self.attitude_target,
+                Vector3f::new(
+                    radians(shaping.ang_vel_roll_max_degs),
+                    radians(shaping.ang_vel_pitch_max_degs),
+                    yaw_rate_max_rads,
+                ),
+            );
+
+            let mut euler_accel_target_rads =
+                body_to_euler_derivative(self.attitude_target, self.ang_accel_target_rads)
+                    .unwrap_or(Vector3f::new(0.0, 0.0, 0.0));
+
+            let shape = |command: f32,
+                         target: f32,
+                         rate_in: f32,
+                         accel_in: f32,
+                         rate_max: f32,
+                         accel_max: f32| {
+                attitude_command_model(
+                    CommandModel {
+                        target_ang_vel: rate_in,
+                        target_ang_accel: accel_in,
+                    },
+                    wrap_pi(command - target),
+                    0.0,
+                    libm::fabsf(rate_max),
+                    accel_max,
+                    shaping.input_tc,
+                    dt,
+                )
+            };
+
+            let roll = shape(
+                euler_roll_angle_rad,
+                self.euler_angle_target_rad.x,
+                self.euler_rate_target_rads.x,
+                euler_accel_target_rads.x,
+                euler_rate_max_rads.x,
+                euler_accel_radss.x,
+            );
+            let pitch = shape(
+                euler_pitch_angle_rad,
+                self.euler_angle_target_rad.y,
+                self.euler_rate_target_rads.y,
+                euler_accel_target_rads.y,
+                euler_rate_max_rads.y,
+                euler_accel_radss.y,
+            );
+            // Yaw is an angle here, so it is shaped like the other angles --
+            // with `input_tc`, not the yaw-rate time constant.
+            let yaw = shape(
+                euler_yaw_angle_rad,
+                self.euler_angle_target_rad.z,
+                self.euler_rate_target_rads.z,
+                euler_accel_target_rads.z,
+                euler_rate_max_rads.z,
+                euler_accel_radss.z,
+            );
+
+            self.euler_rate_target_rads = Vector3f::new(
+                roll.target_ang_vel,
+                pitch.target_ang_vel,
+                yaw.target_ang_vel,
+            );
+            euler_accel_target_rads = Vector3f::new(
+                roll.target_ang_accel,
+                pitch.target_ang_accel,
+                yaw.target_ang_accel,
+            );
+
+            self.ang_vel_target_rads =
+                euler_derivative_to_body(self.attitude_target, self.euler_rate_target_rads);
+            self.ang_accel_target_rads =
+                euler_derivative_to_body(self.attitude_target, euler_accel_target_rads);
+        } else {
+            self.euler_angle_target_rad.x = euler_roll_angle_rad;
+            self.euler_angle_target_rad.y = euler_pitch_angle_rad;
+
+            if ap_math::scalar::is_positive(yaw_rate_max_rads) {
+                let yaw_error = wrap_pi(euler_yaw_angle_rad - self.euler_angle_target_rad.z);
+                let step = yaw_rate_max_rads * dt;
+                let yaw_step = yaw_error.clamp(-step, step);
+                self.euler_angle_target_rad.z = wrap_pi(self.euler_angle_target_rad.z + yaw_step);
+            } else {
+                self.euler_angle_target_rad.z = euler_yaw_angle_rad;
+            }
+
+            self.attitude_target = Quaternion::from_euler(
+                self.euler_angle_target_rad.x,
+                self.euler_angle_target_rad.y,
+                self.euler_angle_target_rad.z,
+            );
+
+            self.euler_rate_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.ang_vel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.ang_accel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+        }
+
+        let out = attitude_controller_run(
+            self.attitude_target,
+            attitude_body,
+            yaw_gains,
+            angle_gains,
+            &ControllerInputs {
+                ang_vel_target_rads: self.ang_vel_target_rads,
+                gyro_rads,
+                ang_vel_roll_max_degs: shaping.ang_vel_roll_max_degs,
+                ang_vel_pitch_max_degs: shaping.ang_vel_pitch_max_degs,
+                ang_vel_yaw_max_degs: shaping.ang_vel_yaw_max_degs,
+            },
+            dt,
+        );
+
+        self.attitude_target = out.attitude_target;
+        out
     }
 
     /// Roll and pitch as angles, yaw as a rate — upstream

@@ -68,6 +68,7 @@ public:
     using AC_AttitudeControl::_ang_vel_roll_max_degs;
     using AC_AttitudeControl::_ang_vel_pitch_max_degs;
     using AC_AttitudeControl::_ang_vel_yaw_max_degs;
+    using AC_AttitudeControl::_euler_angle_target_rad;
 };
 
 int main(void)
@@ -89,8 +90,8 @@ int main(void)
     printf("#gains\n");
     printf("angle_p_roll,angle_p_pitch,angle_p_yaw,accel_roll,accel_pitch,"
            "accel_yaw,rate_yaw_kp,use_sqrt,dt,"
-           "input_tc,rate_y_tc,ff_enabled,vel_roll,vel_pitch,vel_yaw\n");
-    printf("%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%d,%u,%u,%u\n",
+           "input_tc,rate_y_tc,ff_enabled,vel_roll,vel_pitch,vel_yaw,slew_yaw\n");
+    printf("%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%d,%u,%u,%u,%u\n",
            fbits(att.get_angle_roll_p().kP()),
            fbits(att.get_angle_pitch_p().kP()),
            fbits(att.get_angle_yaw_p().kP()),
@@ -105,7 +106,8 @@ int main(void)
            att.get_bf_feedforward() ? 1 : 0,
            fbits(att._ang_vel_roll_max_degs),
            fbits(att._ang_vel_pitch_max_degs),
-           fbits(att._ang_vel_yaw_max_degs));
+           fbits(att._ang_vel_yaw_max_degs),
+           fbits(att.get_slew_yaw_max_rads()));
 
     printf("#rows\n");
     printf("body_r,body_p,body_y,targ_r,targ_p,targ_y,"
@@ -187,8 +189,7 @@ int main(void)
             Vector3f body_euler;
             body_now.to_euler(body_euler);
 
-            Vector3f euler;
-            seq.get_attitude_target_quat().to_euler(euler);
+            const Vector3f euler = seq._euler_angle_target_rad;
             const Vector3f ang_vel = seq.get_attitude_target_ang_vel();
             const Vector3f rate = seq.rate_bf_targets();
 
@@ -198,6 +199,52 @@ int main(void)
                    fbits(euler.x), fbits(euler.y), fbits(euler.z),
                    fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
                    fbits(rate.x), fbits(rate.y), fbits(rate.z));
+        }
+    }
+
+    // ---- a heading command, with and without slew limiting ----
+    printf("#heading\n");
+    printf("slew,step,roll_cmd,pitch_cmd,yaw_cmd,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,ang_vel_x,ang_vel_y,ang_vel_z,"
+           "rate_x,rate_y,rate_z\n");
+    {
+        for (int slew = 0; slew <= 1; slew++) {
+            static Probe head(view, motors);
+            head._dt_s = 0.0025f;
+            head.reset_target_and_rate(true);
+
+            const int STEPS = 400;
+            for (int i = 0; i < STEPS; i++) {
+                const float ts = i * 0.0025f;
+                // Hold a lean, then command a large heading change part-way:
+                // the slew limit only shows on a change big enough to hit it.
+                const float roll_cmd = 0.2f;
+                const float pitch_cmd = -0.15f;
+                const float yaw_cmd = ts < 0.25f ? 0.0f : 2.0f;
+
+                head.input_euler_angle_roll_pitch_yaw_rad(
+                    roll_cmd, pitch_cmd, yaw_cmd, slew != 0);
+
+                Quaternion body_now;
+                view.get_quat_body_to_ned(body_now);
+                Vector3f body_euler;
+                body_now.to_euler(body_euler);
+
+                // The member, not the quaternion's euler angles: the two
+                // differ whenever the yaw cap rebuilds the target, and the
+                // port stores this one.
+                const Vector3f euler = head._euler_angle_target_rad;
+                const Vector3f ang_vel = head.get_attitude_target_ang_vel();
+                const Vector3f rate = head.rate_bf_targets();
+
+                printf("%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                       slew, i,
+                       fbits(roll_cmd), fbits(pitch_cmd), fbits(yaw_cmd),
+                       fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                       fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                       fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                       fbits(rate.x), fbits(rate.y), fbits(rate.z));
+            }
         }
     }
 
