@@ -61,6 +61,8 @@ pub trait Real:
     fn log2(self) -> Self;
     /// Natural logarithm, upstream `logf`.
     fn log(self) -> Self;
+    /// Largest integer not greater than `self`, upstream `floorf`.
+    fn floor(self) -> Self;
     /// `e` raised to `self`, upstream `expf`.
     fn exp(self) -> Self;
     /// Arctangent.
@@ -128,6 +130,10 @@ impl Real for f32 {
     #[inline]
     fn log(self) -> Self {
         libm::logf(self)
+    }
+    #[inline]
+    fn floor(self) -> Self {
+        libm::floorf(self)
     }
     #[inline]
     fn exp(self) -> Self {
@@ -218,6 +224,10 @@ impl Real for f64 {
     #[inline]
     fn log(self) -> Self {
         libm::log(self)
+    }
+    #[inline]
+    fn floor(self) -> Self {
+        libm::floor(self)
     }
     #[inline]
     fn exp(self) -> Self {
