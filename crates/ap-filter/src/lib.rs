@@ -14,4 +14,5 @@ pub mod biquad;
 pub mod buffer;
 pub mod lowpass;
 pub mod mode;
+pub mod notch;
 pub mod slew;

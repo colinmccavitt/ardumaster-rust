@@ -144,6 +144,21 @@ Status counts: **9 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   zero-initialised case every filter in a statically stored vehicle object gets.
   Pinned by `biquad::tests::d005_a_fresh_biquad_is_deterministically_unseeded`.
 
+  **Third occurrence**, and the broadest: `NotchFilter` (`Filter/NotchFilter.h:36-59`)
+  declares **no constructor at all**. Every member of a non-static instance is
+  indeterminate — `initialised` and `need_reset`, the five coefficients `b0`..`a2`,
+  the four state vectors `ntchsig1`, `ntchsig2`, `signal1`, `signal2`, and the three
+  cached values `_center_freq_hz`, `_sample_freq_hz`, `_A`.
+
+  `apply` reads `initialised` and `need_reset` on its first call, and the coefficients
+  immediately after. An indeterminate `initialised` of true sends a never-configured
+  filter straight into the arithmetic with garbage coefficients and garbage state.
+
+  `NotchFilter::default()` sets all fourteen explicitly. Pinned by
+  `notch::tests::d005_a_fresh_notch_is_deterministically_unconfigured`, and
+  `tools/parity/gen_notch_fixture.py` declares its filters `static` for the same
+  reason the biquad harness does.
+
   Note the port does **not** diverge on the related early-return path:
   `compute_params` leaves `a1`..`b2` untouched when the cutoff is not positive, so
   retuning a live filter to zero keeps the previous tuning's coefficients. Those are

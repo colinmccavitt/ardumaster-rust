@@ -55,6 +55,10 @@ pub trait Real:
     fn sin(self) -> Self;
     /// Tangent.
     fn tan(self) -> Self;
+    /// `self` raised to the power `n`, upstream `powf`.
+    fn powf(self, n: Self) -> Self;
+    /// Base-2 logarithm, upstream `log2f`.
+    fn log2(self) -> Self;
     /// Arctangent.
     fn atan(self) -> Self;
     /// Two-argument arctangent, upstream `atan2F(y, x)`.
@@ -108,6 +112,14 @@ impl Real for f32 {
     #[inline]
     fn tan(self) -> Self {
         libm::tanf(self)
+    }
+    #[inline]
+    fn powf(self, n: Self) -> Self {
+        libm::powf(self, n)
+    }
+    #[inline]
+    fn log2(self) -> Self {
+        libm::log2f(self)
     }
     #[inline]
     fn atan(self) -> Self {
@@ -182,6 +194,14 @@ impl Real for f64 {
     #[inline]
     fn tan(self) -> Self {
         libm::tan(self)
+    }
+    #[inline]
+    fn powf(self, n: Self) -> Self {
+        libm::pow(self, n)
+    }
+    #[inline]
+    fn log2(self) -> Self {
+        libm::log2(self)
     }
     #[inline]
     fn atan(self) -> Self {
