@@ -293,6 +293,36 @@ Status counts: **7 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
 
 ---
 
+## D-010 — `crc_crc64` byte order depends on the compilation target
+
+- **status**: `applied`
+- **upstream**: `AP_Math/crc.cpp`, in `crc_crc64`:
+
+  ```cpp
+  uint32_t value = *data++;
+  for (uint8_t j = 0; j < 4; j++) {
+      uint8_t byte = ((uint8_t *)&value)[j];
+  ```
+
+  Reading a `uint32_t` through a `uint8_t*` yields the host's byte order, so
+  the checksum this function computes is a property of the machine it was
+  compiled for, not of the data.
+- **ported**: `value.to_le_bytes()`, which states little-endian explicitly.
+- **why**: the function's comment says it matches the PX4 bootloader, and that
+  format is little-endian. Every ArduPilot target is little-endian, so
+  little-endian is what upstream has always computed and what the format means.
+  Rust has no equivalent of the C aliasing trick that would carry the
+  target-dependence over, and reproducing it deliberately would mean writing
+  target-conditional code to preserve an outcome nobody wants.
+- **risk**: **None on any supported target.** On little-endian — which is every
+  board ArduPilot builds for — the two are byte-identical. They differ only on
+  a big-endian target, where upstream would produce a value no PX4 bootloader
+  would accept, and the port produces the correct one.
+- **sitl_impact**: None. SITL hosts are little-endian.
+- **pinned by**: `crc_parity::every_crc_matches_upstream`, which compares
+  against values produced by compiling and running upstream's own `crc.cpp` on
+  this (little-endian) host — so the equivalence is measured, not assumed.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change
@@ -368,6 +398,36 @@ Recorded so nobody re-litigates them.
   (`quaternion.cpp`). Far looser than any epsilon, but clearly chosen. Reproduced.
 
 ---
+
+## Open questions — not divergences, but not resolved either
+
+Suspected upstream defects where the **correct** behaviour cannot be determined
+from the source. The port reproduces upstream exactly, so there is no divergence
+to register; these are recorded so the question is not lost.
+
+- **`crc8_table_rds02uf` has a one-byte collision.** The table is bijective
+  except that `0x06` appears at both index 128 and index 202, and `0xA6` appears
+  nowhere. One duplicate and one omission in an otherwise-bijective table is
+  what a single mistyped nibble looks like — `0xA6` entered as `0x06`.
+
+  It cannot be repaired from the source. Either index 128 or index 202 should
+  hold `0xA6`, and nothing decides which: the table is a vendor S-box rather
+  than a polynomial table — verified, it is not GF(2)-linear, either as
+  published or with the candidate correction — so its entries cannot be
+  re-derived the way the other six tables can. Changing the wrong one would
+  break interoperability with hardware that works today, so the port changes
+  nothing.
+
+  Upstream cannot observe it: `AP_RangeFinder_RDS02UF` and the SITL model
+  `SIM_RF_RDS02UF` both call `crc8_rds02uf`, so simulated frames always validate
+  against the same table that produced them, whatever it contains. The effect on
+  real hardware would be that frames whose running CRC passes through the
+  affected index are rejected.
+
+  Resolving it needs the RDS02UF vendor protocol document. Pinned meanwhile by
+  `crc::tests::rds02uf_table_has_upstreams_one_byte_collision`, which asserts
+  the exact anomaly, so an upstream edit to the table fails the build rather
+  than passing unnoticed.
 
 ## Upstream test-quality issues — no port change
 
