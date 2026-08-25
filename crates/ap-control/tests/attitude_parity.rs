@@ -84,7 +84,11 @@ fn fixture() -> Fixture {
             "gains" => {
                 // The row carries the shaping config too; this test needs
                 // only the first nine columns.
-                assert!(c.len() >= 9, "malformed gains row: {} columns", c.len());
+                assert!(
+                    c.len() >= 9,
+                    "gains row has {} columns, need at least 9",
+                    c.len()
+                );
                 gains = c[..7].iter().map(|s| f(s)).collect();
                 use_sqrt = c[7] == "1";
                 gains.push(f(c[8])); // dt
@@ -228,7 +232,11 @@ fn the_stick_sequence_matches_upstream() {
         let c: Vec<&str> = line.split(',').collect();
         match section {
             "gains" => {
-                assert_eq!(c.len(), 16, "malformed gains row");
+                assert!(
+                    c.len() >= 17,
+                    "gains row has {} columns, need at least 17",
+                    c.len()
+                );
                 gains = c
                     .iter()
                     .enumerate()
@@ -262,6 +270,7 @@ fn the_stick_sequence_matches_upstream() {
         accel_yaw_max_radss: gains[5],
         // Not exercised by this sequence, which commands a yaw *rate*.
         slew_yaw_max_rads: gains[13],
+        rate_rp_tc: gains[14],
     };
     let yaw_gains = YawLimitGains {
         accel_yaw_max_radss: gains[5],
@@ -395,7 +404,11 @@ fn the_heading_command_matches_upstream() {
         let c: Vec<&str> = line.split(',').collect();
         match section {
             "gains" => {
-                assert_eq!(c.len(), 16, "malformed gains row: {} columns", c.len());
+                assert!(
+                    c.len() >= 16,
+                    "gains row has {} columns, need at least 16",
+                    c.len()
+                );
                 gains = c
                     .iter()
                     .enumerate()
@@ -422,6 +435,7 @@ fn the_heading_command_matches_upstream() {
         accel_pitch_max_radss: gains[4],
         accel_yaw_max_radss: gains[5],
         slew_yaw_max_rads: gains[13],
+        rate_rp_tc: gains[14],
     };
     let yaw_gains = YawLimitGains {
         accel_yaw_max_radss: gains[5],
@@ -511,6 +525,147 @@ fn the_heading_command_matches_upstream() {
 
     println!(
         "{} heading steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// Parity: an euler-rate sequence, the acro-style entry point.
+///
+/// Every axis takes a rate here, so the shaping runs with a zero angle error
+/// and the command carried as a desired velocity — a different path through
+/// the same shaper than either angle entry point takes.
+///
+/// Roll and pitch use `rate_rp_tc` and yaw uses `rate_y_tc`; neither is
+/// `input_tc`. Three constants for three cases, and a port that reached for
+/// the wrong one would still converge to the right place, just with the wrong
+/// feel. Only a step-by-step comparison sees that.
+#[test]
+fn the_euler_rate_sequence_matches_upstream() {
+    use ap_control::attitude_controller::{AttitudeController, ShapingConfig};
+    use ap_math::vector3::Vector3f;
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/attitude_error.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).expect("fixture");
+
+    let mut section = "";
+    let mut gains: Vec<f32> = Vec::new();
+    let mut ff_enabled = false;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix('#') {
+            section = tag;
+            continue;
+        }
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        match section {
+            "gains" => {
+                assert!(
+                    c.len() >= 17,
+                    "gains row has {} columns, need at least 17",
+                    c.len()
+                );
+                gains = c
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != 7 && *i != 11)
+                    .map(|(_, s)| f(s))
+                    .collect();
+                ff_enabled = c[11] == "1";
+            }
+            "eulerrate" => rows.push(c.iter().map(|s| (*s).to_owned()).collect()),
+            _ => {}
+        }
+    }
+
+    assert!(!rows.is_empty(), "no euler-rate rows in the fixture");
+
+    let shaping = ShapingConfig {
+        input_tc: gains[8],
+        rate_y_tc: gains[9],
+        rate_rp_tc: gains[14],
+        rate_bf_ff_enabled: ff_enabled,
+        ang_vel_roll_max_degs: gains[10],
+        ang_vel_pitch_max_degs: gains[11],
+        ang_vel_yaw_max_degs: gains[12],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+        slew_yaw_max_rads: gains[13],
+    };
+    let yaw_gains = YawLimitGains {
+        accel_yaw_max_radss: gains[5],
+        rate_yaw_kp: gains[6],
+        angle_yaw_kp: gains[2],
+        ..YawLimitGains::default()
+    };
+    let angle_gains = AngleGains {
+        angle_p_roll: gains[0],
+        angle_p_pitch: gains[1],
+        angle_p_yaw: gains[2],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+        use_sqrt_controller: true,
+    };
+    let dt = gains[7];
+
+    let mut controller = AttitudeController::new();
+    controller.set_attitude_target(Quaternion::from_euler(-0.25, 0.35, -0.40));
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 16, "malformed euler-rate row");
+        let step: usize = r[0].parse().expect("step");
+        let body = Quaternion::from_euler(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        let out = controller.input_euler_rate_roll_pitch_yaw(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            body,
+            &shaping,
+            &yaw_gains,
+            &angle_gains,
+            Vector3f::new(0.0, 0.0, 0.0),
+            dt,
+        );
+
+        let target = controller.euler_angle_target_rad();
+        let ang_vel = controller.ang_vel_target_rads();
+
+        for (label, got, want) in [
+            ("targ_r", target.x, f(&r[7])),
+            ("targ_p", target.y, f(&r[8])),
+            ("targ_y", target.z, f(&r[9])),
+            ("ang_vel_x", ang_vel.x, f(&r[10])),
+            ("ang_vel_y", ang_vel.y, f(&r[11])),
+            ("ang_vel_z", ang_vel.z, f(&r[12])),
+            ("rate_x", out.ang_vel_body_rads.x, f(&r[13])),
+            ("rate_y", out.ang_vel_body_rads.y, f(&r[14])),
+            ("rate_z", out.ang_vel_body_rads.z, f(&r[15])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < STEP_TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    println!(
+        "{} euler-rate steps, {checked} values, largest difference {largest:e}",
         rows.len()
     );
 }

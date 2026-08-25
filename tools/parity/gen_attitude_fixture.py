@@ -65,6 +65,7 @@ public:
     using AC_AttitudeControl::_attitude_target;
     using AC_AttitudeControl::_input_tc;
     using AC_AttitudeControl::_rate_y_tc;
+    using AC_AttitudeControl::_rate_rp_tc;
     using AC_AttitudeControl::_ang_vel_roll_max_degs;
     using AC_AttitudeControl::_ang_vel_pitch_max_degs;
     using AC_AttitudeControl::_ang_vel_yaw_max_degs;
@@ -90,8 +91,8 @@ int main(void)
     printf("#gains\n");
     printf("angle_p_roll,angle_p_pitch,angle_p_yaw,accel_roll,accel_pitch,"
            "accel_yaw,rate_yaw_kp,use_sqrt,dt,"
-           "input_tc,rate_y_tc,ff_enabled,vel_roll,vel_pitch,vel_yaw,slew_yaw\n");
-    printf("%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%d,%u,%u,%u,%u\n",
+           "input_tc,rate_y_tc,ff_enabled,vel_roll,vel_pitch,vel_yaw,slew_yaw,rate_rp_tc\n");
+    printf("%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%d,%u,%u,%u,%u,%u\n",
            fbits(att.get_angle_roll_p().kP()),
            fbits(att.get_angle_pitch_p().kP()),
            fbits(att.get_angle_yaw_p().kP()),
@@ -107,7 +108,8 @@ int main(void)
            fbits(att._ang_vel_roll_max_degs),
            fbits(att._ang_vel_pitch_max_degs),
            fbits(att._ang_vel_yaw_max_degs),
-           fbits(att.get_slew_yaw_max_rads()));
+           fbits(att.get_slew_yaw_max_rads()),
+           fbits(att._rate_rp_tc));
 
     printf("#rows\n");
     printf("body_r,body_p,body_y,targ_r,targ_p,targ_y,"
@@ -256,6 +258,51 @@ int main(void)
                        fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
                        fbits(rate.x), fbits(rate.y), fbits(rate.z));
             }
+        }
+    }
+
+    // ---- an euler-rate sequence ----
+    printf("#eulerrate\n");
+    printf("step,roll_rate,pitch_rate,yaw_rate,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,ang_vel_x,ang_vel_y,ang_vel_z,"
+           "rate_x,rate_y,rate_z\n");
+    {
+        static Probe er(view, motors);
+        er._dt_s = 0.0025f;
+        er.reset_target_and_rate(true);
+
+        // Offset, for the reason on the heading sequence: starting at zero
+        // attitude error spends the first steps where acos has no precision.
+        Quaternion offset;
+        offset.from_euler(-0.25f, 0.35f, -0.40f);
+        er._attitude_target = offset;
+
+        const int STEPS = 400;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+            // A step, a ramp, and a reversal again -- the same three shapes,
+            // now as rates on all three axes.
+            const float roll_rate = ts < 0.2f ? 0.0f : 0.8f;
+            const float pitch_rate = -0.5f + ts * 1.2f;
+            const float yaw_rate = ts < 0.5f ? 0.4f : -0.4f;
+
+            er.input_euler_rate_roll_pitch_yaw_rads(roll_rate, pitch_rate, yaw_rate);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = er._euler_angle_target_rad;
+            const Vector3f ang_vel = er.get_attitude_target_ang_vel();
+            const Vector3f rate = er.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(roll_rate), fbits(pitch_rate), fbits(yaw_rate),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                   fbits(rate.x), fbits(rate.y), fbits(rate.z));
         }
     }
 
