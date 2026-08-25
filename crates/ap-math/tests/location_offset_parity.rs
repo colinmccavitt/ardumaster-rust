@@ -67,10 +67,8 @@ fn location_offsets_match_upstream() {
 
         match row[0] {
             "offset" => {
-                let mut loc = Location {
-                    lat: row[1].parse().expect("lat"),
-                    lng: row[2].parse().expect("lng"),
-                };
+                let mut loc =
+                    Location::new(row[1].parse().expect("lat"), row[2].parse().expect("lng"));
                 let (start_lat, start_lng) = (loc.lat, loc.lng);
                 loc.offset(Ftype::from(f(row[3])), Ftype::from(f(row[4])));
 
@@ -86,10 +84,8 @@ fn location_offsets_match_upstream() {
                 offsets += 1;
             }
             "bearing" => {
-                let mut loc = Location {
-                    lat: row[1].parse().expect("lat"),
-                    lng: row[2].parse().expect("lng"),
-                };
+                let mut loc =
+                    Location::new(row[1].parse().expect("lat"), row[2].parse().expect("lng"));
                 let (start_lat, start_lng) = (loc.lat, loc.lng);
                 loc.offset_bearing(Ftype::from(f(row[3])), Ftype::from(f(row[4])));
 
@@ -134,20 +130,8 @@ fn location_offsets_match_upstream() {
                 let q_lng: i32 = row[2].parse().expect("q lng");
                 assert_eq!(q_lat, q_lat_echo, "the two rows must describe one query");
 
-                let got = Location {
-                    lat: q_lat,
-                    lng: q_lng,
-                }
-                .line_path_proportion(
-                    Location {
-                        lat: p1lat,
-                        lng: p1lng,
-                    },
-                    Location {
-                        lat: p2lat,
-                        lng: p2lng,
-                    },
-                );
+                let got = Location::new(q_lat, q_lng)
+                    .line_path_proportion(Location::new(p1lat, p1lng), Location::new(p2lat, p2lng));
 
                 if got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()) {
                     exact_proportions += 1;
@@ -193,10 +177,7 @@ fn location_offsets_match_upstream() {
 /// navigation, and the port reproduces it; this test states what that means.
 #[test]
 fn crossing_the_pole_reflects_latitude_without_flipping_longitude() {
-    let mut loc = Location {
-        lat: 899_000_000,
-        lng: 0,
-    };
+    let mut loc = Location::new(899_000_000, 0);
     loc.offset(200_000.0, 0.0);
 
     assert!(
@@ -214,10 +195,7 @@ fn crossing_the_pole_reflects_latitude_without_flipping_longitude() {
 /// landing aim point is placed short of the runway threshold.
 #[test]
 fn a_negative_distance_moves_backwards() {
-    let start = Location {
-        lat: 515_080_000,
-        lng: -1_268_000,
-    };
+    let start = Location::new(515_080_000, -1_268_000);
 
     let mut forward = start;
     forward.offset_bearing(0.0, 1000.0);
@@ -241,7 +219,7 @@ fn a_negative_distance_moves_backwards() {
 /// it themselves.
 #[test]
 fn the_proportion_is_unbounded_beyond_the_ends() {
-    let p1 = Location { lat: 0, lng: 0 };
+    let p1 = Location::new(0, 0);
     let mut p2 = p1;
     p2.offset(1000.0, 0.0);
 

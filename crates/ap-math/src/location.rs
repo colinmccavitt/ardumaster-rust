@@ -161,6 +161,162 @@ mod tests {
         assert_eq!(get_horizontal_distance(a, b), 5.0);
         assert_eq!(get_horizontal_distance(a, a), 0.0);
     }
+
+    /// A frame round-trips through the three storage bits mission storage
+    /// keeps.
+    #[test]
+    fn every_frame_survives_the_storage_bits() {
+        for frame in [
+            AltFrame::Absolute,
+            AltFrame::AboveHome,
+            AltFrame::AboveOrigin,
+            AltFrame::AboveTerrain,
+        ] {
+            let (rel, terr, orig) = frame.to_bits();
+            assert_eq!(
+                AltFrame::from_bits(rel, terr, orig),
+                Some(frame),
+                "{frame:?}"
+            );
+        }
+    }
+
+    /// Above-terrain sets two bits, not one. Upstream marks it relative as
+    /// well, because a terrain altitude has not had home added either, and
+    /// anything reading the bits has to know that.
+    #[test]
+    fn above_terrain_is_also_marked_relative() {
+        assert_eq!(AltFrame::AboveTerrain.to_bits(), (true, true, false));
+        assert_eq!(AltFrame::AboveHome.to_bits(), (true, false, false));
+    }
+
+    /// D-023. Terrain without relative is the combination upstream calls
+    /// impossible and guards with a SITL-only panic. The port reports it.
+    #[test]
+    fn d023_terrain_without_relative_is_reported_not_fatal() {
+        assert_eq!(AltFrame::from_bits(false, true, false), None);
+        assert_eq!(AltFrame::from_bits(false, true, true), None);
+    }
+
+    /// Several bits set is not an error, and the precedence is upstream's:
+    /// terrain over origin, origin over relative.
+    #[test]
+    fn the_bit_precedence_is_terrain_then_origin_then_relative() {
+        assert_eq!(
+            AltFrame::from_bits(true, true, true),
+            Some(AltFrame::AboveTerrain)
+        );
+        assert_eq!(
+            AltFrame::from_bits(true, false, true),
+            Some(AltFrame::AboveOrigin)
+        );
+    }
+
+    /// Converting to the frame a location is already in returns the altitude
+    /// unchanged and needs no context -- which matters, because that is the
+    /// common case and it must not fail before home is set.
+    #[test]
+    fn converting_to_the_same_frame_needs_nothing() {
+        let loc = Location::new_with_alt(0, 0, 12_345, AltFrame::AboveHome);
+        let empty = AltContext::default();
+        assert_eq!(loc.get_alt_cm(AltFrame::AboveHome, &empty), Some(12_345));
+    }
+
+    /// A conversion that needs home before home is set has no answer. Not a
+    /// zero, not the raw number -- no answer.
+    #[test]
+    fn a_conversion_without_home_has_no_answer() {
+        let loc = Location::new_with_alt(0, 0, 100, AltFrame::AboveHome);
+        assert_eq!(
+            loc.get_alt_cm(AltFrame::Absolute, &AltContext::default()),
+            None
+        );
+
+        let ctx = AltContext {
+            home_alt_cm: Some(5_000),
+            ..AltContext::default()
+        };
+        assert_eq!(loc.get_alt_cm(AltFrame::Absolute, &ctx), Some(5_100));
+    }
+
+    /// Every pair of frames converts through absolute and back to where it
+    /// started.
+    #[test]
+    fn frames_round_trip_through_each_other() {
+        let ctx = AltContext {
+            home_alt_cm: Some(12_000),
+            origin_alt_cm: Some(11_500),
+            terrain_alt_cm: Some(10_000),
+        };
+        let frames = [
+            AltFrame::Absolute,
+            AltFrame::AboveHome,
+            AltFrame::AboveOrigin,
+            AltFrame::AboveTerrain,
+        ];
+
+        for from in frames {
+            for to in frames {
+                let mut loc = Location::new_with_alt(515_080_000, -1_268_000, 25_000, from);
+                assert!(loc.change_alt_frame(to, &ctx), "{from:?} -> {to:?}");
+                assert_eq!(loc.alt_frame(), to);
+                assert!(loc.change_alt_frame(from, &ctx), "{to:?} -> {from:?}");
+                assert_eq!(
+                    loc.alt, 25_000,
+                    "{from:?} -> {to:?} -> {from:?} should return the altitude"
+                );
+            }
+        }
+    }
+
+    /// The conversions use the datums they name: 25,000 cm above a home at
+    /// 12,000 cm AMSL is 37,000 cm AMSL.
+    #[test]
+    fn the_conversions_use_the_datums_they_name() {
+        let ctx = AltContext {
+            home_alt_cm: Some(12_000),
+            origin_alt_cm: Some(11_500),
+            terrain_alt_cm: Some(10_000),
+        };
+        let loc = Location::new_with_alt(0, 0, 25_000, AltFrame::AboveHome);
+
+        assert_eq!(loc.get_alt_cm(AltFrame::Absolute, &ctx), Some(37_000));
+        assert_eq!(loc.get_alt_cm(AltFrame::AboveOrigin, &ctx), Some(25_500));
+        assert_eq!(loc.get_alt_cm(AltFrame::AboveTerrain, &ctx), Some(27_000));
+    }
+
+    /// A failed conversion leaves the location exactly as it was.
+    #[test]
+    fn a_failed_conversion_changes_nothing() {
+        let mut loc = Location::new_with_alt(0, 0, 100, AltFrame::AboveHome);
+        let before = loc;
+        assert!(!loc.change_alt_frame(AltFrame::Absolute, &AltContext::default()));
+        assert_eq!(loc.alt, before.alt);
+        assert_eq!(loc.alt_frame(), before.alt_frame());
+    }
+
+    /// offset_up_m works in metres on a field held in centimetres, and leaves
+    /// the frame alone.
+    #[test]
+    fn offset_up_moves_altitude_and_not_the_frame() {
+        let mut loc = Location::new_with_alt(0, 0, 1_000, AltFrame::AboveHome);
+        loc.offset_up_m(2.5);
+        assert_eq!(loc.alt, 1_250);
+        assert_eq!(loc.alt_frame(), AltFrame::AboveHome);
+
+        loc.offset_up_m(-12.5);
+        assert_eq!(loc.alt, 0);
+    }
+
+    /// Upstream treats lat and lng both zero as "no position". It is a real
+    /// coordinate in the Atlantic, so a vehicle genuinely there cannot be
+    /// told apart from one that has never had a fix.
+    #[test]
+    fn an_all_zero_location_reads_as_uninitialised() {
+        assert!(!Location::new(0, 0).initialised());
+        assert!(Location::new(1, 0).initialised());
+        assert!(Location::new(0, 1).initialised());
+    }
 }
 
 /// Radians to centidegrees in single precision, upstream `rad_to_cd`.
@@ -201,13 +357,244 @@ pub struct Location {
     pub lat: i32,
     /// Longitude, 1e-7 degrees.
     pub lng: i32,
+    /// Altitude in centimetres, measured from whatever
+    /// [`Location::alt_frame`] reports. A bare number here means nothing
+    /// without that frame.
+    ///
+    /// Mission storage keeps only 24 bits of it, so about +/- 83 km.
+    pub alt: i32,
+    /// Which datum [`Location::alt`] is measured from.
+    ///
+    /// Private, because upstream's representation admits a state that means
+    /// nothing -- see [`AltFrame::from_bits`].
+    frame: AltFrame,
+    /// Loiter direction: false clockwise, true counter-clockwise. Upstream
+    /// `loiter_ccw`. Nothing to do with altitude; it shares the bitfield.
+    pub loiter_ccw: bool,
+    /// Whether to crosstrack from the waypoint centre (false) or the tangent
+    /// exit (true). Upstream `loiter_xtrack`.
+    pub loiter_xtrack: bool,
+}
+
+/// What [`Location::alt`] is measured from, upstream `Location::AltFrame`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AltFrame {
+    /// Above mean sea level.
+    #[default]
+    Absolute = 0,
+    /// Above the home position.
+    AboveHome = 1,
+    /// Above the EKF origin.
+    AboveOrigin = 2,
+    /// Above the terrain beneath this point.
+    AboveTerrain = 3,
+}
+
+impl AltFrame {
+    /// The three storage bits, upstream `relative_alt`, `terrain_alt` and
+    /// `origin_alt` in that order.
+    ///
+    /// `AboveTerrain` sets **two** of them: upstream marks it relative as
+    /// well, because a terrain altitude has not had home added either.
+    #[must_use]
+    pub const fn to_bits(self) -> (bool, bool, bool) {
+        match self {
+            Self::Absolute => (false, false, false),
+            Self::AboveHome => (true, false, false),
+            Self::AboveOrigin => (false, false, true),
+            Self::AboveTerrain => (true, true, false),
+        }
+    }
+
+    /// Recover a frame from the three storage bits, upstream
+    /// `get_alt_frame`.
+    ///
+    /// `None` for `terrain_alt` without `relative_alt`. Upstream calls that
+    /// combination impossible and enforces it with `AP_HAL::panic` -- but
+    /// only on SITL, so a real vehicle reading such a mission item carries on
+    /// with whatever the bits happen to say.
+    ///
+    /// DIVERGENCE D-023: the port reports it. Flight code cannot panic, and a
+    /// check compiled out on the target is not a check.
+    ///
+    /// The precedence is upstream's: terrain over origin, origin over
+    /// relative. Several bits set is not an error; the highest one decides.
+    #[must_use]
+    pub const fn from_bits(
+        relative_alt: bool,
+        terrain_alt: bool,
+        origin_alt: bool,
+    ) -> Option<Self> {
+        if terrain_alt {
+            if !relative_alt {
+                return None;
+            }
+            return Some(Self::AboveTerrain);
+        }
+        if origin_alt {
+            return Some(Self::AboveOrigin);
+        }
+        if relative_alt {
+            return Some(Self::AboveHome);
+        }
+        Some(Self::Absolute)
+    }
+}
+
+/// The vehicle state an altitude conversion needs, which upstream reaches
+/// through `AP::ahrs()` and `AP::terrain()`.
+///
+/// Passed explicitly per ADR-0004. Every field is optional because every one
+/// of them can genuinely be unavailable -- home unset before arming, no EKF
+/// origin before a fix, no terrain data for this square -- and each absence
+/// makes a different subset of conversions impossible.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AltContext {
+    /// Home altitude, cm AMSL. `None` before home is set.
+    pub home_alt_cm: Option<i32>,
+    /// EKF origin altitude, cm AMSL. `None` before the origin is set.
+    pub origin_alt_cm: Option<i32>,
+    /// Terrain height AMSL beneath this location, cm. `None` when the terrain
+    /// database has no data for it.
+    pub terrain_alt_cm: Option<i32>,
 }
 
 impl Location {
-    /// A position from latitude and longitude in 1e-7 degrees.
+    /// A position from latitude and longitude in 1e-7 degrees, at zero
+    /// altitude above mean sea level.
+    ///
+    /// Upstream's default-constructed `Location` is all zeros, which is what
+    /// this reproduces. A zero absolute altitude is a real position at sea
+    /// level rather than an "unset" marker -- upstream tests for unset with
+    /// [`Location::initialised`].
     #[must_use]
     pub const fn new(lat: i32, lng: i32) -> Self {
-        Self { lat, lng }
+        Self {
+            lat,
+            lng,
+            alt: 0,
+            frame: AltFrame::Absolute,
+            loiter_ccw: false,
+            loiter_xtrack: false,
+        }
+    }
+
+    /// A position with an altitude, upstream's four-argument constructor.
+    #[must_use]
+    pub const fn new_with_alt(lat: i32, lng: i32, alt_cm: i32, frame: AltFrame) -> Self {
+        Self {
+            lat,
+            lng,
+            alt: alt_cm,
+            frame,
+            loiter_ccw: false,
+            loiter_xtrack: false,
+        }
+    }
+
+    /// Whether this location names a position at all, upstream
+    /// `initialised`.
+    ///
+    /// Upstream treats latitude and longitude both zero as "never set" -- a
+    /// point in the Atlantic off Ghana stands in for the absence of a
+    /// position. It is a real coordinate, so a vehicle genuinely there cannot
+    /// be told apart from one that has no position.
+    #[must_use]
+    pub const fn initialised(&self) -> bool {
+        self.lat != 0 || self.lng != 0
+    }
+
+    /// Set the altitude and its frame together, upstream `set_alt_cm`.
+    ///
+    /// Together, because neither means anything alone.
+    pub const fn set_alt_cm(&mut self, alt_cm: i32, frame: AltFrame) {
+        self.alt = alt_cm;
+        self.frame = frame;
+    }
+
+    /// Set the altitude in metres, upstream `set_alt_m`.
+    pub fn set_alt_m(&mut self, alt_m: f32, frame: AltFrame) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream assigns alt_m*100 to an int32; the truncation toward zero is the behaviour"
+        )]
+        self.set_alt_cm((alt_m * 100.0) as i32, frame);
+    }
+
+    /// What [`Location::alt`] is measured from, upstream `get_alt_frame`.
+    #[must_use]
+    pub const fn alt_frame(&self) -> AltFrame {
+        self.frame
+    }
+
+    /// The three storage bits for this location's frame. See
+    /// [`AltFrame::to_bits`].
+    #[must_use]
+    pub const fn alt_bits(&self) -> (bool, bool, bool) {
+        self.frame.to_bits()
+    }
+
+    /// Raise or lower by metres, leaving the frame alone. Upstream
+    /// `offset_up_m`.
+    pub fn offset_up_m(&mut self, alt_offset_m: f32) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream adds alt_offset_m * 100 to an int32 the same way"
+        )]
+        let d = (alt_offset_m * 100.0) as i32;
+        self.alt = self.alt.saturating_add(d);
+    }
+
+    /// This location's altitude expressed in another frame, upstream
+    /// `get_alt_cm`.
+    ///
+    /// `None` when the conversion needs something the context does not have --
+    /// home before it is set, an EKF origin before there is one, terrain data
+    /// for a square the database does not cover. That is a real answer, not a
+    /// failure: an altitude above a home that does not exist is not a number.
+    #[must_use]
+    pub fn get_alt_cm(&self, desired: AltFrame, ctx: &AltContext) -> Option<i32> {
+        if desired == self.frame {
+            return Some(self.alt);
+        }
+
+        // Terrain height is needed if either end of the conversion is above
+        // terrain, and is looked up once.
+        let terrain = if self.frame == AltFrame::AboveTerrain || desired == AltFrame::AboveTerrain {
+            Some(ctx.terrain_alt_cm?)
+        } else {
+            None
+        };
+
+        // Everything goes through absolute.
+        let alt_abs = match self.frame {
+            AltFrame::Absolute => self.alt,
+            AltFrame::AboveHome => self.alt.saturating_add(ctx.home_alt_cm?),
+            AltFrame::AboveOrigin => self.alt.saturating_add(ctx.origin_alt_cm?),
+            AltFrame::AboveTerrain => self.alt.saturating_add(terrain?),
+        };
+
+        Some(match desired {
+            AltFrame::Absolute => alt_abs,
+            AltFrame::AboveHome => alt_abs.saturating_sub(ctx.home_alt_cm?),
+            AltFrame::AboveOrigin => alt_abs.saturating_sub(ctx.origin_alt_cm?),
+            AltFrame::AboveTerrain => alt_abs.saturating_sub(terrain?),
+        })
+    }
+
+    /// Re-express this location's altitude in another frame, upstream
+    /// `change_alt_frame`.
+    ///
+    /// Returns false and leaves the location untouched when the conversion is
+    /// not available.
+    pub fn change_alt_frame(&mut self, desired: AltFrame, ctx: &AltContext) -> bool {
+        match self.get_alt_cm(desired, ctx) {
+            Some(alt_cm) => {
+                self.set_alt_cm(alt_cm, desired);
+                true
+            }
+            None => false,
+        }
     }
 
     /// How much a degree of longitude shrinks at this latitude, upstream

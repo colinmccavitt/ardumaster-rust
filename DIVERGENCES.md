@@ -1115,3 +1115,62 @@ Pinned by `common_parity::the_common_helpers_match_upstream`, which asserts
 that any disagreement is a clean multiple of 2^32 and occurs only at
 `tm_year >= 207`. That makes it a statement about ArduPilot rather than about
 the port, and it will start failing the day upstream widens the constants.
+
+## D-023 — an impossible altitude frame is a SITL-only panic
+
+**Upstream:** `AP_Common/Location.cpp`, `get_alt_frame` and `get_alt_cm`.
+
+Location stores its altitude frame as three independent bits rather than an
+enum:
+
+```cpp
+uint8_t relative_alt : 1;   // above home
+uint8_t terrain_alt  : 1;   // above terrain
+uint8_t origin_alt   : 1;   // above EKF origin
+```
+
+`ABOVE_TERRAIN` sets **two** of them — `relative_alt` as well, because a
+terrain altitude has not had home added either. So `terrain_alt` without
+`relative_alt` is a bit pattern the encoding can hold and the decoder has no
+meaning for, and upstream says as much:
+
+```cpp
+Location::AltFrame Location::get_alt_frame() const
+{
+    if (terrain_alt) {
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+        if (!relative_alt) {
+            AP_HAL::panic("terrain loc must be relative_alt1");
+        }
+#endif
+        return AltFrame::ABOVE_TERRAIN;
+```
+
+The same check appears again in `get_alt_cm`, alongside one for an
+uninitialised location, both under the same `#if`.
+
+**The guard is compiled out on the target.** On SITL an impossible frame stops
+the simulation immediately; on the flight controller the `#if` is false, the
+check does not exist, and `get_alt_frame` returns `ABOVE_TERRAIN` for a
+location whose altitude was never relative to anything. That value then feeds
+`get_alt_cm`, which adds a terrain height to an altitude that already includes
+home.
+
+Reaching it needs a mission item or a MAVLink message with that bit pattern —
+which is to say, it needs bad input rather than a bug elsewhere in the vehicle.
+A check that only runs where the bad input cannot come from is not a check.
+
+**Port:** the frame is an enum, so the state cannot be constructed. The bits are
+still produced and consumed at the serialisation boundary, where mission
+storage needs them, and `AltFrame::from_bits` returns `None` for the impossible
+combination rather than panicking. Flight code cannot panic; reporting it lets
+the caller decide, which for a mission item means rejecting it.
+
+Covered by `location::tests::d023_terrain_without_relative_is_reported_not_fatal`.
+
+Note the port does **not** diverge on the neighbouring `initialised()` guard.
+Upstream treats latitude and longitude both zero as "no position", which is a
+real coordinate in the Atlantic off Ghana — a vehicle genuinely there cannot be
+told apart from one that has never had a fix. That is upstream's sentinel
+choice and changing it would change what every caller means; it is reproduced,
+and `Location::initialised` documents it.
