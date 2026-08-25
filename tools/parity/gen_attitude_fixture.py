@@ -502,6 +502,114 @@ int main(void)
         }
     }
 
+    // ---- a full quaternion demand with a body-frame rate ----
+    //
+    // The desired quaternion is advanced by the call, so it is recorded after
+    // each step: the mutation is part of what the port has to reproduce, not
+    // an incidental detail of the caller.
+    printf("#quatinput\n");
+    printf("step,wx,wy,wz,des_w,des_x,des_y,des_z,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,av_x,av_y,av_z,rate_x,rate_y,rate_z\n");
+    {
+        static Probe qi(view, motors);
+        qi._dt_s = 0.0025f;
+        qi._rate_rp_tc = 0.15f;
+        qi._rate_y_tc = 0.25f;
+        qi._ang_vel_roll_max_degs.set(220.0f);
+        qi._ang_vel_pitch_max_degs.set(140.0f);
+        qi._ang_vel_yaw_max_degs.set(120.0f);
+        qi.reset_target_and_rate(true);
+
+        Quaternion offset;
+        offset.from_euler(0.15f, -0.30f, 0.80f);
+        qi._attitude_target = offset;
+
+        Quaternion desired;
+        desired.from_euler(-0.10f, 0.20f, -0.35f);
+
+        const int STEPS = 400;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+
+            // The yaw component exceeds ATC_RATE_Y_MAX (120 deg/s = 2.09) for
+            // part of the run, and roll and pitch together exceed the
+            // elliptical roll/pitch bound, so ang_vel_limit does real work on
+            // both of its branches rather than passing the input through.
+            Vector3f w{3.0f * sinf(6.0f * ts),
+                       2.5f * cosf(4.0f * ts),
+                       ts < 0.5f ? 2.6f : -1.0f};
+
+            qi.input_quaternion(desired, w);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = qi._euler_angle_target_rad;
+            const Vector3f ang_vel = qi.get_attitude_target_ang_vel();
+            const Vector3f rate = qi.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(w.x), fbits(w.y), fbits(w.z),
+                   fbits(desired.q1), fbits(desired.q2),
+                   fbits(desired.q3), fbits(desired.q4),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                   fbits(rate.x), fbits(rate.y), fbits(rate.z));
+        }
+    }
+
+    // ---- the roll/pitch rate predictor ----
+    //
+    // A pure function of its arguments, so this is a sweep rather than a
+    // sequence: each row carries the state in and the state out. The dt column
+    // records what the caller passed, which upstream ignores -- see D-025.
+    printf("#predictor\n");
+    printf("idx,err_x,err_y,in_vel_x,in_vel_y,in_acc_x,in_acc_y,dt,"
+           "out_vel_x,out_vel_y,out_acc_x,out_acc_y\n");
+    {
+        static Probe pr(view, motors);
+        pr._dt_s = 0.0025f;
+        pr._rate_rp_tc = 0.15f;
+        pr._rate_y_tc = 0.25f;
+        pr._ang_vel_roll_max_degs.set(220.0f);
+        pr._ang_vel_pitch_max_degs.set(140.0f);
+        pr._ang_vel_yaw_max_degs.set(120.0f);
+
+        // Errors from below the shaper's linear region out past the rate
+        // limit, and starting states both with and against the error.
+        const float errors[] = {0.0f, 0.002f, -0.05f, 0.4f, -1.2f, 3.0f, -3.3f};
+        const float vels[] = {0.0f, 0.8f, -1.5f};
+        const float accels[] = {0.0f, 5.0f, -12.0f};
+
+        int idx = 0;
+        for (unsigned a = 0; a < sizeof(errors)/sizeof(errors[0]); a++) {
+            for (unsigned b = 0; b < sizeof(errors)/sizeof(errors[0]); b++) {
+                for (unsigned c = 0; c < sizeof(vels)/sizeof(vels[0]); c++) {
+                    for (unsigned d = 0; d < sizeof(accels)/sizeof(accels[0]); d++) {
+                        const Vector2f err{errors[a], errors[b]};
+                        Vector2f vel{vels[c], vels[(c + 1) % 3]};
+                        Vector2f acc{accels[d], accels[(d + 2) % 3]};
+                        const Vector2f in_vel = vel;
+                        const Vector2f in_acc = acc;
+
+                        pr.command_model_rate_predictor(err, vel, acc, 0.0025f);
+
+                        printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", idx++,
+                               fbits(err.x), fbits(err.y),
+                               fbits(in_vel.x), fbits(in_vel.y),
+                               fbits(in_acc.x), fbits(in_acc.y),
+                               fbits(0.0025f),
+                               fbits(vel.x), fbits(vel.y),
+                               fbits(acc.x), fbits(acc.y));
+                    }
+                }
+            }
+        }
+    }
+
     return 0;
 }
 '''

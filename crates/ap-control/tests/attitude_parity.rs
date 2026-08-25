@@ -1073,3 +1073,184 @@ fn the_thrust_vector_heading_matches_upstream() {
         rows.len()
     );
 }
+
+/// A full attitude demand with a body-frame rate.
+///
+/// The demanded quaternion is compared as well as the controller's outputs,
+/// because the call advances the caller's own quaternion. A port that returned
+/// the right rates while integrating the demand differently would pass a test
+/// that only looked at the rates, and would drift apart over a longer flight.
+#[test]
+fn the_quaternion_input_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("quatinput");
+
+    let mut controller = AttitudeController::new();
+    controller.set_attitude_target(Quaternion::from_euler(0.15, -0.30, 0.80));
+
+    let mut desired = Quaternion::from_euler(-0.10, 0.20, -0.35);
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 20, "malformed quaternion-input row");
+        let step: usize = r[0].parse().expect("step");
+
+        let body = Quaternion::from_euler(f(&r[8]), f(&r[9]), f(&r[10]));
+        let w = Vector3f::new(f(&r[1]), f(&r[2]), f(&r[3]));
+
+        let out = controller.input_quaternion(
+            &mut desired,
+            w,
+            body,
+            &g.shaping,
+            &g.yaw,
+            &g.angle,
+            Vector3f::new(0.0, 0.0, 0.0),
+            g.dt,
+        );
+
+        for (label, got, want) in [
+            ("des_w", desired.q1, f(&r[4])),
+            ("des_x", desired.q2, f(&r[5])),
+            ("des_y", desired.q3, f(&r[6])),
+            ("des_z", desired.q4, f(&r[7])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < THRUST_TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+
+        checked += compare_step(
+            step,
+            controller.euler_angle_target_rad(),
+            controller.ang_vel_target_rads(),
+            out.ang_vel_body_rads,
+            r,
+            11,
+            &mut largest,
+        );
+    }
+
+    println!(
+        "{} quaternion-input steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// The roll/pitch rate predictor, swept rather than stepped.
+///
+/// Compared with `dt` equal to the controller's own step, which is the one
+/// case where the port and upstream must agree — see `D-025` and
+/// [`the_rate_predictor_honours_its_dt`].
+#[test]
+fn the_rate_predictor_matches_upstream() {
+    use ap_control::attitude_controller::{command_model_rate_predictor, Vector2Pair};
+    use ap_math::vector2::Vector2f;
+
+    let (g, rows) = gains_and_rows("predictor");
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 12, "malformed predictor row");
+        let idx: usize = r[0].parse().expect("idx");
+
+        let got = command_model_rate_predictor(
+            Vector2f::new(f(&r[1]), f(&r[2])),
+            Vector2Pair {
+                ang_vel: Vector2f::new(f(&r[3]), f(&r[4])),
+                ang_accel: Vector2f::new(f(&r[5]), f(&r[6])),
+            },
+            &g.shaping,
+            &g.angle,
+            f(&r[7]),
+        );
+
+        for (label, value, want) in [
+            ("out_vel_x", got.ang_vel.x, f(&r[8])),
+            ("out_vel_y", got.ang_vel.y, f(&r[9])),
+            ("out_acc_x", got.ang_accel.x, f(&r[10])),
+            ("out_acc_y", got.ang_accel.y, f(&r[11])),
+        ] {
+            let diff = libm::fabsf(value - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < STEP_TOL,
+                "row {idx} {label}: {value} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    println!(
+        "{} predictor rows, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// D-025: the port's predictor uses the `dt` it is given.
+///
+/// Upstream declares the parameter and never reads it — every internal call
+/// substitutes the controller's own `_dt_s`. The one existing caller,
+/// `AC_Loiter.cpp:191`, passes `get_dt_s()`, so upstream is correct today by
+/// coincidence of that single call site rather than by construction.
+///
+/// This pins the divergence from both sides: a different `dt` must change the
+/// answer, and the answer at the controller's own `dt` must still be the value
+/// upstream recorded. Without the second half, "honours its dt" could be
+/// satisfied by a predictor that had drifted away from upstream entirely.
+#[test]
+fn the_rate_predictor_honours_its_dt() {
+    use ap_control::attitude_controller::{command_model_rate_predictor, Vector2Pair};
+    use ap_math::vector2::Vector2f;
+
+    let (g, rows) = gains_and_rows("predictor");
+
+    // A row with a real error and a non-zero starting state, so the shaper has
+    // something to integrate and dt can actually matter.
+    let row = rows
+        .iter()
+        .find(|r| f(&r[1]) != 0.0 && f(&r[3]) != 0.0 && f(&r[5]) != 0.0)
+        .expect("a row with error, rate and acceleration all non-zero");
+
+    let error = Vector2f::new(f(&row[1]), f(&row[2]));
+    let state = Vector2Pair {
+        ang_vel: Vector2f::new(f(&row[3]), f(&row[4])),
+        ang_accel: Vector2f::new(f(&row[5]), f(&row[6])),
+    };
+    let upstream_dt = f(&row[7]);
+
+    let at_upstream_dt =
+        command_model_rate_predictor(error, state, &g.shaping, &g.angle, upstream_dt);
+    let recorded = Vector2f::new(f(&row[8]), f(&row[9]));
+
+    assert!(
+        libm::fabsf(at_upstream_dt.ang_vel.x - recorded.x) < STEP_TOL
+            && libm::fabsf(at_upstream_dt.ang_vel.y - recorded.y) < STEP_TOL,
+        "at the controller's own dt the port must still match upstream: \
+         {:?} vs recorded {recorded:?}",
+        at_upstream_dt.ang_vel
+    );
+
+    // Four times the step. Upstream would return the value above, unchanged,
+    // because it never looks at the argument.
+    let at_other_dt =
+        command_model_rate_predictor(error, state, &g.shaping, &g.angle, upstream_dt * 4.0);
+
+    let moved = libm::fabsf(at_other_dt.ang_vel.x - at_upstream_dt.ang_vel.x)
+        + libm::fabsf(at_other_dt.ang_vel.y - at_upstream_dt.ang_vel.y);
+    assert!(
+        moved > 1e-4,
+        "D-025: a different dt must change the prediction, but it moved by only {moved:e}. \
+         Reproducing upstream's dead parameter is the defect this pins."
+    );
+
+    println!("D-025 pinned: quadrupling dt moves the prediction by {moved:e}");
+}

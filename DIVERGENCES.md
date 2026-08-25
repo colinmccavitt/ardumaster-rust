@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **9 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **10 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -1252,3 +1252,43 @@ and a wrong one is worse than none on an approach — the caller can go around,
 which it cannot do if it is handed a plausible number.
 
 Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.
+
+## D-025 — the rate predictor ignores the `dt` it is handed
+
+- **status**: `applied`
+- **upstream**: `AC_AttitudeControl/AC_AttitudeControl.cpp:1134`,
+  `command_model_rate_predictor(const Vector2f&, Vector2f&, Vector2f&, float dt) const` —
+  takes `dt` and never reads it. All three internal calls pass the member `_dt_s`:
+
+  ```cpp
+  attitude_command_model(wrap_PI(error_angle_rad.x), 0.0, target_ang_vel_rads.x,
+                         target_ang_accel_rads.x, radians(_ang_vel_roll_max_degs),
+                         get_accel_roll_max_radss(), _input_tc, _dt_s);
+  ```
+
+  The parameter is dead. A compiler does not warn, because the name is used as a
+  parameter declaration and unused parameters are not diagnosed by default.
+- **ported**: `command_model_rate_predictor` uses its `dt` argument. Being a free
+  function it has no `_dt_s` to reach for, so the parameter cannot be dead by
+  construction.
+- **why**: Not an active defect. The sole caller,
+  `AC_WPNav/AC_Loiter.cpp:191`, obtains its argument as
+  `const float dt_s = _attitude_control.get_dt_s();` — the same value the function
+  substitutes — so upstream produces correct numbers today by coincidence of the
+  one call site.
+
+  It is a latent hazard rather than a wrong answer, and worth removing on the way
+  past. A predictor exists to answer "where would this go over an interval"; a
+  second caller asking about any interval other than the controller's own step
+  would be answered about the controller's step instead, silently and with a
+  plausible-looking number. The signature promises something the body does not
+  deliver, which is the shape of defect that survives review.
+- **risk**: None at present. Identical output for every existing call, because the
+  only existing call passes exactly the value upstream substitutes. The behaviour
+  can only differ for a caller that does not yet exist, and for that caller the
+  port is the correct one.
+- **pinned by**: `crates/ap-control/tests/attitude_parity.rs`
+  — `the_rate_predictor_matches_upstream` compares against the recorded firmware
+  with `dt == _dt_s`, where the two agree; `the_rate_predictor_honours_its_dt`
+  asserts that a differing `dt` changes the result, and records that upstream
+  would have returned the `_dt_s` answer.

@@ -20,6 +20,7 @@
 
 use ap_math::quaternion::Quaternion;
 use ap_math::scalar::{is_positive, radians, wrap_pi};
+use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
 
 use crate::attitude_error::{
@@ -28,7 +29,7 @@ use crate::attitude_error::{
     ControllerInputs, ControllerOutput, YawLimitGains,
 };
 use crate::attitude_kinematics::{
-    body_to_euler_derivative, body_to_euler_limit, euler_derivative_to_body,
+    ang_vel_limit, body_to_euler_derivative, body_to_euler_limit, euler_derivative_to_body,
 };
 
 /// The tunables the input shaping reads.
@@ -69,6 +70,106 @@ pub struct ShapingConfig {
     /// should be sedate where a pilot's yaw stick should not. Zero disables
     /// the limit entirely rather than freezing the heading.
     pub slew_yaw_max_rads: f32,
+}
+
+/// Predict where the roll/pitch command model will take the rate targets —
+/// upstream `command_model_rate_predictor`.
+///
+/// Used by the position controller to ask "if I command this attitude error,
+/// what rate will the shaper produce?" without disturbing the controller. It
+/// is `const` upstream and reads no member state that it writes, so it is a
+/// free function here rather than a method — nothing about it needs a
+/// controller to exist.
+///
+/// Roll and pitch only: yaw has no thrust-vector meaning to predict.
+///
+/// The two branches are not the same calculation at different fidelity. With
+/// shaping on it runs the real command model, so the prediction includes the
+/// acceleration limit and the time constant. With shaping off it is a bare
+/// proportional term on the angle error, because that is all the controller
+/// itself would do.
+///
+/// # Two things here are load-bearing only in appearance
+///
+/// Both are reproduced because upstream has them, and both were checked by
+/// mutation: removing either changes nothing, and no test can catch that.
+///
+/// The `wrap_pi` on each error is already done inside the shaper, which
+/// computes `angle + wrap_PI(angle_desired - angle)` with `angle` zero on this
+/// path — the same wrap, on the same quantity. An error of -3.3 rad and one of
+/// +2.983 produce identical output whether or not the caller wraps first.
+///
+/// The yaw limit handed to [`ang_vel_limit`] is zero, and the z it is given is
+/// also zero. Zero reads as "unlimited" there, but even the other reading
+/// would not matter: clamping zero to any symmetric range leaves zero.
+#[must_use]
+pub fn command_model_rate_predictor(
+    error_angle_rad: Vector2f,
+    state: Vector2Pair,
+    shaping: &ShapingConfig,
+    angle_gains: &AngleGains,
+    dt: f32,
+) -> Vector2Pair {
+    let mut ang_vel = state.ang_vel;
+    let mut ang_accel = state.ang_accel;
+
+    if shaping.rate_bf_ff_enabled {
+        let roll = attitude_command_model(
+            CommandModel {
+                target_ang_vel: ang_vel.x,
+                target_ang_accel: ang_accel.x,
+            },
+            wrap_pi(error_angle_rad.x),
+            0.0,
+            radians(shaping.ang_vel_roll_max_degs),
+            shaping.accel_roll_max_radss,
+            shaping.input_tc,
+            dt,
+        );
+        let pitch = attitude_command_model(
+            CommandModel {
+                target_ang_vel: ang_vel.y,
+                target_ang_accel: ang_accel.y,
+            },
+            wrap_pi(error_angle_rad.y),
+            0.0,
+            radians(shaping.ang_vel_pitch_max_degs),
+            shaping.accel_pitch_max_radss,
+            shaping.input_tc,
+            dt,
+        );
+        ang_vel = Vector2f::new(roll.target_ang_vel, pitch.target_ang_vel);
+        ang_accel = Vector2f::new(roll.target_ang_accel, pitch.target_ang_accel);
+    } else {
+        ang_vel = Vector2f::new(
+            angle_gains.angle_p_roll * wrap_pi(error_angle_rad.x),
+            angle_gains.angle_p_pitch * wrap_pi(error_angle_rad.y),
+        );
+    }
+
+    // Yaw's limit is passed as zero, which `ang_vel_limit` reads as
+    // "unlimited" — the right call, since there is no yaw component to bound.
+    let mut limited = Vector3f::new(ang_vel.x, ang_vel.y, 0.0);
+    ang_vel_limit(
+        &mut limited,
+        radians(shaping.ang_vel_roll_max_degs),
+        radians(shaping.ang_vel_pitch_max_degs),
+        0.0,
+    );
+
+    Vector2Pair {
+        ang_vel: Vector2f::new(limited.x, limited.y),
+        ang_accel,
+    }
+}
+
+/// The predictor's rate and acceleration state, roll and pitch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vector2Pair {
+    /// Angular velocity target, roll in x and pitch in y.
+    pub ang_vel: Vector2f,
+    /// Angular acceleration target, roll in x and pitch in y.
+    pub ang_accel: Vector2f,
 }
 
 /// How a caller wants yaw handled alongside a thrust vector — upstream
@@ -153,6 +254,153 @@ impl AttitudeController {
         self.attitude_target = target;
         let (r, p, y) = target.to_euler();
         self.euler_angle_target_rad = Vector3f::new(r, p, y);
+    }
+
+    /// A full attitude quaternion plus a body-frame rate — upstream
+    /// `input_quaternion`.
+    ///
+    /// The most general entry point: the caller supplies where it wants the
+    /// aircraft pointed and how fast it wants it rotating, with no Euler
+    /// decomposition anywhere on the path.
+    ///
+    /// `attitude_desired` is borrowed mutably because upstream advances the
+    /// caller's own quaternion each step — the desired attitude is integrated
+    /// forward by the (limited) rate, so the caller holds a moving demand
+    /// rather than restating it. Passing a fresh quaternion each call would
+    /// silently change the behaviour, which is why the signature makes the
+    /// mutation visible.
+    ///
+    /// Note the ordering: the Euler form of the target is recomputed *after*
+    /// the branch here, where every other entry point does it before. It has
+    /// to be, because the no-shaping branch assigns the target outright and an
+    /// Euler snapshot taken earlier would describe the previous attitude.
+    ///
+    /// The rate limit is applied to the input before it is used for anything,
+    /// so the same limited value both shapes the target and integrates the
+    /// caller's desired attitude. Limiting once, early, is what keeps those
+    /// two from drifting apart.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one upstream entry point; see the siblings"
+    )]
+    pub fn input_quaternion(
+        &mut self,
+        attitude_desired: &mut Quaternion,
+        ang_vel_body_rads: Vector3f,
+        attitude_body: Quaternion,
+        shaping: &ShapingConfig,
+        yaw_gains: &YawLimitGains,
+        angle_gains: &AngleGains,
+        gyro_rads: Vector3f,
+        dt: f32,
+    ) -> ControllerOutput {
+        self.attitude_target =
+            update_attitude_target(self.attitude_target, self.ang_vel_target_rads, dt);
+
+        let mut ang_vel_body_rads = ang_vel_body_rads;
+        ang_vel_limit(
+            &mut ang_vel_body_rads,
+            radians(shaping.ang_vel_roll_max_degs),
+            radians(shaping.ang_vel_pitch_max_degs),
+            radians(shaping.ang_vel_yaw_max_degs),
+        );
+
+        // Into the frame the desired quaternion is integrated in.
+        let ang_vel_target = attitude_desired.rotate(ang_vel_body_rads);
+
+        if shaping.rate_bf_ff_enabled {
+            let attitude_error_quat = self.attitude_target.inverse() * *attitude_desired;
+            let attitude_error_angle = attitude_error_quat.to_axis_angle();
+
+            let axis =
+                |error: f32, vel: f32, accel: f32, max_degs: f32, accel_max: f32, tc: f32| {
+                    attitude_command_model(
+                        CommandModel {
+                            target_ang_vel: vel,
+                            target_ang_accel: accel,
+                        },
+                        wrap_pi(error),
+                        0.0,
+                        radians(max_degs),
+                        accel_max,
+                        tc,
+                        dt,
+                    )
+                };
+
+            let roll = axis(
+                attitude_error_angle.x,
+                self.ang_vel_target_rads.x,
+                self.ang_accel_target_rads.x,
+                shaping.ang_vel_roll_max_degs,
+                shaping.accel_roll_max_radss,
+                shaping.input_tc,
+            );
+            let pitch = axis(
+                attitude_error_angle.y,
+                self.ang_vel_target_rads.y,
+                self.ang_accel_target_rads.y,
+                shaping.ang_vel_pitch_max_degs,
+                shaping.accel_pitch_max_radss,
+                shaping.input_tc,
+            );
+            // Yaw is limited by ATC_RATE_Y_MAX here, not the slew rate: this
+            // is a full attitude demand, not a heading change to ease into.
+            let yaw = axis(
+                attitude_error_angle.z,
+                self.ang_vel_target_rads.z,
+                self.ang_accel_target_rads.z,
+                shaping.ang_vel_yaw_max_degs,
+                shaping.accel_yaw_max_radss,
+                shaping.rate_y_tc,
+            );
+
+            self.ang_vel_target_rads = Vector3f::new(
+                roll.target_ang_vel,
+                pitch.target_ang_vel,
+                yaw.target_ang_vel,
+            );
+            self.ang_accel_target_rads = Vector3f::new(
+                roll.target_ang_accel,
+                pitch.target_ang_accel,
+                yaw.target_ang_accel,
+            );
+        } else {
+            self.attitude_target = *attitude_desired;
+            self.ang_vel_target_rads = ang_vel_target;
+        }
+
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        if let Some(euler_rate) =
+            body_to_euler_derivative(self.attitude_target, self.ang_vel_target_rads)
+        {
+            self.euler_rate_target_rads = euler_rate;
+        }
+
+        // Advance the caller's demand by the same limited rate.
+        *attitude_desired =
+            *attitude_desired * Quaternion::from_rotation_vector(ang_vel_target * dt);
+        attitude_desired.normalize();
+
+        let out = attitude_controller_run(
+            self.attitude_target,
+            attitude_body,
+            yaw_gains,
+            angle_gains,
+            &ControllerInputs {
+                ang_vel_target_rads: self.ang_vel_target_rads,
+                gyro_rads,
+                ang_vel_roll_max_degs: shaping.ang_vel_roll_max_degs,
+                ang_vel_pitch_max_degs: shaping.ang_vel_pitch_max_degs,
+                ang_vel_yaw_max_degs: shaping.ang_vel_yaw_max_degs,
+            },
+            dt,
+        );
+
+        self.attitude_target = out.attitude_target;
+        out
     }
 
     /// Thrust direction plus a heading *rate* — upstream
