@@ -30,6 +30,7 @@ import vehicle_link  # noqa: E402
 
 ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
 OUT = ROOT / "fixtures/srv_setup_sweep.csv"
+PREDICATES_OUT = ROOT / "fixtures/srv_predicates.csv"
 BUILD = Path("/tmp/srv_setup_parity/harness")
 
 # The functions to sweep, chosen from the source by pick_funcs.
@@ -72,6 +73,19 @@ int main(void)
     // still at its default and none has latched a shape.
     AP::scheduler().init(nullptr, 0, 0);
 
+    // The classification predicates first: they are statics that read no
+    // channel state, so they cost nothing and cannot disturb the sweep below.
+    printf("#predicates\n");
+    printf("function,is_motor,e_stop,is_surface\n");
+    for (unsigned fn = 0; fn < 190; fn++) {
+        const SRV_Channel::Function f = (SRV_Channel::Function)fn;
+        printf("%u,%d,%d,%d\n", fn,
+               SRV_Channel::is_motor(f) ? 1 : 0,
+               SRV_Channel::should_e_stop(f) ? 1 : 0,
+               SRV_Channel::is_control_surface(f) ? 1 : 0);
+    }
+
+    printf("#shapes\n");
     printf("function,scaled,pwm\n");
 
     static const uint16_t FUNCS[] = { __FUNCS__ };
@@ -110,10 +124,16 @@ def main():
     build(HARNESS, objects, BUILD, "SRV_Channel/SRV_Channels.cpp",
           link_flags=vehicle_link.LINK_FLAGS)
     text = run(BUILD)
-    OUT.write_text(text)
-    rows = sum(1 for l in text.splitlines()
-               if l and not l.startswith("function,"))
-    print("wrote %s: %d rows" % (OUT.name, rows))
+
+    marker = "#shapes\n"
+    head, shapes = text.split(marker, 1)
+    PREDICATES_OUT.write_text(head)
+    OUT.write_text(marker + shapes)
+
+    for path, body in ((PREDICATES_OUT, head), (OUT, shapes)):
+        rows = sum(1 for l in body.splitlines()
+                   if l and not l.startswith("#") and not l.startswith("function,"))
+        print("wrote %s: %d rows" % (path.name, rows))
 
 
 main()

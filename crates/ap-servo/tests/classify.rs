@@ -7,6 +7,11 @@
 //! chances to get it wrong, so the port writes it twice too but ties them
 //! together with a round trip, which no amount of re-reading would.
 
+#![allow(
+    clippy::indexing_slicing,
+    reason = "indexes fixture rows whose field count is asserted; in a test an index fault is a test failure, which is the desired outcome"
+)]
+
 use ap_servo::function::Function;
 use ap_servo::{Limit, OutputType, ServoChannel};
 
@@ -143,4 +148,83 @@ fn reversing_swaps_the_ends_but_leaves_trim_alone() {
 fn zero_pwm_is_zero() {
     assert_eq!(channel(false).limit_pwm(Limit::ZeroPwm), 0);
     assert_eq!(channel(true).limit_pwm(Limit::ZeroPwm), 0);
+}
+
+/// Parity: every function's classification against upstream.
+///
+/// All 190 values swept through `is_motor`, `should_e_stop` and
+/// `is_control_surface`. These are the three tables that decide whether an
+/// emergency stop reaches an output, whether a function counts as a motor, and
+/// whether it moves a surface — each generated from a switch or a range test,
+/// each with a case-range that reads naturally as two entries.
+///
+/// `motor_num` is not swept: it is an instance method and would need a channel
+/// per function, which the 32-channel limit rules out. It is covered
+/// transitively — the round-trip test above pins it as the exact inverse of
+/// `motor`, and `is_motor`, verified here for every value, pins the three
+/// ranges both are built from.
+#[test]
+fn every_function_classification_matches_upstream() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/srv_predicates.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — run tools/parity/gen_srv_setup_fixture.py",
+            path.display()
+        )
+    });
+
+    let mut checked = 0_usize;
+    let mut motors = 0_usize;
+    let mut estops = 0_usize;
+    let mut surfaces = 0_usize;
+
+    for line in text.lines() {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("function,") {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        assert_eq!(c.len(), 4, "malformed row: {line}");
+
+        let f = ap_servo::function::Function(c[0].parse::<u8>().expect("function"));
+        let want_motor = c[1] == "1";
+        let want_estop = c[2] == "1";
+        let want_surface = c[3] == "1";
+
+        assert_eq!(f.is_motor(), want_motor, "function {}: is_motor", f.0);
+        assert_eq!(
+            f.should_e_stop(),
+            want_estop,
+            "function {}: should_e_stop",
+            f.0
+        );
+        assert_eq!(
+            f.is_control_surface(),
+            want_surface,
+            "function {}: is_control_surface",
+            f.0
+        );
+
+        checked += 3;
+        motors += usize::from(want_motor);
+        estops += usize::from(want_estop);
+        surfaces += usize::from(want_surface);
+    }
+
+    // A sweep where every answer is false would pass against a port that
+    // returned false for everything, so assert the tables are populated.
+    assert!(motors >= 32, "expected at least 32 motors, found {motors}");
+    assert!(
+        estops > motors,
+        "e-stop should cover more than the motors alone"
+    );
+    assert!(surfaces > 0, "no control surfaces found");
+
+    println!(
+        "{checked} classifications over {} functions, all exact          ({motors} motors, {estops} e-stop, {surfaces} surfaces)",
+        checked / 3
+    );
 }
