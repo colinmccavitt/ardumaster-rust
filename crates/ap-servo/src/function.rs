@@ -405,3 +405,26 @@ impl Function {
 /// The premise `valid` relies on: `k_none` is the lowest function value,
 /// so an unsigned value can only fail the upper bound.
 const _: () = assert!(Function::NONE.0 == 0);
+
+/// Functions an emergency stop must be able to zero, upstream
+/// `SRV_Channel::should_e_stop`.
+///
+/// Motors, throttles, engine starters and the heli rotor speed
+/// controllers. Generated from the switch, because missing one means an
+/// E-stop that leaves something spinning -- the exact failure the feature
+/// exists to prevent.
+///
+/// Sorted, so the lookup can binary search.
+const E_STOP: [u8; 40] = [
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 69, 70, 73, 74, 81, 82, 83, 84, 85, 160, 161, 162,
+    163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
+];
+
+impl Function {
+    /// Whether an emergency stop must zero this function, upstream
+    /// `should_e_stop`.
+    #[must_use]
+    pub fn should_e_stop(self) -> bool {
+        E_STOP.binary_search(&self.0).is_ok()
+    }
+}

@@ -103,6 +103,51 @@ L.append("/// so an unsigned value can only fail the upper bound.")
 L.append("const _: () = assert!(Function::NONE.0 == 0);")
 L.append("")
 
+
+# --- should_e_stop -------------------------------------------------------
+SRC_CPP = SRC.parent / "SRV_Channel.cpp"
+cpp = SRC_CPP.read_text()
+estop_body = cpp[cpp.index("bool SRV_Channel::should_e_stop"):]
+estop_body = estop_body[:estop_body.index("default:")]
+
+estop = []
+for m in re.finditer(r"case Function::(k_\w+)(?:\s*\.\.\.\s*Function::(k_\w+))?\s*:",
+                     estop_body):
+    lo_name, hi_name = m.group(1), m.group(2)
+    assert lo_name in by_name, "unknown e-stop function %s" % lo_name
+    if hi_name is None:
+        estop.append(by_name[lo_name])
+    else:
+        # GCC case-range: every value between the two, inclusive.
+        assert hi_name in by_name, "unknown e-stop function %s" % hi_name
+        lo, hi = by_name[lo_name], by_name[hi_name]
+        assert lo <= hi, "inverted case range %s ... %s" % (lo_name, hi_name)
+        estop.extend(range(lo, hi + 1))
+
+assert estop, "no e-stop functions found"
+estop = sorted(set(estop))
+
+L.append("/// Functions an emergency stop must be able to zero, upstream")
+L.append("/// `SRV_Channel::should_e_stop`.")
+L.append("///")
+L.append("/// Motors, throttles, engine starters and the heli rotor speed")
+L.append("/// controllers. Generated from the switch, because missing one means an")
+L.append("/// E-stop that leaves something spinning -- the exact failure the feature")
+L.append("/// exists to prevent.")
+L.append("///")
+L.append("/// Sorted, so the lookup can binary search.")
+L.append("const E_STOP: [u8; %d] = %s;" % (len(estop), "[" + ", ".join(str(v) for v in estop) + "]"))
+L.append("")
+L.append("impl Function {")
+L.append("    /// Whether an emergency stop must zero this function, upstream")
+L.append("    /// `should_e_stop`.")
+L.append("    #[must_use]")
+L.append("    pub fn should_e_stop(self) -> bool {")
+L.append("        E_STOP.binary_search(&self.0).is_ok()")
+L.append("    }")
+L.append("}")
+L.append("")
+
 OUT.write_text("\n".join(L))
-print("wrote %s: %d functions, NR_AUX_SERVO_FUNCTIONS = %d"
-      % (OUT.name, len(entries), count))
+print("wrote %s: %d functions, %d e-stop, NR_AUX_SERVO_FUNCTIONS = %d"
+      % (OUT.name, len(entries), len(estop), count))
