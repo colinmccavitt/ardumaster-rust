@@ -739,3 +739,217 @@ mod yaw_limiting {
         );
     }
 }
+
+mod controller_step {
+    use ap_control::attitude_error::{
+        attitude_controller_run, update_attitude_target, AngleGains, ControllerInputs,
+        YawLimitGains,
+    };
+    use ap_math::quaternion::Quaternion;
+    use ap_math::vector3::Vector3f;
+
+    fn att(roll: f32, pitch: f32, yaw: f32) -> Quaternion {
+        Quaternion::from_euler(roll, pitch, yaw)
+    }
+
+    fn yaw_gains() -> YawLimitGains {
+        YawLimitGains {
+            accel_yaw_max_radss: 2.0,
+            rate_yaw_kp: 0.2,
+            angle_yaw_kp: 4.0,
+            ..YawLimitGains::default()
+        }
+    }
+
+    fn angle_gains() -> AngleGains {
+        AngleGains {
+            angle_p_roll: 6.0,
+            angle_p_pitch: 6.0,
+            angle_p_yaw: 4.0,
+            accel_roll_max_radss: 10.0,
+            accel_pitch_max_radss: 10.0,
+            accel_yaw_max_radss: 2.0,
+            use_sqrt_controller: true,
+        }
+    }
+
+    fn inputs(gyro_z: f32) -> ControllerInputs {
+        ControllerInputs {
+            ang_vel_target_rads: Vector3f::new(0.0, 0.0, 0.0),
+            gyro_rads: Vector3f::new(0.0, 0.0, gyro_z),
+            ang_vel_roll_max_degs: 220.0,
+            ang_vel_pitch_max_degs: 220.0,
+            ang_vel_yaw_max_degs: 200.0,
+        }
+    }
+
+    /// The target advances by the rate it was given.
+    #[test]
+    fn the_target_advances_by_its_rate() {
+        let start = att(0.0, 0.0, 0.0);
+        let rate = Vector3f::new(0.0, 0.0, 1.0); // 1 rad/s of yaw
+        let dt = 0.1_f32;
+
+        let moved = update_attitude_target(start, rate, dt);
+        let (_, _, yaw) = moved.to_euler();
+
+        assert!(
+            libm::fabsf(yaw - 0.1) < 1e-4,
+            "0.1 s at 1 rad/s should be 0.1 rad, got {yaw}"
+        );
+    }
+
+    /// Repeated advancing stays normalised.
+    ///
+    /// Composing a small rotation every iteration accumulates error; upstream
+    /// normalises for that reason, and at 400 Hz it matters within seconds.
+    #[test]
+    fn repeated_advances_stay_normalised() {
+        let mut q = att(0.0, 0.0, 0.0);
+        let rate = Vector3f::new(0.3, -0.2, 0.5);
+
+        for _ in 0..4000 {
+            q = update_attitude_target(q, rate, 0.0025);
+        }
+
+        assert!(
+            libm::fabsf(q.length() - 1.0) < 1e-4,
+            "quaternion drifted to length {}",
+            q.length()
+        );
+    }
+
+    /// A small thrust error keeps the full feedforward.
+    #[test]
+    fn a_small_thrust_error_keeps_full_feedforward() {
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(0.1, 0.0, 0.0); // well under 30 degrees
+
+        let out = attitude_controller_run(
+            target,
+            body,
+            &yaw_gains(),
+            &angle_gains(),
+            &inputs(0.0),
+            0.0025,
+        );
+
+        assert!(
+            libm::fabsf(out.feedforward_scalar - 1.0) < 1e-6,
+            "got {}",
+            out.feedforward_scalar
+        );
+    }
+
+    /// Between the thresholds the feedforward fades linearly.
+    #[test]
+    fn a_moderate_thrust_error_fades_the_feedforward() {
+        let body = att(0.0, 0.0, 0.0);
+        // 45 degrees of lean: halfway between the 30 and 60 degree thresholds.
+        let target = att(45.0_f32.to_radians(), 0.0, 0.0);
+
+        let out = attitude_controller_run(
+            target,
+            body,
+            &yaw_gains(),
+            &angle_gains(),
+            &inputs(0.0),
+            0.0025,
+        );
+
+        assert!(
+            libm::fabsf(out.feedforward_scalar - 0.5) < 0.05,
+            "halfway between thresholds should be about half, got {}",
+            out.feedforward_scalar
+        );
+    }
+
+    /// Past twice the threshold, yaw is the gyro rate outright.
+    ///
+    /// The aircraft stops trying to turn and spends everything on thrust. A
+    /// port that kept commanding yaw here would be asking for rotor drag
+    /// differences from an aircraft that has no thrust margin to give.
+    #[test]
+    fn a_large_thrust_error_hands_yaw_to_the_gyro() {
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(80.0_f32.to_radians(), 0.0, 1.0);
+        let measured_yaw_rate = 0.42_f32;
+
+        let out = attitude_controller_run(
+            target,
+            body,
+            &yaw_gains(),
+            &angle_gains(),
+            &inputs(measured_yaw_rate),
+            0.0025,
+        );
+
+        assert!(
+            libm::fabsf(out.ang_vel_body_rads.z - measured_yaw_rate) < 1e-6,
+            "yaw should be the gyro rate, got {}",
+            out.ang_vel_body_rads.z
+        );
+    }
+
+    /// The fade is monotonic across the band.
+    ///
+    /// Sampling the whole range rather than one point, because a scalar that
+    /// happened to be right at 45 degrees could still be wrong either side.
+    #[test]
+    fn the_feedforward_fade_is_monotonic() {
+        let body = att(0.0, 0.0, 0.0);
+
+        let scalar_at = |degrees: f32| {
+            let target = att(degrees.to_radians(), 0.0, 0.0);
+            attitude_controller_run(
+                target,
+                body,
+                &yaw_gains(),
+                &angle_gains(),
+                &inputs(0.0),
+                0.0025,
+            )
+            .feedforward_scalar
+        };
+
+        let mut previous = scalar_at(31.0);
+        for degrees in [35.0_f32, 40.0, 45.0, 50.0, 55.0, 59.0] {
+            let now = scalar_at(degrees);
+            assert!(
+                now < previous,
+                "scalar should fall through the band: {degrees} deg gave {now}, \
+                 previous was {previous}"
+            );
+            previous = now;
+        }
+        assert!(
+            previous > 0.0,
+            "should not reach zero before the far threshold"
+        );
+    }
+
+    /// The rate output respects the configured limits.
+    #[test]
+    fn the_rate_output_is_limited() {
+        let body = att(0.0, 0.0, 0.0);
+        let target = att(1.0, 1.0, 2.0); // a large error on every axis
+
+        let mut i = inputs(0.0);
+        i.ang_vel_roll_max_degs = 30.0;
+        i.ang_vel_pitch_max_degs = 30.0;
+        i.ang_vel_yaw_max_degs = 20.0;
+
+        let out = attitude_controller_run(target, body, &yaw_gains(), &angle_gains(), &i, 0.0025);
+
+        let roll_pitch = libm::sqrtf(
+            out.ang_vel_body_rads.x * out.ang_vel_body_rads.x
+                + out.ang_vel_body_rads.y * out.ang_vel_body_rads.y,
+        );
+        // The roll/pitch limit is elliptical, so check the combined magnitude
+        // rather than each axis.
+        assert!(
+            roll_pitch <= 30.0_f32.to_radians() * 1.45,
+            "combined roll/pitch rate {roll_pitch} exceeds the ellipse"
+        );
+    }
+}

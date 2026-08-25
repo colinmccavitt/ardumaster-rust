@@ -445,3 +445,131 @@ pub fn thrust_heading_rotation_angles(
 
     (target, error)
 }
+
+/// The thrust error above which yaw corrections start being given up,
+/// upstream `AC_ATTITUDE_THRUST_ERROR_ANGLE_RAD`. 30 degrees.
+///
+/// Twice this and yaw is abandoned entirely. See [`attitude_controller_run`].
+const THRUST_ERROR_ANGLE_DEG: f32 = 30.0;
+
+/// Advance the attitude target by one step of the target angular velocity,
+/// upstream `update_attitude_target`.
+///
+/// Normalised afterwards, because composing a small rotation onto a quaternion
+/// every iteration at 400 Hz accumulates enough error to matter within
+/// seconds.
+#[must_use]
+pub fn update_attitude_target(
+    attitude_target: Quaternion,
+    ang_vel_target_rads: Vector3f,
+    dt: f32,
+) -> Quaternion {
+    let update = Quaternion::from_rotation_vector(ang_vel_target_rads * dt);
+    let mut target = attitude_target * update;
+    target.normalize();
+    target
+}
+
+/// Everything the controller step needs beyond the attitudes.
+#[derive(Debug, Clone, Copy)]
+pub struct ControllerInputs {
+    /// The target angular velocity, in the *target* frame.
+    pub ang_vel_target_rads: Vector3f,
+    /// The most recent gyro reading, body frame.
+    pub gyro_rads: Vector3f,
+    /// Maximum roll rate, degrees per second.
+    pub ang_vel_roll_max_degs: f32,
+    /// Maximum pitch rate, degrees per second.
+    pub ang_vel_pitch_max_degs: f32,
+    /// Maximum yaw rate, degrees per second.
+    pub ang_vel_yaw_max_degs: f32,
+}
+
+/// What one controller step produced.
+#[derive(Debug, Clone, Copy)]
+pub struct ControllerOutput {
+    /// The body-frame angular velocity to hand the rate controller.
+    pub ang_vel_body_rads: Vector3f,
+    /// How much of the feedforward survived the thrust-error blending, 0 to 1.
+    pub feedforward_scalar: f32,
+    /// The attitude error, for callers that log or reset on it.
+    pub attitude_error: AttitudeError,
+    /// The target, possibly rebuilt by the yaw cap.
+    pub attitude_target: Quaternion,
+}
+
+/// One step of the attitude controller, upstream
+/// `attitude_controller_run_quat`.
+///
+/// # Giving up heading to keep thrust
+///
+/// The three-way branch on thrust error is the part that matters. When the
+/// thrust vector is badly wrong, yaw is progressively abandoned:
+///
+/// - Under 30 degrees of thrust error, full feedforward on all three axes.
+/// - Between 30 and 60, the roll and pitch feedforward is faded out linearly
+///   and the yaw *command itself* is blended toward the measured gyro rate —
+///   the controller stops trying to turn and merely stops fighting whatever
+///   turn is happening.
+/// - Over 60, yaw is replaced by the gyro outright. The aircraft holds
+///   whatever heading rate it has and spends everything on thrust.
+///
+/// The reason is authority. A multirotor yaws by unbalancing rotor drag, which
+/// costs thrust margin — exactly what an aircraft with a large thrust error
+/// has none of. Fighting for heading there trades the thing that keeps it
+/// flying for the thing that decides which way it faces.
+pub fn attitude_controller_run(
+    attitude_target: Quaternion,
+    attitude_body: Quaternion,
+    yaw_gains: &YawLimitGains,
+    angle_gains: &AngleGains,
+    inputs: &ControllerInputs,
+    dt: f32,
+) -> ControllerOutput {
+    use ap_math::scalar::radians;
+
+    let (attitude_target, attitude_error) =
+        thrust_heading_rotation_angles(attitude_target, attitude_body, yaw_gains);
+
+    let mut ang_vel_body_rads =
+        update_ang_vel_target_from_att_error(attitude_error.error_rad, angle_gains, dt);
+
+    crate::attitude_kinematics::ang_vel_limit(
+        &mut ang_vel_body_rads,
+        radians(inputs.ang_vel_roll_max_degs),
+        radians(inputs.ang_vel_pitch_max_degs),
+        radians(inputs.ang_vel_yaw_max_degs),
+    );
+
+    // The target rate is expressed in the target frame; the rate controller
+    // wants it in the body frame.
+    let rotation_target_to_body = attitude_body.inverse() * attitude_target;
+    let ang_vel_body_feedforward = rotation_target_to_body.rotate(inputs.ang_vel_target_rads);
+
+    let threshold = radians(THRUST_ERROR_ANGLE_DEG);
+    let thrust_error = attitude_error.thrust_error_angle_rad;
+    let mut feedforward_scalar = 1.0;
+
+    if thrust_error > threshold * 2.0 {
+        // Yaw abandoned: hold whatever rate the aircraft already has.
+        ang_vel_body_rads.z = inputs.gyro_rads.z;
+    } else if thrust_error > threshold {
+        feedforward_scalar = 1.0 - (thrust_error - threshold) / threshold;
+        ang_vel_body_rads.x += ang_vel_body_feedforward.x * feedforward_scalar;
+        ang_vel_body_rads.y += ang_vel_body_feedforward.y * feedforward_scalar;
+        // Note yaw takes the FULL feedforward here and is then blended as a
+        // whole toward the gyro -- it is not scaled twice.
+        ang_vel_body_rads.z += ang_vel_body_feedforward.z;
+        ang_vel_body_rads.z = inputs.gyro_rads.z * (1.0 - feedforward_scalar)
+            + ang_vel_body_rads.z * feedforward_scalar;
+    } else {
+        ang_vel_body_rads += ang_vel_body_feedforward;
+    }
+
+    ControllerOutput {
+        ang_vel_body_rads,
+        feedforward_scalar,
+        attitude_error,
+        attitude_target,
+    }
+}
