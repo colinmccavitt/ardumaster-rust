@@ -18,6 +18,7 @@
 //! so a test can have one without disturbing another.
 
 use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
+use crate::output_channel::{OutputChannel, OutputContext};
 
 /// A mask of output channels, upstream `SRV_Channel::servo_mask_t`.
 pub type ChannelMask = u32;
@@ -201,6 +202,55 @@ impl Registry {
     /// `have_pwm_mask` from `set_output_pwm`.
     pub fn set_have_pwm(&mut self, channel_mask: ChannelMask) {
         self.have_pwm_mask |= channel_mask;
+    }
+
+    /// Write a pulse to every channel a function drives, upstream
+    /// `SRV_Channels::set_output_pwm`.
+    ///
+    /// Does nothing if the function drives no channels -- upstream checks
+    /// `function_assigned` first, so an unassigned function is a silent no-op
+    /// rather than a write to nothing.
+    ///
+    /// A channel held by an override refuses the write, and only the channels
+    /// that accepted it enter the pulse-width mask. Marking a refused channel
+    /// would make the scaled path skip a channel it should be driving.
+    pub fn set_output_pwm(
+        &mut self,
+        channels: &mut [OutputChannel],
+        function: Function,
+        value: u16,
+    ) {
+        if self.output_channel_mask(function) == 0 {
+            return;
+        }
+        for ch in channels.iter_mut() {
+            if ch.function != function {
+                continue;
+            }
+            if ch.set_output_pwm(value, false) && ch.ch_num < 32 {
+                self.have_pwm_mask |= 1_u32 << ch.ch_num;
+            }
+        }
+    }
+
+    /// Convert every channel's scaled value to a pulse, upstream
+    /// `SRV_Channels::calc_pwm`.
+    ///
+    /// Each channel reads the scaled value of its own function. A channel
+    /// whose function this build does not define is left alone: there is no
+    /// scaled value to convert, and writing a zero would drive an output on
+    /// the strength of a configuration error.
+    pub fn calc_pwm(&self, channels: &mut [OutputChannel], emergency_stop: bool) {
+        let ctx = OutputContext {
+            have_pwm_mask: self.have_pwm_mask,
+            emergency_stop,
+        };
+        for ch in channels.iter_mut() {
+            if !ch.function.valid() {
+                continue;
+            }
+            ch.calc_pwm(self.output_scaled(ch.function), &ctx);
+        }
     }
 
     /// Whether every channel in `mask` is digital, upstream

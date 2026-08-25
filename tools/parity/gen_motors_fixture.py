@@ -73,6 +73,7 @@ THROTTLE_OUT = ROOT / "fixtures/motors_throttle.csv"
 CHANNELS_OUT = ROOT / "fixtures/motors_channels.csv"
 SRVFN_OUT = ROOT / "fixtures/srv_functions.csv"
 AUX_OUT = ROOT / "fixtures/srv_aux_function.csv"
+CALC_OUT = ROOT / "fixtures/srv_calc_pwm.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -110,6 +111,7 @@ HARNESS = r'''
 #include <AP_HAL/AP_HAL.h>
 #include <AP_CustomRotations/AP_CustomRotations.h>
 #include <SRV_Channel/SRV_Channel.h>
+#include <AP_Scheduler/AP_Scheduler.h>
 #include <AP_Logger/AP_Logger.h>
 #include <Filter/LowPassFilter.h>
 #include <Filter/DerivativeFilter.h>
@@ -932,6 +934,79 @@ int main(void)
         }
     }
 
+    // The scheduler has to be initialised before anything asks it for the
+    // loop period: get_loop_period_us() raises flow_of_control when it has
+    // not been, which upstream recovers from and this harness panics on.
+    // No vehicle tasks -- nothing here runs a scheduler loop, it just needs
+    // the period bookkeeping done.
+    AP::scheduler().init(nullptr, 0, 0);
+
+    // ---- calc_pwm's priority order ----
+    printf("#calcpwm\n");
+    printf("case,channel,estop,have_pwm,override,scaled,pwm\n");
+    {
+        // Four channels, each carrying one combination of the two channel-level
+        // states. A separate channel per combination, because neither an
+        // override nor the pulse-width mask can be cleared through the public
+        // API -- resetting one channel between cases would mean faking the
+        // setup, and then the fixture measures the fake.
+        //
+        // Motor functions, so should_e_stop applies and the emergency-stop
+        // rows are not silently no-ops.
+        static const uint8_t FN[4] = { 33, 34, 35, 36 };
+        for (unsigned ch = 0; ch < 4; ch++) {
+            SRV_Channels::set_default_function(
+                (uint8_t)ch, (SRV_Channel::Function)FN[ch]);
+        }
+        SRV_Channels::update_aux_servo_function();
+
+        // Give each channel an output range. A motor's range is set by
+        // AP_Motors calling set_range during init; without it high_out is zero
+        // and pwm_from_scaled_value maps every value to the minimum -- the
+        // conversion runs and measures nothing.
+        for (unsigned ch = 0; ch < 4; ch++) {
+            SRV_Channels::set_range((SRV_Channel::Function)FN[ch], 1000);
+        }
+
+        // Channels 2 and 3 are held by an override for the whole sweep.
+        SRV_Channels::set_output_pwm_chan_timeout(2, 1777, 60000);
+        SRV_Channels::set_output_pwm_chan_timeout(3, 1777, 60000);
+
+        static const float SCALED[] = { 0.0f, 250.0f, 500.0f, 1000.0f };
+        const unsigned nsc = sizeof(SCALED) / sizeof(SCALED[0]);
+
+        unsigned cs = 0;
+        for (int estop = 0; estop <= 1; estop++) {
+            SRV_Channels::set_emergency_stop(estop != 0);
+            for (unsigned s = 0; s < nsc; s++, cs++) {
+                for (unsigned ch = 0; ch < 4; ch++) {
+                    SRV_Channels::set_output_scaled(
+                        (SRV_Channel::Function)FN[ch], SCALED[s]);
+                }
+
+                // After the scaled values, not before: set_output_scaled
+                // clears the pulse-width mask for its channels, so a write
+                // issued earlier would have been forgotten by the time
+                // calc_pwm ran -- and the have_pwm case would have been
+                // silently absent.
+                SRV_Channels::set_output_pwm((SRV_Channel::Function)FN[1], 1234);
+                SRV_Channels::set_output_pwm((SRV_Channel::Function)FN[3], 1234);
+
+                SRV_Channels::calc_pwm();
+
+                for (unsigned ch = 0; ch < 4; ch++) {
+                    const SRV_Channel *c = SRV_Channels::srv_channel((uint8_t)ch);
+                    printf("%u,%u,%d,%d,%d,%u,%u\n", cs, ch, estop,
+                           (ch == 1 || ch == 3) ? 1 : 0,
+                           (ch == 2 || ch == 3) ? 1 : 0,
+                           fbits(SCALED[s]),
+                           (unsigned)(c ? c->get_output_pwm() : 0));
+                }
+            }
+        }
+        SRV_Channels::set_emergency_stop(false);
+    }
+
     return 0;
 }
 '''
@@ -966,6 +1041,16 @@ def main():
                             aux_marker = "#auxfn\n"
                             if aux_marker in seventh:
                                 seventh, eighth = seventh.split(aux_marker, 1)
+                                calc_marker = "#calcpwm\n"
+                                if calc_marker in eighth:
+                                    eighth, ninth = eighth.split(calc_marker, 1)
+                                    CALC_OUT.write_text(calc_marker + ninth)
+                                    rows = sum(1 for l in ninth.splitlines()
+                                               if l and not l.startswith("#")
+                                               and "," in l
+                                               and not l[0].isalpha())
+                                    print("wrote %s: %d rows"
+                                          % (CALC_OUT.name, rows))
                                 AUX_OUT.write_text(aux_marker + eighth)
                                 rows = sum(1 for l in eighth.splitlines()
                                            if l and not l.startswith("#")
