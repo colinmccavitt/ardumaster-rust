@@ -261,12 +261,39 @@ impl Spool {
         self.spoolup_block = set;
     }
 
-    /// Upstream `set_desired_spool_state`'s effect on the stored request.
+    /// Store a request with no safety constraint applied.
     ///
-    /// Upstream refuses to accept `THROTTLE_UNLIMITED` while disarmed; that
-    /// check lives in `set_desired_spool_state` rather than here, so it is
-    /// applied by the caller that owns the armed flag.
+    /// This is the raw store. Vehicle code should call
+    /// [`set_desired_spool_state`](Self::set_desired_spool_state) instead,
+    /// which is where upstream puts the arm and interlock check; this exists
+    /// for the spool machine's own use and for tests that want to drive the
+    /// request directly.
     pub fn set_desired(&mut self, desired: DesiredSpoolState) {
+        self.desired = desired;
+    }
+
+    /// Upstream `AP_MotorsMulticopter::set_desired_spool_state`.
+    ///
+    /// A disarmed multirotor, or one whose interlock is open, shuts down
+    /// whatever was asked for. The constraint lives here rather than in the
+    /// vehicle code because it must hold for every caller: a mode cannot ask
+    /// for spinning props by forgetting to check, and there is no path to the
+    /// stored request that bypasses it.
+    ///
+    /// Note this is the multirotor rule specifically. Upstream declares the
+    /// method pure virtual on `AP_Motors` and helicopters override it
+    /// differently — they *do* use `GROUND_IDLE`, because a helicopter's rotor
+    /// is commanded through the interlock rather than gated by it.
+    pub fn set_desired_spool_state(
+        &mut self,
+        desired: DesiredSpoolState,
+        armed: bool,
+        interlock: bool,
+    ) {
+        if !armed || !interlock {
+            self.desired = DesiredSpoolState::ShutDown;
+            return;
+        }
         self.desired = desired;
     }
 

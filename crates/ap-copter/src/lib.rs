@@ -15,4 +15,5 @@
 
 #![no_std]
 
+pub mod alt_hold;
 pub mod pilot_input;

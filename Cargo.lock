@@ -38,6 +38,7 @@ name = "ap-copter"
 version = "0.1.0"
 dependencies = [
  "ap-math",
+ "ap-motors",
  "libm",
 ]
 
