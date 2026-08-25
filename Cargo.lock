@@ -74,6 +74,7 @@ name = "ap-landing"
 version = "0.1.0"
 dependencies = [
  "ap-math",
+ "libm",
 ]
 
 [[package]]

@@ -10,7 +10,8 @@ index fault is a test failure, which is the desired outcome"
 )]
 
 use ap_landing::slope_stage::{
-    target_airspeed_cm, FlareConfig, LandingAirspeedParams, SlopeStage, TransitionInputs,
+    abort_decision, should_recalculate_slope, target_airspeed_cm, AbortDecision, FlareConfig,
+    LandingAirspeedParams, RangefinderState, SlopeStage, TransitionInputs,
 };
 
 /// Bit-exact float from the fixture's `%u` column.
@@ -539,5 +540,138 @@ fn the_uncovered_approach_entries_behave() {
         SlopeStage::Normal.next(&stale_but_aligned, &cfg),
         SlopeStage::Normal,
         "a stale solution must not satisfy the heading test however good it looks"
+    );
+}
+
+/// Whether a rangefinder correction should trigger a slope recalculation.
+///
+/// Compared against whether the firmware's slope actually moved, which is the
+/// observable consequence of the decision.
+///
+/// The test is on the change in the *magnitude* of the correction, not on the
+/// change in the correction itself — so a swing from +3 to −3, six metres of
+/// reversal, registers as no change at all, while +3 to +6 triggers. That is
+/// deliberate: the recalculation handles the barometer being wrong, and how
+/// wrong it is does not depend on the sign. The sign is the abort's business.
+#[test]
+fn the_slope_recalculation_trigger_matches_upstream() {
+    let rows = rows("rangefinder");
+    assert!(!rows.is_empty(), "no rangefinder rows");
+
+    let mut fired = 0_usize;
+    let mut held = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 13, "malformed rangefinder row");
+        let idx: usize = r[0].parse().expect("idx");
+
+        let state = RangefinderState {
+            in_use: r[1].trim() == "1",
+            correction: f(&r[2]),
+            last_stable_correction: f(&r[3]),
+        };
+        let shallow = f(&r[4]);
+
+        let want = (f(&r[9]) - f(&r[7])).abs() > 1e-9;
+        let got = should_recalculate_slope(&state, shallow);
+        assert_eq!(
+            got,
+            want,
+            "row {idx}: state {state:?}, threshold {shallow} — the firmware's \
+             slope {} but the port {}",
+            if want { "moved" } else { "held" },
+            if got {
+                "would recalculate"
+            } else {
+                "would not"
+            }
+        );
+
+        if want {
+            fired += 1;
+        } else {
+            held += 1;
+        }
+    }
+
+    assert!(
+        fired > 100 && held > 100,
+        "the trigger must both fire and hold ({fired} fired, {held} held)"
+    );
+
+    println!(
+        "{} rangefinder rows, recalculated on {fired}, held on {held}",
+        rows.len()
+    );
+}
+
+/// The abort decision, which the recording cannot reach.
+///
+/// The harness vehicle reports zero adjusted altitude, so the corrected
+/// altitude the recalculation derives comes out at or below the landing
+/// point and the recomputed slope is *negative* on every recorded row.
+/// `new_slope_deg - initial_slope_deg` is therefore never positive and cannot
+/// exceed a positive threshold, so the abort branch never runs there.
+///
+/// It is the branch that matters most, so it is checked here directly against
+/// what upstream's source says.
+#[test]
+fn the_abort_decision_behaves() {
+    // A positive correction means the aircraft is LOWER than the barometer
+    // said, so the new slope is shallower — always flyable, always continue.
+    // Upstream says so in a comment and takes no action at all.
+    assert_eq!(
+        abort_decision(5.0, 0.5, 0.0, 1.0, false),
+        AbortDecision::Continue,
+        "a shallower slope is always flyable"
+    );
+
+    // Negative correction, steep enough, not yet aborted: go around, carrying
+    // the offset so the next approach starts from the corrected altitude.
+    assert_eq!(
+        abort_decision(-5.0, 0.5, 0.0, 1.0, false),
+        AbortDecision::GoAround { alt_offset: -5.0 },
+        "a much steeper slope should abort"
+    );
+
+    // Not steep enough: continue.
+    assert_eq!(
+        abort_decision(-5.0, 0.02, 0.0, 20.0, false),
+        AbortDecision::Continue,
+        "a slope within the threshold should be flown"
+    );
+
+    // Already aborted once: never again. A go-around triggered this way
+    // records its offset, so the next approach should not have the same
+    // problem — and if it somehow does, aborting again would loop forever
+    // without ever landing.
+    assert_eq!(
+        abort_decision(-5.0, 0.5, 0.0, 1.0, true),
+        AbortDecision::Continue,
+        "the abort latches; it must only happen once"
+    );
+
+    // A non-positive threshold disables it.
+    assert_eq!(
+        abort_decision(-5.0, 0.5, 0.0, 0.0, false),
+        AbortDecision::Continue,
+        "a zero threshold disables the abort"
+    );
+
+    // The comparison is between slope ANGLES, so the threshold means the same
+    // thing at any approach angle. Two slopes differing by 0.1 are 5.7 degrees
+    // apart near level and under 2 degrees apart at a steep angle.
+    let shallow_pair = abort_decision(-1.0, 0.1, 0.0, 3.0, false);
+    let steep_pair = abort_decision(-1.0, 1.1, 1.0, 3.0, false);
+    assert_eq!(
+        shallow_pair,
+        AbortDecision::GoAround { alt_offset: -1.0 },
+        "0.1 against 0.0 is 5.7 degrees, past a 3 degree threshold"
+    );
+    assert_eq!(
+        steep_pair,
+        AbortDecision::Continue,
+        "the same 0.1 of slope near 45 degrees is under 2 degrees, and must \
+         not abort — which is why the threshold is in degrees"
     );
 }

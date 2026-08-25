@@ -1,7 +1,7 @@
 //! The slope landing's stage machine and the decisions that hang off it,
 //! upstream `AP_Landing`'s `type_slope_*` predicates.
 
-use ap_math::scalar::constrain_value;
+use ap_math::scalar::{constrain_value, degrees};
 
 /// Where the aircraft is in a slope landing, upstream `SlopeStage`.
 ///
@@ -322,5 +322,118 @@ impl SlopeStage {
         }
 
         stage
+    }
+}
+
+/// What the rangefinder is telling the landing logic, upstream
+/// `AP_FixedWing::Rangefinder_State`.
+#[derive(Debug, Clone, Copy)]
+pub struct RangefinderState {
+    /// Whether the rangefinder is being used at all.
+    pub in_use: bool,
+    /// Current correction to the barometric height, metres. Positive means
+    /// the aircraft is *lower* than the barometer thinks.
+    pub correction: f32,
+    /// The last correction considered settled, upstream
+    /// `last_stable_correction`.
+    pub last_stable_correction: f32,
+}
+
+/// Whether the glide slope should be recomputed, upstream the guard at the
+/// head of `type_slope_adjust_landing_slope_for_rangefinder_bump`.
+///
+/// The test is on the change in the *magnitude* of the correction, not on the
+/// change in the correction itself. So a correction swinging from +3 to −3 —
+/// a six metre reversal — registers as no change at all, while one going from
+/// +3 to +6 triggers.
+///
+/// That is deliberate rather than a slip: the recalculation exists to handle
+/// the aircraft discovering it is further from the ground than the barometer
+/// said, in either direction. What matters is how *wrong* the barometer is,
+/// and the sign of that error is handled separately by the abort decision
+/// below.
+///
+/// A non-positive threshold disables the whole mechanism.
+#[must_use]
+pub fn should_recalculate_slope(state: &RangefinderState, shallow_threshold: f32) -> bool {
+    if !state.in_use {
+        return false;
+    }
+    let correction_delta = state.last_stable_correction.abs() - state.correction.abs();
+    shallow_threshold > 0.0 && correction_delta.abs() >= shallow_threshold
+}
+
+/// What the abort decision concluded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AbortDecision {
+    /// Carry on down the newly computed slope.
+    Continue,
+    /// Go around, remembering the altitude offset so the next approach starts
+    /// from the corrected altitude.
+    GoAround {
+        /// The barometric offset to carry forward, upstream `alt_offset`.
+        alt_offset: f32,
+    },
+}
+
+/// Whether a recomputed slope is too steep to fly, upstream the tail of
+/// `type_slope_adjust_landing_slope_for_rangefinder_bump`.
+///
+/// # The sign of the correction decides which problem this is
+///
+/// A *positive* correction means the aircraft is lower than the barometer
+/// said. The new slope is therefore shallower, and a shallower slope is always
+/// flyable — so it continues, and upstream's comment says exactly that:
+/// carry on with the shallower slope instead of pitching and throttling up.
+///
+/// A *negative* correction means the aircraft is higher than it thought, and
+/// the new slope is steeper. Steeper means diving, and diving means speed the
+/// aircraft may not be able to bleed off before touchdown. Past a threshold
+/// it is better to go around and fly the approach again from a corrected
+/// altitude than to try to salvage this one.
+///
+/// # Only once
+///
+/// `already_aborted` latches. A go-around triggered this way records its
+/// altitude offset, so the next approach should not have the same problem —
+/// and if it somehow does, aborting again would loop forever without ever
+/// landing. Upstream's comment is a terse "only allow this once".
+///
+/// The comparison is between slope *angles* rather than slopes, so the
+/// threshold is in degrees and means the same thing at any approach angle. A
+/// difference of two slopes would not.
+#[must_use]
+pub fn abort_decision(
+    correction: f32,
+    slope: f32,
+    initial_slope: f32,
+    steep_threshold_deg: f32,
+    already_aborted: bool,
+) -> AbortDecision {
+    if correction >= 0.0 {
+        return AbortDecision::Continue;
+    }
+    // Deliberately the negation of upstream's `> 0` guard rather than a
+    // `<= 0`. They differ on NaN: `!(NaN > 0.0)` is true and skips, where
+    // `NaN <= 0.0` is false and would go on to compare angles derived from
+    // it. Upstream enters this branch only when the threshold is positive,
+    // so the complement has to send NaN the other way.
+    #[allow(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "the negation and the reversed comparison differ on NaN"
+    )]
+    if !(steep_threshold_deg > 0.0) || already_aborted {
+        return AbortDecision::Continue;
+    }
+
+    let new_slope_deg = degrees(libm::atanf(slope));
+    let initial_slope_deg = degrees(libm::atanf(initial_slope));
+
+    if new_slope_deg - initial_slope_deg > steep_threshold_deg {
+        AbortDecision::GoAround {
+            alt_offset: correction,
+        }
+    } else {
+        AbortDecision::Continue
     }
 }

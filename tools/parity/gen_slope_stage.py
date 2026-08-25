@@ -246,6 +246,75 @@ int main()
                               }
     }
 
+    // ---- the rangefinder bump: recalculation and abort ----
+    //
+    // The two decisions are inside the bump function, so the harness drives
+    // it and observes what it concluded: whether the slope moved, and whether
+    // a go-around was commanded carrying an altitude offset.
+    //
+    // Both thresholds are swept including zero, which disables each
+    // mechanism, and has_aborted is swept because the abort latches.
+    printf("#rangefinder\n");
+    printf("idx,in_use,correction,last_stable,shallow_thr,steep_thr,"
+           "has_aborted,slope_before,initial_slope,"
+           "slope_after,go_around,alt_offset,aborted_after\n");
+    {
+        const float corrections[] = {-40.0f, -6.0f, -0.5f, 0.0f, 0.5f, 6.0f, 40.0f};
+        const float stables[] = {0.0f, 2.0f, 30.0f};
+        const float shallows[] = {0.0f, 1.0f, 15.0f};
+        const float steeps[] = {0.0f, 1.0f, 20.0f};
+        const float initials[] = {0.0f, 0.02f, 0.6f};
+
+        Location prev(-353632621, 1491652374, 12000, Location::AltFrame::ABSOLUTE);
+        Location next(-353600000, 1491700000, 4000, Location::AltFrame::ABSOLUTE);
+        Location cur(-353620000, 1491680000, 8000, Location::AltFrame::ABSOLUTE);
+
+        int idx = 0;
+        for (unsigned a = 0; a < 7; a++)
+          for (unsigned b = 0; b < 3; b++)
+            for (unsigned c = 0; c < 3; c++)
+              for (unsigned d = 0; d < 3; d++)
+                for (unsigned e = 0; e < 3; e++)
+                 for (int use = 0; use <= 1; use++)
+                  for (int had = 0; had <= 1; had++) {
+                      AP_FixedWing::Rangefinder_State rf {};
+                      rf.in_use = use != 0;
+                      rf.correction = corrections[a];
+                      rf.last_stable_correction = stables[b];
+
+                      land->slope_recalc_shallow_threshold.set(shallows[c]);
+                      land->slope_recalc_steep_threshold_to_abort.set(steeps[d]);
+                      land->type_slope_flags.has_aborted_due_to_slope_recalc = (had != 0);
+                      land->flags.commanded_go_around = false;
+                      land->alt_offset = 0.0f;
+
+                      // A known slope to move away from, and the initial
+                      // slope the abort compares against.
+                      // initial_slope is what the abort compares the
+                      // recomputed slope against. Fixed at a shallow value
+                      // the difference never exceeded the threshold and the
+                      // abort was unreachable; sweeping it makes both sides
+                      // of the comparison appear.
+                      land->slope = 0.05f;
+                      land->initial_slope = initials[e];
+                      const float slope_before = land->slope;
+
+                      Location p = prev, n = next;
+                      int32_t offset_cm = 0;
+                      land->type_slope_adjust_landing_slope_for_rangefinder_bump(
+                          rf, p, n, cur, 300.0f, offset_cm);
+
+                      printf("%d,%d,%u,%u,%u,%u,%d,%u,%u,%u,%d,%u,%d\n", idx++,
+                             use, fbits(corrections[a]), fbits(stables[b]),
+                             fbits(shallows[c]), fbits(steeps[d]), had,
+                             fbits(slope_before), fbits(land->initial_slope),
+                             fbits(land->slope),
+                             land->flags.commanded_go_around ? 1 : 0,
+                             fbits(land->alt_offset),
+                             land->type_slope_flags.has_aborted_due_to_slope_recalc ? 1 : 0);
+                  }
+    }
+
     return 0;
 }
 '''
