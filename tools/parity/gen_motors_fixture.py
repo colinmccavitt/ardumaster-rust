@@ -54,6 +54,7 @@ from parity_build import build, run  # noqa: E402
 ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
 OUT = ROOT / "fixtures/motors_parity.csv"
 FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
+SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -167,7 +168,16 @@ const AP_HAL::HAL &hal = *reinterpret_cast<const AP_HAL::HAL *>(hal_storage);
 // rather than record a number that came from a fallback.
 namespace AP {
 AP_AHRS &ahrs() { fputs("harness: unexpected AP::ahrs()\n", stderr); abort(); }
-AP_BattMonitor &battery() { fputs("harness: unexpected AP::battery()\n", stderr); abort(); }
+// Bound but never dereferenced -- see get_current_limit_max_throttle, which
+// takes the reference before checking whether current limiting is on. The
+// scenarios leave MOT_BAT_CURR_MAX at 0, so the check short-circuits and no
+// member is ever read. A scenario that enables limiting would call through a
+// zeroed vtable and die on the spot, which is the failure we want.
+AP_BattMonitor &battery()
+{
+    static uint8_t storage[sizeof(AP_BattMonitor)] = {0};
+    return *reinterpret_cast<AP_BattMonitor *>(storage);
+}
 }
 float AP_AHRS::get_air_density_ratio() const
 {
@@ -291,6 +301,28 @@ public:
     using AP_MotorsMatrix::_throttle_factor;
     using AP_MotorsMatrix::motor_enabled;
     using AP_MotorsMatrix::_test_order;
+    // The spool state machine and everything it reads or writes. All of it is
+    // protected on AP_MotorsMulticopter, which a subclass may reach.
+    using AP_MotorsMulticopter::output_logic;
+    using AP_MotorsMulticopter::_spin_up_ratio;
+    using AP_MotorsMulticopter::_throttle_thrust_max;
+    using AP_MotorsMulticopter::_idle_time;
+    using AP_MotorsMulticopter::_disarm_safe_timer;
+    using AP_MotorsMulticopter::_spin_up_complete;
+    using AP_MotorsMulticopter::_spool_up_time;
+    using AP_MotorsMulticopter::_spool_down_time;
+    using AP_MotorsMulticopter::_idle_time_delay_s;
+    using AP_MotorsMulticopter::_safe_time;
+    using AP_MotorsMulticopter::_spin_arm;
+    using AP_MotorsMulticopter::_disarm_disable_pwm;
+    using AP_MotorsMulticopter::_batt_current_max;
+    using AP_MotorsMulticopter::_throttle_hover_learn;
+    using AP_Motors::_spool_desired;
+    using AP_Motors::_spool_state;
+    using AP_Motors::_thrust_boost;
+    using AP_Motors::_thrust_boost_ratio;
+    using AP_Motors::_thrust_balanced;
+    using AP_Motors::_throttle_filter;
 
     // AP_MotorsMatrix enforces a singleton in its constructor, so the fixture
     // reuses one instance and clears it between frames rather than building
@@ -347,6 +379,51 @@ static const struct frame frames[] = {
 // AP_Param members and initialised_ok() flag start zeroed rather than holding
 // whatever was on the stack.
 static Probe motors;
+
+// A scripted run of the machine. Times are seconds from the start of the
+// scenario; a threshold past the end of the run simply never fires.
+struct scenario {
+    int steps;
+    float spool_up_time, spool_down_time, safe_time, spin_arm, idle_time_delay;
+    int disarm_disable_pwm;
+    float throttle;
+    float arm_at, disarm_at;
+    float interlock_at, interlock_off_at;
+    float desired_ul_at, desired_down_at, desired_gi_at;
+    float clear_block_at;
+    float boost_at, unbalanced_at;
+};
+
+#define NEVER 1.0e9f
+
+static const scenario SCENARIOS[] = {
+    // 0: the whole arc -- arm, idle, spool up, fly, spool down, shut down.
+    { 4000, 0.5f, 0.5f, 0.0f, 0.10f, 0.5f, 0, 0.5f,
+      0.0f, NEVER, 0.0f, NEVER, 0.05f, 6.0f, NEVER, 1.5f, NEVER, NEVER },
+    // 1: interlock dropped in flight -- must slam to SHUT_DOWN, no ramp.
+    { 3000, 0.5f, 0.5f, 0.0f, 0.10f, 0.2f, 0, 0.7f,
+      0.0f, NEVER, 0.0f, 4.0f, 0.05f, NEVER, NEVER, 1.0f, NEVER, NEVER },
+    // 2: SPOOL_TIME below the minimum -- the machine writes the parameter back.
+    { 1200, 0.01f, 0.0f, 0.0f, 0.10f, 0.1f, 0, 0.4f,
+      0.0f, NEVER, 0.0f, NEVER, 0.05f, NEVER, NEVER, 0.5f, NEVER, NEVER },
+    // 3: the disarm-PWM safe-time window gates the exit from SHUT_DOWN.
+    { 2000, 0.5f, 0.5f, 1.0f, 0.10f, 0.2f, 1, 0.4f,
+      0.5f, NEVER, 0.5f, NEVER, 0.05f, NEVER, NEVER, 2.0f, NEVER, NEVER },
+    // 4: thrust boost slews in while unbalanced, then back out.
+    { 4000, 0.5f, 0.5f, 0.0f, 0.10f, 0.2f, 0, 0.6f,
+      0.0f, NEVER, 0.0f, NEVER, 0.05f, NEVER, NEVER, 1.0f, 3.0f, 3.0f },
+    // 5: reversal -- back to THROTTLE_UNLIMITED while spooling down.
+    { 4000, 0.5f, 0.5f, 0.0f, 0.10f, 0.2f, 0, 0.5f,
+      0.0f, NEVER, 0.0f, NEVER, 0.05f, 5.0f, NEVER, 1.0f, NEVER, NEVER },
+    // 6: asymmetric ramps -- a long way down, a short way up.
+    { 4000, 0.2f, 2.0f, 0.0f, 0.20f, 0.3f, 0, 0.8f,
+      0.0f, NEVER, 0.0f, NEVER, 0.05f, 5.0f, 7.0f, 1.0f, NEVER, NEVER },
+    // 7: disarmed mid-flight -- the safety rule, and the timer reset.
+    { 3000, 0.5f, 0.5f, 0.5f, 0.10f, 0.2f, 1, 0.5f,
+      0.0f, 4.0f, 0.0f, NEVER, 0.05f, NEVER, NEVER, 1.5f, NEVER, NEVER },
+};
+
+static const int NUM_SCENARIOS = (int)(sizeof(SCENARIOS) / sizeof(SCENARIOS[0]));
 
 int main(void)
 {
@@ -416,6 +493,92 @@ int main(void)
         }
     }
 
+    // ---- the spool state machine ----
+    printf("#spool\n");
+    printf("scenario,step,state,desired,spin_up_ratio,throttle_thrust_max,"
+           "idle_time,disarm_safe_timer,spin_up_complete,spoolup_block,"
+           "thrust_boost,thrust_boost_ratio,limit_roll,limit_throttle_lower,"
+           "spool_up_time\n");
+
+    for (int sc = 0; sc < NUM_SCENARIOS; sc++) {
+        Probe &m = motors;
+
+        // Reset every piece of state the machine owns, so one scenario cannot
+        // leak into the next through the shared singleton.
+        m.armed(false);
+        m.set_interlock(false);
+        m._spool_desired = AP_Motors::DesiredSpoolState::SHUT_DOWN;
+        m._spool_state = AP_Motors::SpoolState::SHUT_DOWN;
+        m._spin_up_ratio = 0.0f;
+        m._throttle_thrust_max = 0.0f;
+        m._idle_time = 0.0f;
+        m._disarm_safe_timer = 0.0f;
+        m._spin_up_complete = false;
+        m.set_spoolup_block(false);
+        m._thrust_boost = false;
+        m._thrust_boost_ratio = 0.0f;
+        m._thrust_balanced = true;
+        m.limit.set_all(true);
+        m.set_throttle(0.0f);
+        m.set_dt_s(0.0025f);
+        m._batt_current_max.set(0.0f);
+        // Disarming saves the learned hover throttle, which reaches the
+        // storage backend the harness does not have. Hover learning is
+        // orthogonal to spooling, so it is switched off rather than stubbed.
+        m._throttle_hover_learn.set((int8_t)0);  // HOVER_LEARN_DISABLED (the enum is protected)
+
+        const scenario &s = SCENARIOS[sc];
+        m._spool_up_time.set(s.spool_up_time);
+        m._spool_down_time.set(s.spool_down_time);
+        m._safe_time.set(s.safe_time);
+        m._spin_arm.set(s.spin_arm);
+        m._idle_time_delay_s.set(s.idle_time_delay);
+        m._disarm_disable_pwm.set(s.disarm_disable_pwm);
+
+        for (int step = 0; step < s.steps; step++) {
+            // Scripted inputs. Everything the machine reads from outside
+            // itself is set here, so a fixture row is fully determined by the
+            // scenario and the step number.
+            const float tsec = step * 0.0025f;
+            m.armed(tsec >= s.arm_at && tsec < s.disarm_at);
+            m.set_interlock(tsec >= s.interlock_at && tsec < s.interlock_off_at);
+            // get_throttle() reads the FILTERED throttle, and the filter is
+            // only advanced by update_throttle_filter(), which the vehicle
+            // loop calls and this harness does not. Left alone it reads 0,
+            // which would make SPOOLING_UP finish on its first step and the
+            // whole throttle ramp go unexercised. Reset it to the demand so
+            // get_throttle() returns the scenario's value exactly.
+            m.set_throttle(s.throttle);
+            m._throttle_filter.reset(s.throttle);
+            m._thrust_balanced = !(tsec >= s.unbalanced_at);
+            if (tsec >= s.boost_at) {
+                m._thrust_boost = true;
+            }
+            if (tsec >= s.desired_ul_at && tsec < s.desired_down_at) {
+                m._spool_desired = AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED;
+            } else if (tsec >= s.desired_gi_at) {
+                m._spool_desired = AP_Motors::DesiredSpoolState::GROUND_IDLE;
+            } else {
+                m._spool_desired = AP_Motors::DesiredSpoolState::SHUT_DOWN;
+            }
+            // Stand in for the vehicle's pre-takeoff checks clearing the block.
+            if (tsec >= s.clear_block_at) {
+                m.set_spoolup_block(false);
+            }
+
+            m.output_logic();
+
+            printf("%d,%d,%d,%d,%u,%u,%u,%u,%d,%d,%d,%u,%d,%d,%u\n",
+                   sc, step, (int)m._spool_state, (int)m._spool_desired,
+                   fbits(m._spin_up_ratio), fbits(m._throttle_thrust_max),
+                   fbits(m._idle_time), fbits(m._disarm_safe_timer),
+                   (int)m._spin_up_complete, (int)m.get_spoolup_block(),
+                   (int)m._thrust_boost, fbits(m._thrust_boost_ratio),
+                   (int)m.limit.roll, (int)m.limit.throttle_lower,
+                   fbits(m._spool_up_time.get()));
+        }
+    }
+
     return 0;
 }
 '''
@@ -432,6 +595,13 @@ def main():
     if marker in text:
         first, second = text.split(marker, 1)
         OUT.write_text(first)
+        spool_marker = "#spool\n"
+        if spool_marker in second:
+            second, third = second.split(spool_marker, 1)
+            SPOOL_OUT.write_text(spool_marker + third)
+            rows = sum(1 for l in third.splitlines()
+                       if l and not l.startswith("scenario,"))
+            print("wrote %s: %d rows" % (SPOOL_OUT.name, rows))
         FRAMES_OUT.write_text(marker + second)
         frames = sum(1 for l in second.splitlines()
                      if l and not l.startswith("class,"))
