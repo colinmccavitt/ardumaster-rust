@@ -1,0 +1,14 @@
+[package]
+name = "ap-gps"
+description = "Port of ArduPilot libraries/AP_GPS: time conversion and fix state first (Plane-4.7.0). Tracked as FW-012."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-common = { workspace = true }
+ap-math = { workspace = true }
+
+[lints]
+workspace = true

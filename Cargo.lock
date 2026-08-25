@@ -41,6 +41,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-gps"
+version = "0.1.0"
+dependencies = [
+ "ap-common",
+ "ap-math",
+]
+
+[[package]]
 name = "ap-hal"
 version = "0.1.0"
 
