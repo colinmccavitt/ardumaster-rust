@@ -213,6 +213,17 @@ int main(void)
             head._dt_s = 0.0025f;
             head.reset_target_and_rate(true);
 
+            // Start the target away from the body. With target == body the
+            // attitude error begins at zero and creeps up through the region
+            // where 1 - cos(theta) is too small to represent next to 1.0 --
+            // acos returns exactly zero there and the error contribution
+            // disappears. Stepping across that boundary is a discontinuity,
+            // not a controller behaviour, and comparing two implementations
+            // across it measures which side of an ulp each landed on.
+            Quaternion offset;
+            offset.from_euler(0.30f, -0.20f, 0.50f);
+            head._attitude_target = offset;
+
             const int STEPS = 400;
             for (int i = 0; i < STEPS; i++) {
                 const float ts = i * 0.0025f;

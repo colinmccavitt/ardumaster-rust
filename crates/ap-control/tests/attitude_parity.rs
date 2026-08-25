@@ -333,50 +333,41 @@ fn the_stick_sequence_matches_upstream() {
 
 /// Looser than the single-shot tolerance, and deliberately so.
 ///
-/// Four hundred iterations of a shaper that feeds its own output back in
-/// accumulate transcendental disagreement rather than merely exhibiting it. A
-/// structural error still shows: it diverges rather than drifting, and the
-/// sequence is long enough that divergence is unmistakable.
-const STEP_TOL: f32 = 1e-4;
+/// Iterating a shaper that feeds its own output back accumulates
+/// transcendental disagreement rather than merely exhibiting it. A structural
+/// error still shows: it diverges rather than drifting, and the sequences are
+/// long enough that divergence is unmistakable.
+///
+/// Set from measurement: the stick sequence reaches 1.4e-5 over 400 steps and
+/// the heading sequence 1.3e-6 over 800. The heading run is TIGHTER despite
+/// being longer, because it keeps clear of the region where acos loses its
+/// precision -- see the note on that test.
+const STEP_TOL: f32 = 3e-5;
 
 /// Parity: a heading command through the yaw-angle entry point, run with and
 /// without slew limiting.
 ///
-/// # Known failing — the sequence sits on a representability cliff
+/// # Why the target starts away from the body
 ///
-/// This diverges at step 7, and the cause is the test's own choice of
-/// attitudes rather than the port.
+/// The first version of this sequence began with target == body, and diverged
+/// at step 7. The cause was not the controller.
 ///
 /// The decomposition takes `acosf` of the dot product of two thrust vectors.
-/// For a small attitude error θ that dot product is `cos θ ≈ 1 − θ²/2`, and in
-/// `f32` anything within about 6e-8 of 1.0 *rounds to exactly 1.0* — so `acos`
-/// returns exactly zero and the whole error contribution vanishes. That is
-/// visible in the fixture: for steps 0 to 6 `rate_x` equals `ang_vel_x`
-/// exactly, meaning the contribution really is zero, and at step 7 upstream's
-/// appears abruptly as 0.0011.
+/// For a small attitude error θ that is `cos θ ≈ 1 − θ²/2`, and in `f32`
+/// anything within about 6e-8 of 1.0 *rounds to exactly 1.0* — so `acos`
+/// returns exactly zero and the whole error contribution vanishes. Starting at
+/// zero error meant creeping up through that region: for steps 0 to 6 `rate_x`
+/// equalled `ang_vel_x` exactly, and at step 7 the contribution appeared
+/// abruptly. A few ulp of accumulated difference decided which side of the
+/// boundary each implementation landed on, so the comparison was measuring a
+/// discontinuity rather than the controller.
 ///
-/// At step 7 the combined roll-pitch error is about 3.2e-4, which puts
-/// `1 − cos θ` at roughly 5e-8 — just under the threshold. A difference of a
-/// few ulp in the target, accumulated over seven steps, decides which side of
-/// it each implementation lands on, and that flips the contribution between
-/// zero and 0.0011. The comparison is measuring a discontinuity.
-///
-/// So the fix is a better sequence, not a change to the controller: start the
-/// target away from the body, or command angles large enough that the error
-/// stays out of the region where `acos` has no precision left. The 49-pair
-/// test and the stick sequence both keep clear of it, which is why they agree
-/// to 4.8e-7 and 1.4e-5.
-///
-/// Left ignored rather than deleted or quietly retuned, because "the test was
-/// standing on a cliff edge" is worth someone knowing before they write the
-/// next one.
-///
-/// Also worth recording: the first version passed the `targ_r` comparison
-/// while the target was 37% wrong, because a 1e-4 *absolute* tolerance is
-/// meaningless against values of 2.5e-4. Whatever replaces this wants a
-/// relative tolerance in the small-signal region.
+/// The target now starts about 0.36 rad away from the body, four orders of
+/// magnitude clear of it. Recorded because the next sequence written here will
+/// have the same trap available: an attitude comparison that begins at zero
+/// error spends its first steps in a region where `acos` has no precision
+/// left.
 #[test]
-#[ignore = "the chosen attitudes sit on an f32 acos cliff; see the doc comment"]
 fn the_heading_command_matches_upstream() {
     use ap_control::attitude_controller::{AttitudeController, ShapingConfig};
     use ap_math::vector3::Vector3f;
@@ -461,9 +452,11 @@ fn the_heading_command_matches_upstream() {
         let slew = r[0] == "1";
         let step: usize = r[1].parse().expect("step");
 
-        // A new run starts a fresh controller, as the harness does.
+        // A new run starts a fresh controller with the same offset target the
+        // harness sets -- see the doc comment for why it is offset at all.
         if current_slew != Some(slew) {
             controller = AttitudeController::new();
+            controller.set_attitude_target(Quaternion::from_euler(0.30, -0.20, 0.50));
             current_slew = Some(slew);
         }
 
