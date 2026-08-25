@@ -990,3 +990,84 @@ one stands if the check fails -- exactly what the gyro path does.
 Covered by `d020_a_nan_does_not_reach_the_published_accel` in
 `crates/ap-ins/src/lib.rs`, alongside `a_nan_does_not_reach_the_published_gyro`
 which pins the behaviour upstream already has.
+
+## D-021 — a requested quintuple notch is silently delivered as a triple
+
+**Upstream:** `HarmonicNotchFilterParams::num_composite_notches` and
+`HarmonicNotchFilter<T>::allocate_filters`,
+`libraries/Filter/HarmonicNotchFilter.cpp`.
+
+The parameter layer offers a `QuintupleNotch` option and reports it faithfully:
+
+```cpp
+uint8_t HarmonicNotchFilterParams::num_composite_notches(void) const
+{
+    if (hasOption(Options::DoubleNotch))    { return 2; }
+    if (hasOption(Options::TripleNotch))    { return 3; }
+    if (hasOption(Options::QuintupleNotch)) { return 5; }
+    return 1;
+}
+```
+
+`allocate_filters` then throws the fifth and fourth away:
+
+```cpp
+_composite_notches = MIN(composite_notches, 3);
+```
+
+And so the branch in `update` that exists to place the outer pair is
+unreachable:
+
+```cpp
+if (_composite_notches != 2) { set_center_frequency(..., 1.0, ...); }
+if (_composite_notches > 1)  { set_center_frequency(..., 1.0 - _notch_spread, ...);
+                               set_center_frequency(..., 1.0 + _notch_spread, ...); }
+if (_composite_notches > 3)  { set_center_frequency(..., 1.0 - 2 * _notch_spread, ...);
+                               set_center_frequency(..., 1.0 + 2 * _notch_spread, ...); }
+```
+
+`_composite_notches` is at most 3, so `> 3` never holds.
+
+**Why this is a defect rather than a decision.** The `> 3` branch is the
+evidence. It places exactly the two extra notches a quintuple needs, at twice
+the spread, and nothing else in the file could ever reach it. Someone wrote the
+placement logic for five and someone clamped the count to three; the two cannot
+both be intended. The clamp also contradicts `AP_InertialSensor.cpp:1078`,
+which sizes its memory estimate using the unclamped `num_composite_notches()`
+of 5.
+
+**Consequence:** a user who selects `QuintupleNotch` gets a triple notch, with
+no warning and no indication in logs. The notch is narrower than asked for, so
+it tolerates less RPM-estimate error than the pilot has been led to expect.
+
+**Port:** `allocate_filters` clamps to five, and a quintuple places five
+notches — centre, then a pair at one spread, then a pair at two.
+
+**This changes flight behaviour**, unlike the divergences before it, which
+either removed undefined behaviour or corrected a fault path. Anyone selecting
+this option gets a materially different filter from upstream. It is fixed under
+ADR-0007 rather than reproduced, on the grounds that delivering a documented
+option is what the code was written to do, but it is the divergence most worth
+revisiting if the port is ever compared against a real flight.
+
+Covered by `harmonic::tests::d021_a_quintuple_notch_places_five`.
+
+## Noted, and deliberately not diverged
+
+**`set_center_frequency` tests Nyquist before applying the spread.**
+`HarmonicNotchFilter.cpp` compares `notch_center` against the Nyquist limit and
+only afterwards multiplies by `spread_mul`, so the upper notch of a double or
+triple can sit above Nyquist. Upstream carries a comment questioning this
+itself: *"NOTE: should this be notch_center*spread_mul ?"*. A documented
+uncertainty is not an oversight, and changing it would move notches on a real
+airframe, so the port reproduces it.
+
+**Upstream's bank loop can write past the end.** The guard
+`_num_enabled_filters < _num_filters` is tested once per harmonic while the
+counter advances up to five times inside the body, so a bank whose capacity is
+not a multiple of the composite count overruns. Unreachable on SITL, where
+`HAL_HNF_MAX_FILTERS` is 54 and divides by 1, 2, 3 and 5; reachable on an F7
+board, where it is 27 and does not divide by 2. The port uses checked lookups
+throughout, so it cannot occur regardless — that is a property of the
+implementation rather than a behavioural divergence, and no configuration
+reachable on the target platform behaves differently.
