@@ -17,6 +17,9 @@ pub mod crc;
 /// Generated CRC lookup tables. See `tools/parity/gen_crc_tables.py`.
 pub mod crc_tables;
 pub mod matrix3;
+pub mod matrix_alg;
+/// Generated closed-form inverses. See `tools/parity/gen_matrix_alg.py`.
+pub mod matrix_alg_gen;
 pub mod polygon;
 pub mod quaternion;
 pub mod scalar;

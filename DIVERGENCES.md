@@ -371,6 +371,52 @@ it too cannot terminate for `N >= 257`. The port's slice iteration fixes it by
 construction, and it is covered by the same reasoning and the same fixture, so
 it is recorded here rather than given its own id.
 
+## D-012 — `mat_inverseN` allocates five matrices and checks none of them
+
+- **status**: `applied`
+- **upstream**: `AP_Math/matrix_alg.cpp`, in `mat_inverseN` and the
+  `matrix_multiply` it calls:
+
+  ```cpp
+  L = NEW_NOTHROW T[n*n];
+  U = NEW_NOTHROW T[n*n];
+  P = NEW_NOTHROW T[n*n];
+  mat_LU_decompose(A,L,U,P,n);      // first statement is memset(L, ...)
+  ```
+
+  `NEW_NOTHROW` is `new(std::nothrow)` (`AP_Common.h:200`), so it returns
+  **null** on exhaustion rather than throwing. None of the five allocations in
+  this function, nor the one in `matrix_multiply`, is checked before use. On a
+  controller that has run out of memory mid-calibration the result is a null
+  dereference, not a failed inversion.
+- **ported**: no allocation at all. The caller supplies the scratch, sized by
+  `scratch_len(n)`, and a buffer that is too small is reported as
+  `MatError::ScratchTooSmall` rather than assumed.
+- **why**: ADR-0004 rules out an allocator in the port, so upstream's approach
+  is not available even if it were sound. Making the caller own the memory
+  turns a runtime failure that upstream cannot detect into a requirement
+  visible at the call site. The 3×3 and 4×4 paths are closed-form and take no
+  scratch, which is what keeps the calibration hot path free of buffers.
+- **risk**: **None for any input upstream handles.** Where upstream's
+  allocations succeed the port performs the same operations in the same order —
+  confirmed bit-for-bit across the parity fixture, including the LU path at
+  n = 5, 6 and 9. The divergence exists only where upstream would dereference
+  null.
+- **sitl_impact**: None. SITL is not memory constrained.
+- **pinned by**:
+  `matrix_alg::tests::d012_insufficient_scratch_is_reported_not_dereferenced`,
+  and by `matrix_alg_parity::matrix_inverse_matches_upstream`, which asserts
+  the two agree exactly on 42 invertible matrices and reject the same 33
+  singular ones.
+
+### Also changed, and not separately registered
+
+`mat_inverse` returns `Result<(), MatError>` where upstream returns `bool`.
+Upstream marks its own declaration `WARN_IF_UNUSED` because silently ignoring
+an inversion failure is the hazard; `Result` is that warning with teeth.
+Distinguishing `Singular` from `BadDimensions` also means a caller that passed
+a mis-sized buffer is not told its matrix was singular.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change
