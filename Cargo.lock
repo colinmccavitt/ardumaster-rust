@@ -22,6 +22,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-pid"
+version = "0.1.0"
+dependencies = [
+ "ap-filter",
+ "ap-math",
+]
+
+[[package]]
 name = "ap-replay"
 version = "0.1.0"
 
