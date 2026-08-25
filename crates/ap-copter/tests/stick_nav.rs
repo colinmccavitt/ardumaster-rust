@@ -164,7 +164,9 @@ fn no_valid_radio_gives_neutral() {
 /// 45 degrees, with no other input changing. This test pins that rather than
 /// asserting the envelope is round, because the port reproduces upstream and
 /// a test that claimed otherwise would be describing a port that does not
-/// exist. See DIVERGENCES.md D-027 for the proposal to correct it.
+/// exist. Reproducing it is a decision rather than an oversight — see
+/// DIVERGENCES.md D-027 — so this test failing means the port has drifted
+/// away from the firmware, not that the quirk has been fixed.
 #[test]
 fn the_speed_envelope_is_square_in_earth_frame() {
     let vel_max = 7.5_f32;

@@ -75,9 +75,13 @@ pub fn pilot_desired_lean_angles_rad(
 /// `vel_max` — exactly `vel_max`/√2 at 45 degrees, a 29% loss from yaw alone.
 ///
 /// Upstream's comment says the transform turns a "square input range" into a
-/// "circular output", and with these two steps in this order it does not. The
-/// port reproduces it; see DIVERGENCES.md D-027 for the proposed correction
-/// and why it has not been applied unilaterally.
+/// "circular output", and with these two steps in this order it does not.
+///
+/// The port reproduces it deliberately. Correcting the frame is two lines
+/// swapped, and it was considered and declined: an aircraft that flies
+/// differently from every other ArduCopter is a worse outcome than one
+/// carrying a known and bounded quirk. See DIVERGENCES.md D-027, which has
+/// the measurements and both sides of the argument.
 #[must_use]
 pub fn pilot_desired_velocity_ne(
     roll_in_norm: f32,

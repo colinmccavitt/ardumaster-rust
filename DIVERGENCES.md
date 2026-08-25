@@ -1353,9 +1353,13 @@ Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.
 
 ## D-027 — pilot velocity: the square-to-circle transform is applied in the wrong frame
 
-- **status**: `proposed` — reproduced, not corrected. Awaiting a decision,
-  because unlike every other entry here this one changes handling a pilot
-  feels in normal flight rather than in a degenerate configuration.
+- **status**: `not applied` — decided. The port reproduces upstream; the
+  correction below is recorded but deliberately not taken.
+
+  This is the one entry in this register that is a finding rather than a fix.
+  It is kept because the analysis is worth having: a later reader who notices
+  the same thing should find it already understood and already decided, not
+  rediscover it and assume the port simply missed it.
 - **upstream**: `ArduCopter/mode.cpp:572`, `Mode::get_pilot_desired_velocity`:
 
   ```cpp
@@ -1406,24 +1410,28 @@ Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.
   output magnitude becomes `vel_max` for any full-deflection stick regardless
   of heading, and the two versions agree exactly whenever the yaw is a
   multiple of 90 degrees.
-- **why it is not applied**: every other divergence in this register either
-  fires only in a configuration the aircraft should not be in (D-026's
-  collapsed calibration), or produces identical numbers for every call that
-  exists today (D-025). This one fires on every diagonal heading in normal
-  flight and changes the speed the aircraft flies at by up to 41%.
+- **why it is not applied**: raised with the user and decided in favour of
+  reproducing what real ArduPilot does.
 
-  That is a handling change, and a handling change is the user's call rather
-  than the porter's — even though the standing instruction is to fix inherited
-  bugs, because the instruction assumes the thing being fixed is agreed to be a
-  bug. A reviewer could argue the earth-frame square is deliberate: it makes
-  the maximum ground speed along north and east exactly `vel_max`, which is
-  what a `WPNAV_SPEED`-style limit is usually taken to mean, and correcting it
-  would let the aircraft exceed that limit along those axes by up to √2 when
-  the stick is on a diagonal.
+  The standing instruction in this port is to fix inherited bugs rather than
+  carry them, and every other entry here does exactly that. This one is
+  different in kind, which is why it was raised rather than applied: it fires
+  on every diagonal heading in normal flight and changes the speed the
+  aircraft flies at by up to 41%, so it is a handling change rather than the
+  removal of a fault.
 
-  Both readings are defensible, and they are defensible for different reasons:
-  one is about what the pilot feels, the other about what the speed parameter
-  promises. Recorded here in full so the choice can be made on the evidence.
+  It is also genuinely arguable in upstream's favour. The earth-frame square
+  is what makes the maximum ground speed along north and east exactly
+  `vel_max`, which is what a `WPNAV_SPEED`-style limit is normally taken to
+  promise; correcting the frame would let a diagonal stick exceed that limit
+  along those axes by up to √2. So the two readings are not "right and wrong"
+  but "what the pilot feels" against "what the speed parameter promises", and
+  upstream picked the second.
+
+  A vehicle that flies differently from every other ArduCopter is a worse
+  outcome than one that inherits a known and bounded quirk, whatever the
+  quirk's merits: pilots' expectations, tuning guides and log comparisons are
+  all calibrated against the real firmware's behaviour.
 - **pinned by**: `crates/ap-copter/tests/stick_nav.rs`
   — `the_pilot_velocity_matches_upstream` (1029 rows, bit-exact) and
   `the_speed_envelope_is_square_in_earth_frame`.
