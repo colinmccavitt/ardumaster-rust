@@ -15,6 +15,7 @@ ap-math = { workspace = true, features = ["ekf-double"] }
 ap-nav = { workspace = true, features = ["replay"] }
 ap-pid = { workspace = true }
 ap-replay = { workspace = true }
+ap-servo = { workspace = true }
 
 [lints]
 workspace = true

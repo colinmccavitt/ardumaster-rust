@@ -50,6 +50,42 @@ with open(OUT_DIR / "vpslice_join.csv", "w", newline="") as f:
         w.writerow([t] + ["{:.17g}".format(v) for v in vals])
 print("  wrote vpslice_join.csv")
 
+# RCOU is logged by default, so the chain reaches the actual servo signal
+# without another patch. ARM comes with it because a disarmed vehicle holds
+# its servos at trim regardless of what the controllers ask for.
+m = mavutil.mavlink_connection(str(LOG))
+rcou, arm = [], []
+while True:
+    x = m.recv_match(type=["RCOU", "ARM"])
+    if x is None:
+        break
+    if x.get_type() == "RCOU":
+        rcou.append((x.TimeUS, x.C1, x.C2, x.C3, x.C4))
+    else:
+        arm.append((x.TimeUS, x.ArmState))
+print("RCOU %d record(s), %d arm event(s)" % (len(rcou), len(arm)))
+if not rcou:
+    sys.exit("no RCOU records")
+
+
+def armed_at(t):
+    state = 0
+    for at, s in arm:
+        if at <= t:
+            state = s
+        else:
+            break
+    return state
+
+
+with open(OUT_DIR / "vpslice_rcou.csv", "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["time_us", "out_c1", "out_c2", "out_c3", "out_c4", "out_armed"])
+    for row in rcou:
+        w.writerow([row[0]] + ["{:.17g}".format(v) for v in row[1:]]
+                   + [armed_at(row[0])])
+print("  wrote vpslice_rcou.csv")
+
 m = mavutil.mavlink_connection(str(LOG))
 params = {}
 while True:

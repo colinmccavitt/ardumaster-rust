@@ -61,6 +61,7 @@ dependencies = [
  "ap-nav",
  "ap-pid",
  "ap-replay",
+ "ap-servo",
 ]
 
 [[package]]

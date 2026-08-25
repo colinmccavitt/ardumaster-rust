@@ -1,11 +1,22 @@
-//! The longitudinal counterpart: pitch demand through to elevator.
+//! The longitudinal counterpart: pitch demand through to the servo.
 //!
 //! ```text
 //!   PitchDemand::from_tecs           ->  limited demand
 //!   PitchDemand::demanded_pitch_cd   ->  plus trim and throttle feed-forward
 //!   PitchDemand::angle_error_cd      ->  angle error
 //!   PitchController::servo_out       ->  elevator, centidegrees
+//!   ServoChannel::pwm_from_angle     ->  pulse width, microseconds
 //! ```
+//!
+//! The last stage is compared against `RCOU`, which every flight logs anyway,
+//! so the chain reaches the signal the servo actually received without a
+//! further logging patch. `RCOU` is written at about 10 Hz against the
+//! controller's 50, so each record is matched to the most recent output at or
+//! before it.
+//!
+//! Only while armed: a disarmed vehicle holds its servos at trim whatever the
+//! controllers compute, and treating those samples as conversion failures
+//! would be wrong. Measured, they are 199 of 2,053 and every one is disarmed.
 //!
 //! # What this does and does not test
 //!
@@ -46,6 +57,7 @@ use ap_control::{PitchController, PitchInputs, RateGains};
 use ap_pid::PidGains;
 use ap_plane::PitchDemand;
 use ap_replay::{Comparison, Fixture, Params, Row};
+use ap_servo::ServoChannel;
 
 /// Attitude steps to skip while the pitch controller's unlogged filters
 /// converge on upstream's state.
@@ -83,7 +95,7 @@ fn pitch_from_params(p: &Params) -> PitchController {
 }
 
 #[test]
-fn pitch_demand_through_to_elevator_matches_the_flight() {
+fn pitch_demand_through_to_the_servo_matches_the_flight() {
     let dir = fixtures_dir();
     let paths = [
         dir.join("vpslice_pitch.csv"),
@@ -118,6 +130,34 @@ fn pitch_demand_through_to_elevator_matches_the_flight() {
     let mut demanded = Comparison::new("stage 2: plus trim and throttle FF", 1.0);
     let mut angle_err = Comparison::new("stage 3: angle error", 1.0);
     let mut elevator = Comparison::new("stage 4: elevator out (centidegrees)", 2.0);
+    let mut pwm = Comparison::new("stage 5: elevator PWM (microseconds)", 0.5);
+
+    // The elevator channel, as this airframe has it configured. Angle output:
+    // symmetric about the trim, full deflection at 4500 centidegrees.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "servo endpoints are int16 parameters round-tripped as floats"
+    )]
+    let elevator_channel = ServoChannel {
+        servo_min: params.f32("SERVO2_MIN") as u16,
+        servo_max: params.f32("SERVO2_MAX") as u16,
+        servo_trim: params.f32("SERVO2_TRIM") as u16,
+        reversed: params.f32("SERVO2_REVERSED") != 0.0,
+        output_type: ap_servo::OutputType::Angle,
+        high_out: 4500,
+    };
+    assert_eq!(
+        params.f32("SERVO2_FUNCTION") as i32,
+        19,
+        "SERVO2 is expected to be the elevator (function 19) on this airframe"
+    );
+
+    // Every logged servo sample, with the arm state at that moment.
+    let rcou = Fixture::load(dir.join("vpslice_rcou.csv").as_path()).expect("servo fixture");
+    let mut rcou_next = 0usize;
+    let mut pwm_armed = 0usize;
+    let mut pwm_disarmed = 0usize;
 
     let mut prev_us: Option<u64> = None;
     let mut segments = 0usize;
@@ -242,6 +282,24 @@ logged as floats but are integral"
             elevator.sample(row.time_us, row.output("out"), out.into());
             compared += 1;
         }
+
+        // Every servo record at or before this controller step reflects the
+        // pulse width produced by the most recent output, which is this one:
+        // the controller runs at 50 Hz and the log writes servo values at
+        // about 10, so several steps pass between records.
+        while rcou_next < rcou.rows.len() && rcou.rows[rcou_next].time_us <= row.time_us {
+            let r = &rcou.rows[rcou_next];
+            rcou_next += 1;
+            if r.output("armed") == 0.0 {
+                // A disarmed vehicle holds its servos at trim whatever the
+                // controllers ask for.
+                pwm_disarmed += 1;
+                continue;
+            }
+            let got = elevator_channel.pwm_from_angle(out);
+            pwm.sample(r.time_us, r.output("c2"), f64::from(got));
+            pwm_armed += 1;
+        }
     }
 
     println!("{driven} attitude steps driven across {segments} segment(s)");
@@ -251,7 +309,8 @@ logged as floats but are integral"
     if unjoined > 0 {
         println!("  {unjoined} with no matching join record");
     }
-    for cmp in [&limited, &demanded, &angle_err, &elevator] {
+    println!("  {pwm_armed} servo samples compared, {pwm_disarmed} skipped while disarmed");
+    for cmp in [&limited, &demanded, &angle_err, &elevator, &pwm] {
         println!("  {}", cmp.report());
     }
 
@@ -262,6 +321,16 @@ logged as floats but are integral"
         limited.report(),
         demanded.report(),
         angle_err.report()
+    );
+    assert!(
+        pwm_armed > 1000,
+        "too few armed servo samples compared: {pwm_armed}"
+    );
+    assert!(
+        pwm.passed(),
+        "the pulse width the servo would receive differs from the one the          aircraft actually sent
+  {}",
+        pwm.report()
     );
     assert!(
         elevator.passed(),
