@@ -357,3 +357,161 @@ mod command_model {
         );
     }
 }
+
+mod thrust_vector_attitude {
+    use ap_control::attitude_error::{attitude_from_thrust_vector, thrust_vector_rotation_angles};
+    use ap_math::vector3::Vector3f;
+
+    fn close(a: f32, b: f32, tol: f32) -> bool {
+        libm::fabsf(a - b) < tol
+    }
+
+    /// Straight up with no heading is level and north-facing.
+    #[test]
+    fn straight_up_is_level() {
+        let q = attitude_from_thrust_vector(Vector3f::new(0.0, 0.0, -1.0), 0.0);
+        let (roll, pitch, yaw) = q.to_euler();
+
+        assert!(close(roll, 0.0, 1e-5), "roll {roll}");
+        assert!(close(pitch, 0.0, 1e-5), "pitch {pitch}");
+        assert!(close(yaw, 0.0, 1e-5), "yaw {yaw}");
+    }
+
+    /// A zero-length thrust vector is read as straight up, not rejected.
+    ///
+    /// A caller that has not computed a demand yet gets a usable attitude
+    /// rather than a NaN one, which would poison everything downstream.
+    #[test]
+    fn a_zero_thrust_vector_is_read_as_up() {
+        let q = attitude_from_thrust_vector(Vector3f::new(0.0, 0.0, 0.0), 0.0);
+        let (roll, pitch, _) = q.to_euler();
+
+        assert!(roll.is_finite() && pitch.is_finite(), "should not be NaN");
+        assert!(close(roll, 0.0, 1e-5) && close(pitch, 0.0, 1e-5));
+    }
+
+    /// The magnitude of the thrust vector does not matter, only its direction.
+    #[test]
+    fn only_the_direction_of_thrust_matters() {
+        let unit = attitude_from_thrust_vector(Vector3f::new(0.3, -0.2, -0.9), 0.7);
+        let scaled = attitude_from_thrust_vector(Vector3f::new(3.0, -2.0, -9.0), 0.7);
+
+        let (r1, p1, y1) = unit.to_euler();
+        let (r2, p2, y2) = scaled.to_euler();
+
+        assert!(close(r1, r2, 1e-4) && close(p1, p2, 1e-4) && close(y1, y2, 1e-4));
+    }
+
+    /// The attitude it builds points its thrust where it was asked to.
+    ///
+    /// Checked by running the result back through the decomposition against a
+    /// level reference: the lean angle should match the tilt requested. This
+    /// ties the two directions of the same idea together, which neither on its
+    /// own would.
+    #[test]
+    fn the_built_attitude_points_its_thrust_as_asked() {
+        // A thrust vector tilted 0.3 rad from vertical.
+        let tilt = 0.3_f32;
+        let thrust = Vector3f::new(libm::sinf(tilt), 0.0, -libm::cosf(tilt));
+
+        let q = attitude_from_thrust_vector(thrust, 0.0);
+        let level = ap_math::quaternion::Quaternion::identity();
+        let e = thrust_vector_rotation_angles(q, level);
+
+        assert!(
+            close(e.thrust_error_angle_rad, tilt, 1e-3),
+            "asked for {tilt} rad of tilt, decomposition sees {}",
+            e.thrust_error_angle_rad
+        );
+    }
+}
+
+mod rate_target {
+    use ap_control::attitude_error::{update_ang_vel_target_from_att_error, AngleGains};
+    use ap_math::vector3::Vector3f;
+
+    fn gains(use_sqrt: bool, accel: f32) -> AngleGains {
+        AngleGains {
+            angle_p_roll: 6.0,
+            angle_p_pitch: 6.0,
+            angle_p_yaw: 4.0,
+            accel_roll_max_radss: accel,
+            accel_pitch_max_radss: accel,
+            accel_yaw_max_radss: accel,
+            use_sqrt_controller: use_sqrt,
+        }
+    }
+
+    /// Without the square-root controller it is a plain proportional gain.
+    #[test]
+    fn the_proportional_path_is_gain_times_error() {
+        let g = gains(false, 10.0);
+        let out = update_ang_vel_target_from_att_error(Vector3f::new(0.1, 0.2, 0.3), &g, 0.0025);
+
+        assert!(libm::fabsf(out.x - 6.0 * 0.1) < 1e-5, "roll {}", out.x);
+        assert!(libm::fabsf(out.y - 6.0 * 0.2) < 1e-5, "pitch {}", out.y);
+        assert!(libm::fabsf(out.z - 4.0 * 0.3) < 1e-5, "yaw {}", out.z);
+    }
+
+    /// A zero acceleration limit falls back to the proportional path.
+    ///
+    /// Per axis, not per vehicle: this is what lets a vehicle run the
+    /// square-root controller on roll and pitch and proportional on yaw.
+    #[test]
+    fn a_zero_acceleration_limit_falls_back_per_axis() {
+        let mut g = gains(true, 10.0);
+        g.accel_yaw_max_radss = 0.0;
+
+        let error = Vector3f::new(0.5, 0.5, 0.5);
+        let out = update_ang_vel_target_from_att_error(error, &g, 0.0025);
+
+        // Yaw took the proportional path exactly.
+        assert!(libm::fabsf(out.z - 4.0 * 0.5) < 1e-5, "yaw {}", out.z);
+        // Roll did not: at this error the sqrt controller is below the gain.
+        assert!(
+            out.x < 6.0 * 0.5,
+            "roll should be shaped, got {} vs proportional {}",
+            out.x,
+            6.0 * 0.5
+        );
+    }
+
+    /// The square-root controller holds back on large errors.
+    ///
+    /// That is its purpose: a proportional gain on a big error commands a rate
+    /// the aircraft cannot stop from before overshooting. Small errors are
+    /// where the two agree.
+    #[test]
+    fn the_sqrt_controller_limits_large_errors() {
+        let g = gains(true, 10.0);
+        let p = gains(false, 10.0);
+
+        let small = Vector3f::new(0.01, 0.0, 0.0);
+        let large = Vector3f::new(1.5, 0.0, 0.0);
+
+        let sqrt_small = update_ang_vel_target_from_att_error(small, &g, 0.0025).x;
+        let prop_small = update_ang_vel_target_from_att_error(small, &p, 0.0025).x;
+        assert!(
+            libm::fabsf(sqrt_small - prop_small) < 0.01,
+            "small errors should agree: {sqrt_small} vs {prop_small}"
+        );
+
+        let sqrt_large = update_ang_vel_target_from_att_error(large, &g, 0.0025).x;
+        let prop_large = update_ang_vel_target_from_att_error(large, &p, 0.0025).x;
+        assert!(
+            sqrt_large < prop_large,
+            "large errors should be held back: {sqrt_large} vs {prop_large}"
+        );
+    }
+
+    /// Sign is preserved on every axis.
+    #[test]
+    fn the_rate_target_follows_the_sign_of_the_error() {
+        let g = gains(true, 10.0);
+        let out = update_ang_vel_target_from_att_error(Vector3f::new(-0.4, 0.4, -0.4), &g, 0.0025);
+
+        assert!(out.x < 0.0, "roll {}", out.x);
+        assert!(out.y > 0.0, "pitch {}", out.y);
+        assert!(out.z < 0.0, "yaw {}", out.z);
+    }
+}

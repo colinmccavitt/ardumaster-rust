@@ -220,3 +220,133 @@ pub fn attitude_command_model(
         target_ang_accel,
     }
 }
+
+/// Bounds on the acceleration the stability controller assumes, upstream's
+/// `AC_ATTITUDE_ACCEL_*_CONTROLLER_{MIN,MAX}_RADSS`.
+///
+/// In degrees, converted at use, for the reason given on
+/// [`DEFAULT_ACCEL_MAX_DEGSS`].
+///
+/// Roll and pitch get a much wider range than yaw because they are what a
+/// multirotor is good at: thrust vectoring gives large roll and pitch
+/// authority, while yaw comes only from rotor drag differences.
+const ACCEL_RP_MIN_DEGSS: f32 = 40.0;
+const ACCEL_RP_MAX_DEGSS: f32 = 720.0;
+const ACCEL_Y_MIN_DEGSS: f32 = 10.0;
+const ACCEL_Y_MAX_DEGSS: f32 = 120.0;
+
+/// Build an attitude from a thrust direction and a heading, upstream
+/// `attitude_from_thrust_vector`.
+///
+/// The order matters: the thrust rotation is applied first and the heading
+/// second, as `thrust * yaw`. Reversing it would yaw in the earth frame before
+/// leaning, which puts the lean on the wrong axis for any non-zero heading.
+///
+/// A zero-length thrust vector is read as straight up rather than rejected —
+/// upstream substitutes the up vector, which keeps a caller that has not yet
+/// computed a demand from producing a NaN attitude.
+#[must_use]
+pub fn attitude_from_thrust_vector(thrust_vector: Vector3f, heading_angle_rad: f32) -> Quaternion {
+    let thrust_vector = if is_zero(thrust_vector.length_squared()) {
+        THRUST_VECTOR_UP
+    } else {
+        let length = thrust_vector.length();
+        thrust_vector / length
+    };
+
+    let mut thrust_vec_cross = THRUST_VECTOR_UP.cross(thrust_vector);
+    let thrust_vector_angle = libm::acosf(THRUST_VECTOR_UP.dot(thrust_vector).clamp(-1.0, 1.0));
+
+    let thrust_vector_length = thrust_vec_cross.length();
+    if is_zero(thrust_vector_length) || is_zero(thrust_vector_angle) {
+        thrust_vec_cross = THRUST_VECTOR_UP;
+    } else {
+        thrust_vec_cross /= thrust_vector_length;
+    }
+
+    let thrust_vec_quat = Quaternion::from_axis_angle(thrust_vec_cross, thrust_vector_angle);
+    // Heading is about earth-frame down, which is +Z in NED -- the opposite
+    // sign to the thrust axis above.
+    let yaw_quat = Quaternion::from_axis_angle(Vector3f::new(0.0, 0.0, 1.0), heading_angle_rad);
+
+    thrust_vec_quat * yaw_quat
+}
+
+/// The gains and limits the rate target is computed from.
+#[derive(Debug, Clone, Copy)]
+pub struct AngleGains {
+    /// `ATC_ANG_RLL_P`, already multiplied by its runtime scale.
+    pub angle_p_roll: f32,
+    /// `ATC_ANG_PIT_P`, scaled.
+    pub angle_p_pitch: f32,
+    /// `ATC_ANG_YAW_P`, scaled.
+    pub angle_p_yaw: f32,
+    /// Maximum roll acceleration, rad/s².
+    pub accel_roll_max_radss: f32,
+    /// Maximum pitch acceleration, rad/s².
+    pub accel_pitch_max_radss: f32,
+    /// Maximum yaw acceleration, rad/s².
+    pub accel_yaw_max_radss: f32,
+    /// Whether to shape the response with the square-root controller.
+    pub use_sqrt_controller: bool,
+}
+
+/// Turn an attitude error into a body-frame rate target, upstream
+/// `update_ang_vel_target_from_att_error`.
+///
+/// Each axis is either a plain proportional gain or a square-root controller,
+/// per axis rather than per vehicle: the choice depends on whether that axis
+/// has an acceleration limit configured, so a vehicle can legitimately run
+/// sqrt on roll and pitch and proportional on yaw.
+///
+/// The acceleration handed to the square-root controller is *half* the axis
+/// maximum, clamped. Halving leaves headroom for the rate controller
+/// underneath, which needs authority of its own to track the target this
+/// produces — giving the full limit here would let the attitude loop consume
+/// all of it and leave the rate loop nothing.
+#[must_use]
+pub fn update_ang_vel_target_from_att_error(
+    attitude_error_rot_vec_rad: Vector3f,
+    gains: &AngleGains,
+    dt: f32,
+) -> Vector3f {
+    use ap_math::control::sqrt_controller;
+    use ap_math::scalar::radians;
+
+    let axis = |error: f32, angle_p: f32, accel_max: f32, min_deg: f32, max_deg: f32| {
+        if gains.use_sqrt_controller && !is_zero(accel_max) {
+            sqrt_controller(
+                error,
+                angle_p,
+                (accel_max / 2.0).clamp(radians(min_deg), radians(max_deg)),
+                dt,
+            )
+        } else {
+            angle_p * error
+        }
+    };
+
+    Vector3f::new(
+        axis(
+            attitude_error_rot_vec_rad.x,
+            gains.angle_p_roll,
+            gains.accel_roll_max_radss,
+            ACCEL_RP_MIN_DEGSS,
+            ACCEL_RP_MAX_DEGSS,
+        ),
+        axis(
+            attitude_error_rot_vec_rad.y,
+            gains.angle_p_pitch,
+            gains.accel_pitch_max_radss,
+            ACCEL_RP_MIN_DEGSS,
+            ACCEL_RP_MAX_DEGSS,
+        ),
+        axis(
+            attitude_error_rot_vec_rad.z,
+            gains.angle_p_yaw,
+            gains.accel_yaw_max_radss,
+            ACCEL_Y_MIN_DEGSS,
+            ACCEL_Y_MAX_DEGSS,
+        ),
+    )
+}
