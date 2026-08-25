@@ -22,6 +22,9 @@ pub mod matrix_alg;
 pub mod matrix_alg_gen;
 pub mod polygon;
 pub mod quaternion;
+/// Generated sensor-orientation rotations. See
+/// `tools/parity/gen_rotations.py`.
+pub mod rotations_gen;
 pub mod scalar;
 pub mod vector2;
 pub mod vector3;

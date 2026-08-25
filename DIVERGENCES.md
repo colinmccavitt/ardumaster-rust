@@ -512,6 +512,53 @@ building a `MatrixN<double,N>` narrows the diagonal through `float` first. The
 port's `from_diagonal` takes `&[T; N]`. No current caller passes a double
 diagonal, so this is an API difference rather than a behavioural one.
 
+## D-015 — upstream compiles with `-fsingle-precision-constant`
+
+- **status**: `applied`
+- **upstream**: not a line of code — a build flag, present on every ArduPilot
+  translation unit. It makes GCC treat every unsuffixed floating literal as
+  `float` instead of `double`.
+
+  The consequence is that reading the C++ alone gives the wrong arithmetic.
+  In `Vector3<T>::rotate`:
+
+  ```cpp
+  #define HALF_SQRT_2 0.70710678118654752440084436210485
+  tmp = HALF_SQRT_2*(ftype)(x - y);
+  ```
+
+  By the C standard that literal is a `double`, so the product is computed in
+  double and narrowed once on assignment. With the flag it is a `float`, and
+  the whole expression evaluates in single precision.
+- **ported**: the port has no equivalent flag and does not want one. Literals
+  are written at full precision and narrowed to the element type via
+  `T::from_f64`, which reproduces upstream's value exactly wherever the element
+  type is `f32` — which is every build upstream actually ships, since
+  `HAL_WITH_EKF_DOUBLE` is off by default.
+- **why it is registered rather than ignored**: where the port's element type is
+  `f64` — the `ekf-double` feature — the two genuinely differ. Upstream still
+  narrows its constants to float and then promotes them back, so a double build
+  carries single-precision constants. The port keeps full double precision. The
+  port is more accurate; it is not identical.
+- **risk**: **None for `f32`**, which is bit-exact — confirmed across 308
+  rotation applications covering all 44 concrete rotations. The divergence
+  exists only under `ekf-double`.
+- **how it was found, because the method matters**: the first version of the
+  rotations generator applied the standard's promotion rules. **43 of the 44
+  rotations agreed anyway** — single rounding and double rounding usually land
+  on the same `f32` — and `ROTATION_ROLL_90_PITCH_68_YAW_293` disagreed in the
+  last bit. That single case is the whole evidence for this entry.
+
+  It is the clearest argument yet for bit-exact parity over a tolerance: at any
+  tolerance loose enough to feel safe, the wrong precision model would have
+  passed silently, and the error would have been inherited by every later module
+  that reads a float literal.
+- **sitl_impact**: None. SITL is `f32`.
+- **pinned by**: `rotations_parity::every_rotation_matches_upstream`, which
+  compares raw bit patterns and includes a probe vector pairing a large
+  component with a small one, chosen so that the two precision models give
+  different answers.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change
