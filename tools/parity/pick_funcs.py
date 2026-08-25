@@ -75,19 +75,12 @@ picked = picked[:32]
 assert len(picked) == 32, "need exactly 32, got %d" % len(picked)
 assert len(set(picked)) == 32, "duplicates in the swept functions"
 
-print("groups: %s" % sorted(groups))
-print("picked: %s" % picked)
+import sys
 
-# Patch the harness.
-p = Path("/srv/ardumaster/ports/plane-fw-rust/tools/parity/gen_motors_fixture.py")
-t = p.read_text()
-start = t.index("        static const uint16_t FUNCS[32] = {")
-end = t.index("};", start) + 2
-new = ("        // Chosen by tools/parity/pick_funcs.py from the same parse that\n"
-       "        // builds the Rust table: every actuator, two representatives of\n"
-       "        // each other group, and functions with no default at all. Picking\n"
-       "        // these by hand got several wrong.\n"
-       "        static const uint16_t FUNCS[32] = {\n            "
-       + ", ".join(str(v) for v in picked) + ",\n        };")
-p.write_text(t[:start] + new + t[end:])
-print("harness updated")
+if "--list" in sys.argv:
+    # Just the values, for a generator to paste into its harness.
+    print(", ".join(str(v) for v in picked))
+else:
+    print("groups: %s" % sorted(groups))
+    print("picked (%d): %s" % (len(picked), picked))
+    print("run with --list to emit just the values")
