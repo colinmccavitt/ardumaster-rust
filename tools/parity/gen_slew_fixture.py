@@ -23,6 +23,7 @@ BUILD = Path("/tmp/slew_parity/harness")
 HARNESS = r'''
 #include <AP_HAL/AP_HAL.h>
 #include <SRV_Channel/SRV_Channel.h>
+#include <AP_Scheduler/AP_Scheduler.h>
 #include <cstdarg>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,14 +52,33 @@ static uint32_t fbits(float f)
 
 int main()
 {
+    AP::scheduler().init(nullptr, 0, 0);
+
 
     const SRV_Channel::Function THR = SRV_Channel::k_throttle;
     const SRV_Channel::Function FLAP = SRV_Channel::k_flap;
     const SRV_Channel::Function ELEV = SRV_Channel::k_elevator;
 
+    // The override sequence below drives this channel; it is set up here so
+    // its conversion limits can be recorded alongside everything else the
+    // port needs, in one place.
+    const uint8_t CHAN = 4;
+    SRV_Channels::set_default_function(CHAN, ELEV);
+    SRV_Channels::update_aux_servo_function();
+    const SRV_Channel *cfg = SRV_Channels::srv_channel(CHAN);
+
     printf("#functions\n");
-    printf("throttle,flap,elevator\n");
-    printf("%d,%d,%d\n", (int)THR, (int)FLAP, (int)ELEV);
+    printf("throttle,flap,elevator,num_servo_channels,loop_period_us,"
+           "chan,servo_min,servo_trim,servo_max,servo_reversed\n");
+    printf("%d,%d,%d,%d,%u,%d,%u,%u,%u,%d\n",
+           (int)THR, (int)FLAP, (int)ELEV,
+           (int)NUM_SERVO_CHANNELS,
+           (unsigned)AP::scheduler().get_loop_period_us(),
+           (int)CHAN,
+           (unsigned)cfg->get_output_min(),
+           (unsigned)cfg->get_trim(),
+           (unsigned)cfg->get_output_max(),
+           cfg->get_reversed() ? 1 : 0);
 
     // ---- a slew-limited step, read both ways ----
     //
@@ -121,6 +141,51 @@ int main()
         for (int i = 0; i < 8; i++) {
             printf("%d,%u\n", i,
                    fbits(SRV_Channels::get_slew_limited_output_scaled(THR)));
+        }
+    }
+
+    // ---- the override counter ----
+    //
+    // The timeout is in milliseconds but the mechanism counts loops, so the
+    // conversion rounds up: a request shorter than one loop still gets one.
+    // A timeout of zero is documented as clearing the override -- it sets the
+    // flag anyway and lets the next calc_pwm clear it, so the override lasts
+    // the rest of the current loop and no longer.
+    //
+    // Neither the counter nor the flag is reachable from outside
+    // SRV_Channels, so the pulse width is what is recorded. That is the point
+    // of the mechanism, and the scaled value sweeps underneath it so the
+    // moment the override lapses the output visibly returns to tracking it.
+    printf("#override\n");
+    printf("step,request_ms,pwm,scaled,out_pwm\n");
+    {
+
+        for (int i = 0; i < 60; i++) {
+            // Sweeping, so an overridden channel is visibly not following it.
+            const float scaled = -4000.0f + 150.0f * i;
+            SRV_Channels::set_output_scaled(ELEV, scaled);
+
+            uint16_t request = 0;
+            bool ask = false;
+            if (i == 5)       { request = 20;  ask = true; }
+            else if (i == 25) { request = 0;   ask = true; }
+            else if (i == 35) { request = 1;   ask = true; }
+            else if (i == 45) { request = 60000; ask = true; }
+
+            if (ask) {
+                SRV_Channels::set_output_pwm_chan_timeout(CHAN, 1200 + i, request);
+            }
+
+            SRV_Channels::calc_pwm();
+
+            uint16_t out = 0;
+            SRV_Channels::get_output_pwm_chan(CHAN, out);
+
+            printf("%d,%d,%d,%u,%u\n", i,
+                   ask ? (int)request : -1,
+                   ask ? (int)(1200 + i) : -1,
+                   fbits(scaled),
+                   (unsigned)out);
         }
     }
 

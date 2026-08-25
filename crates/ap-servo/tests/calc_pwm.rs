@@ -80,8 +80,6 @@ fn the_calc_pwm_priority_matches_upstream() {
     let mut channels: Vec<OutputChannel> = (0..4_u8)
         .map(|i| OutputChannel::new(config(), Function(FN[usize::from(i)]), i))
         .collect();
-    channels[2].set_override(true);
-    channels[3].set_override(true);
 
     let mut registry = Registry::new();
     registry.update_aux_servo_function(&[
@@ -91,10 +89,17 @@ fn the_calc_pwm_priority_matches_upstream() {
         Function(FN[3]),
     ]);
 
-    // The override write itself, matching set_output_pwm_chan_timeout, which
-    // forces past the override it is in the act of setting.
-    channels[2].set_output_pwm(1777, true);
-    channels[3].set_output_pwm(1777, true);
+    // Hold 2 and 3 overridden for the whole sweep, through the function that
+    // actually creates an override. Setting the flag alone would not survive:
+    // calc_pwm clears the flag on any channel whose counter has run out, in
+    // this port and in upstream alike.
+    //
+    // Ten seconds on a 2.5 ms loop is four thousand loops, far more than the
+    // sweep needs, so the override never lapses partway and turns a parity
+    // failure into a puzzle.
+    let loop_period_us = 2500;
+    registry.set_output_pwm_chan_timeout(&mut channels, 2, 1777, 10_000, loop_period_us);
+    registry.set_output_pwm_chan_timeout(&mut channels, 3, 1777, 10_000, loop_period_us);
 
     let mut checked = 0_usize;
     let mut saw_estop_bypassed = false;

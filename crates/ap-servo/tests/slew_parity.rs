@@ -48,7 +48,7 @@ fn sections() -> std::collections::HashMap<String, Vec<Vec<String>>> {
 fn the_slew_limiter_matches_upstream() {
     let s = sections();
     let funcs = &s.get("functions").expect("functions section")[0];
-    assert_eq!(funcs.len(), 3, "malformed functions row");
+    assert!(funcs.len() >= 3, "malformed functions row");
 
     let thr = Function(funcs[0].trim().parse().expect("throttle function"));
     let flap = Function(funcs[1].trim().parse().expect("flap function"));
@@ -311,4 +311,231 @@ fn a_new_entry_starts_from_the_current_output() {
         250.0 + step,
         reg.output_scaled(thr)
     );
+}
+
+/// The loop-based override, and what it does to the pulse width.
+///
+/// Neither the counter nor the override flag is reachable from outside
+/// `SRV_Channels`, so the recording captures the only observable: the width.
+/// That is the right one — holding the width is the mechanism's entire
+/// purpose — and the channel's scaled value sweeps underneath it, so the
+/// moment an override lapses the output visibly returns to tracking it.
+///
+/// Four requests, each testing something different:
+///
+/// - 20 ms on a 2.5 ms loop: eight loops, the ordinary case.
+/// - 0 ms: documented as clearing the override. It does not hold the width for
+///   even one loop, because `calc_pwm` steps the counters before converting,
+///   sees zero and clears the flag first.
+/// - 1 ms: shorter than a loop. The round-up gives it one anyway, which is the
+///   difference between a scripted override working and silently doing nothing.
+/// - 60000 ms: 24000 loops, long enough to hold for the rest of the sequence.
+#[test]
+fn the_override_timeout_matches_upstream() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let s = sections();
+    let cfg = &s.get("functions").expect("functions section")[0];
+    assert_eq!(cfg.len(), 10, "malformed functions row");
+
+    let elev = Function(cfg[2].trim().parse().expect("elevator function"));
+    let recorded_channels: usize = cfg[3].trim().parse().expect("channel count");
+    assert_eq!(
+        recorded_channels, NUM_SERVO_CHANNELS,
+        "the firmware was built with {recorded_channels} servo channels but the \
+         port assumes {NUM_SERVO_CHANNELS}; every channel index below would be \
+         against a different table"
+    );
+
+    let loop_period_us: u32 = cfg[4].trim().parse().expect("loop period");
+    let chan: usize = cfg[5].trim().parse().expect("channel");
+    let servo_min: u16 = cfg[6].trim().parse().expect("servo min");
+    let servo_trim: u16 = cfg[7].trim().parse().expect("servo trim");
+    let servo_max: u16 = cfg[8].trim().parse().expect("servo max");
+
+    let rows = s.get("override").expect("override section");
+
+    // The channel's output type and full-deflection value are private in
+    // upstream with no accessor, so they cannot be recorded. They do not need
+    // to be: the sequence records fifty-odd scaled-to-width pairs on the steps
+    // where no override is holding, and those pin the conversion completely.
+    // If this were the wrong type the parity comparison would fail, which is
+    // the verification rather than an assumption.
+    let config = ServoChannel::angle(servo_min, servo_trim, servo_max, 4500);
+
+    let mut reg = Registry::new();
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| {
+            let function = if i == chan { elev } else { Function(0) };
+            OutputChannel::new(config, function, u8::try_from(i).expect("channel fits"))
+        })
+        .collect();
+    let functions: Vec<Function> = channels.iter().map(|c| c.function).collect();
+    reg.update_aux_servo_function(&functions);
+
+    let mut held = 0_usize;
+    let mut tracked = 0_usize;
+
+    for r in rows {
+        assert_eq!(r.len(), 5, "malformed override row");
+        let step: usize = r[0].parse().expect("step");
+        let request: i32 = r[1].trim().parse().expect("request");
+        let pwm: i32 = r[2].trim().parse().expect("pwm");
+
+        reg.set_output_scaled(elev, f(&r[3]));
+
+        if request >= 0 {
+            reg.set_output_pwm_chan_timeout(
+                &mut channels,
+                chan,
+                u16::try_from(pwm).expect("pwm fits"),
+                u16::try_from(request).expect("timeout fits"),
+                loop_period_us,
+            );
+        }
+
+        reg.calc_pwm(&mut channels, false);
+
+        let got = channels[chan].output_pwm();
+        let want: u16 = r[4].trim().parse().expect("out pwm");
+        assert_eq!(
+            got, want,
+            "step {step}: pulse width {got} != upstream {want}"
+        );
+
+        if reg.override_counter(chan) > 0 {
+            held += 1;
+        } else {
+            tracked += 1;
+        }
+    }
+
+    // A sequence that never held, or never let go, would pass with the counter
+    // hard-wired either way.
+    assert!(
+        held > 5 && tracked > 5,
+        "the override must both hold and lapse ({held} held, {tracked} tracked)"
+    );
+
+    println!(
+        "{} override steps, {held} held, {tracked} tracked",
+        rows.len()
+    );
+}
+
+/// The millisecond-to-loop conversion rounds up.
+///
+/// A request shorter than one loop would round to zero and do nothing at all,
+/// which for a scripted override is the difference between working and
+/// silently failing. Checked directly because the recording covers one such
+/// case and this covers the boundary either side of it.
+#[test]
+fn a_sub_loop_timeout_still_gets_one_loop() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let period_us = 2500_u32;
+    let config = ServoChannel::angle(1100, 1500, 1900, 4500);
+    let mut reg = Registry::new();
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| OutputChannel::new(config, Function(0), u8::try_from(i).expect("fits")))
+        .collect();
+
+    for (timeout_ms, expected_loops) in [(0_u16, 0_u16), (1, 1), (2, 1), (3, 2), (5, 2), (25, 10)] {
+        reg.set_output_pwm_chan_timeout(&mut channels, 0, 1500, timeout_ms, period_us);
+        assert_eq!(
+            reg.override_counter(0),
+            expected_loops,
+            "{timeout_ms} ms on a {period_us} us loop should be {expected_loops} loops"
+        );
+    }
+}
+
+/// The `had_pwm` branch, both ways.
+///
+/// Upstream clears the channel's pulse-width bit only when it was not already
+/// set, and its comment explains why: with the bit clear the channel returns to
+/// its scaled value once the override lapses, but the pre-override width is not
+/// stored anywhere, so a channel that *was* driven by a width has nothing to go
+/// back to and keeping it frozen is the only honest option.
+///
+/// The recorded sequence cannot show this. It writes a scaled value every step,
+/// which clears the bit anyway, so both branches produce the same mask and the
+/// distinction is invisible — mutation testing found exactly that.
+#[test]
+fn the_had_pwm_branch_decides_what_happens_after_the_override() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let elev = Function(19);
+    let config = ServoChannel::angle(1100, 1500, 1900, 4500);
+    let make = || -> Vec<OutputChannel> {
+        (0..NUM_SERVO_CHANNELS)
+            .map(|i| {
+                let function = if i == 4 { elev } else { Function(0) };
+                OutputChannel::new(config, function, u8::try_from(i).expect("fits"))
+            })
+            .collect()
+    };
+    let functions: Vec<Function> = make().iter().map(|c| c.function).collect();
+
+    // Not previously driven by a width: the bit is cleared, so the channel
+    // returns to its scaled value when the override lapses.
+    let mut reg = Registry::new();
+    let mut channels = make();
+    reg.update_aux_servo_function(&functions);
+    reg.set_output_scaled(elev, 0.0);
+    reg.set_output_pwm_chan_timeout(&mut channels, 4, 1777, 3, 2500);
+    assert_eq!(reg.have_pwm_mask() & (1 << 4), 0, "the bit should be clear");
+    reg.calc_pwm(&mut channels, false);
+
+    // Previously driven by a width: the bit stays, so the width persists.
+    let mut reg2 = Registry::new();
+    let mut channels2 = make();
+    reg2.update_aux_servo_function(&functions);
+    reg2.set_output_pwm(&mut channels2, elev, 1600);
+    assert_ne!(
+        reg2.have_pwm_mask() & (1 << 4),
+        0,
+        "a direct width write should set the bit; this test is vacuous without it"
+    );
+    reg2.set_output_pwm_chan_timeout(&mut channels2, 4, 1777, 3, 2500);
+    assert_ne!(
+        reg2.have_pwm_mask() & (1 << 4),
+        0,
+        "the bit must survive, because there is no pre-override width to restore"
+    );
+}
+
+/// The loop count saturates rather than wrapping.
+///
+/// Unreachable at Copter's and Plane's 2.5 ms loop: a `u16` timeout tops out at
+/// 65.5 seconds, which is 26214 loops, comfortably inside `u16`. It becomes
+/// reachable on a fast loop — at 400 us the same request is 163837 loops, and a
+/// wrap would turn the longest possible override into a very short one.
+#[test]
+fn a_long_timeout_on_a_fast_loop_saturates() {
+    use ap_servo::output_channel::OutputChannel;
+    use ap_servo::{ServoChannel, NUM_SERVO_CHANNELS};
+
+    let config = ServoChannel::angle(1100, 1500, 1900, 4500);
+    let mut channels: Vec<OutputChannel> = (0..NUM_SERVO_CHANNELS)
+        .map(|i| OutputChannel::new(config, Function(0), u8::try_from(i).expect("fits")))
+        .collect();
+    let mut reg = Registry::new();
+
+    // 65.535 s at 400 us is 163838 loops, which does not fit in u16.
+    reg.set_output_pwm_chan_timeout(&mut channels, 0, 1500, u16::MAX, 400);
+    assert_eq!(
+        reg.override_counter(0),
+        u16::MAX,
+        "the count must saturate; wrapping would turn the longest override \
+         into one of a few hundred loops"
+    );
+
+    // And the same request on a 2.5 ms loop fits, so it is not saturating
+    // everything indiscriminately.
+    reg.set_output_pwm_chan_timeout(&mut channels, 1, 1500, u16::MAX, 2500);
+    assert_eq!(reg.override_counter(1), 26214);
 }

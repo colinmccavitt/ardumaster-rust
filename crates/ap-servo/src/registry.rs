@@ -19,6 +19,7 @@
 
 use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 use crate::output_channel::{OutputChannel, OutputContext};
+use crate::NUM_SERVO_CHANNELS;
 use ap_math::scalar::is_positive;
 
 /// A mask of output channels, upstream `SRV_Channel::servo_mask_t`.
@@ -53,6 +54,8 @@ pub struct Registry {
     initialised: bool,
     /// Per-function slew limits, upstream's `_slew` linked list.
     slew: [Option<SlewEntry>; MAX_SLEW_ENTRIES],
+    /// Loops of override remaining per channel, upstream `override_counter`.
+    override_counter: [u16; NUM_SERVO_CHANNELS],
 }
 
 /// How many functions may carry a slew limit at once.
@@ -91,6 +94,7 @@ impl Registry {
             invalid_mask: 0,
             initialised: false,
             slew: [None; MAX_SLEW_ENTRIES],
+            override_counter: [0; NUM_SERVO_CHANNELS],
         }
     }
 
@@ -344,6 +348,103 @@ impl Registry {
         }
     }
 
+    /// Hold a channel at a pulse width for a while, upstream
+    /// `set_output_pwm_chan_timeout`.
+    ///
+    /// The timeout is in milliseconds but the mechanism counts *loops*, so it
+    /// is converted with a deliberate round-up: any non-zero request gets at
+    /// least one loop rather than being rounded away to nothing. A scripted
+    /// override asking for a millisecond on a 2.5 ms loop still happens.
+    ///
+    /// A `timeout_ms` of zero is documented upstream as clearing the override.
+    /// The flag is set true here regardless, which reads as though the channel
+    /// is held for the rest of the loop — but `calc_pwm` steps the counters
+    /// before it converts anything, sees zero, and clears the flag first. So
+    /// the pulse width never reflects the override at all: the recording shows
+    /// the output following the scaled value in the very same loop.
+    ///
+    /// What does survive is the write itself and the mask clearing, so a zero
+    /// timeout is a way to push a width and immediately hand the channel back
+    /// to its scaled value rather than a very short hold.
+    ///
+    /// Upstream's `had_pwm` handling is not reproduced literally; see the
+    /// comment in the body for why it is a no-op here. Its *intent* holds: a
+    /// channel that was not already driven by a pulse width returns to its
+    /// scaled value once the override lapses, while one that was stays frozen,
+    /// because the pre-override width is not stored anywhere.
+    pub fn set_output_pwm_chan_timeout(
+        &mut self,
+        channels: &mut [OutputChannel],
+        chan: usize,
+        value: u16,
+        timeout_ms: u16,
+        loop_period_us: u32,
+    ) {
+        let Some(counter) = self.override_counter.get_mut(chan) else {
+            return;
+        };
+        let Some(channel) = channels.get_mut(chan) else {
+            return;
+        };
+        if loop_period_us == 0 {
+            return;
+        }
+
+        // Round up, so a non-zero request is never rounded away.
+        // Upstream spells the round-up out as `(x + period - 1) / period`;
+        // this is the same arithmetic with the intent on the surface.
+        let loop_count = (u32::from(timeout_ms) * 1000).div_ceil(loop_period_us);
+        *counter = u16::try_from(loop_count).unwrap_or(u16::MAX);
+
+        channel.set_override(true);
+        channel.set_output_pwm(value, true);
+        // The pulse-width mask is deliberately left alone.
+        //
+        // Upstream looks like it does something here: it reads whether the
+        // channel already had a width, writes the new one, and clears the bit
+        // if it had not. That dance exists only because its
+        // `SRV_Channel::set_output_pwm` sets the bit unconditionally, so the
+        // clear is undoing a side effect of the line above it. Follow both
+        // branches and the mask ends up exactly as it started.
+        //
+        // Its comment explains the intent, which is worth keeping: a channel
+        // that was not already driven by a width returns to its scaled value
+        // once the override lapses, while one that was stays frozen, because
+        // the pre-override width is not stored anywhere and there is nothing
+        // to restore.
+        //
+        // Here the mask lives on the registry and the channel write does not
+        // touch it, so that intent is already satisfied by doing nothing. A
+        // transcription of the dance would be dead code that reads as
+        // load-bearing — which is how it was written first, and a mutation
+        // deleting it changed no test.
+    }
+
+    /// Step the override counters, upstream the second half of `calc_pwm`.
+    ///
+    /// A channel with loops remaining stays overridden and spends one; a
+    /// channel at zero has its override cleared. Both happen in the same pass,
+    /// so a counter of one buys exactly one more loop.
+    fn step_override_counters(&mut self, channels: &mut [OutputChannel]) {
+        for (chan, channel) in channels.iter_mut().enumerate() {
+            let Some(counter) = self.override_counter.get_mut(chan) else {
+                break;
+            };
+            if *counter == 0 {
+                channel.set_override(false);
+            } else {
+                channel.set_override(true);
+                *counter -= 1;
+            }
+        }
+    }
+
+    /// Loops of override left on a channel, for callers that want to know.
+    #[must_use]
+    pub fn override_counter(&self, chan: usize) -> u16 {
+        self.override_counter.get(chan).copied().unwrap_or(0)
+    }
+
     /// How many slew entries are in use, so a caller can tell it has not
     /// silently exhausted the table.
     #[must_use]
@@ -443,7 +544,13 @@ impl Registry {
     /// whose function this build does not define is left alone: there is no
     /// scaled value to convert, and writing a zero would drive an output on
     /// the strength of a configuration error.
-    pub fn calc_pwm(&self, channels: &mut [OutputChannel], emergency_stop: bool) {
+    pub fn calc_pwm(&mut self, channels: &mut [OutputChannel], emergency_stop: bool) {
+        // Upstream's order: slew limits first, then the override counters,
+        // then the per-channel conversion. The slew pass rewrites the scaled
+        // values the conversion is about to read, so it has to come first.
+        self.apply_slew_limits();
+        self.step_override_counters(channels);
+
         let ctx = OutputContext {
             have_pwm_mask: self.have_pwm_mask,
             emergency_stop,

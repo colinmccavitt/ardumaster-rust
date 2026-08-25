@@ -24,6 +24,15 @@
 
 use ap_math::scalar::constrain_value;
 
+/// How many servo output channels exist, upstream `NUM_SERVO_CHANNELS`.
+///
+/// Upstream picks 32 or 16 by program-size budget: boards with more than a
+/// megabyte of flash get 32, smaller ones get 16. SITL is the target here and
+/// is far above that threshold, so 32. The fixture records the firmware's own
+/// value and the parity test asserts they agree, so a build that chose 16
+/// fails loudly rather than silently indexing a shorter table.
+pub const NUM_SERVO_CHANNELS: usize = 32;
+
 pub mod function;
 pub mod output_channel;
 pub mod registry;
