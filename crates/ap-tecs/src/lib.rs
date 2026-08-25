@@ -20,4 +20,5 @@ pub mod underspeed;
 pub mod demand;
 pub mod limits;
 pub mod pitch;
+pub mod tecs;
 mod util;

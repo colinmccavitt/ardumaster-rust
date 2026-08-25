@@ -59,6 +59,9 @@ pub struct HeightDemand {
     /// Rate-limited height demand, upstream `_hgt_dem_rate_ltd`.
     pub hgt_dem_rate_ltd: f32,
     /// Previous raw input, upstream `_hgt_dem_in_prev`.
+    ///
+    /// Shared with the demand-freeze check in [`crate::tecs`]: upstream keeps
+    /// exactly one of these and both readers must see the same value.
     pub hgt_dem_in_prev: f32,
     /// Low-passed height demand, upstream `_hgt_dem_lpf`.
     pub hgt_dem_lpf: f32,
