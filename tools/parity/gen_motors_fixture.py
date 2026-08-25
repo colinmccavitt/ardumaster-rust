@@ -70,6 +70,7 @@ FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
 SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"
 OUTPUT_OUT = ROOT / "fixtures/motors_output.csv"
 THROTTLE_OUT = ROOT / "fixtures/motors_throttle.csv"
+CHANNELS_OUT = ROOT / "fixtures/motors_channels.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -221,6 +222,18 @@ public:
     using AP_MotorsMulticopter::_throttle_hover;
     using AP_Motors::_throttle_in;
     using AP_Motors::_throttle_slew_rate;
+    using AP_MotorsMulticopter::update_throttle_range;
+    using AP_MotorsMulticopter::output_boost_throttle;
+    using AP_MotorsMulticopter::output_rpyt;
+    using AP_MotorsMulticopter::_boost_scale;
+    using AP_Motors::_pwm_type;
+    using AP_Motors::_roll_in_ff;
+    using AP_Motors::_pitch_in_ff;
+    using AP_Motors::_yaw_in_ff;
+
+    // PWMType is protected, so the cast has to happen in here rather than at
+    // the call site.
+    void set_pwm_type_raw(int ty) { _pwm_type.set((PWMType)ty); }
 
 
     // AP_MotorsMatrix enforces a singleton in its constructor, so the fixture
@@ -709,6 +722,86 @@ int main(void)
         m._throttle_hover_learn.set((int8_t)0);
     }
 
+    // ---- the channel outputs ----
+    printf("#channels\n");
+
+    // update_throttle_range across the output types, with a frame fitted so
+    // have_digital_outputs() has a real motor mask to answer about.
+    printf("#range\n");
+    printf("pwm_type,digital,start_min,start_max,end_min,end_max\n");
+    {
+        Probe &m = motors;
+        m.clear_motors();
+        m.setup_motors(AP_Motors::MOTOR_FRAME_QUAD, AP_Motors::MOTOR_FRAME_TYPE_X);
+        // Both branches. have_digital_outputs() asks SRV_Channels which
+        // output CHANNELS are digital, not what MOT_PWM_TYPE says, so a DShot
+        // vehicle whose channels are not marked digital still takes the
+        // analog branch. Setting digital_mask is what makes the other branch
+        // reachable -- with the old stub returning zero it never was.
+        for (int digital = 0; digital <= 1; digital++) {
+            if (digital) {
+                // The public route. It accumulates with |=, so there is no
+                // way back -- which is why the analog pass runs first.
+                SRV_Channels::set_digital_outputs(m.get_motor_mask(), 0);
+            }
+            for (int ty = 0; ty <= 9; ty++) {
+                m._pwm_min.set(1100);
+                m._pwm_max.set(1900);
+                m.set_pwm_type_raw(ty);
+                m.update_throttle_range();
+                printf("%d,%d,%d,%d,%d,%d\n", ty, digital, 1100, 1900,
+                       (int)m.get_pwm_output_min(), (int)m.get_pwm_output_max());
+            }
+        }
+    }
+
+    // output_boost_throttle: read the channel back out of the real
+    // SRV_Channels rather than trusting that the call happened.
+    printf("#boost\n");
+    printf("boost_scale,throttle,scaled\n");
+    {
+        Probe &m = motors;
+        static const float SCALES[] = { -1.0f, 0.0f, 0.5f, 1.0f, 2.0f, 5.0f };
+        static const float THROTTLES[] = { 0.0f, 0.1f, 0.25f, 0.5f, 0.9f, 1.0f };
+
+        for (unsigned s = 0; s < sizeof(SCALES) / sizeof(SCALES[0]); s++) {
+            for (unsigned h = 0; h < sizeof(THROTTLES) / sizeof(THROTTLES[0]); h++) {
+                m._boost_scale.set(SCALES[s]);
+                m._throttle_filter.reset(THROTTLES[h]);
+                m.output_boost_throttle();
+                printf("%u,%u,%u\n", fbits(SCALES[s]), fbits(THROTTLES[h]),
+                       fbits(SRV_Channels::get_output_scaled(SRV_Channel::k_boost_throttle)));
+            }
+        }
+        m._boost_scale.set(0.0f);
+    }
+
+    // output_rpyt, likewise read back.
+    printf("#rpyt\n");
+    printf("roll,pitch,yaw,throttle,roll_out,pitch_out,yaw_out,thrust_out\n");
+    {
+        Probe &m = motors;
+        static const float VALS[] = { -1.0f, -0.4f, 0.0f, 0.3f, 1.0f };
+
+        for (unsigned a = 0; a < sizeof(VALS) / sizeof(VALS[0]); a++) {
+            for (unsigned b = 0; b < sizeof(VALS) / sizeof(VALS[0]); b++) {
+                m._roll_in_ff = VALS[a];
+                m._pitch_in_ff = VALS[b];
+                m._yaw_in_ff = VALS[(a + b) % 5];
+                const float thr = (float)((a * 5 + b) % 11) / 10.0f;
+                m._throttle_filter.reset(thr);
+                m.output_rpyt();
+                printf("%u,%u,%u,%u,%u,%u,%u,%u\n",
+                       fbits(VALS[a]), fbits(VALS[b]), fbits(VALS[(a + b) % 5]),
+                       fbits(thr),
+                       fbits(SRV_Channels::get_output_scaled(SRV_Channel::k_roll_out)),
+                       fbits(SRV_Channels::get_output_scaled(SRV_Channel::k_pitch_out)),
+                       fbits(SRV_Channels::get_output_scaled(SRV_Channel::k_yaw_out)),
+                       fbits(SRV_Channels::get_output_scaled(SRV_Channel::k_thrust_out)));
+            }
+        }
+    }
+
     return 0;
 }
 '''
@@ -734,6 +827,14 @@ def main():
                 thr_marker = "#throttle\n"
                 if thr_marker in fourth:
                     fourth, fifth = fourth.split(thr_marker, 1)
+                    ch_marker = "#channels\n"
+                    if ch_marker in fifth:
+                        fifth, sixth = fifth.split(ch_marker, 1)
+                        CHANNELS_OUT.write_text(ch_marker + sixth)
+                        rows = sum(1 for l in sixth.splitlines()
+                                   if l and not l.startswith("#") and "," in l
+                                   and not l[0].isalpha())
+                        print("wrote %s: %d rows" % (CHANNELS_OUT.name, rows))
                     THROTTLE_OUT.write_text(thr_marker + fifth)
                     rows = sum(1 for l in fifth.splitlines()
                                if l and not l.startswith("#") and "," in l

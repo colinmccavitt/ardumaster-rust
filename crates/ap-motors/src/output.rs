@@ -21,6 +21,43 @@ pub struct PwmParams {
     pub pwm_max: i16,
     /// `MOT_SAFE_DISARM`: whether to stop sending pulses at all when disarmed.
     pub disarm_disable_pwm: bool,
+    /// The parameter *default* behind [`Self::pwm_min`].
+    ///
+    /// Carried because `update_throttle_range` uses `set_and_default`, which
+    /// writes the default as well as the value. Only the value affects the
+    /// pulse widths, so it would be easy to drop -- but the default is what a
+    /// parameter reset restores, and a port that silently kept the old one
+    /// would hand a digital-output vehicle back its analog endpoints.
+    pub pwm_min_default: i16,
+    /// The parameter default behind [`Self::pwm_max`]. See
+    /// [`Self::pwm_min_default`].
+    pub pwm_max_default: i16,
+}
+
+/// How the outputs are driven, upstream `MOT_PWM_TYPE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PwmType {
+    /// Ordinary servo-rate PWM.
+    #[default]
+    Normal = 0,
+    /// One pulse per loop, sent as soon as the value is known.
+    OneShot = 1,
+    /// OneShot with the pulse width divided by eight.
+    OneShot125 = 2,
+    /// A raw duty cycle for brushed motors.
+    Brushed = 3,
+    /// Digital, 150 kbit/s.
+    DShot150 = 4,
+    /// Digital, 300 kbit/s.
+    DShot300 = 5,
+    /// Digital, 600 kbit/s.
+    DShot600 = 6,
+    /// Digital, 1200 kbit/s.
+    DShot1200 = 7,
+    /// Scaled output mapped to PWM by the servo layer.
+    PwmRange = 8,
+    /// Scaled angle output mapped to PWM by the servo layer.
+    PwmAngle = 9,
 }
 
 impl PwmParams {
@@ -124,4 +161,69 @@ pub fn set_actuator_with_slew(
 /// fractionally past 1 for one iteration.
 pub fn actuator_spin_up_to_ground_idle(spin_up_ratio: f32, spin_min: f32) -> f32 {
     spin_up_ratio.clamp(0.0, 1.0) * spin_min
+}
+
+/// Set the pulse endpoints for the output type, upstream
+/// `update_throttle_range`.
+///
+/// Digital protocols and the two scaled types do not use the endpoints as
+/// microseconds at all -- the servo layer maps a normalised value onto
+/// whatever the protocol wants -- so upstream pins them to a plain 1000-2000
+/// range rather than leaving whatever an analog setup was configured with.
+///
+/// Returns the ESC scaling to hand the RC output layer, which upstream applies
+/// through `hal.rcout->set_esc_scaling`.
+pub fn update_throttle_range(
+    params: &mut PwmParams,
+    pwm_type: PwmType,
+    have_digital_outputs: bool,
+) -> (i16, i16) {
+    if have_digital_outputs || pwm_type == PwmType::PwmRange || pwm_type == PwmType::PwmAngle {
+        // `set_and_default`, not a plain assignment: the default moves too, so
+        // a later parameter reset restores 1000-2000 rather than the analog
+        // endpoints this vehicle never used.
+        params.pwm_min = 1000;
+        params.pwm_min_default = 1000;
+        params.pwm_max = 2000;
+        params.pwm_max_default = 2000;
+    }
+
+    (params.pwm_min, params.pwm_max)
+}
+
+/// The value written to the boost-throttle channel, upstream
+/// `output_boost_throttle`.
+///
+/// A boost motor runs proportionally to the main throttle, scaled by
+/// `MOT_BOOST_SCALE`. A scale of zero or less means no boost motor, which
+/// writes zero rather than skipping the write -- an unwritten channel would
+/// hold its last value.
+///
+/// The `* 1000.0` is upstream's: the channel is scaled in thousandths.
+pub fn boost_throttle_output(throttle: f32, boost_scale: f32) -> f32 {
+    if boost_scale > 0.0 {
+        (throttle * boost_scale).clamp(0.0, 1.0) * 1000.0
+    } else {
+        0.0
+    }
+}
+
+/// The roll, pitch, yaw and thrust values written to their channels, upstream
+/// `output_rpyt`.
+///
+/// Returned as `(roll, pitch, yaw, thrust)`. The angular three are scaled in
+/// centidegrees against a 45 degree full-scale; thrust, like the boost
+/// channel, is in thousandths.
+pub fn rpyt_outputs(
+    roll_in_ff: f32,
+    pitch_in_ff: f32,
+    yaw_in_ff: f32,
+    throttle: f32,
+) -> (f32, f32, f32, f32) {
+    (
+        roll_in_ff * 4500.0,
+        pitch_in_ff * 4500.0,
+        yaw_in_ff * 4500.0,
+        throttle * 1000.0,
+    )
 }

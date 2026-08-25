@@ -99,10 +99,16 @@ fn the_pwm_mapping_matches_upstream() {
         let state = state_of(r[0].parse().expect("state"));
         let armed = r[1] == "1";
         let disarm_disable_pwm = r[2] == "1";
+        let pwm_min: i16 = r[3].parse().expect("pwm_min");
+        let pwm_max: i16 = r[4].parse().expect("pwm_max");
         let params = PwmParams {
-            pwm_min: r[3].parse().expect("pwm_min"),
-            pwm_max: r[4].parse().expect("pwm_max"),
+            pwm_min,
+            pwm_max,
             disarm_disable_pwm,
+            // Irrelevant to the pulse width; only update_throttle_range moves
+            // them, and that has its own coverage.
+            pwm_min_default: pwm_min,
+            pwm_max_default: pwm_max,
         };
         let actuator = f(&r[5]);
         let want: i16 = r[6].parse().expect("pwm");
@@ -198,10 +204,14 @@ fn the_pwm_endpoint_check_matches_upstream() {
 
     for r in &rows {
         assert_eq!(r.len(), 3);
+        let pwm_min: i16 = r[0].parse().expect("pwm_min");
+        let pwm_max: i16 = r[1].parse().expect("pwm_max");
         let params = PwmParams {
-            pwm_min: r[0].parse().expect("pwm_min"),
-            pwm_max: r[1].parse().expect("pwm_max"),
+            pwm_min,
+            pwm_max,
             disarm_disable_pwm: false,
+            pwm_min_default: pwm_min,
+            pwm_max_default: pwm_max,
         };
         let want = r[2] == "1";
         assert_eq!(
