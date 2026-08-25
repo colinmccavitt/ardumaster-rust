@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "ap-math",
  "ap-replay",
+ "ap-sim",
 ]
 
 [[package]]
@@ -89,6 +90,10 @@ version = "0.1.0"
 dependencies = [
  "ap-math",
 ]
+
+[[package]]
+name = "ap-sim"
+version = "0.1.0"
 
 [[package]]
 name = "ap-tecs"
