@@ -12,6 +12,7 @@
 pub mod average;
 pub mod biquad;
 pub mod buffer;
+pub mod derivative;
 pub mod harmonic;
 pub mod lowpass;
 pub mod mode;
