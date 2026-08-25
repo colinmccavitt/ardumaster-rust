@@ -1,0 +1,13 @@
+[package]
+name = "ap-baro"
+description = "Port of ArduPilot libraries/AP_Baro: the 1976 standard atmosphere first (Plane-4.7.0). Tracked as FW-013."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[lints]
+workspace = true

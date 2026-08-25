@@ -59,6 +59,10 @@ pub trait Real:
     fn powf(self, n: Self) -> Self;
     /// Base-2 logarithm, upstream `log2f`.
     fn log2(self) -> Self;
+    /// Natural logarithm, upstream `logf`.
+    fn log(self) -> Self;
+    /// `e` raised to `self`, upstream `expf`.
+    fn exp(self) -> Self;
     /// Arctangent.
     fn atan(self) -> Self;
     /// Two-argument arctangent, upstream `atan2F(y, x)`.
@@ -120,6 +124,14 @@ impl Real for f32 {
     #[inline]
     fn log2(self) -> Self {
         libm::log2f(self)
+    }
+    #[inline]
+    fn log(self) -> Self {
+        libm::logf(self)
+    }
+    #[inline]
+    fn exp(self) -> Self {
+        libm::expf(self)
     }
     #[inline]
     fn atan(self) -> Self {
@@ -202,6 +214,14 @@ impl Real for f64 {
     #[inline]
     fn log2(self) -> Self {
         libm::log2(self)
+    }
+    #[inline]
+    fn log(self) -> Self {
+        libm::log(self)
+    }
+    #[inline]
+    fn exp(self) -> Self {
+        libm::exp(self)
     }
     #[inline]
     fn atan(self) -> Self {
