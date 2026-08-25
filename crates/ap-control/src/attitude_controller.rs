@@ -25,8 +25,9 @@ use ap_math::vector3::Vector3f;
 
 use crate::attitude_error::{
     attitude_command_model, attitude_controller_run, attitude_from_thrust_vector,
-    thrust_vector_rotation_angles, update_attitude_target, AngleGains, CommandModel,
-    ControllerInputs, ControllerOutput, YawLimitGains,
+    thrust_vector_rotation_angles, update_ang_vel_target_from_att_error, update_attitude_target,
+    AngleGains, CommandModel, ControllerInputs, ControllerOutput, YawLimitGains,
+    THRUST_ERROR_ANGLE_DEG,
 };
 use crate::attitude_kinematics::{
     ang_vel_limit, body_to_euler_derivative, body_to_euler_limit, euler_derivative_to_body,
@@ -210,6 +211,7 @@ pub struct AttitudeController {
     euler_rate_target_rads: Vector3f,
     ang_vel_target_rads: Vector3f,
     ang_accel_target_rads: Vector3f,
+    attitude_ang_error: Quaternion,
 }
 
 impl Default for AttitudeController {
@@ -228,6 +230,7 @@ impl AttitudeController {
             euler_rate_target_rads: Vector3f::new(0.0, 0.0, 0.0),
             ang_vel_target_rads: Vector3f::new(0.0, 0.0, 0.0),
             ang_accel_target_rads: Vector3f::new(0.0, 0.0, 0.0),
+            attitude_ang_error: Quaternion::identity(),
         }
     }
 
@@ -254,6 +257,261 @@ impl AttitudeController {
         self.attitude_target = target;
         let (r, p, y) = target.to_euler();
         self.euler_angle_target_rad = Vector3f::new(r, p, y);
+    }
+
+    /// Rate-only acro — upstream `input_rate_bf_roll_pitch_yaw_2_rads`.
+    ///
+    /// Not a unit variant of the plain body-rate entry point. This one never
+    /// runs the attitude controller at all: it shapes the rate command and
+    /// hands the result straight to the rate loop, then drags the attitude
+    /// target to wherever the aircraft actually is.
+    ///
+    /// That is the whole point of rate-only acro. There is no attitude to hold
+    /// and therefore no attitude error to correct, so the target exists only
+    /// to be coherent for whatever mode is entered next. A pilot who releases
+    /// the sticks stops rotating; the aircraft does not return to level,
+    /// because nothing ever recorded a level to return to.
+    ///
+    /// Returns the body-frame rate for the rate controller. There is no
+    /// `ControllerOutput` because no attitude error was computed.
+    pub fn input_rate_bf_roll_pitch_yaw_2(
+        &mut self,
+        roll_rate_bf_rads: f32,
+        pitch_rate_bf_rads: f32,
+        yaw_rate_bf_rads: f32,
+        attitude_body: Quaternion,
+        shaping: &ShapingConfig,
+        dt: f32,
+    ) -> Vector3f {
+        self.shape_body_rates(
+            roll_rate_bf_rads,
+            pitch_rate_bf_rads,
+            yaw_rate_bf_rads,
+            shaping,
+            dt,
+        );
+
+        self.attitude_target = attitude_body;
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        if let Some(euler_rate) =
+            body_to_euler_derivative(self.attitude_target, self.ang_vel_target_rads)
+        {
+            self.euler_rate_target_rads = euler_rate;
+        }
+
+        self.ang_vel_target_rads
+    }
+
+    /// Acro with integrated rate error — upstream
+    /// `input_rate_bf_roll_pitch_yaw_3_rads`.
+    ///
+    /// Plane's acro mode, and a genuinely different control law from the other
+    /// two. It integrates the *rate* error — commanded minus measured — into a
+    /// persistent attitude error quaternion, and then corrects that error as
+    /// an attitude. So the aircraft holds the attitude the stick history asked
+    /// for, rather than merely the rate: drop a wing to a gust and it comes
+    /// back, which is what a fixed-wing pilot expects and a multirotor acro
+    /// pilot does not.
+    ///
+    /// The integrated error is clamped to 30 degrees before each update, which
+    /// is anti-windup: without it a sustained rate the airframe cannot deliver
+    /// would wind the error up without bound and hand the rate loop a demand
+    /// that takes just as long to unwind.
+    ///
+    /// The clamp is applied to the stored quaternion, not only to the local
+    /// copy, so the bound persists rather than being re-derived each step.
+    ///
+    /// Returns the body-frame rate for the rate controller.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one upstream entry point; see the siblings"
+    )]
+    pub fn input_rate_bf_roll_pitch_yaw_3(
+        &mut self,
+        roll_rate_bf_rads: f32,
+        pitch_rate_bf_rads: f32,
+        yaw_rate_bf_rads: f32,
+        attitude_body: Quaternion,
+        shaping: &ShapingConfig,
+        angle_gains: &AngleGains,
+        gyro_rads: Vector3f,
+        dt: f32,
+    ) -> Vector3f {
+        let mut attitude_error = self.attitude_ang_error.to_axis_angle();
+
+        let err_mag = attitude_error.length();
+        let threshold = radians(THRUST_ERROR_ANGLE_DEG);
+        if err_mag > threshold {
+            attitude_error *= threshold / err_mag;
+            self.attitude_ang_error = Quaternion::from_rotation_vector(attitude_error);
+        }
+
+        // The integrator's input is the rate the airframe is failing to
+        // deliver, not the commanded rate.
+        let update = Quaternion::from_rotation_vector((self.ang_vel_target_rads - gyro_rads) * dt);
+        self.attitude_ang_error = update * self.attitude_ang_error;
+        self.attitude_ang_error.normalize();
+
+        self.shape_body_rates(
+            roll_rate_bf_rads,
+            pitch_rate_bf_rads,
+            yaw_rate_bf_rads,
+            shaping,
+            dt,
+        );
+
+        self.attitude_target = attitude_body * self.attitude_ang_error;
+        self.attitude_target.normalize();
+
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        if let Some(euler_rate) =
+            body_to_euler_derivative(self.attitude_target, self.ang_vel_target_rads)
+        {
+            self.euler_rate_target_rads = euler_rate;
+        }
+
+        // Re-read the error rather than reusing the pre-update copy: the
+        // integration above moved it.
+        let attitude_error = self.attitude_ang_error.to_axis_angle();
+        update_ang_vel_target_from_att_error(attitude_error, angle_gains, dt)
+            + self.ang_vel_target_rads
+    }
+
+    /// The three-axis rate shaping the two acro variants share verbatim.
+    fn shape_body_rates(
+        &mut self,
+        roll_rate_bf_rads: f32,
+        pitch_rate_bf_rads: f32,
+        yaw_rate_bf_rads: f32,
+        shaping: &ShapingConfig,
+        dt: f32,
+    ) {
+        let shape = |desired: f32, rate_in: f32, accel_in: f32, accel_max: f32, tc: f32| {
+            attitude_command_model(
+                CommandModel {
+                    target_ang_vel: rate_in,
+                    target_ang_accel: accel_in,
+                },
+                0.0,
+                desired,
+                0.0,
+                accel_max,
+                tc,
+                dt,
+            )
+        };
+
+        let roll = shape(
+            roll_rate_bf_rads,
+            self.ang_vel_target_rads.x,
+            self.ang_accel_target_rads.x,
+            shaping.accel_roll_max_radss,
+            shaping.rate_rp_tc,
+        );
+        let pitch = shape(
+            pitch_rate_bf_rads,
+            self.ang_vel_target_rads.y,
+            self.ang_accel_target_rads.y,
+            shaping.accel_pitch_max_radss,
+            shaping.rate_rp_tc,
+        );
+        let yaw = shape(
+            yaw_rate_bf_rads,
+            self.ang_vel_target_rads.z,
+            self.ang_accel_target_rads.z,
+            shaping.accel_yaw_max_radss,
+            shaping.rate_y_tc,
+        );
+
+        self.ang_vel_target_rads = Vector3f::new(
+            roll.target_ang_vel,
+            pitch.target_ang_vel,
+            yaw.target_ang_vel,
+        );
+        self.ang_accel_target_rads = Vector3f::new(
+            roll.target_ang_accel,
+            pitch.target_ang_accel,
+            yaw.target_ang_accel,
+        );
+    }
+
+    /// Point the target at the vehicle — upstream `reset_target_and_rate`.
+    ///
+    /// `reset_rate` false leaves the feedforward vectors alone so the rate
+    /// controller keeps running through the reset; true zeroes them.
+    pub fn reset_target_and_rate(&mut self, attitude_body: Quaternion, reset_rate: bool) {
+        self.attitude_target = attitude_body;
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        if reset_rate {
+            self.ang_vel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.ang_accel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.euler_rate_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+        }
+    }
+
+    /// Swing the target's heading onto the vehicle's — upstream
+    /// `reset_yaw_target_and_rate`.
+    ///
+    /// Roll and pitch are left as they were: this is for a heading reset, and
+    /// rotating the whole target would throw away the lean the controller is
+    /// currently holding.
+    ///
+    /// The shift is applied on the left, in the earth frame, because yaw here
+    /// means heading about earth-down rather than rotation about the body's
+    /// own z. Composing on the right would yaw about the tilted body axis and
+    /// change the lean.
+    ///
+    /// # The cached Euler target is deliberately left stale
+    ///
+    /// Upstream rotates the quaternion and does not refresh
+    /// `_euler_angle_target_rad`, so between this call and the next entry
+    /// point the cache still describes the old heading. Reproduced, because
+    /// the cache is observable and changing it would be a real difference.
+    ///
+    /// It is a fragility rather than a defect. The shift is computed *from*
+    /// that cache, so two of these calls with no entry point in between would
+    /// use the same stale value twice and shift the heading twice. No caller
+    /// does: every attitude entry point recomputes the cache at its start, and
+    /// the most repetitive caller — `Copter::standby_update`, which runs while
+    /// the mode's `run()` keeps calling an entry point every loop — is
+    /// therefore always working from a value refreshed microseconds earlier.
+    pub fn reset_yaw_target_and_rate(&mut self, ahrs_yaw_rad: f32, reset_rate: bool) {
+        let yaw_shift = ahrs_yaw_rad - self.euler_angle_target_rad.z;
+        let shift = Quaternion::from_rotation_vector(Vector3f::new(0.0, 0.0, yaw_shift));
+        self.attitude_target = shift * self.attitude_target;
+
+        if reset_rate {
+            self.euler_rate_target_rads.z = 0.0;
+            self.ang_accel_target_rads.z = 0.0;
+            self.ang_vel_target_rads =
+                euler_derivative_to_body(self.attitude_target, self.euler_rate_target_rads);
+        }
+    }
+
+    /// Shift the target to keep the current error across an EKF reset —
+    /// upstream `inertial_frame_reset`.
+    ///
+    /// An EKF reset moves the vehicle's estimated attitude discontinuously.
+    /// The aircraft did not move, so the controller must not react. Rebuilding
+    /// the target from the new attitude and the error it was already working
+    /// on leaves the error unchanged across the jump, and the rate loop sees
+    /// nothing.
+    pub fn inertial_frame_reset(&mut self, attitude_body: Quaternion) {
+        self.attitude_target = attitude_body * self.attitude_ang_error;
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+    }
+
+    /// The integrated attitude error, upstream `_attitude_ang_error`.
+    #[must_use]
+    pub fn attitude_ang_error(&self) -> Quaternion {
+        self.attitude_ang_error
     }
 
     /// A full attitude quaternion plus a body-frame rate — upstream
@@ -400,6 +658,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -541,6 +800,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -664,6 +924,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -856,6 +1117,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -1004,6 +1266,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -1173,6 +1436,7 @@ impl AttitudeController {
         );
 
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 
@@ -1326,6 +1590,7 @@ which is which"
 
         // The yaw cap may have rebuilt the target; keep it.
         self.attitude_target = out.attitude_target;
+        self.attitude_ang_error = out.attitude_ang_error;
         out
     }
 }

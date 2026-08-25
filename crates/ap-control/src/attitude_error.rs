@@ -450,7 +450,7 @@ pub fn thrust_heading_rotation_angles(
 /// upstream `AC_ATTITUDE_THRUST_ERROR_ANGLE_RAD`. 30 degrees.
 ///
 /// Twice this and yaw is abandoned entirely. See [`attitude_controller_run`].
-const THRUST_ERROR_ANGLE_DEG: f32 = 30.0;
+pub(crate) const THRUST_ERROR_ANGLE_DEG: f32 = 30.0;
 
 /// Advance the attitude target by one step of the target angular velocity,
 /// upstream `update_attitude_target`.
@@ -496,6 +496,15 @@ pub struct ControllerOutput {
     pub attitude_error: AttitudeError,
     /// The target, possibly rebuilt by the yaw cap.
     pub attitude_target: Quaternion,
+    /// The rotation from body to target, kept so an EKF reset can shift the
+    /// target and preserve the error the controller was working on.
+    ///
+    /// Upstream computes this twice under two names — once as
+    /// `rotation_target_to_body`, to rotate the feedforward into the body
+    /// frame, and again at the end of the function as `_attitude_ang_error`
+    /// from the identical expression. They cannot disagree, so this returns
+    /// the one value.
+    pub attitude_ang_error: Quaternion,
 }
 
 /// One step of the attitude controller, upstream
@@ -571,5 +580,6 @@ pub fn attitude_controller_run(
         feedforward_scalar,
         attitude_error,
         attitude_target,
+        attitude_ang_error: rotation_target_to_body,
     }
 }

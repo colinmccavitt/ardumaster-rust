@@ -70,6 +70,8 @@ public:
     using AC_AttitudeControl::_ang_vel_pitch_max_degs;
     using AC_AttitudeControl::_ang_vel_yaw_max_degs;
     using AC_AttitudeControl::_euler_angle_target_rad;
+    using AC_AttitudeControl::_rate_gyro_rads;
+    using AC_AttitudeControl::_attitude_ang_error;
 };
 
 int main(void)
@@ -607,6 +609,105 @@ int main(void)
                     }
                 }
             }
+        }
+    }
+
+    // ---- rate-only acro ----
+    //
+    // Never runs the attitude controller: the shaped rate goes straight to the
+    // rate loop and the target is dragged to wherever the aircraft is. The
+    // recorded output is _ang_vel_body_rads, not a controller result.
+    printf("#acro2\n");
+    printf("step,roll_rate,pitch_rate,yaw_rate,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,av_x,av_y,av_z,out_x,out_y,out_z\n");
+    {
+        static Probe a2(view, motors);
+        a2._dt_s = 0.0025f;
+        a2._rate_rp_tc = 0.15f;
+        a2._rate_y_tc = 0.25f;
+        a2._ang_vel_roll_max_degs.set(220.0f);
+        a2._ang_vel_pitch_max_degs.set(140.0f);
+        a2._ang_vel_yaw_max_degs.set(120.0f);
+        a2.reset_target_and_rate(true);
+
+        const int STEPS = 400;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+            const float rr = ts < 0.35f ? 1.1f : -0.7f;
+            const float pr = -0.5f + 1.4f * ts;
+            const float yr = 0.8f * sinf(5.0f * ts);
+
+            a2.input_rate_bf_roll_pitch_yaw_2_rads(rr, pr, yr);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = a2._euler_angle_target_rad;
+            const Vector3f ang_vel = a2.get_attitude_target_ang_vel();
+            const Vector3f out = a2.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(rr), fbits(pr), fbits(yr),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                   fbits(out.x), fbits(out.y), fbits(out.z));
+        }
+    }
+
+    // ---- acro with integrated rate error ----
+    //
+    // The gyro is the integrator's other input, so it is scripted rather than
+    // left at zero: with a zero gyro the rate error equals the commanded rate
+    // and the anti-windup clamp is the only thing that ever bounds it, which
+    // exercises far less than the real loop does.
+    printf("#acro3\n");
+    printf("step,roll_rate,pitch_rate,yaw_rate,gx,gy,gz,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,err_w,err_x,err_y,err_z,out_x,out_y,out_z\n");
+    {
+        static Probe a3(view, motors);
+        a3._dt_s = 0.0025f;
+        a3._rate_rp_tc = 0.15f;
+        a3._rate_y_tc = 0.25f;
+        a3._ang_vel_roll_max_degs.set(220.0f);
+        a3._ang_vel_pitch_max_degs.set(140.0f);
+        a3._ang_vel_yaw_max_degs.set(120.0f);
+        a3.reset_target_and_rate(true);
+        a3._attitude_ang_error.initialise();
+
+        const int STEPS = 500;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+            const float rr = ts < 1.0f ? 1.3f : -0.9f;
+            const float pr = 0.7f * cosf(3.0f * ts);
+            const float yr = ts < 0.8f ? 0.5f : -0.4f;
+
+            // A gyro well short of the command, held one-signed long enough
+            // that the integrated error runs past the 30-degree anti-windup
+            // clamp instead of merely approaching it.
+            const Vector3f gyro{0.15f * rr, 0.80f * pr, 0.30f * yr};
+            a3._rate_gyro_rads = gyro;
+
+            a3.input_rate_bf_roll_pitch_yaw_3_rads(rr, pr, yr);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = a3._euler_angle_target_rad;
+            const Quaternion err = a3._attitude_ang_error;
+            const Vector3f out = a3.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(rr), fbits(pr), fbits(yr),
+                   fbits(gyro.x), fbits(gyro.y), fbits(gyro.z),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(err.q1), fbits(err.q2), fbits(err.q3), fbits(err.q4),
+                   fbits(out.x), fbits(out.y), fbits(out.z));
         }
     }
 

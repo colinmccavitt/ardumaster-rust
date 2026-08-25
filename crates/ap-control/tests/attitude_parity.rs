@@ -1254,3 +1254,235 @@ fn the_rate_predictor_honours_its_dt() {
 
     println!("D-025 pinned: quadrupling dt moves the prediction by {moved:e}");
 }
+
+/// Rate-only acro: the shaped rate goes straight to the rate loop.
+///
+/// The attitude controller never runs on this path, so what is compared is
+/// `_ang_vel_body_rads` rather than a controller result — and the target is
+/// checked too, because its only job here is to be coherent for the next mode.
+#[test]
+fn the_rate_only_acro_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("acro2");
+
+    let mut controller = AttitudeController::new();
+
+    // Deliberately start the target somewhere the recording never was. This
+    // path assigns the target from the vehicle attitude every step, so a
+    // correct port converges onto the recorded values immediately no matter
+    // where it began. The harness AHRS never moves, so without this the
+    // assignment and "leave the target alone" produce identical numbers and
+    // the step is untested -- mutation testing found exactly that.
+    controller.set_attitude_target(Quaternion::from_euler(0.4, -0.3, 1.2));
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 16, "malformed rate-only acro row");
+        let step: usize = r[0].parse().expect("step");
+        let body = Quaternion::from_euler(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        let out = controller.input_rate_bf_roll_pitch_yaw_2(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            body,
+            &g.shaping,
+            g.dt,
+        );
+
+        checked += compare_step(
+            step,
+            controller.euler_angle_target_rad(),
+            controller.ang_vel_target_rads(),
+            out,
+            r,
+            7,
+            &mut largest,
+        );
+    }
+
+    println!(
+        "{} rate-only acro steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}
+
+/// Acro with integrated rate error — Plane's acro law.
+///
+/// The integrated error quaternion is compared as well as the rate output.
+/// It is the whole state of this controller: get the integration subtly wrong
+/// and the rates still look plausible for a while, then diverge.
+#[test]
+fn the_integrating_acro_matches_upstream() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("acro3");
+
+    let mut controller = AttitudeController::new();
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+    let mut peak_err = 0.0_f32;
+
+    for r in &rows {
+        assert_eq!(r.len(), 20, "malformed integrating-acro row");
+        let step: usize = r[0].parse().expect("step");
+        let body = Quaternion::from_euler(f(&r[7]), f(&r[8]), f(&r[9]));
+        let gyro = Vector3f::new(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        let out = controller.input_rate_bf_roll_pitch_yaw_3(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            body,
+            &g.shaping,
+            &g.angle,
+            gyro,
+            g.dt,
+        );
+
+        let err = controller.attitude_ang_error();
+        peak_err = peak_err.max(err.to_axis_angle().length());
+
+        for (label, got, want) in [
+            ("err_w", err.q1, f(&r[13])),
+            ("err_x", err.q2, f(&r[14])),
+            ("err_y", err.q3, f(&r[15])),
+            ("err_z", err.q4, f(&r[16])),
+            ("targ_r", controller.euler_angle_target_rad().x, f(&r[10])),
+            ("targ_p", controller.euler_angle_target_rad().y, f(&r[11])),
+            ("targ_y", controller.euler_angle_target_rad().z, f(&r[12])),
+            ("out_x", out.x, f(&r[17])),
+            ("out_y", out.y, f(&r[18])),
+            ("out_z", out.z, f(&r[19])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < THRUST_TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    // The anti-windup clamp is the only thing bounding this integrator, so a
+    // sequence that never approaches it has not tested the interesting half.
+    let limit = 30.0_f32.to_radians();
+    assert!(
+        peak_err > limit * 0.9,
+        "the integrated error peaked at {peak_err} rad, never reaching the \
+         {limit} rad clamp — this sequence does not exercise the anti-windup"
+    );
+
+    println!(
+        "{} integrating-acro steps, {checked} values, largest difference {largest:e}, \
+         peak integrated error {peak_err:.4} rad against a {limit:.4} rad clamp",
+        rows.len()
+    );
+}
+
+/// The reset paths, which have no numerics to compare but do have invariants.
+///
+/// `inertial_frame_reset` is the one that matters: an EKF reset moves the
+/// estimated attitude discontinuously while the aircraft does not move, so the
+/// controller must see no change in its error. That is the property asserted
+/// here, rather than a recorded value.
+#[test]
+fn the_reset_paths_hold_their_invariants() {
+    use ap_control::attitude_controller::AttitudeController;
+
+    let (g, rows) = gains_and_rows("acro3");
+    let mut controller = AttitudeController::new();
+
+    // Run a while so the controller carries real state rather than identity.
+    for r in rows.iter().take(120) {
+        let body = Quaternion::from_euler(f(&r[7]), f(&r[8]), f(&r[9]));
+        controller.input_rate_bf_roll_pitch_yaw_3(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            body,
+            &g.shaping,
+            &g.angle,
+            Vector3f::new(f(&r[4]), f(&r[5]), f(&r[6])),
+            g.dt,
+        );
+    }
+
+    // An EKF reset: the estimate jumps, the aircraft has not moved.
+    let before = controller.attitude_ang_error();
+    let jumped = Quaternion::from_euler(0.6, -0.4, 2.1);
+    controller.inertial_frame_reset(jumped);
+
+    let target = controller.attitude_target();
+    let error_after = jumped.inverse() * target;
+    for (label, got, want) in [
+        ("w", error_after.q1, before.q1),
+        ("x", error_after.q2, before.q2),
+        ("y", error_after.q3, before.q3),
+        ("z", error_after.q4, before.q4),
+    ] {
+        assert!(
+            libm::fabsf(got - want) < 1e-5,
+            "inertial_frame_reset changed the error in {label}: {got} != {want}. \
+             The aircraft did not move, so the controller must not react."
+        );
+    }
+
+    // reset_target_and_rate puts the target on the vehicle and, when asked,
+    // clears the feedforward.
+    let body = Quaternion::from_euler(-0.2, 0.35, 1.4);
+    controller.reset_target_and_rate(body, false);
+    let kept = controller.ang_vel_target_rads();
+    assert!(
+        kept.length() > 0.0,
+        "reset_rate false must leave the feedforward alone so the rate loop keeps running"
+    );
+
+    controller.reset_target_and_rate(body, true);
+    assert_eq!(
+        controller.ang_vel_target_rads(),
+        Vector3f::new(0.0, 0.0, 0.0),
+        "reset_rate true must clear the feedforward"
+    );
+    let (r, p, y) = body.to_euler();
+    let euler = controller.euler_angle_target_rad();
+    assert!(
+        libm::fabsf(euler.x - r) < 1e-6
+            && libm::fabsf(euler.y - p) < 1e-6
+            && libm::fabsf(euler.z - y) < 1e-6,
+        "the target must land on the vehicle attitude"
+    );
+
+    // reset_yaw_target_and_rate moves heading only.
+    controller.reset_target_and_rate(Quaternion::from_euler(0.3, -0.25, 0.5), true);
+    let lean_before = controller.euler_angle_target_rad();
+    controller.reset_yaw_target_and_rate(2.0, true);
+
+    // Read the target itself, not the cached Euler form: this path rotates the
+    // quaternion and deliberately leaves the cache stale until the next entry
+    // point refreshes it. Asserting on the cache would assert the staleness.
+    let (after_r, after_p, after_y) = controller.attitude_target().to_euler();
+    let lean_after = Vector3f::new(after_r, after_p, after_y);
+
+    assert!(
+        libm::fabsf(lean_after.z - 2.0) < 1e-5,
+        "heading should now be the vehicle's, got {}",
+        lean_after.z
+    );
+
+    // And pin the staleness itself, so nobody "fixes" it into a divergence
+    // without meaning to.
+    assert!(
+        libm::fabsf(controller.euler_angle_target_rad().z - lean_before.z) < 1e-9,
+        "upstream leaves the cached Euler target untouched here; see the note          on reset_yaw_target_and_rate"
+    );
+    assert!(
+        libm::fabsf(lean_after.x - lean_before.x) < 1e-5
+            && libm::fabsf(lean_after.y - lean_before.y) < 1e-5,
+        "roll and pitch must survive a heading reset: {lean_before:?} became {lean_after:?}"
+    );
+}
