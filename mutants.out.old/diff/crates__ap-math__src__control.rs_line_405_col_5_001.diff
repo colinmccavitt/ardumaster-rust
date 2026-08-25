@@ -1,0 +1,41 @@
+--- crates/ap-math/src/control.rs
++++ replace sqrt_controller_accel -> f32 with 1.0
+@@ -397,37 +397,17 @@
+ #[must_use]
+ pub fn sqrt_controller_accel(
+     error: f32,
+     rate_cmd: f32,
+     rate_state: f32,
+     p: f32,
+     second_ord_lim: f32,
+ ) -> f32 {
+-    if !is_positive(rate_cmd * rate_state) {
+-        return 0.0;
+-    }
+-    if !is_positive(second_ord_lim) {
+-        return -p * rate_state;
+-    }
+-    if !is_positive(p) {
+-        if is_zero(rate_cmd) {
+-            return 0.0;
+-        }
+-        return -(second_ord_lim / rate_cmd.abs()) * rate_state;
+-    }
+-
+-    let linear_dist = second_ord_lim / sq(p);
+-    if error.abs() <= linear_dist {
+-        return -p * rate_state;
+-    }
+-    if is_zero(rate_cmd) {
+-        return 0.0;
+-    }
+-    -(second_ord_lim / rate_cmd.abs()) * rate_state
++    1.0 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// How far it takes to stop from a velocity, upstream `stopping_distance`.
+ ///
+ /// Literally [`inv_sqrt_controller`]: the distance at which the controller
+ /// would command exactly this speed is the distance it needs to shed it.
+ #[must_use]
+ pub fn stopping_distance(velocity: f32, p: f32, accel_max: f32) -> f32 {

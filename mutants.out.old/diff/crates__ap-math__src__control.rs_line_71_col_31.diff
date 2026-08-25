@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with + in update_vel_accel
+@@ -63,17 +63,17 @@
+ /// `limit` names a direction in which acceleration is constrained; `vel_error`
+ /// gives the sign of the velocity error. When both point the same way as the
+ /// step, the step is refused — unless the velocity is currently opposing the
+ /// limit, in which case it is clipped so it cannot cross zero.
+ ///
+ /// The point is that a controller which has hit a limit should not keep
+ /// pushing into it, but should still be allowed to unwind.
+ pub fn update_vel_accel(vel: &mut f32, accel: f32, dt: f32, limit: f32, vel_error: f32) {
+-    let mut delta_vel = accel * dt;
++    let mut delta_vel = accel + /* ~ changed by cargo-mutants ~ */ dt;
+     if is_positive(delta_vel * limit) && is_positive(vel_error * limit) {
+         if is_negative(*vel * limit) {
+             delta_vel = constrain_value(delta_vel, -vel.abs(), vel.abs());
+         } else {
+             delta_vel = 0.0;
+         }
+     }
+     *vel += delta_vel;

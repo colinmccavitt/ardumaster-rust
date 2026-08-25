@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with / in sqrt_controller
+@@ -327,17 +327,17 @@
+     let correction_rate = if is_negative(second_ord_lim) || is_zero(second_ord_lim) {
+         // No acceleration limit: purely proportional.
+         error * p
+     } else if is_zero(p) {
+         // No proportional gain: purely square-root.
+         if is_positive(error) {
+             safe_sqrt(2.0 * second_ord_lim * error)
+         } else if is_negative(error) {
+-            -safe_sqrt(2.0 * second_ord_lim * -error)
++            -safe_sqrt(2.0 / /* ~ changed by cargo-mutants ~ */ second_ord_lim * -error)
+         } else {
+             0.0
+         }
+     } else {
+         let linear_dist = second_ord_lim / sq(p);
+         if error > linear_dist {
+             safe_sqrt(2.0 * second_ord_lim * (error - linear_dist / 2.0))
+         } else if error < -linear_dist {

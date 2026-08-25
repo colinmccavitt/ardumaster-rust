@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete ! in shape_pos_vel_accel
+@@ -204,17 +204,17 @@
+     accel_max: f32,
+     jerk_max: f32,
+     dt: f32,
+     limit_total: bool,
+ ) -> Result<(), ShapeError> {
+     if is_positive(vel_min) || is_negative(vel_max) {
+         return Err(ShapeError::VelLimitsMalformed);
+     }
+-    if !is_negative(accel_min) || !is_positive(accel_max) {
++    if  /* ~ changed by cargo-mutants ~ */is_negative(accel_min) || !is_positive(accel_max) {
+         return Err(ShapeError::AccelLimitsMalformed);
+     }
+     if !is_positive(jerk_max) {
+         return Err(ShapeError::JerkNotPositive);
+     }
+ 
+     #[allow(
+         clippy::cast_possible_truncation,

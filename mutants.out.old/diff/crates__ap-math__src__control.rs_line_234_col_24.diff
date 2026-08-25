@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace / with % in shape_pos_vel_accel
+@@ -226,17 +226,17 @@
+ 
+     // The acceleration allowance is taken from the direction of travel: a
+     // positive position error is closed by decelerating, which uses accel_min.
+     let (accel_lim, k_v) = if is_positive(pos_error) {
+         let lim = -accel_min;
+         (lim, jerk_max / lim)
+     } else {
+         let lim = accel_max;
+-        (lim, jerk_max / lim)
++        (lim, jerk_max % /* ~ changed by cargo-mutants ~ */ lim)
+     };
+ 
+     // Correction frame: remove the feedforward velocity.
+     let vel_corr = vel - vel_desired;
+ 
+     let mut vel_corr_cmd = sqrt_controller(pos_error, k_v, accel_lim, dt);
+     let accel_corr_cmd = sqrt_controller_accel(pos_error, vel_corr_cmd, vel_corr, k_v, accel_lim);
+     vel_corr_cmd += accel_corr_cmd / k_v;

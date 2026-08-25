@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace <= with > in sqrt_controller_accel
+@@ -411,17 +411,17 @@
+     if !is_positive(p) {
+         if is_zero(rate_cmd) {
+             return 0.0;
+         }
+         return -(second_ord_lim / rate_cmd.abs()) * rate_state;
+     }
+ 
+     let linear_dist = second_ord_lim / sq(p);
+-    if error.abs() <= linear_dist {
++    if error.abs() > /* ~ changed by cargo-mutants ~ */ linear_dist {
+         return -p * rate_state;
+     }
+     if is_zero(rate_cmd) {
+         return 0.0;
+     }
+     -(second_ord_lim / rate_cmd.abs()) * rate_state
+ }
+ 

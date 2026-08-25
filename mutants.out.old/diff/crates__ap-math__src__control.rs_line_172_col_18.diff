@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace += with -= in shape_vel_accel
+@@ -164,17 +164,17 @@
+     let kpa = if is_positive(vel_error) {
+         jerk_max / accel_max
+     } else {
+         jerk_max / -accel_min
+     };
+ 
+     let mut accel_target = sqrt_controller(vel_error, kpa, jerk_max, dt);
+     accel_target = constrain_value(accel_target, accel_min, accel_max);
+-    accel_target += accel_desired;
++    accel_target -= /* ~ changed by cargo-mutants ~ */ accel_desired;
+ 
+     if limit_total_accel {
+         accel_target = constrain_value(accel_target, accel_min, accel_max);
+     }
+ 
+     shape_accel(accel_target, accel, jerk_max, dt)
+ }
+ 

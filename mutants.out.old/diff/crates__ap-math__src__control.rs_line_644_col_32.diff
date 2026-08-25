@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace || with && in shape_vel_accel_xy
+@@ -636,17 +636,17 @@
+     accel_desired: Vector2f,
+     vel: Vector2f,
+     accel: &mut Vector2f,
+     accel_max: f32,
+     jerk_max: f32,
+     dt: f32,
+     limit_total_accel: bool,
+ ) {
+-    if !is_positive(accel_max) || !is_positive(jerk_max) {
++    if !is_positive(accel_max) && /* ~ changed by cargo-mutants ~ */ !is_positive(jerk_max) {
+         return;
+     }
+ 
+     // The gain that makes the sqrt controller's linear region hand over to
+     // its square-root region exactly at the acceleration limit.
+     let kpa = jerk_max / accel_max;
+ 
+     let vel_error = vel_desired - vel;

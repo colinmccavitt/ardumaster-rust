@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace * with + in update_vel_accel_xy
+@@ -521,17 +521,17 @@
+ /// being allowed one free step.
+ pub fn update_vel_accel_xy(
+     vel: &mut Vector2f,
+     accel: Vector2f,
+     dt: f32,
+     limit: Vector2f,
+     vel_error: Vector2f,
+ ) {
+-    let mut delta_vel = accel * dt;
++    let mut delta_vel = accel + /* ~ changed by cargo-mutants ~ */ dt;
+     if !limit.is_zero()
+         && !delta_vel.is_zero()
+         && is_positive(delta_vel.dot(limit))
+         && is_positive(vel_error.dot(limit))
+         && !is_negative(vel.dot(limit))
+     {
+         delta_vel = Vector2f::new(0.0, 0.0);
+     }

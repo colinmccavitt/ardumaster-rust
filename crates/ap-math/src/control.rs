@@ -27,6 +27,7 @@
 //! direction rather than a sign, and they are their own slice.
 
 use crate::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq, wrap_pi};
+use crate::vector2::{Vector2, Vector2f};
 use crate::vector3::Vector3f;
 
 /// Position type, upstream `postype_t`.
@@ -503,6 +504,279 @@ pub fn kinematic_limit(direction: Vector3f, max_xy: f32, max_z_neg: f32, max_z_p
     }
     let segment_length_xy = safe_sqrt(sq(direction.x) + sq(direction.y));
     kinematic_limit_xyz(segment_length_xy, direction.z, max_xy, max_z_neg, max_z_pos)
+}
+
+/// Project velocity forward, suppressing motion that would worsen a limited
+/// error — upstream `update_vel_accel_xy`.
+///
+/// `limit` is a direction, not a magnitude: a non-zero vector says "the
+/// vehicle cannot go further this way". The step is dropped only when all
+/// three of the following point the same way as the limit — the step itself,
+/// the existing error, and the current velocity. Any one of them pointing
+/// back means the step is helping, and it is kept.
+///
+/// The third test is the subtle one and it is `!is_negative`, not
+/// `is_positive`: a velocity of exactly zero still counts as "not moving
+/// away", so a stationary vehicle at a limit stays suppressed rather than
+/// being allowed one free step.
+pub fn update_vel_accel_xy(
+    vel: &mut Vector2f,
+    accel: Vector2f,
+    dt: f32,
+    limit: Vector2f,
+    vel_error: Vector2f,
+) {
+    let mut delta_vel = accel * dt;
+    if !limit.is_zero()
+        && !delta_vel.is_zero()
+        && is_positive(delta_vel.dot(limit))
+        && is_positive(vel_error.dot(limit))
+        && !is_negative(vel.dot(limit))
+    {
+        delta_vel = Vector2f::new(0.0, 0.0);
+    }
+    *vel += delta_vel;
+}
+
+/// Project position and velocity forward — upstream `update_pos_vel_accel_xy`.
+///
+/// Position and velocity are suppressed independently, against their own
+/// errors. A vehicle can be held in position while still being allowed to
+/// slow down, which is what happens when it arrives at a boundary with speed
+/// still on.
+///
+/// Note the position test omits the velocity check that its counterpart
+/// applies — two conditions here, three there. Reproduced: position has no
+/// equivalent of "already moving away", because position *is* the thing being
+/// compared.
+pub fn update_pos_vel_accel_xy(
+    pos: &mut Vector2<Postype>,
+    vel: &mut Vector2f,
+    accel: Vector2f,
+    dt: f32,
+    limit: Vector2f,
+    pos_error: Vector2f,
+    vel_error: Vector2f,
+) {
+    let mut delta_pos = *vel * dt + accel * (0.5 * dt * dt);
+
+    if !is_zero(limit.length_squared())
+        && is_positive(delta_pos.dot(limit))
+        && is_positive(pos_error.dot(limit))
+    {
+        delta_pos = Vector2f::new(0.0, 0.0);
+    }
+
+    // Widened per component, as the one-dimensional form does: the step is
+    // computed in single precision because velocity and acceleration are, and
+    // only the accumulation needs the extra bits.
+    pos.x += Postype::from(delta_pos.x);
+    pos.y += Postype::from(delta_pos.y);
+
+    update_vel_accel_xy(vel, accel, dt, limit, vel_error);
+}
+
+/// Jerk-limit a two-dimensional acceleration command — upstream
+/// `shape_accel_xy`.
+///
+/// The limit is on the *length* of the change, not on each axis. Limiting per
+/// axis would let a diagonal change move by `sqrt(2)` times the intended jerk,
+/// and would bend the commanded direction as one axis saturated before the
+/// other. Limiting the vector keeps the direction and caps the rate.
+pub fn shape_accel_xy(accel_desired: Vector2f, accel: &mut Vector2f, jerk_max: f32, dt: f32) {
+    if !is_positive(jerk_max) {
+        // Upstream reports an internal error and returns, leaving the
+        // acceleration untouched. Reproduced: a caller that has passed a
+        // nonsensical jerk limit is better served by nothing happening than
+        // by an unbounded step.
+        return;
+    }
+    if is_positive(dt) {
+        let mut accel_delta = accel_desired - *accel;
+        accel_delta.limit_length(jerk_max * dt);
+        *accel += accel_delta;
+    }
+}
+
+/// The three-dimensional spelling, which shapes only the horizontal pair —
+/// upstream's `Vector3f` overload of `shape_accel_xy`.
+///
+/// The vertical component is left exactly as it was. That is the point of the
+/// name: a multirotor's vertical axis has a different jerk budget and is
+/// shaped separately.
+pub fn shape_accel_xy_3d(accel_desired: Vector3f, accel: &mut Vector3f, jerk_max: f32, dt: f32) {
+    let mut planar = Vector2f::new(accel.x, accel.y);
+    shape_accel_xy(
+        Vector2f::new(accel_desired.x, accel_desired.y),
+        &mut planar,
+        jerk_max,
+        dt,
+    );
+    accel.x = planar.x;
+    accel.y = planar.y;
+}
+
+/// Shape a velocity command into a jerk-limited acceleration — upstream
+/// `shape_vel_accel_xy`.
+///
+/// The correction is computed by the vector square-root controller, then
+/// passed through [`limit_accel_corner_xy`] *before* the feedforward is added.
+/// Order matters: the cornering limit is about what the airframe can do to
+/// change its own velocity, so applying it to the correction alone leaves the
+/// feedforward — which the caller has already reasoned about — intact.
+///
+/// `limit_total_accel` then optionally caps the sum. A caller that has a
+/// trajectory it trusts leaves it false and keeps its feedforward whole.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "upstream's signature; splitting it into a struct would make the call sites disagree with the code they are being checked against"
+)]
+pub fn shape_vel_accel_xy(
+    vel_desired: Vector2f,
+    accel_desired: Vector2f,
+    vel: Vector2f,
+    accel: &mut Vector2f,
+    accel_max: f32,
+    jerk_max: f32,
+    dt: f32,
+    limit_total_accel: bool,
+) {
+    if !is_positive(accel_max) || !is_positive(jerk_max) {
+        return;
+    }
+
+    // The gain that makes the sqrt controller's linear region hand over to
+    // its square-root region exactly at the acceleration limit.
+    let kpa = jerk_max / accel_max;
+
+    let vel_error = vel_desired - vel;
+    let mut accel_target = sqrt_controller_xy(vel_error, kpa, jerk_max, dt);
+
+    limit_accel_corner_xy(vel, &mut accel_target, accel_max);
+
+    accel_target += accel_desired;
+
+    if limit_total_accel {
+        accel_target.limit_length(accel_max);
+    }
+
+    shape_accel_xy(accel_target, accel, jerk_max, dt);
+}
+
+/// The vector square-root controller — upstream's `Vector2f` overload of
+/// `sqrt_controller`.
+///
+/// Scalar controller on the error's *length*, with the result pointed back
+/// along the error. So the correction never changes direction, only magnitude
+/// — a per-axis version would corner differently depending on which way the
+/// error happened to lie.
+#[must_use]
+pub fn sqrt_controller_xy(error: Vector2f, p: f32, second_ord_lim: f32, dt: f32) -> Vector2f {
+    let error_length = error.length();
+    if !is_positive(error_length) {
+        return Vector2f::new(0.0, 0.0);
+    }
+    let correction_length = sqrt_controller(error_length, p, second_ord_lim, dt);
+    error * (correction_length / error_length)
+}
+
+/// Limit acceleration, prioritising cross-track — upstream `limit_accel_xy`.
+///
+/// When the demand exceeds what the airframe can deliver, something has to be
+/// given up, and this gives up along-track first. Cross-track acceleration is
+/// what holds the vehicle on its path; along-track only changes how fast it
+/// gets there. Sacrificing the path to keep the schedule is the wrong trade,
+/// so the schedule goes.
+///
+/// With no velocity there is no track to be cross to, and it falls back to a
+/// plain magnitude limit.
+///
+/// Returns whether any limiting happened.
+pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {
+    if !is_positive(accel_max) {
+        return false;
+    }
+    if accel.length_squared() <= accel_max * accel_max {
+        return false;
+    }
+
+    if vel.is_zero() {
+        accel.limit_length(accel_max);
+        return true;
+    }
+
+    let vel_unit = vel.normalized_or_zero();
+    let mut accel_dir = vel_unit.dot(*accel);
+    let mut accel_cross = *accel - vel_unit * accel_dir;
+
+    if accel_cross.limit_length(accel_max) {
+        // The cross-track component alone used the entire budget, so there is
+        // nothing left for along-track at all.
+        accel_dir = 0.0;
+    } else {
+        // limit_length cannot absolutely guarantee this difference is
+        // non-negative, hence the guarded square root — upstream's comment.
+        let accel_max_dir = safe_sqrt(accel_max * accel_max - accel_cross.length_squared());
+        accel_dir = accel_dir.clamp(-accel_max_dir, accel_max_dir);
+    }
+
+    *accel = accel_cross + vel_unit * accel_dir;
+    true
+}
+
+/// Limit acceleration with direction-dependent priority — upstream
+/// `limit_accel_corner_xy`.
+///
+/// The same budget problem as [`limit_accel_xy`], answered differently
+/// depending on whether the vehicle is trying to slow down.
+///
+/// **Not braking:** cross-track wins, as before. Path over schedule.
+///
+/// **Braking:** along-track wins. A vehicle that has asked to decelerate
+/// usually has a reason — an obstacle, a boundary, an arrival — and cutting
+/// the deceleration to hold a curve is the wrong trade in exactly the case
+/// where holding the curve matters least.
+///
+/// The pre-limit to twice `accel_max` before decomposing is upstream's, and
+/// its comment explains it: the demand is often proportional to velocity
+/// error and can be enormous, which makes the direction ill-conditioned. Two
+/// times leaves room for the decomposition to be meaningful while bounding
+/// the input.
+pub fn limit_accel_corner_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {
+    if !is_positive(accel_max) {
+        return false;
+    }
+
+    if vel.is_zero() {
+        return accel.limit_length(accel_max);
+    }
+
+    accel.limit_length(2.0 * accel_max);
+
+    let vel_unit = vel.normalized_or_zero();
+    let mut accel_dir_scalar = accel.dot(vel_unit);
+    let mut accel_dir = vel_unit * accel_dir_scalar;
+    let mut accel_cross = *accel - accel_dir;
+
+    if is_positive(accel_dir_scalar) {
+        let accel_cross_mag = accel_cross.length().min(accel_max);
+        let accel_along_max = safe_sqrt(accel_max * accel_max - accel_cross_mag * accel_cross_mag);
+
+        accel_cross.limit_length(accel_max);
+        accel_dir.limit_length(accel_along_max);
+
+        *accel = accel_cross + accel_dir;
+        return true;
+    }
+
+    accel_dir_scalar = accel_dir_scalar.max(-accel_max);
+    accel_dir = vel_unit * accel_dir_scalar;
+
+    let accel_cross_max = safe_sqrt(accel_max * accel_max - accel_dir_scalar * accel_dir_scalar);
+    accel_cross.limit_length(accel_cross_max);
+
+    *accel = accel_cross + accel_dir;
+    true
 }
 
 #[cfg(test)]

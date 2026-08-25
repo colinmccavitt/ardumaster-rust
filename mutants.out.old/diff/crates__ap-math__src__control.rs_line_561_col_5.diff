@@ -1,0 +1,36 @@
+--- crates/ap-math/src/control.rs
++++ replace update_pos_vel_accel_xy with ()
+@@ -553,32 +553,17 @@
+     pos: &mut Vector2<Postype>,
+     vel: &mut Vector2f,
+     accel: Vector2f,
+     dt: f32,
+     limit: Vector2f,
+     pos_error: Vector2f,
+     vel_error: Vector2f,
+ ) {
+-    let mut delta_pos = *vel * dt + accel * (0.5 * dt * dt);
+-
+-    if !is_zero(limit.length_squared())
+-        && is_positive(delta_pos.dot(limit))
+-        && is_positive(pos_error.dot(limit))
+-    {
+-        delta_pos = Vector2f::new(0.0, 0.0);
+-    }
+-
+-    // Widened per component, as the one-dimensional form does: the step is
+-    // computed in single precision because velocity and acceleration are, and
+-    // only the accumulation needs the extra bits.
+-    pos.x += Postype::from(delta_pos.x);
+-    pos.y += Postype::from(delta_pos.y);
+-
+-    update_vel_accel_xy(vel, accel, dt, limit, vel_error);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Jerk-limit a two-dimensional acceleration command — upstream
+ /// `shape_accel_xy`.
+ ///
+ /// The limit is on the *length* of the change, not on each axis. Limiting per
+ /// axis would let a diagonal change move by `sqrt(2)` times the intended jerk,
+ /// and would bend the commanded direction as one axis saturated before the

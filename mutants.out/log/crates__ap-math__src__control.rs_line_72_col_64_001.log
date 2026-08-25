@@ -1,0 +1,34 @@
+
+*** crates/ap-math/src/control.rs:72:64: replace * with / in update_vel_accel
+
+*** mutation diff:
+--- crates/ap-math/src/control.rs
++++ replace * with / in update_vel_accel
+@@ -64,17 +64,17 @@
+ /// gives the sign of the velocity error. When both point the same way as the
+ /// step, the step is refused — unless the velocity is currently opposing the
+ /// limit, in which case it is clipped so it cannot cross zero.
+ ///
+ /// The point is that a controller which has hit a limit should not keep
+ /// pushing into it, but should still be allowed to unwind.
+ pub fn update_vel_accel(vel: &mut f32, accel: f32, dt: f32, limit: f32, vel_error: f32) {
+     let mut delta_vel = accel * dt;
+-    if is_positive(delta_vel * limit) && is_positive(vel_error * limit) {
++    if is_positive(delta_vel * limit) && is_positive(vel_error / /* ~ changed by cargo-mutants ~ */ limit) {
+         if is_negative(*vel * limit) {
+             delta_vel = constrain_value(delta_vel, -vel.abs(), vel.abs());
+         } else {
+             delta_vel = 0.0;
+         }
+     }
+     *vel += delta_vel;
+ }
+
+
+*** /root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=ap-math@0.1.0
+       Fresh libm v0.2.16
+       Dirty ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/crates/ap-math): the file `crates/ap-math/src/control.rs` has changed (1787679628.141486773s, 7s after last build at 1787679621.566422001s)
+   Compiling ap-math v0.1.0 (/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/crates/ap-math)
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name ap_math --edition=2021 crates/ap-math/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=521a06f7f6b9812f -C extra-filename=-28bd256dfed83426 --out-dir /tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rmeta`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name scurve_parity --edition=2021 crates/ap-math/tests/scurve_parity.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=24256da060db084b -C extra-filename=-489399fa7a5c68ee --out-dir /tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern libm=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rlib`
+     Running `/root/.rustup/toolchains/1.98.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name vector3_geom_parity --edition=2021 crates/ap-math/tests/vector3_geom_parity.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unsafe_code --warn=missing_docs '--warn=clippy::indexing_slicing' '--warn=clippy::float_cmp' --test --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "ekf-double"))' -C metadata=227238f9fb09b758 -C extra-filename=-1d7fd336a8779e5e --out-dir /tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps --extern ap_math=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps/libap_math-28bd256dfed83426.rlib --extern libm=/tmp/cargo-mutants-plane-fw-rust-lgaGAi.tmp/target/debug/deps/liblibm-a0720e46d9b34d24.rlib`

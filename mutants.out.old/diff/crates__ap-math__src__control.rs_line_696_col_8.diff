@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete ! in limit_accel_xy
+@@ -688,17 +688,17 @@
+ /// gets there. Sacrificing the path to keep the schedule is the wrong trade,
+ /// so the schedule goes.
+ ///
+ /// With no velocity there is no track to be cross to, and it falls back to a
+ /// plain magnitude limit.
+ ///
+ /// Returns whether any limiting happened.
+ pub fn limit_accel_xy(vel: Vector2f, accel: &mut Vector2f, accel_max: f32) -> bool {
+-    if !is_positive(accel_max) {
++    if  /* ~ changed by cargo-mutants ~ */is_positive(accel_max) {
+         return false;
+     }
+     if accel.length_squared() <= accel_max * accel_max {
+         return false;
+     }
+ 
+     if vel.is_zero() {
+         accel.limit_length(accel_max);

@@ -1,4 +1,0 @@
-crates/ap-servo/src/lib.rs:102:9: replace ServoChannel::angle -> Self with Default::default()
-crates/ap-servo/src/lib.rs:115:9: replace ServoChannel::range -> Self with Default::default()
-crates/ap-servo/src/function.rs:395:9: replace Function::motor -> Self with Default::default()
-crates/ap-servo/src/function.rs:543:9: replace Function::default_output -> Option<DefaultOutput> with Some(Default::default())

@@ -1,0 +1,28 @@
+--- crates/ap-math/src/control.rs
++++ replace shape_accel -> Result<(), ShapeError> with Ok(())
+@@ -112,24 +112,17 @@
+ /// raises an internal error and returns, leaving `accel` untouched; so does
+ /// this, and says so.
+ pub fn shape_accel(
+     accel_desired: f32,
+     accel: &mut f32,
+     jerk_max: f32,
+     dt: f32,
+ ) -> Result<(), ShapeError> {
+-    if !is_positive(jerk_max) {
+-        return Err(ShapeError::JerkNotPositive);
+-    }
+-    if is_positive(dt) {
+-        let accel_delta = constrain_value(accel_desired - *accel, -jerk_max * dt, jerk_max * dt);
+-        *accel += accel_delta;
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Shape an acceleration to track a velocity demand, upstream
+ /// `shape_vel_accel`.
+ ///
+ /// The correction gain is derived from the limits rather than tuned:
+ /// `jerk_max / accel_max` is the reciprocal of the time the acceleration takes
+ /// to reach its limit, which is the fastest the velocity loop can usefully

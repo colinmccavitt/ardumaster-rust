@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete ! in shape_accel_xy
+@@ -579,17 +579,17 @@
+ /// Jerk-limit a two-dimensional acceleration command — upstream
+ /// `shape_accel_xy`.
+ ///
+ /// The limit is on the *length* of the change, not on each axis. Limiting per
+ /// axis would let a diagonal change move by `sqrt(2)` times the intended jerk,
+ /// and would bend the commanded direction as one axis saturated before the
+ /// other. Limiting the vector keeps the direction and caps the rate.
+ pub fn shape_accel_xy(accel_desired: Vector2f, accel: &mut Vector2f, jerk_max: f32, dt: f32) {
+-    if !is_positive(jerk_max) {
++    if  /* ~ changed by cargo-mutants ~ */is_positive(jerk_max) {
+         // Upstream reports an internal error and returns, leaving the
+         // acceleration untouched. Reproduced: a caller that has passed a
+         // nonsensical jerk limit is better served by nothing happening than
+         // by an unbounded step.
+         return;
+     }
+     if is_positive(dt) {
+         let mut accel_delta = accel_desired - *accel;

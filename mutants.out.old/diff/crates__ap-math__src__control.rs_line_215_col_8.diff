@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ delete ! in shape_pos_vel_accel
+@@ -207,17 +207,17 @@
+     limit_total: bool,
+ ) -> Result<(), ShapeError> {
+     if is_positive(vel_min) || is_negative(vel_max) {
+         return Err(ShapeError::VelLimitsMalformed);
+     }
+     if !is_negative(accel_min) || !is_positive(accel_max) {
+         return Err(ShapeError::AccelLimitsMalformed);
+     }
+-    if !is_positive(jerk_max) {
++    if  /* ~ changed by cargo-mutants ~ */is_positive(jerk_max) {
+         return Err(ShapeError::JerkNotPositive);
+     }
+ 
+     #[allow(
+         clippy::cast_possible_truncation,
+         reason = "upstream assigns the postype_t difference to a float; positions \
+ are far apart in absolute terms and close in relative ones, which is the whole \
+ reason the subtraction happens at the wider width first"

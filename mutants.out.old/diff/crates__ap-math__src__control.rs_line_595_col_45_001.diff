@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace - with / in shape_accel_xy
+@@ -587,17 +587,17 @@
+     if !is_positive(jerk_max) {
+         // Upstream reports an internal error and returns, leaving the
+         // acceleration untouched. Reproduced: a caller that has passed a
+         // nonsensical jerk limit is better served by nothing happening than
+         // by an unbounded step.
+         return;
+     }
+     if is_positive(dt) {
+-        let mut accel_delta = accel_desired - *accel;
++        let mut accel_delta = accel_desired / /* ~ changed by cargo-mutants ~ */ *accel;
+         accel_delta.limit_length(jerk_max * dt);
+         *accel += accel_delta;
+     }
+ }
+ 
+ /// The three-dimensional spelling, which shapes only the horizontal pair —
+ /// upstream's `Vector3f` overload of `shape_accel_xy`.
+ ///

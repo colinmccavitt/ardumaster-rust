@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace && with || in update_pos_vel_accel_xy
+@@ -557,17 +557,17 @@
+     limit: Vector2f,
+     pos_error: Vector2f,
+     vel_error: Vector2f,
+ ) {
+     let mut delta_pos = *vel * dt + accel * (0.5 * dt * dt);
+ 
+     if !is_zero(limit.length_squared())
+         && is_positive(delta_pos.dot(limit))
+-        && is_positive(pos_error.dot(limit))
++        || /* ~ changed by cargo-mutants ~ */ is_positive(pos_error.dot(limit))
+     {
+         delta_pos = Vector2f::new(0.0, 0.0);
+     }
+ 
+     // Widened per component, as the one-dimensional form does: the step is
+     // computed in single precision because velocity and acceleration are, and
+     // only the accumulation needs the extra bits.
+     pos.x += Postype::from(delta_pos.x);

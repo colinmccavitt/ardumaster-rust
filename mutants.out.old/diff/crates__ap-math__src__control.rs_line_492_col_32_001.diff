@@ -1,0 +1,21 @@
+--- crates/ap-math/src/control.rs
++++ replace / with * in kinematic_limit_xyz
+@@ -484,17 +484,17 @@
+     // the slope the two limits themselves describe.
+     let slope = segment_length_z / segment_length_xy;
+     if is_positive(slope) {
+         if slope.abs() < max_z_pos / max_xy {
+             return max_xy / segment_length_xy;
+         }
+         return (max_z_pos / segment_length_z).abs();
+     }
+-    if slope.abs() < max_z_neg / max_xy {
++    if slope.abs() < max_z_neg * /* ~ changed by cargo-mutants ~ */ max_xy {
+         return max_xy / segment_length_xy;
+     }
+     (max_z_neg / segment_length_z).abs()
+ }
+ 
+ /// [`kinematic_limit_xyz`] for a direction vector, upstream's `Vector3f`
+ /// overload of `kinematic_limit`.
+ #[must_use]
