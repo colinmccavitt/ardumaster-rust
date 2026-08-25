@@ -31,10 +31,9 @@
 //!
 //! # What this slice does not include
 //!
-//! The gyro and accelerometer **filter chains** -- the two-pole low pass and
-//! the harmonic notch. `LowPassFilter2p` is not ported yet, so
-//! [`ImuInstance::gyro_filtered`] currently holds the raw sample and the field
-//! exists to keep the shape right for when the filter lands. Also absent:
+//! The **harmonic notch**. The two-pole low pass is here; the notch runs
+//! ahead of it in upstream's chain, so when it lands it goes in front of
+//! [`ImuInstance::set_gyro_filter`]'s filter rather than after. Also absent:
 //! sculling compensation (upstream has none -- the delta velocity is a plain
 //! rectangular sum), multi-instance selection, vibration and clipping
 //! metrics, temperature calibration, board orientation, gyro/accel offset and
@@ -42,6 +41,7 @@
 
 #![no_std]
 
+use ap_filter::biquad::LowPassFilter2p;
 use ap_math::vector3::Vector3f;
 
 /// A gap this long between samples means the sensor was unhealthy, so the
@@ -51,6 +51,20 @@ pub const UNHEALTHY_GAP_US: u64 = 100_000;
 /// Below this measured rate a sensor with no per-sample timestamp is refused,
 /// upstream's "don't accept below 40Hz". Hz.
 pub const MIN_RAW_SAMPLE_RATE_HZ: u16 = 40;
+
+/// Default gyro filter cutoff for a fixed-wing build, upstream
+/// `DEFAULT_GYRO_FILTER`. Hz.
+///
+/// Upstream picks this per frame class: 20 for Copter and for everything that
+/// is neither Copter nor Rover, and 4 for Rover. Plane takes the `#else`
+/// branch, so 20. It is the default of a parameter (`INS_GYRO_FILTER`), not a
+/// constant in the arithmetic -- the cutoff is passed to
+/// [`ImuInstance::set_gyro_filter`] rather than read from here.
+pub const DEFAULT_GYRO_FILTER_HZ: f32 = 20.0;
+
+/// Default accelerometer filter cutoff for a fixed-wing build, upstream
+/// `DEFAULT_ACCEL_FILTER`. Hz. Rover uses 10; Plane takes 20.
+pub const DEFAULT_ACCEL_FILTER_HZ: f32 = 20.0;
 
 /// Upstream's `MIN` macro, which is a ternary and therefore returns `b` when
 /// either operand is NaN. `f32::min` returns the *non*-NaN operand instead, so
@@ -125,11 +139,14 @@ pub struct ImuInstance {
     delta_velocity_dt: f32,
     delta_velocity_valid: bool,
 
-    /// Where the filtered gyro would go. The filter chain is not ported, so
-    /// this currently holds the raw sample -- see the module docs.
+    /// The most recent filtered gyro sample, published to the frontend on
+    /// the next [`ImuInstance::update_gyro`].
     gyro_filtered: Vector3f,
     /// Likewise for the accelerometer.
     accel_filtered: Vector3f,
+
+    gyro_filter: LowPassFilter2p<Vector3f>,
+    accel_filter: LowPassFilter2p<Vector3f>,
 
     gyro: Vector3f,
     accel: Vector3f,
@@ -252,8 +269,16 @@ the difference is a sample interval, not an absolute time"
         self.last_delta_angle = delta_angle;
         self.last_raw_gyro = gyro;
 
-        // The filter chain belongs here; see the module docs.
-        self.gyro_filtered = gyro;
+        // Upstream runs the harmonic notch first and the low pass last, so
+        // the low pass attenuates whatever noise the notch introduces. The
+        // notch is not ported; when it lands it goes ahead of this.
+        let filtered = self.gyro_filter.apply(gyro);
+        if filtered.is_nan() || filtered.is_inf() {
+            // Reset and keep the last good value rather than publish a NaN.
+            self.gyro_filter.reset();
+        } else {
+            self.gyro_filtered = filtered;
+        }
         self.new_gyro_data = true;
     }
 
@@ -294,7 +319,17 @@ the difference is a sample interval, not an absolute time"
         self.delta_velocity_acc += accel * dt;
         self.delta_velocity_acc_dt += dt;
 
-        self.accel_filtered = accel;
+        // D-019's sibling. Upstream assigns the filter's output to
+        // `_accel_filtered` and only *then* checks it, resetting the filter but
+        // leaving the NaN in place to be published. The gyro path a few
+        // hundred lines up guards against exactly that by restoring the
+        // previous value; this mirrors it. See D-020.
+        let filtered = self.accel_filter.apply(accel);
+        if filtered.is_nan() || filtered.is_inf() {
+            self.accel_filter.reset();
+        } else {
+            self.accel_filtered = filtered;
+        }
         self.new_accel_data = true;
     }
 
@@ -383,6 +418,24 @@ the difference is a sample interval, not an absolute time"
         } else {
             None
         }
+    }
+
+    /// Set the gyro low-pass cutoff, upstream `update_gyro_filters`.
+    ///
+    /// Until this is called the filter passes samples through untouched, which
+    /// is upstream's zero-initialised state too. Retuning does not disturb the
+    /// filter's state -- upstream retunes in flight and a reset would step the
+    /// gyro signal each time.
+    pub fn set_gyro_filter(&mut self, sample_rate_hz: f32, cutoff_hz: f32) {
+        self.gyro_filter
+            .set_cutoff_frequency(sample_rate_hz, cutoff_hz);
+    }
+
+    /// Set the accelerometer low-pass cutoff, upstream
+    /// `update_accel_filters`.
+    pub fn set_accel_filter(&mut self, sample_rate_hz: f32, cutoff_hz: f32) {
+        self.accel_filter
+            .set_cutoff_frequency(sample_rate_hz, cutoff_hz);
     }
 
     /// The most recent published gyro reading, upstream `get_gyro`.
@@ -593,6 +646,100 @@ leaves a coning term here computed from state it just discarded"
         let (acc_after, dt_after) = (imu.delta_velocity_acc, imu.delta_velocity_acc_dt);
         assert_eq!(acc_after, Vector3f::zero());
         assert_eq!(dt_after, 0.0);
+    }
+
+    /// The filter is in the path now, not just a field. Unconfigured it passes
+    /// through, which is what keeps every other test in this module valid.
+    #[test]
+    fn an_unconfigured_filter_passes_samples_through() {
+        let mut imu = ImuInstance::new();
+        let mut t = 1_000_000_u64;
+        feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        imu.update_gyro();
+        assert_eq!(imu.gyro(), Vector3f::new(0.5, 0.0, 0.0));
+    }
+
+    /// Configured, it actually filters: a step does not reach the published
+    /// gyro immediately.
+    #[test]
+    fn a_configured_filter_smooths_a_step() {
+        let mut imu = ImuInstance::new();
+        imu.set_gyro_filter(8000.0, DEFAULT_GYRO_FILTER_HZ);
+        let mut t = 1_000_000_u64;
+
+        // Seed at zero, then step to 1 rad/s.
+        feed(&mut imu, Vector3f::zero(), &mut t);
+        feed(&mut imu, Vector3f::zero(), &mut t);
+        imu.update_gyro();
+        feed(&mut imu, Vector3f::new(1.0, 0.0, 0.0), &mut t);
+        imu.update_gyro();
+        let just_after = imu.gyro().x;
+        assert!(
+            just_after < 0.01,
+            "a step should be attenuated, got {just_after}"
+        );
+
+        for _ in 0..8000 {
+            feed(&mut imu, Vector3f::new(1.0, 0.0, 0.0), &mut t);
+        }
+        imu.update_gyro();
+        assert!(
+            (imu.gyro().x - 1.0).abs() < 0.01,
+            "and it should settle at unity gain, got {}",
+            imu.gyro().x
+        );
+    }
+
+    /// D-020. A NaN out of the accelerometer filter must not be published.
+    /// Upstream assigns it first and checks second, so it publishes the NaN
+    /// for one cycle and hands it to the AHRS.
+    #[test]
+    fn d020_a_nan_does_not_reach_the_published_accel() {
+        let mut imu = ImuInstance::new();
+        imu.set_accel_filter(8000.0, DEFAULT_ACCEL_FILTER_HZ);
+        let mut t = 1_000_000_u64;
+        let good = Vector3f::new(0.0, 0.0, -9.80665);
+
+        t += DT_US;
+        imu.notify_accel_raw_sample(good, t, 8000, t);
+        for _ in 0..100 {
+            t += DT_US;
+            imu.notify_accel_raw_sample(good, t, 8000, t);
+        }
+        imu.update_accel();
+        let before = imu.accel();
+        assert!(!before.is_nan());
+
+        t += DT_US;
+        imu.notify_accel_raw_sample(Vector3f::new(f32::NAN, 0.0, 0.0), t, 8000, t);
+        imu.update_accel();
+
+        assert!(
+            !imu.accel().is_nan(),
+            "a NaN sample must not be published, got {:?}",
+            imu.accel()
+        );
+        assert_eq!(imu.accel(), before, "the last good value should stand");
+    }
+
+    /// And the same guard on the gyro side, which upstream does have.
+    #[test]
+    fn a_nan_does_not_reach_the_published_gyro() {
+        let mut imu = ImuInstance::new();
+        imu.set_gyro_filter(8000.0, DEFAULT_GYRO_FILTER_HZ);
+        let mut t = 1_000_000_u64;
+        feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        for _ in 0..100 {
+            feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        }
+        imu.update_gyro();
+        let before = imu.gyro();
+
+        feed(&mut imu, Vector3f::new(f32::INFINITY, 0.0, 0.0), &mut t);
+        imu.update_gyro();
+        assert!(!imu.gyro().is_nan() && !imu.gyro().is_inf());
+        assert_eq!(imu.gyro(), before);
     }
 
     /// PORT-DERIVED. A sensor that neither timestamps its samples nor reports

@@ -117,6 +117,39 @@ Status counts: **9 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs
   does. The divergence appears only where upstream's UB resolves the other way, which SITL is
   unlikely to exhibit.
 - **pinned by**: `lowpass::tests::d005_fresh_filter_is_deterministically_unseeded`
+- **second occurrence**: `DigitalBiquadFilter` has the identical defect.
+  `Filter/LowPassFilter2p.h:48` declares `bool initialised;` with no default member
+  initializer, and `LowPassFilter2p.cpp:12-16` sets only the two delay elements:
+
+  ```cpp
+  template <class T>
+  DigitalBiquadFilter<T>::DigitalBiquadFilter() {
+    _delay_element_1 = T();
+    _delay_element_2 = T();   // initialised is NOT set
+  }
+  ```
+
+  It is read at `LowPassFilter2p.cpp:20` (`if (!initialised)`). The consequence is
+  sharper here than for the single-pole filter: the seeding it guards sets both
+  delay elements to `sample / (1 + a1 + a2)`, which is exactly the value that makes
+  the filter's first output equal its first input. Skipping it starts the filter at
+  zero, so a gyro filter would ramp up from nothing over its time constant at the
+  moment the vehicle starts reading gyros.
+
+  Reproducing this in a parity harness required declaring the filters `static`; a
+  stack-allocated `LowPassFilter2p` reads the indeterminate bool, which is why
+  `tools/parity/gen_biquad_fixture.py` says so in its docstring.
+
+  `DigitalBiquadFilter::default()` sets `initialised: false`, matching the
+  zero-initialised case every filter in a statically stored vehicle object gets.
+  Pinned by `biquad::tests::d005_a_fresh_biquad_is_deterministically_unseeded`.
+
+  Note the port does **not** diverge on the related early-return path:
+  `compute_params` leaves `a1`..`b2` untouched when the cutoff is not positive, so
+  retuning a live filter to zero keeps the previous tuning's coefficients. Those are
+  dead while the cutoff is zero, but `reset(value)` still reads them through
+  `1/(1 + a1 + a2)`. `BiquadParams::update` reproduces that in place rather than
+  returning a fresh zeroed struct.
 
 ## D-006 — `SlewLimiter` leaves thirteen members uninitialised
 
@@ -894,3 +927,51 @@ the two points touches either input, so the port is identical to upstream;
 after a stall the accumulator is genuinely empty.
 
 Covered by `a_stall_leaves_nothing_behind` in `crates/ap-ins/src/lib.rs`.
+
+## D-020 — a NaN from the accelerometer filter is published
+
+**Upstream:** `AP_InertialSensor_Backend::_notify_new_accel_raw_sample` and
+`_notify_new_delta_velocity`, `AP_InertialSensor_Backend.cpp:611-614` and
+`:689-692`.
+
+```cpp
+_imu._accel_filtered[instance] = _imu._accel_filter[instance].apply(accel);
+if (_imu._accel_filtered[instance].is_nan() || _imu._accel_filtered[instance].is_inf()) {
+    _imu._accel_filter[instance].reset();
+}
+```
+
+The filter output is assigned to `_accel_filtered` and *then* checked. On a NaN
+or infinity the filter is reset, but the bad value stays in `_accel_filtered` --
+it is not replaced. It goes on to `set_accel_peak_hold` and then to
+`_publish_accel`, which copies it into `_accel[instance]`, so the AHRS reads a
+NaN acceleration for that cycle.
+
+**The gyro path does exactly the right thing**, a few hundred lines up in
+`apply_gyro_filters`:
+
+```cpp
+gyro_filtered = _imu._gyro_filter[instance].apply(gyro_filtered);
+if (gyro_filtered.is_nan() || gyro_filtered.is_inf()) {
+    _imu._gyro_filter[instance].reset();
+    ...
+    gyro_filtered = _imu._gyro_filtered[instance];   // <- keep the last good value
+}
+```
+
+It resets the filter *and* restores the previous filtered value, specifically so
+nothing bad is published. The accelerometer path omits that last line. Two
+guards written for the same hazard, one of them incomplete, is the signature of
+an oversight rather than a decision -- the same shape as D-019 in the same file.
+
+**Consequence:** one cycle of NaN acceleration reaching `AP_AHRS_DCM`, where it
+enters `_ra_sum` and from there the drift correction's `ga_b`. A NaN in an
+accumulator does not wash out on the next sample; it persists until something
+resets the accumulator.
+
+**Port:** the filtered value is checked before it is stored, and the previous
+one stands if the check fails -- exactly what the gyro path does.
+
+Covered by `d020_a_nan_does_not_reach_the_published_accel` in
+`crates/ap-ins/src/lib.rs`, alongside `a_nan_does_not_reach_the_published_gyro`
+which pins the behaviour upstream already has.
