@@ -1,4 +1,4 @@
-//! The first end-to-end test: navigation through to aileron.
+//! The first end-to-end test: navigation through to the servo.
 //!
 //! Every crate in this port has been verified alone against upstream's own
 //! recorded behaviour, and none of them had ever been run together. This does
@@ -12,7 +12,14 @@
 //!   RollDemand::from_navigation            ->  limited demand
 //!   RollDemand::angle_error_cd             ->  angle error
 //!   RollController::servo_out       50 Hz  ->  aileron, centidegrees
+//!   ServoChannel::pwm_from_angle           ->  pulse width, microseconds
 //! ```
+//!
+//! The last stage is compared against `RCOU`, which every flight logs anyway.
+//! It is written at about 10 Hz against the controller's 50, so each record is
+//! matched to the most recent output at or before it — and only where that
+//! output came from the port's own angle error, since elsewhere the controller
+//! is driven from the logged one to keep its state right.
 //!
 //! # Three things about the composition that the per-module tests could not see
 //!
@@ -58,6 +65,7 @@ use ap_nav::{L1Control, L1Gains, NavInputs};
 use ap_pid::PidGains;
 use ap_plane::RollDemand;
 use ap_replay::{Comparison, Fixture, Params, Row};
+use ap_servo::{OutputType, ServoChannel};
 
 /// One navigation period. An attitude step further behind than this means a
 /// navigation update ran that was not a waypoint call.
@@ -132,7 +140,7 @@ fn nav_inputs(row: &Row) -> NavInputs {
 }
 
 #[test]
-fn navigation_through_to_aileron_matches_the_flight() {
+fn navigation_through_to_the_servo_matches_the_flight() {
     let dir = fixtures_dir();
     let paths = [
         dir.join("vslice_l1.csv"),
@@ -168,6 +176,32 @@ fn navigation_through_to_aileron_matches_the_flight() {
     let mut limited = Comparison::new("stage 2: after the roll limit", 1.0);
     let mut angle_err = Comparison::new("stage 3: angle error", 1.0);
     let mut aileron = Comparison::new("stage 4: aileron out (centidegrees)", 2.0);
+    let mut pwm = Comparison::new("stage 5: aileron PWM (microseconds)", 0.5);
+
+    // The aileron channel as this airframe has it configured.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "servo endpoints are int16 parameters round-tripped as floats"
+    )]
+    let aileron_channel = ServoChannel {
+        servo_min: params.f32("SERVO1_MIN") as u16,
+        servo_max: params.f32("SERVO1_MAX") as u16,
+        servo_trim: params.f32("SERVO1_TRIM") as u16,
+        reversed: params.f32("SERVO1_REVERSED") != 0.0,
+        output_type: OutputType::Angle,
+        high_out: 4500,
+    };
+    assert_eq!(
+        params.f32("SERVO1_FUNCTION") as i32,
+        4,
+        "SERVO1 is expected to be the aileron (function 4) on this airframe"
+    );
+
+    let rcou = Fixture::load(dir.join("vslice_rcou.csv").as_path()).expect("servo fixture");
+    let mut rcou_next = 0usize;
+    let mut pwm_armed = 0usize;
+    let mut pwm_skipped = 0usize;
 
     let mut next_l1 = 0usize;
     let mut held_inputs: Option<NavInputs> = None;
@@ -320,6 +354,26 @@ fn navigation_through_to_aileron_matches_the_flight() {
             aileron.sample(row.time_us, row.output("out"), out.into());
             compared += 1;
         }
+
+        // Servo records at or before this step hold the pulse width this
+        // output produced. Only compare where the port computed the angle
+        // error itself: elsewhere the controller was driven from the logged
+        // one, and the conversion would be checked against an input the port
+        // did not produce.
+        while rcou_next < rcou.rows.len() && rcou.rows[rcou_next].time_us <= row.time_us {
+            let r = &rcou.rows[rcou_next];
+            rcou_next += 1;
+            if r.output("armed") == 0.0 || err.is_none() {
+                pwm_skipped += 1;
+                continue;
+            }
+            pwm.sample(
+                r.time_us,
+                r.output("c1"),
+                f64::from(aileron_channel.pwm_from_angle(out)),
+            );
+            pwm_armed += 1;
+        }
     }
 
     println!("{l1_calls} navigation updates, {driven} attitude steps driven");
@@ -329,7 +383,8 @@ fn navigation_through_to_aileron_matches_the_flight() {
     if unjoined > 0 {
         println!("  {unjoined} with no matching join record");
     }
-    for cmp in [&nav_roll, &limited, &angle_err, &aileron] {
+    println!("  {pwm_armed} servo samples compared, {pwm_skipped} skipped (disarmed or not reproducible)");
+    for cmp in [&nav_roll, &limited, &angle_err, &aileron, &pwm] {
         println!("  {}", cmp.report());
     }
 
@@ -348,6 +403,16 @@ fn navigation_through_to_aileron_matches_the_flight() {
         "the vehicle glue diverges\n  {}\n  {}",
         limited.report(),
         angle_err.report()
+    );
+    assert!(
+        pwm_armed > 300,
+        "too few servo samples compared: {pwm_armed}"
+    );
+    assert!(
+        pwm.passed(),
+        "the pulse width the servo would receive differs from the one the          aircraft actually sent
+  {}",
+        pwm.report()
     );
     assert!(
         aileron.passed(),
