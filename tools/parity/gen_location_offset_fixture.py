@@ -153,6 +153,19 @@ int main(void)
         }
     }
 
+    // get_distance over every ordered pair.
+    for (unsigned a = 0; a < ARRAY_SIZE(points); a++) {
+        for (unsigned b = 0; b < ARRAY_SIZE(points); b++) {
+            Location p1{}, p2{};
+            p1.lat = points[a].lat; p1.lng = points[a].lng;
+            p2.lat = points[b].lat; p2.lng = points[b].lng;
+            printf("distance,%d,%d,%d,%d,%u,0\n",
+                   points[a].lat, points[a].lng,
+                   points[b].lat, points[b].lng,
+                   fbits((float)p1.get_distance(p2)));
+        }
+    }
+
     // line_path_proportion: every ordered triple of points, so the query point
     // lands on, off, and well beyond both ends of the line.
     for (unsigned a = 0; a < ARRAY_SIZE(points); a++) {

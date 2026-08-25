@@ -11,7 +11,7 @@
 //! confirms it — nothing outside `AP_Math` references either. They are left
 //! unported rather than carried over untested.
 
-use crate::scalar::{radians, wrap_2pi, Real};
+use crate::scalar::{norm2, radians, wrap_2pi, Real};
 use crate::vector2::{Vector2, Vector2f};
 use crate::Ftype;
 
@@ -656,6 +656,29 @@ upstream's and reproducing it is the point"
     /// Offset from this position to `other`, north and east in metres,
     /// upstream `get_distance_NE`.
     ///
+    /// Horizontal distance to another location in metres, upstream
+    /// `get_distance`.
+    ///
+    /// Flat-earth over the difference in degrees, with the longitude scaled at
+    /// the midpoint latitude. Good to a fraction of a percent over the tens of
+    /// kilometres a fixed-wing leg covers, and wrong over a continent — which
+    /// is the trade upstream makes everywhere, not just here.
+    ///
+    /// Altitude is not part of it: this is ground distance, and a glide slope
+    /// wants exactly that.
+    #[must_use]
+    pub fn get_distance(self, other: Self) -> Ftype {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "upstream casts the int32 difference to ftype the same way; a coordinate difference beyond 2^24 is half the planet"
+        )]
+        let dlat = (other.lat - self.lat) as Ftype;
+        #[allow(clippy::cast_precision_loss, reason = "as above")]
+        let dlng = Self::diff_longitude(other.lng, self.lng) as Ftype
+            * Self::longitude_scale((self.lat + other.lat) / 2);
+        norm2(dlat, dlng) * Ftype::from(LOCATION_SCALING_FACTOR)
+    }
+
     /// Wrap a longitude into -180e7..180e7, upstream `wrap_longitude`.
     ///
     /// One wrap only. A value more than a full turn out stays out — upstream

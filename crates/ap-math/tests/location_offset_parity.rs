@@ -50,6 +50,8 @@ fn location_offsets_match_upstream() {
     let mut offsets = 0_usize;
     let mut bearings = 0_usize;
     let mut bearing_off_by_one = 0_usize;
+    let mut distances = 0_usize;
+    let mut exact_distances = 0_usize;
     let mut proportions = 0_usize;
     let mut exact_proportions = 0_usize;
     let mut worst_prop = 0.0_f64;
@@ -112,6 +114,40 @@ fn location_offsets_match_upstream() {
                 }
                 bearings += 1;
             }
+            "distance" => {
+                let p1 = Location::new(
+                    row[1].parse().expect("p1 lat"),
+                    row[2].parse().expect("p1 lng"),
+                );
+                let p2 = Location::new(
+                    row[3].parse().expect("p2 lat"),
+                    row[4].parse().expect("p2 lng"),
+                );
+                let want = f(row[5]);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "the harness narrows the ftype result to float before \
+emitting it, so the comparison is made at that width"
+                )]
+                let got = p1.get_distance(p2) as f32;
+
+                if got.to_bits() == want.to_bits() {
+                    exact_distances += 1;
+                } else {
+                    let rel =
+                        ((f64::from(got) - f64::from(want)) / f64::from(want).abs().max(1.0)).abs();
+                    assert!(
+                        rel < 1.0e-6,
+                        "get_distance between ({}, {}) and ({}, {}): {got} against \
+                         upstream {want}",
+                        p1.lat,
+                        p1.lng,
+                        p2.lat,
+                        p2.lng
+                    );
+                }
+                distances += 1;
+            }
             "proportion" => {
                 pending = Some((
                     row[1].parse().expect("p1 lat"),
@@ -157,9 +193,10 @@ fn location_offsets_match_upstream() {
     assert!(offsets >= 90, "got {offsets} offsets");
     assert!(bearings >= 90, "got {bearings} bearings");
     assert!(proportions >= 700, "got {proportions} proportions");
+    assert!(distances >= 80, "got {distances} distances");
     println!(
         "{offsets} offsets exact; {bearings} bearings, {bearing_off_by_one} of them one count out (D-017); \
-         {proportions} proportions, {exact_proportions} bit-exact, worst relative {worst_prop:e}"
+         {proportions} proportions, {exact_proportions} bit-exact; {distances} distances, {exact_distances} bit-exact, worst relative {worst_prop:e}"
     );
     assert!(
         bearing_off_by_one * 4 < bearings,

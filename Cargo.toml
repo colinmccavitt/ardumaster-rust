@@ -28,6 +28,7 @@ ap-ahrs = { path = "crates/ap-ahrs" }
 ap-baro = { path = "crates/ap-baro" }
 ap-common = { path = "crates/ap-common" }
 ap-gps = { path = "crates/ap-gps" }
+ap-landing = { path = "crates/ap-landing" }
 ap-ins = { path = "crates/ap-ins" }
 ap-sim = { path = "crates/ap-sim" }
 ap-scheduler = { path = "crates/ap-scheduler" }

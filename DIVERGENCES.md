@@ -1174,3 +1174,47 @@ real coordinate in the Atlantic off Ghana — a vehicle genuinely there cannot b
 told apart from one that has never had a fix. That is upstream's sentinel
 choice and changing it would change what every caller means; it is reproduced,
 and `Location::initialised` documents it.
+
+## D-024 — a glide slope is computed from an unresolvable altitude
+
+**Upstream:** `AP_Landing::loc_alt_AMSL_cm`, `libraries/AP_Landing/AP_Landing.cpp:215`.
+
+```cpp
+int32_t AP_Landing::loc_alt_AMSL_cm(const Location &loc) const
+{
+    int32_t alt_cm;
+    if (loc.get_alt_cm(Location::AltFrame::ABSOLUTE, alt_cm)) {
+        return alt_cm;
+    }
+    if (loc.get_alt_frame() == Location::AltFrame::ABOVE_TERRAIN) {
+        // if we can't get true terrain then assume flat terrain around home
+        return loc.alt + ahrs.get_home().alt;
+    }
+
+    // this should not happen, but return a value
+    INTERNAL_ERROR(AP_InternalError::error_t::flow_of_control);
+    return loc.alt;
+}
+```
+
+The last branch returns `loc.alt` — the raw field, in whatever frame it
+happens to be stored in — after logging an internal error. `INTERNAL_ERROR`
+records the fault and execution continues.
+
+`type_slope_setup_landing_glide_slope` calls this twice, for the previous and
+next waypoints, and the difference between them becomes `sink_height`, which
+sets the descent rate, the flare distance and the slope. A waypoint stored
+above home, on a vehicle where home is not yet set, therefore contributes a
+number whose datum is unknown, and the approach is flown to the slope built
+from it.
+
+The terrain fallback above it is different in kind and is reproduced: assuming
+the ground is as flat as it is at home is a real approximation, and over a
+runway it is usually true.
+
+**Port:** `loc_alt_amsl_cm` returns `None` and `setup_landing_glide_slope`
+returns `None` with it. Without the waypoint altitudes there is no glide slope,
+and a wrong one is worse than none on an approach — the caller can go around,
+which it cannot do if it is handed a plausible number.
+
+Covered by `ap_landing::tests::d024_an_unresolvable_altitude_has_no_slope`.

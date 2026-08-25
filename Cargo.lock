@@ -62,6 +62,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-landing"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-math"
 version = "0.1.0"
 dependencies = [
