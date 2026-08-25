@@ -129,6 +129,26 @@ impl YawController {
         self.integrator
     }
 
+    /// Start a segment from the integrator upstream actually had, for log
+    /// replay.
+    ///
+    /// The damper's integrator has no decay term, so an offset at the start of
+    /// a segment never washes out -- a replay that starts it at zero is wrong
+    /// for the whole run, not just the first few steps. The high-pass state is
+    /// not logged and cannot be seeded, but it *does* decay, so a long enough
+    /// warm-up handles it.
+    ///
+    /// Not available in a flight build: see the `replay` feature.
+    #[cfg(feature = "replay")]
+    pub fn seed_for_replay(&mut self, integrator: f32) {
+        self.integrator = integrator;
+        // Mid-flight the gain-change rescale has already settled, so the last
+        // seen damping gain is the current one. Left at zero -- the value a
+        // freshly constructed controller has -- the very next call would
+        // multiply the seeded integrator by zero and undo the seed.
+        self.k_d_last = self.gains.k_d;
+    }
+
     /// Clear both integrators, upstream `reset_I`.
     pub fn reset_i(&mut self) {
         self.info.i = 0.0;

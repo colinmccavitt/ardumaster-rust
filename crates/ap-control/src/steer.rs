@@ -117,6 +117,29 @@ impl SteerController {
         self.info.i = 0.0;
     }
 
+    /// Start a step from the state upstream actually had, for log replay.
+    ///
+    /// Needed because of D-018. Upstream's integrator winds to its IMAX limit
+    /// while the aircraft is stationary and the port's does not, so a
+    /// continuous replay diverges on the third sample and can then compare
+    /// nothing that depends on the integrator. Seeding each step lets the
+    /// integrator *arithmetic* -- the saturation guards, the IMAX clamp, the
+    /// gain conversion -- be checked against upstream everywhere the two gates
+    /// agree, which is everything D-018 is not meant to change.
+    ///
+    /// `last_out` is the previous call's four terms summed, which the log
+    /// carries individually. `last_t_ms` is when that previous call ran: this
+    /// controller measures its own loop period, so without it a seeded step
+    /// would see a zero period and integrate nothing.
+    ///
+    /// Not available in a flight build: see the `replay` feature.
+    #[cfg(feature = "replay")]
+    pub fn seed_for_replay(&mut self, integrator: f32, last_out: f32, last_t_ms: u32) {
+        self.info.i = integrator;
+        self.last_out = last_out;
+        self.last_t_ms = last_t_ms;
+    }
+
     /// True if the controller has run within the last second, upstream
     /// `active()`.
     #[must_use]

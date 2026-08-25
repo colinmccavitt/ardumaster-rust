@@ -11,8 +11,16 @@ ap-math = { workspace = true }
 ap-pid = { workspace = true }
 
 [dev-dependencies]
+# self-dependency so the crate's own tests get the `replay` feature
+ap-control = { path = ".", features = ["replay"] }
 ap-replay = { workspace = true }
 ap-pid = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Exposes `SteerController::seed_for_replay`, used only by the log-replay test
+# to start each step from the state upstream actually had. Never enabled in a
+# flight build.
+replay = []

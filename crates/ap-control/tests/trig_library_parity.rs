@@ -101,3 +101,54 @@ fn libm_and_glibc_agree_to_within_four_ulp() {
          far more than the 616 measured for D-017"
     );
 }
+
+/// The same measurement on the yaw damper's turn-coordination offset, which
+/// uses `sinf` alone.
+///
+/// This matters more than the pitch case, and the difference is instructive.
+/// In pitch the offset feeds a demanded rate that is recomputed from scratch
+/// every call, so an ulp of disagreement stays an ulp. In the yaw damper the
+/// offset is subtracted from the measured rate, high-passed, and then
+/// **integrated with no decay term** — so the disagreement accumulates for as
+/// long as the flight lasts instead of washing out.
+#[test]
+fn the_yaw_offset_disagrees_by_the_same_few_ulp() {
+    let path = fixtures_dir().join("yaw_replay.csv");
+    if !path.exists() {
+        eprintln!("skipping: yaw fixture not present");
+        return;
+    }
+    let fx = Fixture::load(&path).expect("fixture should load");
+
+    let mut differing = 0usize;
+    let mut worst_ulp = 0i32;
+    let mut worst_abs = 0.0_f64;
+
+    for row in &fx.rows {
+        let bank = row.input("rr") as f32;
+        let aspeed = row.input("as") as f32;
+        let speed = aspeed.max(10.0);
+
+        let a = GRAVITY_MSS / speed * Real::sin(bank);
+        let b = GRAVITY_MSS / speed * bank.sin();
+        if a.to_bits() != b.to_bits() {
+            differing += 1;
+            let ulp = (a.to_bits() as i64 - b.to_bits() as i64).unsigned_abs() as i32;
+            worst_ulp = worst_ulp.max(ulp);
+            worst_abs = worst_abs.max((f64::from(a) - f64::from(b)).abs());
+        }
+    }
+
+    println!("yaw offsets evaluated: {}", fx.rows.len());
+    println!("libm and glibc differ: {differing}");
+    println!("worst {worst_ulp} ulp, {worst_abs:.3e} absolute");
+
+    assert!(
+        differing > 0,
+        "if the two libraries agreed everywhere here, the yaw replay's          integrator drift would need another explanation"
+    );
+    assert!(
+        worst_ulp <= 4,
+        "libm and glibc now differ by {worst_ulp} ulp on the yaw offset, was          4 when D-017 was written"
+    );
+}

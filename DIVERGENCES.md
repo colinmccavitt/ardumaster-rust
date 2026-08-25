@@ -659,26 +659,40 @@ since there is no inherent method to shadow it.
   clamp above it already existed. So the guard was written to test the
   measured speed and has silently tested a constant against itself for
   thirteen years.
-- **risk**: **Low, and in the intended direction.** The effect is confined to
-  groundspeed below `STEER2SRV_MINSPD` (default 1 m/s): standing on the
-  runway, at the very start of the takeoff roll, and at the end of the
-  landing rollout. In those moments the port no longer accumulates steering
-  integrator, which is exactly what the commit set out to achieve. Above the
-  floor the two are identical.
+- **risk**: **In the intended direction, and larger than it looks.** The
+  effect is confined by speed — below `STEER2SRV_MINSPD` (default 1 m/s):
+  standing on the runway, the very start of the takeoff roll, the end of the
+  landing rollout. Above the floor the two are bit-identical, measured over
+  1,713 seeded steps of a real flight.
 
-  The windup upstream accrues is real but usually small, because the demanded
-  yaw rate while stationary is normally near zero and the error is scaled by
-  `1/_minspeed`. It is largest when the aircraft is held at a heading
-  different from its target before the roll begins — the case the commit
-  names.
+  But within that window the difference is not marginal. Replaying the
+  reference flight shows upstream's integrator **saturated at its IMAX clamp
+  — the full 15.0 —** before the takeoff roll begins, because the rate error
+  is divided by `_minspeed` rather than by a real speed and accumulates for
+  as long as the aircraft is stationary. The port holds zero. An earlier draft
+  of this entry guessed the windup was "usually small"; it was wrong, and the
+  measurement replaced the guess.
+
+  So the aircraft starts its roll with a fully wound steering integrator
+  upstream and a clean one in the port. That is precisely the "impact on
+  initial takeoff" the 2013 commit set out to remove.
 - **sitl_impact**: Steering output differs only below `STEER2SRV_MINSPD`. A
   `sitl-diff` run should expect divergence at the start of the takeoff roll
   and nowhere else.
 - **pinned by**: `steer::tests::d018_the_integrator_is_gated_on_the_measured_groundspeed`,
   which asserts both halves: stationary the integrator stays at zero, and
-  above the floor it still works. The replay test additionally requires that
-  wherever the port and upstream disagree, the groundspeed is below the floor
-  — so the divergence cannot silently widen.
+  above the floor it still works.
+
+  `steer_replay` bounds it against a real flight. A continuous replay is
+  useless here — the two integrators part company on the third sample and
+  never rejoin — so it runs two passes. Everything computed fresh each call
+  (the demanded rate, the measured rate, P, D, FF) is compared continuously
+  and agrees to the bit across all 2,185 samples. The integrator arithmetic
+  is then checked step by step, seeded from the state upstream actually had,
+  on every consecutive pair above the floor: 1,713 steps, integrator and
+  steering output both bit-exact. And below the floor the port is required to
+  hold zero. Together those say the divergence is exactly where it is meant to
+  be and nowhere else.
 
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
