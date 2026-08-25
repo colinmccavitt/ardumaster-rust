@@ -21,6 +21,12 @@
 
 #![no_std]
 
+mod steer;
+mod yaw;
+
+pub use steer::{SteerController, SteerGains, SteerInputs};
+pub use yaw::{SideslipInputs, YawController, YawGains, YawRateInputs};
+
 use ap_math::scalar::{constrain_value, degrees, radians, Real, GRAVITY_MSS};
 use ap_pid::{AcPid, PidGains, PidInfo, Scaling};
 

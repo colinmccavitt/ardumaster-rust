@@ -13,7 +13,7 @@ Rules:
   replaces, so nobody "restores parity" by accident.
 - `proposed` entries are **not applied**. High-blast-radius changes need explicit sign-off.
 
-Status counts: **8 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
+Status counts: **9 applied · 1 proposed · 1 rejected · 3 reproduced (not bugs)**
 
 ---
 
@@ -632,6 +632,53 @@ pitch replay's numbers did not move when this was fixed.
 Concrete-typed float code therefore calls the trait explicitly —
 `Real::tan(x)`, not `x.tan()`. Generic code over `T: Real` is safe as written,
 since there is no inherent method to shadow it.
+
+## D-018 — the steering integrator's speed gate compares a value against its own clamp
+
+- **status**: `applied`
+- **upstream**: `APM_Control/AP_SteerController.cpp`, `get_steering_out_rate`:
+
+  ```cpp
+  float speed = _ahrs.groundspeed();
+  if (speed < _minspeed) {
+      speed = _minspeed;          // clamped UP to the floor
+  }
+  ...
+  if (ki_rate > 0 && speed >= _minspeed) {   // ... then compared against it
+  ```
+
+  `speed` is the clamped local, so `speed >= _minspeed` is true on every call
+  and the gate cannot fire. The integrator winds while the aircraft is
+  standing still.
+- **ported**: gates on the measured groundspeed, before the clamp.
+- **why**: the intent is documented and unambiguous. The gate was added by
+  commit `39bfd809c2` (Andrew Tridgell, 2013-10-05), titled *"APM_Control:
+  disable integrator below minimum speed"* with the body *"this reduces the
+  impact on initial takeoff"*. The diff changes `if (ki_rate > 0)` to
+  `if (ki_rate > 0 && speed >= _minspeed)` and touches nothing else — the
+  clamp above it already existed. So the guard was written to test the
+  measured speed and has silently tested a constant against itself for
+  thirteen years.
+- **risk**: **Low, and in the intended direction.** The effect is confined to
+  groundspeed below `STEER2SRV_MINSPD` (default 1 m/s): standing on the
+  runway, at the very start of the takeoff roll, and at the end of the
+  landing rollout. In those moments the port no longer accumulates steering
+  integrator, which is exactly what the commit set out to achieve. Above the
+  floor the two are identical.
+
+  The windup upstream accrues is real but usually small, because the demanded
+  yaw rate while stationary is normally near zero and the error is scaled by
+  `1/_minspeed`. It is largest when the aircraft is held at a heading
+  different from its target before the roll begins — the case the commit
+  names.
+- **sitl_impact**: Steering output differs only below `STEER2SRV_MINSPD`. A
+  `sitl-diff` run should expect divergence at the start of the takeoff roll
+  and nowhere else.
+- **pinned by**: `steer::tests::d018_the_integrator_is_gated_on_the_measured_groundspeed`,
+  which asserts both halves: stationary the integrator stays at zero, and
+  above the floor it still works. The replay test additionally requires that
+  wherever the port and upstream disagree, the groundspeed is below the floor
+  — so the divergence cannot silently widen.
 
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
