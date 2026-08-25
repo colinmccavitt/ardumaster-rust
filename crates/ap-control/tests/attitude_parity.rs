@@ -669,3 +669,144 @@ fn the_euler_rate_sequence_matches_upstream() {
         rows.len()
     );
 }
+
+/// The acro path: rates commanded directly in the body frame.
+///
+/// Distinct from the euler-rate sequence in more than units. The shaping runs
+/// on the body-frame targets themselves rather than on Euler rates that are
+/// then converted, so an error in which frame the acceleration limit belongs
+/// to shows up here and nowhere else.
+#[test]
+fn the_body_rate_sequence_matches_upstream() {
+    use ap_control::attitude_controller::{AttitudeController, ShapingConfig};
+    use ap_math::vector3::Vector3f;
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/attitude_error.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).expect("fixture");
+
+    let mut section = "";
+    let mut gains: Vec<f32> = Vec::new();
+    let mut ff_enabled = false;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix('#') {
+            section = tag;
+            continue;
+        }
+        if line.is_empty() || line.chars().next().is_some_and(char::is_alphabetic) {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        match section {
+            "gains" => {
+                assert!(
+                    c.len() >= 17,
+                    "gains row has {} columns, need at least 17",
+                    c.len()
+                );
+                gains = c
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != 7 && *i != 11)
+                    .map(|(_, s)| f(s))
+                    .collect();
+                ff_enabled = c[11] == "1";
+            }
+            "bfrate" => rows.push(c.iter().map(|s| (*s).to_owned()).collect()),
+            _ => {}
+        }
+    }
+
+    assert!(!rows.is_empty(), "no body-rate rows in the fixture");
+    assert!(
+        ff_enabled,
+        "the fixture has feedforward off, so this exercises the fallback path only"
+    );
+
+    let shaping = ShapingConfig {
+        input_tc: gains[8],
+        rate_y_tc: gains[9],
+        rate_rp_tc: gains[14],
+        rate_bf_ff_enabled: ff_enabled,
+        ang_vel_roll_max_degs: gains[10],
+        ang_vel_pitch_max_degs: gains[11],
+        ang_vel_yaw_max_degs: gains[12],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+        slew_yaw_max_rads: gains[13],
+    };
+    let yaw_gains = YawLimitGains {
+        accel_yaw_max_radss: gains[5],
+        rate_yaw_kp: gains[6],
+        angle_yaw_kp: gains[2],
+        ..YawLimitGains::default()
+    };
+    let angle_gains = AngleGains {
+        angle_p_roll: gains[0],
+        angle_p_pitch: gains[1],
+        angle_p_yaw: gains[2],
+        accel_roll_max_radss: gains[3],
+        accel_pitch_max_radss: gains[4],
+        accel_yaw_max_radss: gains[5],
+        use_sqrt_controller: true,
+    };
+    let dt = gains[7];
+
+    let mut controller = AttitudeController::new();
+    controller.set_attitude_target(Quaternion::from_euler(0.40, 0.30, 1.10));
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+
+    for r in &rows {
+        assert_eq!(r.len(), 16, "malformed body-rate row");
+        let step: usize = r[0].parse().expect("step");
+        let body = Quaternion::from_euler(f(&r[4]), f(&r[5]), f(&r[6]));
+
+        let out = controller.input_rate_bf_roll_pitch_yaw(
+            f(&r[1]),
+            f(&r[2]),
+            f(&r[3]),
+            body,
+            &shaping,
+            &yaw_gains,
+            &angle_gains,
+            Vector3f::new(0.0, 0.0, 0.0),
+            dt,
+        );
+
+        let target = controller.euler_angle_target_rad();
+        let ang_vel = controller.ang_vel_target_rads();
+
+        for (label, got, want) in [
+            ("targ_r", target.x, f(&r[7])),
+            ("targ_p", target.y, f(&r[8])),
+            ("targ_y", target.z, f(&r[9])),
+            ("ang_vel_x", ang_vel.x, f(&r[10])),
+            ("ang_vel_y", ang_vel.y, f(&r[11])),
+            ("ang_vel_z", ang_vel.z, f(&r[12])),
+            ("rate_x", out.ang_vel_body_rads.x, f(&r[13])),
+            ("rate_y", out.ang_vel_body_rads.y, f(&r[14])),
+            ("rate_z", out.ang_vel_body_rads.z, f(&r[15])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < STEP_TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+    }
+
+    println!(
+        "{} body-rate steps, {checked} values, largest difference {largest:e}",
+        rows.len()
+    );
+}

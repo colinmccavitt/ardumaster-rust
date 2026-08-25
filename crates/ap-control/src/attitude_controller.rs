@@ -125,6 +125,134 @@ impl AttitudeController {
         self.euler_angle_target_rad = Vector3f::new(r, p, y);
     }
 
+    /// Body-frame rates — upstream `input_rate_bf_roll_pitch_yaw_rads`.
+    ///
+    /// The acro entry point proper. The command is already in the frame the
+    /// rate controller works in, so unlike every other entry point here there
+    /// is no conversion of the *command*: the shaping runs directly on the
+    /// body-frame targets, with the body-frame acceleration limits rather than
+    /// Euler-converted ones.
+    ///
+    /// The Euler rate target is still computed, but as bookkeeping rather than
+    /// as part of the path — it exists so a mode switch away from acro finds
+    /// coherent state.
+    ///
+    /// The fallback path is the interesting one. With shaping off it composes
+    /// the target with an axis-angle rotation built straight from the command,
+    /// never touching Euler angles — so unlike the Euler-rate fallback it has
+    /// no gimbal lock to avoid and needs no pitch clamp. An aircraft in acro
+    /// can fly through vertical.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one upstream entry point; see the siblings"
+    )]
+    pub fn input_rate_bf_roll_pitch_yaw(
+        &mut self,
+        roll_rate_bf_rads: f32,
+        pitch_rate_bf_rads: f32,
+        yaw_rate_bf_rads: f32,
+        attitude_body: Quaternion,
+        shaping: &ShapingConfig,
+        yaw_gains: &YawLimitGains,
+        angle_gains: &AngleGains,
+        gyro_rads: Vector3f,
+        dt: f32,
+    ) -> ControllerOutput {
+        self.attitude_target =
+            update_attitude_target(self.attitude_target, self.ang_vel_target_rads, dt);
+
+        let (r, p, y) = self.attitude_target.to_euler();
+        self.euler_angle_target_rad = Vector3f::new(r, p, y);
+
+        if shaping.rate_bf_ff_enabled {
+            let shape = |desired: f32, rate_in: f32, accel_in: f32, accel_max: f32, tc: f32| {
+                attitude_command_model(
+                    CommandModel {
+                        target_ang_vel: rate_in,
+                        target_ang_accel: accel_in,
+                    },
+                    0.0,
+                    desired,
+                    0.0,
+                    accel_max,
+                    tc,
+                    dt,
+                )
+            };
+
+            let roll = shape(
+                roll_rate_bf_rads,
+                self.ang_vel_target_rads.x,
+                self.ang_accel_target_rads.x,
+                shaping.accel_roll_max_radss,
+                shaping.rate_rp_tc,
+            );
+            let pitch = shape(
+                pitch_rate_bf_rads,
+                self.ang_vel_target_rads.y,
+                self.ang_accel_target_rads.y,
+                shaping.accel_pitch_max_radss,
+                shaping.rate_rp_tc,
+            );
+            let yaw = shape(
+                yaw_rate_bf_rads,
+                self.ang_vel_target_rads.z,
+                self.ang_accel_target_rads.z,
+                shaping.accel_yaw_max_radss,
+                shaping.rate_y_tc,
+            );
+
+            self.ang_vel_target_rads = Vector3f::new(
+                roll.target_ang_vel,
+                pitch.target_ang_vel,
+                yaw.target_ang_vel,
+            );
+            self.ang_accel_target_rads = Vector3f::new(
+                roll.target_ang_accel,
+                pitch.target_ang_accel,
+                yaw.target_ang_accel,
+            );
+
+            // Bookkeeping only, and it may fail at gimbal lock. Upstream
+            // leaves its output untouched there, which carries the previous
+            // value; nothing on this path reads it, so the carry is harmless
+            // and reproducing it costs nothing.
+            if let Some(euler_rate) =
+                body_to_euler_derivative(self.attitude_target, self.ang_vel_target_rads)
+            {
+                self.euler_rate_target_rads = euler_rate;
+            }
+        } else {
+            let update = Quaternion::from_rotation_vector(
+                Vector3f::new(roll_rate_bf_rads, pitch_rate_bf_rads, yaw_rate_bf_rads) * dt,
+            );
+            self.attitude_target = self.attitude_target * update;
+            self.attitude_target.normalize();
+
+            self.euler_rate_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.ang_vel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+            self.ang_accel_target_rads = Vector3f::new(0.0, 0.0, 0.0);
+        }
+
+        let out = attitude_controller_run(
+            self.attitude_target,
+            attitude_body,
+            yaw_gains,
+            angle_gains,
+            &ControllerInputs {
+                ang_vel_target_rads: self.ang_vel_target_rads,
+                gyro_rads,
+                ang_vel_roll_max_degs: shaping.ang_vel_roll_max_degs,
+                ang_vel_pitch_max_degs: shaping.ang_vel_pitch_max_degs,
+                ang_vel_yaw_max_degs: shaping.ang_vel_yaw_max_degs,
+            },
+            dt,
+        );
+
+        self.attitude_target = out.attitude_target;
+        out
+    }
+
     /// All three as Euler rates — upstream
     /// `input_euler_rate_roll_pitch_yaw_rads`.
     ///

@@ -86,6 +86,22 @@ int main(void)
 
     att._dt_s = 0.0025f;
 
+    // _rate_rp_tc and _rate_y_tc are plain floats with no initializer -- the
+    // vehicle assigns them at mode entry from the AC_CommandModel parameters,
+    // so a controller built outside a vehicle reads whatever was on the stack.
+    // It read zero, which happens to equal Copter's shipped default, but the
+    // fixture cannot rest on that: set them, and set them apart, so the two
+    // constants are distinguishable and neither is the no-op value.
+    //
+    // The velocity limits default to 0, meaning unlimited, so every sequence
+    // recorded so far compared the limiter as a no-op on both sides. These
+    // bite on pitch and yaw and not on roll, so both branches get recorded.
+    att._rate_rp_tc = 0.15f;
+    att._rate_y_tc = 0.25f;
+    att._ang_vel_roll_max_degs.set(220.0f);
+    att._ang_vel_pitch_max_degs.set(140.0f);
+    att._ang_vel_yaw_max_degs.set(120.0f);
+
     // The gains this controller is running, so the port can be driven with
     // exactly the same ones rather than with a hand-copied guess.
     printf("#gains\n");
@@ -165,6 +181,11 @@ int main(void)
         // start somewhere both sides can reach.
         static Probe seq(view, motors);
         seq._dt_s = 0.0025f;
+        seq._rate_rp_tc = 0.15f;
+        seq._rate_y_tc = 0.25f;
+        seq._ang_vel_roll_max_degs.set(220.0f);
+        seq._ang_vel_pitch_max_degs.set(140.0f);
+        seq._ang_vel_yaw_max_degs.set(120.0f);
         seq.reset_target_and_rate(true);
 
         // The controller reads the body attitude from the AHRS itself, so
@@ -213,6 +234,11 @@ int main(void)
         for (int slew = 0; slew <= 1; slew++) {
             static Probe head(view, motors);
             head._dt_s = 0.0025f;
+            head._rate_rp_tc = 0.15f;
+            head._rate_y_tc = 0.25f;
+            head._ang_vel_roll_max_degs.set(220.0f);
+            head._ang_vel_pitch_max_degs.set(140.0f);
+            head._ang_vel_yaw_max_degs.set(120.0f);
             head.reset_target_and_rate(true);
 
             // Start the target away from the body. With target == body the
@@ -269,6 +295,11 @@ int main(void)
     {
         static Probe er(view, motors);
         er._dt_s = 0.0025f;
+        er._rate_rp_tc = 0.15f;
+        er._rate_y_tc = 0.25f;
+        er._ang_vel_roll_max_degs.set(220.0f);
+        er._ang_vel_pitch_max_degs.set(140.0f);
+        er._ang_vel_yaw_max_degs.set(120.0f);
         er.reset_target_and_rate(true);
 
         // Offset, for the reason on the heading sequence: starting at zero
@@ -296,6 +327,53 @@ int main(void)
             const Vector3f euler = er._euler_angle_target_rad;
             const Vector3f ang_vel = er.get_attitude_target_ang_vel();
             const Vector3f rate = er.rate_bf_targets();
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(roll_rate), fbits(pitch_rate), fbits(yaw_rate),
+                   fbits(body_euler.x), fbits(body_euler.y), fbits(body_euler.z),
+                   fbits(euler.x), fbits(euler.y), fbits(euler.z),
+                   fbits(ang_vel.x), fbits(ang_vel.y), fbits(ang_vel.z),
+                   fbits(rate.x), fbits(rate.y), fbits(rate.z));
+        }
+    }
+
+    // ---- a body-frame rate sequence ----
+    printf("#bfrate\n");
+    printf("step,roll_rate,pitch_rate,yaw_rate,body_r,body_p,body_y,"
+           "targ_r,targ_p,targ_y,ang_vel_x,ang_vel_y,ang_vel_z,"
+           "rate_x,rate_y,rate_z\n");
+    {
+        static Probe bf(view, motors);
+        bf._dt_s = 0.0025f;
+        bf._rate_rp_tc = 0.15f;
+        bf._rate_y_tc = 0.25f;
+        bf._ang_vel_roll_max_degs.set(220.0f);
+        bf._ang_vel_pitch_max_degs.set(140.0f);
+        bf._ang_vel_yaw_max_degs.set(120.0f);
+        bf.reset_target_and_rate(true);
+
+        // Offset, per the note on the heading sequence.
+        Quaternion offset;
+        offset.from_euler(0.40f, 0.30f, 1.10f);
+        bf._attitude_target = offset;
+
+        const int STEPS = 400;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+            const float roll_rate = ts < 0.3f ? 0.0f : -0.9f;
+            const float pitch_rate = 0.6f - ts * 1.0f;
+            const float yaw_rate = ts < 0.6f ? -0.3f : 0.7f;
+
+            bf.input_rate_bf_roll_pitch_yaw_rads(roll_rate, pitch_rate, yaw_rate);
+
+            Quaternion body_now;
+            view.get_quat_body_to_ned(body_now);
+            Vector3f body_euler;
+            body_now.to_euler(body_euler);
+
+            const Vector3f euler = bf._euler_angle_target_rad;
+            const Vector3f ang_vel = bf.get_attitude_target_ang_vel();
+            const Vector3f rate = bf.rate_bf_targets();
 
             printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
                    fbits(roll_rate), fbits(pitch_rate), fbits(yaw_rate),
