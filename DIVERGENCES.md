@@ -559,6 +559,37 @@ diagonal, so this is an API difference rather than a behavioural one.
   component with a small one, chosen so that the two precision models give
   different answers.
 
+## D-016 — coordinate range checks compare integers against a float bound
+
+- **status**: `applied`
+- **upstream**: `AP_Math/location.cpp`:
+
+  ```cpp
+  bool check_lat(int32_t lat)  { return labs(lat) <= 90*1e7; }
+  bool check_lng(int32_t lng)  { return labs(lng) <= 180*1e7; }
+  ```
+
+  With `-fsingle-precision-constant` (D-015) the bound is a `float`, so the
+  comparison converts the integer to `float` first. At 9e8 the gap between
+  representable floats is 64, so every value from 900000001 to 900000032 rounds
+  onto the bound and is **accepted** — by a check whose only purpose is to
+  reject out-of-range coordinates. Longitude behaves the same way at 1.8e9,
+  where the gap is 128 and the window is +64.
+- **ported**: compares as integers.
+- **why**: measured, not inferred. The parity harness ran upstream over values
+  straddling the bound in single steps, and it accepts 900000001 through
+  900000032 and rejects from 900000033 — exactly the rounding window.
+- **risk**: **None in practice.** The overshoot is about 3.2e-6 degrees of
+  latitude, roughly 35 cm, and every value inside the valid range is treated
+  identically. The divergence exists only for coordinates already past the
+  pole.
+- **sitl_impact**: None.
+- **pinned by**: `location_parity::location_matches_upstream`, which requires
+  that wherever the two disagree it is always upstream accepting and the port
+  rejecting, and always outside the true bound — rather than hard-coding the
+  window, so the assertion stays correct if upstream changes the constant. Also
+  `location::tests::d016_latitude_bound_is_checked_as_an_integer`.
+
 ## D-003 — `is_zero()` compares doubles against `FLT_EPSILON`
 
 - **status**: `rejected` — reproduce upstream, do not change

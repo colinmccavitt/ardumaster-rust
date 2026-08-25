@@ -355,6 +355,28 @@ pub fn degrees<T: Real>(rad: T) -> T {
     rad * (T::from_f64(180.0) / T::PI)
 }
 
+/// Centidegrees to radians. Upstream `cd_to_rad`.
+///
+/// Upstream's `CDEG_TO_RAD` is `(M_PI / 18000.0f)`, and with
+/// -fsingle-precision-constant (D-015) that division happens in single
+/// precision -- so the constant is not the correctly rounded pi/18000.
+/// Dividing in `T` reproduces it exactly.
+#[inline]
+#[must_use]
+pub fn cd_to_rad<T: Real>(cdeg: T) -> T {
+    cdeg * (T::PI / T::from_f64(18000.0))
+}
+
+/// Radians to centidegrees. Upstream `rad_to_cd`.
+///
+/// `RAD_TO_CDEG` is `(18000.0f / M_PI)`; see [`cd_to_rad`] for why the
+/// division must happen in `T`.
+#[inline]
+#[must_use]
+pub fn rad_to_cd<T: Real>(rad: T) -> T {
+    rad * (T::from_f64(18000.0) / T::PI)
+}
+
 /// Square of a value. Upstream `AP_Math.h:261`.
 #[inline]
 pub fn sq<T: Real>(v: T) -> T {
