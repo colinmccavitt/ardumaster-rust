@@ -1,0 +1,13 @@
+[package]
+name = "ap-servo"
+description = "Port of ArduPilot libraries/SRV_Channel output conversion (Plane-4.7.0). Tracked as FW-018."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[lints]
+workspace = true

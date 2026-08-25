@@ -776,6 +776,29 @@ Suspected upstream defects where the **correct** behaviour cannot be determined
 from the source. The port reproduces upstream exactly, so there is no divergence
 to register; these are recorded so the question is not lost.
 
+- **`pwm_from_angle` reaches a working feature through undefined behaviour, and
+  `pwm_from_range` does not have it at all.** `SRV_Channel::pwm_from_range`
+  guards `servo_max <= servo_min` and returns the minimum. `pwm_from_angle` has
+  no such guard: with the endpoints inverted the span goes negative, and
+  upstream converts the negative result to `uint16_t`. That conversion is
+  undefined in C++.
+
+  On x86-64 GCC it wraps, and the wrapped value added to the trim comes out as
+  exactly the reversed deflection — 1000µs at +4500 where a normal channel
+  gives 2000µs. So inverting `SERVOn_MIN` and `SERVOn_MAX` is a working way to
+  reverse an angle output, and a no-op on a range output. Whether that is
+  intended is not determinable from the source; it is certainly not stated
+  anywhere, and the two functions plainly disagree about it.
+
+  The port reproduces the observable behaviour using Rust's defined wrapping
+  arithmetic rather than the undefined conversion, so the result is identical
+  without relying on the compiler. An earlier version saturated instead, which
+  lost the reversal and pinned a misconfigured channel at its trim — caught by
+  the parity fixture, which sweeps inverted endpoints on purpose.
+
+  Pinned by `servo_parity::pwm_conversion_matches_upstream` over 1,088 cases,
+  476 of them degenerate configurations.
+
 - **`crc8_table_rds02uf` has a one-byte collision.** The table is bijective
   except that `0x06` appears at both index 128 and index 202, and `0xA6` appears
   nowhere. One duplicate and one omission in an otherwise-bijective table is
