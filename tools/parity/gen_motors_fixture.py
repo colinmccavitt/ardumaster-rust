@@ -55,6 +55,7 @@ ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
 OUT = ROOT / "fixtures/motors_parity.csv"
 FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
 SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"
+OUTPUT_OUT = ROOT / "fixtures/motors_output.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -323,6 +324,14 @@ public:
     using AP_Motors::_thrust_boost_ratio;
     using AP_Motors::_thrust_balanced;
     using AP_Motors::_throttle_filter;
+    using AP_MotorsMulticopter::output_to_pwm;
+    using AP_MotorsMulticopter::set_actuator_with_slew;
+    using AP_MotorsMulticopter::actuator_spin_up_to_ground_idle;
+    using AP_MotorsMulticopter::check_mot_pwm_params;
+    using AP_MotorsMulticopter::_slew_up_time;
+    using AP_MotorsMulticopter::_slew_dn_time;
+    using AP_MotorsMulticopter::_pwm_min;
+    using AP_MotorsMulticopter::_pwm_max;
 
     // AP_MotorsMatrix enforces a singleton in its constructor, so the fixture
     // reuses one instance and clears it between frames rather than building
@@ -579,6 +588,118 @@ int main(void)
         }
     }
 
+    // ---- the output stage ----
+    printf("#output\n");
+
+    // output_to_pwm: every spool state, both arming states, both
+    // MOT_SAFE_DISARM settings, a couple of endpoint pairs, and actuator
+    // values chosen to sit just under integer pulse widths so the truncation
+    // shows rather than hides.
+    printf("#pwm\n");
+    printf("state,armed,disarm_disable,pwm_min,pwm_max,actuator,pwm\n");
+    {
+        Probe &m = motors;
+        static const float ACTUATORS[] = {
+            0.0f, 0.0009f, 0.1f, 0.25f, 0.3333333f, 0.5f, 0.6666667f,
+            0.75f, 0.9f, 0.999f, 1.0f, 1.5f, -0.25f,
+        };
+        static const int16_t ENDS[][2] = { {1000, 2000}, {1100, 1900}, {1, 2} };
+
+        for (int st = 0; st <= 4; st++) {
+            for (int arm = 0; arm <= 1; arm++) {
+                for (int dis = 0; dis <= 1; dis++) {
+                    for (unsigned e = 0; e < 3; e++) {
+                        m._pwm_min.set(ENDS[e][0]);
+                        m._pwm_max.set(ENDS[e][1]);
+                        m._disarm_disable_pwm.set((int8_t)dis);
+                        m._spool_state = (AP_Motors::SpoolState)st;
+                        m.armed(arm != 0);
+                        for (unsigned a = 0;
+                             a < sizeof(ACTUATORS) / sizeof(ACTUATORS[0]); a++) {
+                            const int16_t pwm = m.output_to_pwm(ACTUATORS[a]);
+                            printf("%d,%d,%d,%d,%d,%u,%d\n", st, arm, dis,
+                                   ENDS[e][0], ENDS[e][1],
+                                   fbits(ACTUATORS[a]), (int)pwm);
+                        }
+                    }
+                }
+            }
+        }
+        m.armed(false);
+    }
+
+    // set_actuator_with_slew: a grid of slew times against a step in each
+    // direction, run for several iterations so the ramp is visible rather
+    // than just its first step.
+    printf("#slew\n");
+    printf("up_time,dn_time,dt,start,input,iter,output\n");
+    {
+        Probe &m = motors;
+        static const float TIMES[] = { 0.0f, 0.05f, 0.2f, 0.5f, 2.0f, -1.0f };
+        static const float DTS[] = { 0.0025f, 0.01f };
+        static const float STARTS[] = { 0.0f, 0.3f, 1.0f };
+        static const float INPUTS[] = { 0.0f, 0.55f, 1.0f, 1.4f, -0.3f };
+
+        for (unsigned u = 0; u < sizeof(TIMES) / sizeof(TIMES[0]); u++) {
+            for (unsigned d = 0; d < sizeof(TIMES) / sizeof(TIMES[0]); d++) {
+                for (unsigned k = 0; k < sizeof(DTS) / sizeof(DTS[0]); k++) {
+                    for (unsigned s = 0; s < sizeof(STARTS) / sizeof(STARTS[0]); s++) {
+                        for (unsigned i = 0; i < sizeof(INPUTS) / sizeof(INPUTS[0]); i++) {
+                            m._slew_up_time.set(TIMES[u]);
+                            m._slew_dn_time.set(TIMES[d]);
+                            m.set_dt_s(DTS[k]);
+                            float out = STARTS[s];
+                            for (int it = 0; it < 6; it++) {
+                                m.set_actuator_with_slew(out, INPUTS[i]);
+                                printf("%u,%u,%u,%u,%u,%d,%u\n",
+                                       fbits(TIMES[u]), fbits(TIMES[d]),
+                                       fbits(DTS[k]), fbits(STARTS[s]),
+                                       fbits(INPUTS[i]), it, fbits(out));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // actuator_spin_up_to_ground_idle across the ramp, including the
+    // out-of-range values the clamp exists for. SPIN_MIN stays at its default
+    // -- it lives inside the thrust linearisation, which a subclass of
+    // AP_MotorsMatrix cannot reach -- so the port covers other values by unit
+    // test and this pins the default.
+    printf("#idle\n");
+    printf("spin_up_ratio,spin_min,actuator\n");
+    {
+        Probe &m = motors;
+        static const float RATIOS[] = {
+            -0.5f, 0.0f, 0.001f, 0.25f, 0.5f, 0.75f, 0.999f, 1.0f, 1.2f,
+        };
+        for (unsigned r = 0; r < sizeof(RATIOS) / sizeof(RATIOS[0]); r++) {
+            m._spin_up_ratio = RATIOS[r];
+            printf("%u,%u,%u\n", fbits(RATIOS[r]),
+                   fbits(m.thr_lin.get_spin_min()),
+                   fbits(m.actuator_spin_up_to_ground_idle()));
+        }
+    }
+
+    // check_mot_pwm_params over the interesting endpoint pairs.
+    printf("#pwmvalid\n");
+    printf("pwm_min,pwm_max,valid\n");
+    {
+        Probe &m = motors;
+        static const int16_t PAIRS[][2] = {
+            {1000, 2000}, {0, 2000}, {1, 2}, {2, 1}, {1500, 1500},
+            {-1, 2000}, {1, 1}, {1900, 1100}, {1, 32767},
+        };
+        for (unsigned i = 0; i < sizeof(PAIRS) / sizeof(PAIRS[0]); i++) {
+            m._pwm_min.set(PAIRS[i][0]);
+            m._pwm_max.set(PAIRS[i][1]);
+            printf("%d,%d,%d\n", PAIRS[i][0], PAIRS[i][1],
+                   (int)m.check_mot_pwm_params());
+        }
+    }
+
     return 0;
 }
 '''
@@ -598,6 +719,14 @@ def main():
         spool_marker = "#spool\n"
         if spool_marker in second:
             second, third = second.split(spool_marker, 1)
+            out_marker = "#output\n"
+            if out_marker in third:
+                third, fourth = third.split(out_marker, 1)
+                OUTPUT_OUT.write_text(out_marker + fourth)
+                rows = sum(1 for l in fourth.splitlines()
+                           if l and not l.startswith("#") and "," in l
+                           and not l[0].isalpha())
+                print("wrote %s: %d rows" % (OUTPUT_OUT.name, rows))
             SPOOL_OUT.write_text(spool_marker + third)
             rows = sum(1 for l in third.splitlines()
                        if l and not l.startswith("scenario,"))
