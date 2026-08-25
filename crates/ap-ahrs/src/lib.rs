@@ -45,6 +45,10 @@ pub enum MatrixHealth {
 pub struct Dcm {
     /// The attitude, body to earth.
     pub matrix: Matrix3f,
+    /// Corrected body rates, upstream `_omega`. Read by the rate controllers,
+    /// and deliberately excluding the proportional drift terms -- see
+    /// [`Dcm::matrix_update`].
+    pub omega: Vector3f,
     renorm_val_sum: f32,
     renorm_val_count: u16,
 }
@@ -61,20 +65,53 @@ impl Dcm {
     pub fn new() -> Self {
         Self {
             matrix: Matrix3f::identity(),
+            omega: Vector3f::zero(),
             renorm_val_sum: 0.0,
             renorm_val_count: 0,
         }
     }
 
-    /// Rotate the matrix by a gyro sample, upstream's body of `matrix_update`.
+    /// Advance the attitude by one IMU sample, upstream `matrix_update`.
     ///
-    /// The rotation uses the corrected rate — the raw gyro plus the integral
-    /// drift estimate plus both proportional terms. Upstream's own comment
-    /// explains why `_omega` afterwards excludes the P terms: the spin rate is
-    /// taken from its length and feeds the P gain calculation, so including
-    /// them would be positive feedback.
-    pub fn rotate(&mut self, omega: Vector3f, omega_p: Vector3f, omega_yaw_p: Vector3f, dt: f32) {
-        self.matrix.rotate((omega + omega_p + omega_yaw_p) * dt);
+    /// Two things happen to `omega` here and the order matters.
+    ///
+    /// The rotation uses the rate derived from the **delta angle** -- the
+    /// integrated rotation over the sample interval, divided by that interval
+    /// -- plus the integral drift estimate, plus both proportional correction
+    /// terms. Delta angle rather than the instantaneous gyro because it
+    /// captures rotation that happened between samples, which a point reading
+    /// cannot.
+    ///
+    /// Afterwards `omega` is **replaced** by the filtered gyro plus the
+    /// integral term, deliberately excluding the P terms. Upstream explains
+    /// why: the spin rate is taken from `omega.length()` and feeds the P gain
+    /// calculation, so including the P terms would be positive feedback into
+    /// their own gain. That replacement happens whether or not the rotation
+    /// did, because the rate controllers read `omega` every loop regardless.
+    ///
+    /// `delta_angle` is `None` when the IMU has no sample ready; a
+    /// non-positive interval is treated the same way. Upstream skips the
+    /// rotation entirely rather than integrating a guess.
+    pub fn matrix_update(
+        &mut self,
+        delta_angle: Option<(Vector3f, f32)>,
+        gyro: Vector3f,
+        omega_i: Vector3f,
+        omega_p: Vector3f,
+        omega_yaw_p: Vector3f,
+    ) {
+        if let Some((delta_angle, dangle_dt)) = delta_angle {
+            if dangle_dt > 0.0 {
+                self.omega = delta_angle / dangle_dt;
+                self.omega += omega_i;
+                self.matrix
+                    .rotate((self.omega + omega_p + omega_yaw_p) * dangle_dt);
+            }
+        }
+
+        // Deliberately outside the branch: the rate controllers read omega
+        // every loop whether or not a new IMU sample arrived.
+        self.omega = gyro + omega_i;
     }
 
     /// Renormalise one row, upstream `renorm`.
@@ -156,25 +193,31 @@ impl Dcm {
         MatrixHealth::Ok
     }
 
-    /// Mean renormalisation factor since the last call, upstream's
-    /// `_renorm_val_sum / _renorm_val_count` reporting, resetting the running
-    /// total.
+    /// The running renormalisation statistics, upstream `_renorm_val_sum`
+    /// and `_renorm_val_count`.
     ///
-    /// A value drifting away from 1.0 means the matrix is being pulled out of
-    /// shape faster than the integration should be doing.
-    pub fn take_renorm_average(&mut self) -> Option<f32> {
-        if self.renorm_val_count == 0 {
-            return None;
-        }
-        let avg = self.renorm_val_sum / f32::from(self.renorm_val_count);
-        self.renorm_val_sum = 0.0;
-        self.renorm_val_count = 0;
-        Some(avg)
+    /// Upstream accumulates both in `renorm` and **never reads them** -- the
+    /// only references anywhere in `AP_AHRS_DCM` are the two increments and
+    /// the declarations. They are kept here because they are upstream's state,
+    /// but nothing in the estimator depends on them and no behaviour follows
+    /// from their value.
+    ///
+    /// Returned as a pair rather than averaged: an average would be an
+    /// interface upstream does not have, and inventing one is what the first
+    /// version of this port did.
+    #[must_use]
+    pub const fn renorm_stats(&self) -> (f32, u16) {
+        (self.renorm_val_sum, self.renorm_val_count)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::float_cmp,
+        reason = "these compare values the code either copies verbatim or leaves untouched, so exact equality is the property under test"
+    )]
+
     use super::*;
 
     fn skewed() -> Matrix3f {
@@ -299,36 +342,104 @@ mod tests {
         assert_eq!(d.check_matrix(), MatrixHealth::NeedsReset);
     }
 
-    /// PORT-DERIVED. The renormalisation statistic averages the factors used
-    /// and clears on read, which is how upstream reports it.
+    /// PORT-DERIVED. The statistics accumulate one entry per renormalised
+    /// row. Upstream never reads them, so there is no behaviour to pin beyond
+    /// the accumulation itself.
     #[test]
-    fn the_renorm_average_clears_on_read() {
+    fn the_renorm_statistics_accumulate_per_row() {
         let mut d = Dcm::new();
-        assert_eq!(d.take_renorm_average(), None);
+        assert_eq!(d.renorm_stats(), (0.0, 0));
         d.matrix = Matrix3f::identity();
         assert_eq!(d.normalize(), MatrixHealth::Ok);
-        let avg = d
-            .take_renorm_average()
-            .expect("three rows were renormalised");
+        let (sum, count) = d.renorm_stats();
+        assert_eq!(count, 3, "one per row");
         assert!(
-            (avg - 1.0).abs() < 1e-6,
-            "identity should need no scaling, got {avg}"
+            (sum - 3.0).abs() < 1e-6,
+            "identity needs no scaling, so each factor is 1.0; got {sum}"
         );
-        assert_eq!(d.take_renorm_average(), None, "reading should clear it");
     }
 
-    /// PORT-DERIVED. The small-angle rotation is not a true rotation: it
-    /// leaves the matrix slightly non-orthonormal, which is precisely why
+    /// PORT-DERIVED. omega follows the gyro whether or not a new IMU sample
+    /// drove a rotation, because the rate controllers read it every loop.
+    #[test]
+    fn omega_follows_the_gyro_even_without_an_imu_sample() {
+        let mut d = Dcm::new();
+        let gyro = Vector3f::new(0.1, -0.2, 0.3);
+        let omega_i = Vector3f::new(0.01, 0.0, 0.0);
+        let before = d.matrix;
+
+        d.matrix_update(None, gyro, omega_i, Vector3f::zero(), Vector3f::zero());
+
+        assert_eq!(d.omega, gyro + omega_i);
+        assert_eq!(d.matrix.a, before.a, "no sample means no rotation");
+    }
+
+    /// PORT-DERIVED. A non-positive sample interval is treated as no sample:
+    /// upstream leaves the attitude alone rather than dividing by it.
+    #[test]
+    fn a_zero_interval_does_not_rotate() {
+        let mut d = Dcm::new();
+        let before = d.matrix;
+        d.matrix_update(
+            Some((Vector3f::new(0.0, 0.0, 0.1), 0.0)),
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+        );
+        assert_eq!(d.matrix.a, before.a);
+        assert_eq!(d.matrix.c, before.c);
+    }
+
+    /// PORT-DERIVED. The proportional terms steer the rotation but stay out of
+    /// the omega the controllers read -- upstream's guard against feeding the
+    /// P gain calculation with its own output.
+    #[test]
+    fn the_proportional_terms_rotate_but_do_not_reach_omega() {
+        let sample = Some((Vector3f::new(0.0, 0.0, 0.001), 0.01));
+        let mut with_p = Dcm::new();
+        let mut without_p = Dcm::new();
+
+        with_p.matrix_update(
+            sample,
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::new(0.0, 0.0, 0.05),
+            Vector3f::zero(),
+        );
+        without_p.matrix_update(
+            sample,
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+        );
+
+        assert_ne!(
+            with_p.matrix.a.y, without_p.matrix.a.y,
+            "P should steer the rotation"
+        );
+        assert_eq!(with_p.omega, Vector3f::zero(), "and stay out of omega");
+    }
+
+    /// PORT-DERIVED. The integration step is not a true rotation: it leaves
+    /// the matrix slightly non-orthonormal, which is precisely why
     /// normalisation runs after it.
     #[test]
     fn the_rotation_step_leaves_work_for_the_normaliser() {
         let mut d = Dcm::new();
-        let rate = Vector3f::new(0.0, 0.0, 1.0); // 1 rad/s in yaw
-        d.rotate(rate, Vector3f::zero(), Vector3f::zero(), 0.1);
+        // 1 rad/s of yaw over a 0.1s sample, as a delta angle
+        d.matrix_update(
+            Some((Vector3f::new(0.0, 0.0, 0.1), 0.1)),
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+            Vector3f::zero(),
+        );
         let after_rotation = orthonormality_error(&d.matrix);
         assert!(
             after_rotation > 1e-4,
-            "a first-order rotation should distort the matrix, error {after_rotation}"
+            "a first-order step should distort the matrix, error {after_rotation}"
         );
         assert_eq!(d.normalize(), MatrixHealth::Ok);
         assert!(orthonormality_error(&d.matrix) < 1e-6);

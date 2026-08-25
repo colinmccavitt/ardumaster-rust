@@ -82,8 +82,9 @@ int main()
         d._renorm_val_sum = 0;
         d._renorm_val_count = 0;
 
-        fprintf(stderr, "row %u\n", i);
+        fprintf(stderr, "row %u: before normalize\n", i);
         d.normalize();
+        fprintf(stderr, "row %u: normalize returned, a.x=%f\n", i, (double)d._dcm_matrix.a.x);
 
         printf("%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
                "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u\n",
