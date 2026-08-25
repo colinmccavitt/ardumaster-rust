@@ -22,6 +22,10 @@
 
 #![no_std]
 
+pub mod drift;
+
+pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
+
 use ap_math::matrix3::Matrix3f;
 use ap_math::scalar::Real;
 use ap_math::vector3::Vector3f;
@@ -125,7 +129,12 @@ impl Dcm {
         let renorm_val = 1.0 / a.length();
 
         self.renorm_val_sum += renorm_val;
-        self.renorm_val_count += 1;
+        // Wrapping on purpose. Upstream's counter is a uint16_t bumped once per
+        // renormalised row, so at a 400 Hz IMU it laps every 55 seconds of
+        // flight -- and since nothing ever reads it, upstream never notices.
+        // Rust's `+= 1` would panic there instead, so the wrap is made explicit
+        // rather than inherited by accident.
+        self.renorm_val_count = self.renorm_val_count.wrapping_add(1);
 
         if !(renorm_val < 2.0 && renorm_val > 0.5) && !(renorm_val < 1.0e6 && renorm_val > 1.0e-6) {
             return None;
