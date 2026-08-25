@@ -72,6 +72,7 @@ OUTPUT_OUT = ROOT / "fixtures/motors_output.csv"
 THROTTLE_OUT = ROOT / "fixtures/motors_throttle.csv"
 CHANNELS_OUT = ROOT / "fixtures/motors_channels.csv"
 SRVFN_OUT = ROOT / "fixtures/srv_functions.csv"
+AUX_OUT = ROOT / "fixtures/srv_aux_function.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -121,12 +122,24 @@ HARNESS = r'''
 #include <AP_HAL_SITL/Scheduler.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
 #include <AP_ROMFS/AP_ROMFS.h>
+#include <cstdarg>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 namespace AP_HAL {
-    void panic(const char *m, ...) { fputs(m, stderr); abort(); }
+    // Formats its arguments. The previous version used fputs, so a panic
+    // carrying detail -- AP_HAL::panic("...%s", name) -- printed the format
+    // string and named nothing.
+    void panic(const char *m, ...)
+    {
+        va_list ap;
+        va_start(ap, m);
+        vfprintf(stderr, m, ap);
+        va_end(ap);
+        fputc('\n', stderr);
+        abort();
+    }
 
 }
 
@@ -850,6 +863,75 @@ int main(void)
         }
     }
 
+    // ---- the channel-to-function mapping ----
+    printf("#auxfn\n");
+    // One section, two row kinds: `ch` is a channel's assigned function (-1
+    // when this build does not define it), `fn` is a function's channel mask.
+    printf("case,kind,a,b\n");
+    {
+        // Each case is an assignment of functions to the first N channels.
+        // Every function here is one this build defines. Passing an
+        // out-of-range one to set_default_function trips an internal error --
+        // upstream sets its bitmask before checking validity -- and that is
+        // not how a vehicle acquires an invalid function anyway; that comes
+        // from the SERVOn_FUNCTION parameter, which update_aux_servo_function
+        // screens itself.
+        static const uint8_t CASES[][8] = {
+            { 33,  34,  35,  36,   0,   0,   0,   0 },  // four motors
+            { 33,  33,  34,  34,   0,   0,   0,   0 },  // two channels per motor
+            { 33,  34,  35,  36,  37,  38,  39,  40 },  // eight motors
+            { 0,   0,   0,   0,   0,   0,   0,   0 },   // all k_none
+            { 82,  83,  84,  85,   0,   0,   0,   0 },  // the second motor range
+            { 160, 161, 162, 163,  0,   0,   0,   0 },  // the third
+        };
+        const unsigned ncases = sizeof(CASES) / sizeof(CASES[0]);
+
+        // Functions to interrogate afterwards: the motors used above, several
+        // never assigned, and two this build does not define -- which answer
+        // with invalid_mask. With every channel validly assigned that is zero,
+        // and a port answering with an all-ones sentinel instead fails on
+        // exactly those rows. That is the check this section exists for.
+        static const int PROBE[] = { 33, 34, 35, 36, 37, 40, 82, 160, 250, 251 };
+        const unsigned nprobe = sizeof(PROBE) / sizeof(PROBE[0]);
+
+        for (unsigned c = 0; c < ncases; c++) {
+            for (unsigned ch = 0; ch < 8; ch++) {
+                // set_default_function only moves a parameter still sitting at
+                // its default, which is where every one of them is here: this
+                // harness never loads storage.
+                SRV_Channels::set_default_function(
+                    (uint8_t)ch, (SRV_Channel::Function)CASES[c][ch]);
+            }
+
+            SRV_Channels::update_aux_servo_function();
+
+            // Record what all 32 channels hold, not just the eight set above.
+            // channels[] is private, so this reconstructs it through the
+            // public masks: a channel belongs to whichever function's mask
+            // contains its bit, and one in no function's mask is invalid.
+            // Without this the test cannot reproduce the input, because the
+            // untouched channels are what make invalid_mask non-zero.
+            for (unsigned ch = 0; ch < 32; ch++) {
+                int found = -1;
+                for (unsigned fn = 0; fn < 190; fn++) {
+                    const uint32_t m = SRV_Channels::get_output_channel_mask(
+                        (SRV_Channel::Function)fn);
+                    if (m & (1u << ch)) {
+                        found = (int)fn;
+                        break;
+                    }
+                }
+                printf("%u,ch,%u,%d\n", c, ch, found);
+            }
+
+            for (unsigned k = 0; k < nprobe; k++) {
+                printf("%u,fn,%d,%u\n", c, PROBE[k],
+                       (unsigned)SRV_Channels::get_output_channel_mask(
+                           (SRV_Channel::Function)PROBE[k]));
+            }
+        }
+    }
+
     return 0;
 }
 '''
@@ -881,6 +963,14 @@ def main():
                         fn_marker = "#srvfn\n"
                         if fn_marker in sixth:
                             sixth, seventh = sixth.split(fn_marker, 1)
+                            aux_marker = "#auxfn\n"
+                            if aux_marker in seventh:
+                                seventh, eighth = seventh.split(aux_marker, 1)
+                                AUX_OUT.write_text(aux_marker + eighth)
+                                rows = sum(1 for l in eighth.splitlines()
+                                           if l and not l.startswith("#")
+                                           and "," in l and not l[0].isalpha())
+                                print("wrote %s: %d rows" % (AUX_OUT.name, rows))
                             SRVFN_OUT.write_text(fn_marker + seventh)
                             rows = sum(1 for l in seventh.splitlines()
                                        if l and not l.startswith("#")

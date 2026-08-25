@@ -266,3 +266,99 @@ fn each_motor_range_is_contiguous() {
     assert_ne!(Function::motor(8).0, Function::motor(7).0 + 1);
     assert_ne!(Function::motor(12).0, Function::motor(11).0 + 1);
 }
+
+/// Parity: `update_aux_servo_function` against upstream.
+///
+/// This is the test that would have caught the `invalid_mask` bug. The port had
+/// it as an all-ones sentinel; the unit tests asserted the sentinel and passed,
+/// because the code and the tests came from the same wrong reading. Upstream's
+/// answer here is 0xFFFF0000 — neither zero nor all ones — so a port with the
+/// sentinel fails on every `fn,250` row, and a port returning zero fails too.
+///
+/// The channel vector is reconstructed by the harness through the public masks
+/// rather than read out of the private `channels[]`, so the test drives the
+/// port with exactly the assignment upstream had, including the channels the
+/// case never touched. Those untouched channels are what make `invalid_mask`
+/// non-zero, so leaving them out would have quietly removed the interesting
+/// case.
+#[test]
+fn the_aux_function_mapping_matches_upstream() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("fixtures/srv_aux_function.csv"))
+        .expect("workspace root");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — run tools/parity/gen_motors_fixture.py",
+            path.display()
+        )
+    });
+
+    // case -> (channel functions, expected masks)
+    let mut channels: std::collections::BTreeMap<usize, Vec<Function>> =
+        std::collections::BTreeMap::new();
+    let mut masks: std::collections::BTreeMap<usize, Vec<(u8, u32)>> =
+        std::collections::BTreeMap::new();
+
+    for line in text.lines() {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("case,") {
+            continue;
+        }
+        let c: Vec<&str> = line.split(',').collect();
+        assert_eq!(c.len(), 4, "malformed row: {line}");
+        let case: usize = c[0].parse().expect("case");
+
+        match c[1] {
+            "ch" => {
+                let channel: usize = c[2].parse().expect("channel");
+                let function: i32 = c[3].parse().expect("function");
+                let v = channels.entry(case).or_default();
+                assert_eq!(v.len(), channel, "channel rows out of order");
+                // -1 means this build defines no such function. Any value past
+                // the table stands in for it; the port only asks `valid()`.
+                v.push(if function < 0 {
+                    Function(u8::MAX)
+                } else {
+                    Function(u8::try_from(function).expect("function fits"))
+                });
+            }
+            "fn" => {
+                let function: u8 = c[2].parse().expect("function");
+                let mask: u32 = c[3].parse().expect("mask");
+                masks.entry(case).or_default().push((function, mask));
+            }
+            other => panic!("unknown row kind {other}"),
+        }
+    }
+
+    assert!(!channels.is_empty(), "fixture has no cases");
+    let mut checked = 0_usize;
+    let mut saw_nonzero_invalid = false;
+
+    for (case, assignments) in &channels {
+        assert_eq!(assignments.len(), 32, "case {case}: expected 32 channels");
+
+        let mut registry = Registry::new();
+        registry.update_aux_servo_function(assignments);
+
+        for &(function, want) in masks.get(case).expect("masks for case") {
+            let got = registry.output_channel_mask(Function(function));
+            assert_eq!(
+                got, want,
+                "case {case} function {function}: mask {got:#x} != upstream {want:#x}"
+            );
+            checked += 1;
+            if !Function(function).valid() && want != 0 {
+                saw_nonzero_invalid = true;
+            }
+        }
+    }
+
+    assert!(
+        saw_nonzero_invalid,
+        "the fixture must include a non-zero invalid_mask, or the sentinel bug \
+         this test exists for would pass again"
+    );
+    println!("{} cases, {checked} masks, all exact", channels.len());
+}

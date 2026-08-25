@@ -2,3 +2,8 @@ target/
 Cargo.lock merge=binary
 logs/
 *.BIN
+
+# Written by the parity harness: the real StorageManager persists parameters
+# to disk now that the firmware is linked rather than stubbed. It is harness
+# scratch, not an input -- the fixtures do not read it.
+eeprom.bin
