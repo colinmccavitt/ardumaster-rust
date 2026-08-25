@@ -53,6 +53,7 @@ from parity_build import build, run  # noqa: E402
 
 ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
 OUT = ROOT / "fixtures/motors_parity.csv"
+FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
 BUILD = Path("/tmp/motors_parity/harness")
 
 OBJECTS = [
@@ -283,6 +284,7 @@ public:
     using AP_MotorsMatrix::add_motor;
     using AP_MotorsMatrix::add_motor_raw;
     using AP_MotorsMatrix::normalise_rpy_factors;
+    using AP_MotorsMatrix::setup_motors;
     using AP_MotorsMatrix::_roll_factor;
     using AP_MotorsMatrix::_pitch_factor;
     using AP_MotorsMatrix::_yaw_factor;
@@ -378,6 +380,42 @@ int main(void)
         }
     }
 
+    // ---- every frame class and type the Copter build defines ----
+    printf("#frames\n");
+    printf("class,type,ok,motor,roll,pitch,yaw,throttle,order\n");
+
+    for (int cls = 0; cls <= 17; cls++) {
+        for (int typ = 0; typ <= 20; typ++) {
+            Probe &m = motors;
+            m.clear_motors();
+
+            m.setup_motors((AP_Motors::motor_frame_class)cls,
+                           (AP_Motors::motor_frame_type)typ);
+            // setup_motors returns void, so success is read from whether it
+            // fitted any motors -- which is also what the vehicle cares about.
+            unsigned fitted = 0;
+            for (unsigned i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+                if (m.motor_enabled[i]) { fitted++; }
+            }
+            if (fitted == 0) {
+                printf("%d,%d,0,-1,0,0,0,0,0\n", cls, typ);
+                continue;
+            }
+            // RAW factors, before normalisation. The port stores these and
+            // normalises them itself, which keeps upstream's two-stage shape
+            // instead of baking the scaling into the table.
+            for (unsigned i = 0; i < AP_MOTORS_MAX_NUM_MOTORS; i++) {
+                if (!m.motor_enabled[i]) {
+                    continue;
+                }
+                printf("%d,%d,1,%u,%u,%u,%u,%u,%u\n", cls, typ, i,
+                       fbits(m._roll_factor[i]), fbits(m._pitch_factor[i]),
+                       fbits(m._yaw_factor[i]), fbits(m._throttle_factor[i]),
+                       (unsigned)m._test_order[i]);
+            }
+        }
+    }
+
     return 0;
 }
 '''
@@ -389,7 +427,17 @@ def main():
     build(HARNESS, OBJECTS, BUILD, "AP_Motors/AP_MotorsMatrix.cpp",
           )
     text = run(BUILD)
-    OUT.write_text(text)
+    # The harness emits two documents; split them at the second banner.
+    marker = "#frames\n"
+    if marker in text:
+        first, second = text.split(marker, 1)
+        OUT.write_text(first)
+        FRAMES_OUT.write_text(marker + second)
+        frames = sum(1 for l in second.splitlines()
+                     if l and not l.startswith("class,"))
+        print("wrote %s: %d rows" % (FRAMES_OUT.name, frames))
+    else:
+        OUT.write_text(text)
     rows = sum(1 for l in text.splitlines()
                if l and not l.startswith("#") and not l.startswith("frame,"))
     print("wrote %s: %d rows" % (OUT.name, rows))
