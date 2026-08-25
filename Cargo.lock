@@ -72,6 +72,9 @@ dependencies = [
 [[package]]
 name = "ap-param"
 version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
 
 [[package]]
 name = "ap-pid"

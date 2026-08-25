@@ -118,6 +118,13 @@ pub enum StorageError {
         /// Where.
         offset: u16,
     },
+    /// The backing store refused a write. Storage may be left with a record
+    /// half appended -- which is invisible to a reader, by design; see the
+    /// ordering in `save`.
+    WriteFailed {
+        /// Where.
+        offset: u16,
+    },
 }
 
 /// One entry as it appears in storage.

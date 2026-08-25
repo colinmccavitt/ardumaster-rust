@@ -43,8 +43,10 @@
 #![no_std]
 
 pub mod info;
+pub mod save;
 pub mod storage;
 
+pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 
 pub use info::{
