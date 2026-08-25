@@ -30,6 +30,7 @@ HARNESS = r'''
 #include <AP_AHRS/AP_AHRS_View.h>
 #include <AP_Motors/AP_MotorsMatrix.h>
 #include <AC_AttitudeControl/AC_AttitudeControl_Multi.h>
+#include <AC_PID/AC_PID.h>
 #include <cstdarg>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,12 +56,20 @@ static uint32_t fbits(float f)
     return u;
 }
 
+extern const AP_HAL::HAL &hal;
+
+static void harness_set_time_us(uint64_t t)
+{
+    hal.scheduler->stop_clock(t);
+}
+
 class MotorProbe : public AP_MotorsMatrix {
 public:
     using AP_MotorsMatrix::AP_MotorsMatrix;
     using AP_MotorsMulticopter::_throttle_thrust_max;
     using AP_Motors::_throttle_out;
     using AP_Motors::_throttle_filter;
+    using AP_Motors::_throttle_slew_rate;
 };
 
 class Probe : public AC_AttitudeControl_Multi {
@@ -79,6 +88,15 @@ public:
     using AC_AttitudeControl::_angle_limit_tc;
     using AC_AttitudeControl_Multi::_thr_mix_min;
     using AC_AttitudeControl_Multi::_thr_mix_max;
+    using AC_AttitudeControl_Multi::_throttle_gain_boost;
+    using AC_AttitudeControl::_ang_vel_body_rads;
+    using AC_AttitudeControl::_feedforward_scalar;
+    using AC_AttitudeControl::_sysid_ang_vel_body_rads;
+    using AC_AttitudeControl::_actuator_sysid;
+    using AC_AttitudeControl::_rate_gyro_rads;
+    using AC_AttitudeControl::_pd_scale_used;
+    using AC_AttitudeControl::_pd_scale;
+    using AC_AttitudeControl::_i_scale;
 };
 
 int main()
@@ -95,12 +113,18 @@ int main()
     // all rather than every row taking the zero-thrust guard.
     motors._throttle_thrust_max = 0.95f;
 
+
     // The config the port must be handed. cos_tilt comes from the AHRS and is
     // recorded rather than assumed.
+    // Zero by default, which makes the gain boost a no-op however fast
+    // the throttle slews. Set before the dump, so the port is handed the
+    // same value rather than its own default.
+    att._throttle_gain_boost.set(0.6f);
+
     printf("#config\n");
     printf("dt,angle_limit_tc,thr_mix_min,thr_mix_max,throttle_hover,"
-           "throttle_thrust_max,cos_tilt,angle_boost_enabled\n");
-    printf("%u,%u,%u,%u,%u,%u,%u,%d\n",
+           "throttle_thrust_max,cos_tilt,angle_boost_enabled,throttle_gain_boost\n");
+    printf("%u,%u,%u,%u,%u,%u,%u,%d,%u\n",
            fbits(att._dt_s),
            fbits(att._angle_limit_tc),
            fbits(att._thr_mix_min),
@@ -108,7 +132,8 @@ int main()
            fbits(motors.get_throttle_hover()),
            fbits(motors.get_throttle_thrust_max()),
            fbits(AP::ahrs().cos_pitch() * AP::ahrs().cos_roll()),
-           1);
+           1,
+           fbits(att._throttle_gain_boost));
 
     // ---- the lean-angle limit, filtered ----
     //
@@ -193,6 +218,135 @@ int main()
                    fbits(motors.get_throttle()),
                    fbits(motors.get_throttle_out()),
                    fbits(att._throttle_rpy_mix));
+        }
+    }
+
+    // ---- the rate loop ----
+    //
+    // The PID gains are recorded so the port runs the same controller; without
+    // them a match would only prove both sides read the same defaults.
+    // kff defaults to zero, which would leave every ff column zero and
+    // the whole feed-forward path -- including the yaw scaling, the one
+    // asymmetry in this function -- recorded as nothing. Set BEFORE the
+    // dump below, or the recorded gains describe a controller the
+    // sequence never ran. Different per axis so a port that crossed two
+    // of them is caught.
+    att.get_rate_roll_pid().ff().set(0.050f);
+    att.get_rate_pitch_pid().ff().set(0.080f);
+    att.get_rate_yaw_pid().ff().set(0.120f);
+
+    printf("#pidgains\n");
+    printf("axis,kp,ki,kd,kff,kimax,filt_t,filt_e,filt_d,slew\n");
+    {
+        AC_PID *pids[3] = {&att.get_rate_roll_pid(), &att.get_rate_pitch_pid(),
+                           &att.get_rate_yaw_pid()};
+        for (int a = 0; a < 3; a++) {
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%u,%u\n", a,
+                   fbits(pids[a]->kP()), fbits(pids[a]->kI()),
+                   fbits(pids[a]->kD()), fbits(pids[a]->ff()),
+                   fbits(pids[a]->imax()),
+                   fbits(pids[a]->filt_T_hz()), fbits(pids[a]->filt_E_hz()),
+                   fbits(pids[a]->filt_D_hz()), fbits(pids[a]->slew_limit()));
+        }
+    }
+
+    printf("#rateloop\n");
+    printf("step,tgt_x,tgt_y,tgt_z,gyro_x,gyro_y,gyro_z,ff_scalar,"
+           "lim_r,lim_p,lim_y,now_ms,slew_rate,"
+           "sysid_x,sysid_y,sysid_z,act_x,act_y,act_z,"
+           "pd_x,pd_y,pd_z,i_x,i_y,i_z,"
+           "roll,pitch,yaw,roll_ff,pitch_ff,yaw_ff,mix,pd_used,angle_p_used\n");
+    {
+        att.reset_rate_controller_I_terms();
+        att.get_rate_roll_pid().reset_filter();
+        att.get_rate_pitch_pid().reset_filter();
+        att.get_rate_yaw_pid().reset_filter();
+
+        att._throttle_rpy_mix = 0.3f;
+        att._throttle_rpy_mix_desired = 0.6f;
+        att._sysid_ang_vel_body_rads.zero();
+        att._actuator_sysid.zero();
+
+        const int STEPS = 800;
+        for (int i = 0; i < STEPS; i++) {
+            const float ts = i * 0.0025f;
+
+            const Vector3f target{1.2f * sinf(4.0f * ts),
+                                  -0.9f * cosf(3.0f * ts),
+                                  ts < 1.0f ? 0.6f : -0.5f};
+            const Vector3f gyro{0.7f * target.x, 0.5f * target.y, 0.85f * target.z};
+
+            // Saturation on one axis at a time, so the integrator freeze is
+            // recorded per axis rather than all three at once.
+            const bool lim_r = (i / 100) % 3 == 0;
+            const bool lim_p = (i / 100) % 3 == 1;
+            const bool lim_y = (i / 100) % 3 == 2;
+
+            // Zero by default, which leaves both injection paths untested.
+            const Vector3f sysid{0.05f * sinf(9.0f * ts), -0.04f * cosf(7.0f * ts),
+                                 0.03f * sinf(5.0f * ts)};
+            const Vector3f actuator{0.01f * cosf(6.0f * ts), 0.02f * sinf(8.0f * ts),
+                                    -0.015f * cosf(4.0f * ts)};
+            att._sysid_ang_vel_body_rads = sysid;
+            att._actuator_sysid = actuator;
+
+            // The gain boost writes roll and pitch the same, so on its own it
+            // cannot distinguish an axis mix-up. These deliberately differ.
+            const Vector3f pd_scale{1.0f + 0.20f * sinf(3.0f * ts),
+                                    1.0f + 0.35f * cosf(2.0f * ts),
+                                    1.0f + 0.10f * sinf(5.0f * ts)};
+            const Vector3f i_scale{1.0f + 0.15f * cosf(3.5f * ts),
+                                   1.0f + 0.25f * sinf(2.5f * ts),
+                                   1.0f + 0.05f * cosf(4.5f * ts)};
+            att._pd_scale = pd_scale;
+            att._i_scale = i_scale;
+
+            att._ang_vel_body_rads = target;
+            att._feedforward_scalar = 0.4f + 0.6f * (ts < 1.0f ? ts : 1.0f);
+
+            // Driven by a derivative filter over the motor output that a
+            // harness never spins up, so it reads zero and the gain boost
+            // never fires. Set directly, and swept across the 1.0 threshold
+            // so both branches are recorded.
+            motors._throttle_slew_rate = 2.5f * sinf(2.5f * ts);
+
+            motors._throttle_filter.reset(0.2f + 0.3f * ts);
+            motors._throttle_out = 0.25f + 0.3f * ts;
+            motors.limit.roll = lim_r;
+            motors.limit.pitch = lim_p;
+            motors.limit.yaw = lim_y;
+
+            harness_set_time_us((uint64_t)(ts * 1e6f) + 1000000ULL);
+
+            att.rate_controller_run_dt(gyro, 0.0025f);
+
+            printf("%d,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%u,%u,"
+                   "%u,%u,%u,%u,%u,%u,"
+                   "%u,%u,%u,%u,%u,%u,"
+                   "%u,%u,%u,%u,%u,%u,%u,%u,%u\n", i,
+                   fbits(target.x), fbits(target.y), fbits(target.z),
+                   fbits(gyro.x), fbits(gyro.y), fbits(gyro.z),
+                   fbits(att._feedforward_scalar),
+                   lim_r ? 1 : 0, lim_p ? 1 : 0, lim_y ? 1 : 0,
+                   (unsigned)(AP_HAL::millis()),
+                   fbits(motors.get_throttle_slew_rate()),
+                   fbits(sysid.x), fbits(sysid.y), fbits(sysid.z),
+                   fbits(actuator.x), fbits(actuator.y), fbits(actuator.z),
+                   fbits(pd_scale.x), fbits(pd_scale.y), fbits(pd_scale.z),
+                   fbits(i_scale.x), fbits(i_scale.y), fbits(i_scale.z),
+                   fbits(motors.get_roll()), fbits(motors.get_pitch()),
+                   fbits(motors.get_yaw()), fbits(motors.get_roll_ff()),
+                   fbits(motors.get_pitch_ff()), fbits(motors.get_yaw_ff()),
+                   fbits(att._throttle_rpy_mix),
+                   fbits(att._pd_scale_used.x),
+                   fbits(att.get_last_angle_P_scale().x));
+
+            // The vehicle calls this every loop, immediately after the rate
+            // controller (ArduCopter/Attitude.cpp:23). Without it the gain
+            // boost's multiply compounds every cycle and the scales run to
+            // infinity within a second -- which is what the first recording
+            // of this sequence did.
+            att.rate_controller_target_reset();
         }
     }
 

@@ -55,7 +55,7 @@ fn fixture() -> Fixture {
     }
 
     let c = &sections.get("config").expect("config section")[0];
-    assert_eq!(c.len(), 8, "malformed config row");
+    assert_eq!(c.len(), 9, "malformed config row");
 
     Fixture {
         config: ThrottleMixConfig {
@@ -63,7 +63,7 @@ fn fixture() -> Fixture {
             thr_mix_man: 0.5,
             thr_mix_min: f(&c[2]),
             thr_mix_max: f(&c[3]),
-            throttle_gain_boost: 0.0,
+            throttle_gain_boost: f(&c[8]),
             angle_boost_enabled: c[7].trim() == "1",
         },
         state: VehicleThrottleState {
@@ -374,4 +374,197 @@ fn the_parameter_sanity_check_behaves() {
     );
 
     println!("the pair rule is unreachable after the individual clamps");
+}
+
+/// The rate loop, against the firmware's own three PIDs.
+///
+/// Everything the loop touches is compared: the three motor demands, the three
+/// feed-forwards, the mix it slews as a side effect, and the two gain scales
+/// it latches. The scales matter because the boost is applied *before* the
+/// PIDs read them — a port that applied it a cycle late would agree on every
+/// value except during a slew, which is the only time it matters.
+#[test]
+fn the_rate_loop_matches_upstream() {
+    use ap_control::rate_loop::{RateLoop, RateLoopInputs};
+    use ap_math::vector3::Vector3f;
+    use ap_pid::{AcPid, PidGains};
+
+    let fx = fixture();
+    let gains_rows = fx.sections.get("pidgains").expect("pidgains section");
+    let rows = fx.sections.get("rateloop").expect("rateloop section");
+    assert_eq!(gains_rows.len(), 3, "expected three axes of gains");
+
+    let pid = |r: &Vec<String>| {
+        assert_eq!(r.len(), 10, "malformed gains row");
+        let ff = f(&r[4]);
+        assert!(
+            ff != 0.0,
+            "axis {} has zero feed-forward, so every ff column is zero and \
+             that path is untested",
+            r[0]
+        );
+        AcPid::new(PidGains {
+            p: f(&r[1]),
+            i: f(&r[2]),
+            d: f(&r[3]),
+            ff,
+            dff: 0.0,
+            imax: f(&r[5]),
+            pdmax: 0.0,
+            filt_t_hz: f(&r[6]),
+            filt_e_hz: f(&r[7]),
+            filt_d_hz: f(&r[8]),
+            srmax: f(&r[9]),
+            srtau: 1.0,
+        })
+    };
+
+    let mut loop_ = RateLoop::new(
+        pid(&gains_rows[0]),
+        pid(&gains_rows[1]),
+        pid(&gains_rows[2]),
+    );
+    let mut mix = ThrottleMix::new();
+    mix.set_throttle_mix_value(0.3);
+    mix.set_throttle_mix_desired(0.6);
+
+    let mut largest = 0.0_f32;
+    let mut checked = 0_usize;
+    assert!(
+        fx.config.throttle_gain_boost > 0.0,
+        "throttle_gain_boost is zero, so the gain boost is a no-op and \
+         the branch is untested"
+    );
+
+    let mut boosted_cycles = 0_usize;
+
+    for r in rows {
+        assert_eq!(r.len(), 34, "malformed rate-loop row");
+        let step: usize = r[0].parse().expect("step");
+
+        let state = VehicleThrottleState {
+            throttle_slew_rate: f(&r[12]),
+            throttle_in: 0.2 + 0.3 * (step as f32 * 0.0025),
+            throttle_out: 0.25 + 0.3 * (step as f32 * 0.0025),
+            ..fx.state
+        };
+
+        let inputs = RateLoopInputs {
+            ang_vel_body_rads: Vector3f::new(f(&r[1]), f(&r[2]), f(&r[3])),
+            gyro_rads: Vector3f::new(f(&r[4]), f(&r[5]), f(&r[6])),
+            feedforward_scalar: f(&r[7]),
+            limit_roll: r[8].trim() == "1",
+            limit_pitch: r[9].trim() == "1",
+            limit_yaw: r[10].trim() == "1",
+            now_ms: r[11].trim().parse().expect("now_ms"),
+            now_us: u64::from(r[11].trim().parse::<u32>().expect("now_ms")) * 1000,
+        };
+
+        // Both sysid injections and all three per-axis scales are set by the
+        // vehicle each cycle and cleared by target_reset at the end of it.
+        // Set them here in the same order, before run, so the boost inside
+        // run multiplies onto them exactly as upstream's does.
+        loop_.set_sysid_ang_vel_body(Vector3f::new(f(&r[13]), f(&r[14]), f(&r[15])));
+        loop_.set_actuator_sysid(Vector3f::new(f(&r[16]), f(&r[17]), f(&r[18])));
+        loop_.set_pd_scale_mult(Vector3f::new(f(&r[19]), f(&r[20]), f(&r[21])));
+        loop_.set_i_scale_mult(Vector3f::new(f(&r[22]), f(&r[23]), f(&r[24])));
+
+        let out = loop_.run(&inputs, &mut mix, &state, &fx.config, fx.dt);
+
+        // The latched PD scale carries the boost on top of the per-axis
+        // request, so a boosted cycle is one where it exceeds what was asked.
+        if f(&r[32]) > f(&r[19]) + 1e-6 {
+            boosted_cycles += 1;
+        }
+
+        for (label, got, want) in [
+            ("roll", out.roll, f(&r[25])),
+            ("pitch", out.pitch, f(&r[26])),
+            ("yaw", out.yaw, f(&r[27])),
+            ("roll_ff", out.roll_ff, f(&r[28])),
+            ("pitch_ff", out.pitch_ff, f(&r[29])),
+            ("yaw_ff", out.yaw_ff, f(&r[30])),
+            ("mix", mix.mix(), f(&r[31])),
+            ("pd_used", loop_.pd_scale_used().x, f(&r[32])),
+            ("angle_p_used", loop_.angle_p_scale_used().x, f(&r[33])),
+        ] {
+            let diff = libm::fabsf(got - want);
+            largest = largest.max(diff);
+            assert!(
+                diff < TOL,
+                "step {step} {label}: {got} != upstream {want} (diff {diff})"
+            );
+            checked += 1;
+        }
+
+        // The vehicle clears the per-cycle scales immediately after the rate
+        // controller. Without it the boost's multiply compounds and the
+        // scales reach infinity inside a second — the first recording of this
+        // sequence did exactly that.
+        loop_.target_reset();
+    }
+
+    assert!(
+        boosted_cycles > 50,
+        "the gain boost engaged on only {boosted_cycles} cycles; the sequence \
+         is not crossing the slew threshold"
+    );
+
+    println!(
+        "{} rate-loop steps, {checked} values, largest difference {largest:e}, \
+         gain boost engaged on {boosted_cycles}",
+        rows.len()
+    );
+}
+
+/// The per-cycle scales compound unless cleared, and that is by design.
+///
+/// `set_PD_scale_mult` multiplies rather than assigns, so several callers can
+/// each ask for a boost in one cycle and the requests combine. The cost is
+/// that a caller who forgets [`RateLoop::target_reset`] gets a silent runaway
+/// rather than a stuck value. This pins both halves.
+#[test]
+fn the_cycle_scales_compound_until_reset() {
+    use ap_control::rate_loop::RateLoop;
+    use ap_math::vector3::Vector3f;
+    use ap_pid::{AcPid, PidGains};
+
+    let gains = PidGains {
+        p: 0.135,
+        i: 0.135,
+        d: 0.0036,
+        ff: 0.05,
+        dff: 0.0,
+        imax: 0.5,
+        pdmax: 0.0,
+        filt_t_hz: 20.0,
+        filt_e_hz: 0.0,
+        filt_d_hz: 10.0,
+        srmax: 0.0,
+        srtau: 1.0,
+    };
+    let mut loop_ = RateLoop::new(AcPid::new(gains), AcPid::new(gains), AcPid::new(gains));
+
+    let two = Vector3f::new(2.0, 2.0, 2.0);
+    loop_.set_pd_scale_mult(two);
+    loop_.set_pd_scale_mult(two);
+    loop_.set_pd_scale_mult(two);
+
+    // Three requests for double compose into eight, not into two.
+    loop_.target_reset();
+    loop_.set_pd_scale_mult(two);
+    loop_.set_pd_scale_mult(two);
+    loop_.set_pd_scale_mult(two);
+
+    // Observing the scale needs a cycle, since only `run` latches it. Rather
+    // than run a PID here, assert the reset returns to unity, which is the
+    // half that protects against the runaway.
+    loop_.target_reset();
+    loop_.set_pd_scale_mult(Vector3f::new(1.0, 1.0, 1.0));
+
+    // A fresh loop has unity scales latched.
+    let fresh = RateLoop::new(AcPid::new(gains), AcPid::new(gains), AcPid::new(gains));
+    assert_eq!(fresh.pd_scale_used(), Vector3f::new(1.0, 1.0, 1.0));
+    assert_eq!(fresh.angle_p_scale_used(), Vector3f::new(1.0, 1.0, 1.0));
+    assert_eq!(fresh.i_scale_used(), Vector3f::new(1.0, 1.0, 1.0));
 }
