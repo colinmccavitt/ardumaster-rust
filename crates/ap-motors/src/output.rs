@@ -266,7 +266,7 @@ impl PwmType {
 
 /// Which channels are written as scaled values rather than pulse widths,
 /// upstream's `_motor_pwm_scaled`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MotorPwmScaled {
     /// Bit per motor channel. Upstream accumulates this with `|=` as channels
     /// are configured, and never clears it.
@@ -353,5 +353,93 @@ impl MotorMatrix {
     pub fn output_channel_mask(&self, registry: &ap_servo::registry::Registry) -> u32 {
         motor_mask_to_channel_mask(self.motor_mask(), registry)
             | registry.output_channel_mask(ap_servo::function::Function::BOOST_THROTTLE)
+    }
+}
+
+/// What `rc_set_freq` decides, separated from the HAL calls that carry it out.
+///
+/// Upstream reaches straight into `hal.rcout` from the middle of the function.
+/// Returning the decisions instead keeps the choice testable without a HAL,
+/// and leaves the caller — which owns the HAL — to apply them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreqSetup {
+    /// The output channels the change applies to.
+    pub channel_mask: u32,
+    /// The rate to set.
+    pub freq_hz: u16,
+    /// The mode to select, if this output type calls for one. `None` leaves
+    /// the mode alone, which is what upstream does for `NORMAL` and for the
+    /// two scaled types.
+    pub mode: Option<ap_hal::rc::OutputMode>,
+    /// Set when the rate is above servo rate, upstream `_motor_fast_mask`.
+    pub fast: bool,
+    /// For the scaled output types, the offset and the motors to apply it to.
+    /// See [`PwmType::scaled_offset`].
+    pub scaled: Option<MotorPwmScaled>,
+}
+
+impl PwmType {
+    /// The HAL output mode this type selects, upstream's switch in
+    /// `rc_set_freq`.
+    ///
+    /// `None` for `Normal` — upstream's case does nothing, leaving whatever
+    /// the board came up in — and for the two scaled types, which are a
+    /// scaling arrangement rather than a wire protocol and leave the mode
+    /// alone too.
+    ///
+    /// OneShot and OneShot125 are also conditional upstream: the mode is only
+    /// set when the rate is above servo rate and the mask is non-empty. That
+    /// condition lives in [`rc_set_freq`], not here, because it depends on the
+    /// rate rather than on the type.
+    #[must_use]
+    pub fn output_mode(self) -> Option<ap_hal::rc::OutputMode> {
+        use ap_hal::rc::OutputMode as M;
+        match self {
+            Self::Normal | Self::PwmRange | Self::PwmAngle => None,
+            Self::OneShot => Some(M::OneShot),
+            Self::OneShot125 => Some(M::OneShot125),
+            Self::Brushed => Some(M::Brushed),
+            Self::DShot150 => Some(M::DShot150),
+            Self::DShot300 => Some(M::DShot300),
+            Self::DShot600 => Some(M::DShot600),
+            Self::DShot1200 => Some(M::DShot1200),
+        }
+    }
+}
+
+/// Decide what a rate change implies, upstream `AP_Motors::rc_set_freq`.
+///
+/// `motor_mask` is in motor numbers; `channel_mask` in the result is in output
+/// channels, because that is what the HAL wants. Conflating them is the
+/// mistake [`motor_mask_to_channel_mask`] exists to prevent.
+pub fn rc_set_freq(
+    motor_mask: u32,
+    freq_hz: u16,
+    pwm_type: PwmType,
+    registry: &ap_servo::registry::Registry,
+) -> FreqSetup {
+    let channel_mask = motor_mask_to_channel_mask(motor_mask, registry);
+    let fast = freq_hz > 50;
+
+    // The two OneShot modes are only selected when the rate is actually above
+    // servo rate and there is something to apply it to. Upstream guards them
+    // and not the others, because OneShot at servo rate is just PWM -- while
+    // a DShot ESC needs its protocol regardless of the requested rate.
+    let mode = match pwm_type {
+        PwmType::OneShot | PwmType::OneShot125 if !(fast && channel_mask != 0) => None,
+        other => other.output_mode(),
+    };
+
+    let scaled = pwm_type.scaled_offset().map(|offset| MotorPwmScaled {
+        mask: motor_mask,
+        offset,
+    });
+
+    FreqSetup {
+        channel_mask,
+        freq_hz,
+        mode,
+        fast,
+        scaled,
     }
 }

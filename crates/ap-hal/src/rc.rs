@@ -44,8 +44,49 @@ pub trait RcInput {
     }
 }
 
+/// How an output channel is driven. Upstream `AP_HAL::RCOutput::output_mode`.
+///
+/// The three LED modes are here because upstream puts them here: a NeoPixel
+/// string is driven by the same timer hardware as a DShot ESC, so the output
+/// layer treats them as modes of one thing rather than as a separate device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputMode {
+    /// No output.
+    #[default]
+    None = 0,
+    /// Ordinary servo-rate PWM.
+    Normal = 1,
+    /// One pulse per loop, sent as soon as the value is known.
+    OneShot = 2,
+    /// OneShot with the pulse width divided by eight.
+    OneShot125 = 3,
+    /// A raw duty cycle, for brushed motors.
+    Brushed = 4,
+    /// Digital, 150 kbit/s.
+    DShot150 = 5,
+    /// Digital, 300 kbit/s.
+    DShot300 = 6,
+    /// Digital, 600 kbit/s.
+    DShot600 = 7,
+    /// Digital, 1200 kbit/s.
+    DShot1200 = 8,
+    /// A NeoPixel string: DShot timing at 800 kHz, driving LEDs.
+    NeoPixel = 9,
+    /// ProfiLED: DShot timing with separate clock and data lines.
+    ProfiLed = 10,
+    /// NeoPixel with RGB rather than GRB ordering.
+    NeoPixelRgb = 11,
+}
+
 /// Servo and motor output. Upstream `AP_HAL::RCOutput`.
 pub trait RcOutput {
+    /// Select how the channels in `chmask` are driven, upstream
+    /// `set_output_mode`.
+    ///
+    /// Defaulted to a no-op: a backend that only does ordinary PWM has nothing
+    /// to switch, and upstream's base class does the same.
+    fn set_output_mode(&mut self, _chmask: u32, _mode: OutputMode) {}
+
     /// Set the update rate, in Hz, for the channels selected by `chmask`.
     fn set_freq(&mut self, chmask: u32, freq_hz: u16) -> Result<()>;
 

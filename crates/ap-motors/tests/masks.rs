@@ -247,3 +247,106 @@ fn the_motor_channel_mapping_matches_upstream() {
 
     println!("{} mask mappings, all exact", mask_cases.len());
 }
+
+/// OneShot is only selected when the rate is actually above servo rate.
+///
+/// Upstream guards the two OneShot modes and not the others, and the asymmetry
+/// is deliberate: OneShot at servo rate is just PWM, so there is nothing to
+/// select — while a DShot ESC needs its protocol regardless of what rate was
+/// asked for. A port that guarded all of them would leave a DShot ESC being
+/// driven as analog PWM whenever something set a 50 Hz rate.
+#[test]
+fn oneshot_is_conditional_but_dshot_is_not() {
+    use ap_hal::rc::OutputMode;
+    use ap_motors::output::{rc_set_freq, PwmType};
+
+    let registry = straight_through(4);
+
+    // Above servo rate: OneShot is selected.
+    let fast = rc_set_freq(0b1111, 400, PwmType::OneShot, &registry);
+    assert_eq!(fast.mode, Some(OutputMode::OneShot));
+    assert!(fast.fast);
+
+    // At servo rate: not selected.
+    let slow = rc_set_freq(0b1111, 50, PwmType::OneShot, &registry);
+    assert_eq!(slow.mode, None, "OneShot at servo rate is just PWM");
+    assert!(!slow.fast);
+
+    // DShot is selected either way.
+    for freq in [50_u16, 400] {
+        let d = rc_set_freq(0b1111, freq, PwmType::DShot600, &registry);
+        assert_eq!(
+            d.mode,
+            Some(OutputMode::DShot600),
+            "DShot needs its protocol at {freq} Hz"
+        );
+    }
+}
+
+/// An empty channel mask leaves OneShot unselected even at a high rate.
+#[test]
+fn oneshot_needs_channels_as_well_as_rate() {
+    use ap_motors::output::{rc_set_freq, PwmType};
+
+    let registry = straight_through(0); // nothing assigned
+    let setup = rc_set_freq(0b1111, 400, PwmType::OneShot, &registry);
+
+    assert_eq!(setup.channel_mask, 0);
+    assert_eq!(setup.mode, None, "no channels, nothing to switch");
+    assert!(setup.fast, "the fast flag still reflects the rate");
+}
+
+/// Normal PWM selects no mode at all.
+///
+/// Upstream's `NORMAL` case does nothing, leaving whatever the board came up
+/// in. A port that selected `Normal` explicitly would override a mode
+/// something else had set.
+#[test]
+fn normal_pwm_leaves_the_mode_alone() {
+    use ap_motors::output::{rc_set_freq, PwmType};
+
+    let registry = straight_through(4);
+    assert_eq!(
+        rc_set_freq(0b1111, 400, PwmType::Normal, &registry).mode,
+        None
+    );
+}
+
+/// The scaled types set up a scaling arrangement rather than a wire protocol.
+#[test]
+fn the_scaled_types_configure_scaling_and_not_a_mode() {
+    use ap_motors::output::{rc_set_freq, PwmType};
+
+    let registry = straight_through(4);
+
+    let range = rc_set_freq(0b1111, 400, PwmType::PwmRange, &registry);
+    assert_eq!(range.mode, None, "a scaling arrangement, not a protocol");
+    let scaled = range.scaled.expect("range type should configure scaling");
+    assert_eq!(scaled.mask, 0b1111);
+    assert!((scaled.offset - 1000.0).abs() < f32::EPSILON);
+
+    let angle = rc_set_freq(0b1111, 400, PwmType::PwmAngle, &registry);
+    let scaled = angle.scaled.expect("angle type should configure scaling");
+    assert!((scaled.offset - 1500.0).abs() < f32::EPSILON);
+
+    assert!(
+        rc_set_freq(0b1111, 400, PwmType::DShot600, &registry)
+            .scaled
+            .is_none(),
+        "a digital protocol is not scaled"
+    );
+}
+
+/// The channel mask is in channels, not motor numbers.
+#[test]
+fn the_freq_setup_reports_channels_not_motors() {
+    use ap_motors::output::{rc_set_freq, PwmType};
+
+    let mut registry = Registry::new();
+    let mut assignments = [Function::NONE; 32];
+    assignments[6] = Function::motor(0);
+    registry.update_aux_servo_function(&assignments);
+
+    let setup = rc_set_freq(0b1, 400, PwmType::Normal, &registry);
+    assert_eq!(setup.channel_mask, 1 << 6, "motor 0 lives on channel 6");
+}
