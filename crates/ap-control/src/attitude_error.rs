@@ -117,3 +117,106 @@ pub fn thrust_vector_rotation_angles(
         thrust_vector_correction,
     }
 }
+
+/// The acceleration limit assumed when none is configured, upstream's
+/// `radians(1800)`.
+///
+/// 1800 degrees per second squared — fast enough to be effectively no limit on
+/// any real airframe. It exists to keep the shaping from dividing by zero, not
+/// to describe a vehicle.
+///
+/// Written in degrees and converted, not as a radian literal: upstream
+/// computes it through `radians()`, and a hand-converted constant is one
+/// ulp away from that as often as not.
+const DEFAULT_ACCEL_MAX_DEGSS: f32 = 1800.0;
+
+/// How many loop iterations the default input time constant spreads the
+/// acceleration over, upstream's `dt * 10.0`.
+const DEFAULT_INPUT_TC_CYCLES: f32 = 10.0;
+
+/// What the command model produced.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CommandModel {
+    /// The angular velocity to command.
+    pub target_ang_vel: f32,
+    /// The angular acceleration used to get there.
+    pub target_ang_accel: f32,
+}
+
+/// Turn an angle error into a rate and acceleration target, upstream
+/// `attitude_command_model`.
+///
+/// The shaping is jerk limited as well as acceleration limited, which is what
+/// `input_tc` sets: the jerk limit is `accel_max / input_tc`, so a smaller
+/// time constant means the aircraft is allowed to change its acceleration
+/// faster and the response feels sharper.
+///
+/// `state` carries the current rate and acceleration in and the new ones out,
+/// because the shaping is a filter over time rather than a function of the
+/// error alone.
+///
+/// Returns the state unchanged for a non-positive `dt`, as upstream does — a
+/// paused controller should not integrate.
+///
+/// # The final `+= accel * dt`
+///
+/// The shaping produces a velocity for the *start* of the step and an
+/// acceleration across it. Upstream advances the velocity by one step of that
+/// acceleration before returning, so the caller gets the value for the end of
+/// the step. Dropping it leaves the rate target one iteration behind, which at
+/// 400 Hz is small and constant — exactly the kind of error that looks like a
+/// slightly sluggish airframe rather than like a bug.
+pub fn attitude_command_model(
+    state: CommandModel,
+    error_angle: f32,
+    desired_ang_vel: f32,
+    max_ang_vel: f32,
+    accel_max: f32,
+    input_tc: f32,
+    dt: f32,
+) -> CommandModel {
+    use ap_math::scalar::is_positive;
+
+    if !is_positive(dt) {
+        return state;
+    }
+
+    let accel_max = if is_positive(accel_max) {
+        accel_max
+    } else {
+        ap_math::scalar::radians(DEFAULT_ACCEL_MAX_DEGSS)
+    };
+    let input_tc = if is_positive(input_tc) {
+        input_tc
+    } else {
+        dt * DEFAULT_INPUT_TC_CYCLES
+    };
+
+    let mut target_ang_accel = state.target_ang_accel;
+    let mut target_ang_vel = state.target_ang_vel;
+
+    // The shaping reports an error for a degenerate configuration; upstream
+    // ignores its return and carries on with whatever it wrote, so this does
+    // too rather than inventing a failure path the caller cannot have.
+    let _ = ap_math::control::shape_angle_vel_accel(
+        error_angle,
+        desired_ang_vel,
+        0.0,
+        0.0,
+        target_ang_vel,
+        &mut target_ang_accel,
+        -max_ang_vel,
+        max_ang_vel,
+        accel_max,
+        accel_max / input_tc,
+        dt,
+        true,
+    );
+
+    target_ang_vel += target_ang_accel * dt;
+
+    CommandModel {
+        target_ang_vel,
+        target_ang_accel,
+    }
+}

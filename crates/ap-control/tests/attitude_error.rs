@@ -186,3 +186,174 @@ fn the_two_corrections_compose_back_to_the_target() {
         assert!(close(ry, ty, 1e-3), "yaw {ry} != {ty}");
     }
 }
+
+mod command_model {
+    use ap_control::attitude_error::{attitude_command_model, CommandModel};
+
+    fn close(a: f32, b: f32, tol: f32) -> bool {
+        libm::fabsf(a - b) < tol
+    }
+
+    const DT: f32 = 0.0025;
+
+    /// A non-positive dt leaves the state alone.
+    ///
+    /// A paused controller must not integrate. Returning a zeroed state
+    /// instead would drop the rate target to nothing on the first stalled
+    /// iteration, which is a step input to everything downstream.
+    #[test]
+    fn a_stopped_clock_does_not_advance_the_model() {
+        let state = CommandModel {
+            target_ang_vel: 0.7,
+            target_ang_accel: 3.0,
+        };
+
+        for dt in [0.0_f32, -0.001] {
+            let out = attitude_command_model(state, 0.5, 0.0, 2.0, 10.0, 0.15, dt);
+            assert_eq!(out, state, "dt {dt} should change nothing");
+        }
+    }
+
+    /// A held error produces a steady rate, not a diverging one.
+    ///
+    /// Note the rate does *not* go to zero. A held error is not physical --
+    /// upstream integrates the attitude between calls, so the error shrinks as
+    /// the aircraft turns -- and asking the model to chase a target that never
+    /// gets closer gets a constant rate back, which is the right answer to the
+    /// wrong question. What matters is that it converges rather than winding
+    /// up.
+    #[test]
+    fn a_held_error_produces_a_steady_rate() {
+        let mut state = CommandModel::default();
+        let error = 0.4_f32;
+
+        for _ in 0..4000 {
+            state = attitude_command_model(state, error, 0.0, 5.0, 20.0, 0.15, DT);
+        }
+        let settled = state.target_ang_vel;
+
+        // Another thousand iterations must not move it.
+        for _ in 0..1000 {
+            state = attitude_command_model(state, error, 0.0, 5.0, 20.0, 0.15, DT);
+        }
+
+        assert!(
+            close(state.target_ang_vel, settled, 1e-3),
+            "rate drifted from {settled} to {} -- it should have converged",
+            state.target_ang_vel
+        );
+        assert!(
+            state.target_ang_vel.is_finite() && libm::fabsf(state.target_ang_vel) > 0.0,
+            "and should be a real, non-zero rate: {}",
+            state.target_ang_vel
+        );
+    }
+
+    /// A larger error asks for a larger rate.
+    ///
+    /// The direction of the relationship, which a sign or scaling error in the
+    /// shaping would invert without making anything non-finite.
+    #[test]
+    fn a_larger_error_asks_for_a_larger_rate() {
+        let settle = |error: f32| {
+            let mut state = CommandModel::default();
+            for _ in 0..4000 {
+                state = attitude_command_model(state, error, 0.0, 5.0, 20.0, 0.15, DT);
+            }
+            state.target_ang_vel
+        };
+
+        let small = settle(0.1);
+        let large = settle(0.8);
+
+        assert!(
+            large > small && small > 0.0,
+            "0.8 rad should out-command 0.1 rad: {large} vs {small}"
+        );
+    }
+
+    /// The rate target respects the maximum.
+    #[test]
+    fn the_rate_target_is_limited() {
+        let max = 1.0_f32;
+        let mut state = CommandModel::default();
+
+        let mut peak = 0.0_f32;
+        for _ in 0..2000 {
+            // A large error, so the limit is what binds rather than the error.
+            state = attitude_command_model(state, 3.0, 0.0, max, 20.0, 0.15, DT);
+            peak = peak.max(libm::fabsf(state.target_ang_vel));
+        }
+
+        assert!(
+            peak <= max + 1e-3,
+            "rate reached {peak}, above the {max} limit"
+        );
+        assert!(
+            peak > max * 0.9,
+            "the limit should actually be reached, got {peak}"
+        );
+    }
+
+    /// A zero acceleration limit falls back rather than dividing by zero.
+    ///
+    /// Upstream substitutes 1800 deg/s², which is effectively no limit on any
+    /// real airframe — the fallback exists to keep the jerk limit
+    /// (`accel_max / input_tc`) finite, not to describe a vehicle.
+    #[test]
+    fn a_missing_acceleration_limit_falls_back() {
+        let mut state = CommandModel::default();
+
+        for _ in 0..200 {
+            state = attitude_command_model(state, 0.5, 0.0, 5.0, 0.0, 0.15, DT);
+            assert!(
+                state.target_ang_vel.is_finite() && state.target_ang_accel.is_finite(),
+                "the fallback should keep everything finite"
+            );
+        }
+
+        assert!(
+            libm::fabsf(state.target_ang_vel) > 0.0,
+            "and the model should still be moving"
+        );
+    }
+
+    /// A zero input time constant falls back to ten loop cycles.
+    #[test]
+    fn a_missing_time_constant_falls_back() {
+        let mut state = CommandModel::default();
+
+        for _ in 0..200 {
+            state = attitude_command_model(state, 0.5, 0.0, 5.0, 20.0, 0.0, DT);
+            assert!(state.target_ang_vel.is_finite());
+        }
+
+        assert!(libm::fabsf(state.target_ang_vel) > 0.0);
+    }
+
+    /// A smaller time constant gives a sharper response.
+    ///
+    /// `input_tc` sets the jerk limit as `accel_max / input_tc`, so halving it
+    /// doubles how fast the acceleration may change. If this comes out
+    /// backwards, the parameter is inverted somewhere.
+    #[test]
+    fn a_smaller_time_constant_responds_faster() {
+        let run = |tc: f32| {
+            let mut state = CommandModel::default();
+            let mut peak = 0.0_f32;
+            for _ in 0..40 {
+                state = attitude_command_model(state, 1.0, 0.0, 5.0, 20.0, tc, DT);
+                peak = peak.max(libm::fabsf(state.target_ang_vel));
+            }
+            peak
+        };
+
+        let sharp = run(0.05);
+        let soft = run(0.30);
+
+        assert!(
+            sharp > soft,
+            "a 0.05 s constant should outrun a 0.30 s one: {sharp} vs {soft}"
+        );
+    }
+}
