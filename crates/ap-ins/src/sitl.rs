@@ -5,10 +5,10 @@
 //! orientation, lever-arm corrections, and the timer that decides when each
 //! sample is due.
 //!
-//! Random sensor noise (white noise and vibration), RPM-scaled motor
-//! harmonics are implemented; temperature *calibration* application and
-//! file playback are not here yet. The IMU warm-up temperature curve and
-//! per-instance fail masks are implemented.
+//! Random sensor noise (white noise and vibration) can be applied via
+//! [`sitl_apply_accel_noise`]; RPM-scaled motor harmonics are included.
+//! Temperature *calibration* application and file playback are not here yet.
+//! The IMU warm-up temperature curve and per-instance fail masks are implemented.
 
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{is_zero, radians, wrap_pi, Real};
@@ -299,6 +299,68 @@ pub fn sitl_motor_vibe_offset(
         );
     }
     total
+}
+
+/// Persistent noise state for one SITL accel instance.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SitlAccelNoiseState {
+    /// Phase clock for fixed-frequency vibration, upstream `accel_time`.
+    pub accel_time_s: f32,
+    /// Per-motor harmonic phase, upstream `accel_motor_phase`.
+    pub motor_phases: [f32; 8],
+}
+
+/// Inputs for one noisy accelerometer sample, upstream `generate_accel`.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlAccelNoiseInputs<'a> {
+    pub base: Vector3f,
+    pub white_rand: Vector3f,
+    pub base_accel_noise: f32,
+    pub motor_accel_noise: f32,
+    pub motors_on: bool,
+    pub vibe: Option<&'a SitlVibeConfig>,
+    pub vibe_rand: f32,
+    pub motor_vibe: Option<&'a SitlMotorVibeConfig>,
+    pub motor_mask: u32,
+    pub motor_rpm: &'a [f32],
+    pub motor_rand: f32,
+    pub sample_dt_s: f32,
+}
+
+/// Apply white noise and vibration to a base accel sample, upstream the noise
+/// blocks in `generate_accel`.
+#[must_use]
+pub fn sitl_apply_accel_noise(
+    state: &mut SitlAccelNoiseState,
+    inp: &SitlAccelNoiseInputs<'_>,
+) -> Vector3f {
+    let mut sample = inp.base;
+    let amp = sitl_accel_noise_amplitude(
+        inp.base_accel_noise,
+        inp.motor_accel_noise,
+        inp.motors_on,
+    );
+    sample += sitl_white_noise_offset(inp.white_rand, amp);
+
+    if let Some(vibe) = inp.vibe {
+        sample += sitl_vibe_freq_offset(vibe, state.accel_time_s, inp.vibe_rand);
+        if vibe.motors_on && !vibe.vibe_freq_hz.is_zero() {
+            state.accel_time_s += inp.sample_dt_s;
+        }
+    }
+
+    if let Some(motor) = inp.motor_vibe {
+        sample += sitl_motor_vibe_offset(
+            motor,
+            inp.motor_mask,
+            inp.motor_rpm,
+            &mut state.motor_phases,
+            inp.sample_dt_s,
+            inp.motor_rand,
+        );
+    }
+
+    sample
 }
 
 /// The slow triangular gyro drift SITL can inject, upstream `gyro_drift()`.
@@ -734,6 +796,59 @@ mod tests {
         let rpm = [6000.0, 0.0, 0.0, 0.0];
         let _ = sitl_motor_vibe_offset(&cfg, 0b1, &rpm, &mut phases, 0.001, 0.0);
         assert!(phases[0] > 0.0);
+    }
+
+    #[test]
+    fn apply_accel_noise_adds_white_noise() {
+        let mut state = SitlAccelNoiseState::default();
+        let out = sitl_apply_accel_noise(
+            &mut state,
+            &SitlAccelNoiseInputs {
+                base: Vector3f::new(0.0, 0.0, -9.8),
+                white_rand: Vector3f::new(1.0, 0.0, 0.0),
+                base_accel_noise: SITL_DEFAULT_ACCEL_NOISE,
+                motor_accel_noise: 0.5,
+                motors_on: false,
+                vibe: None,
+                vibe_rand: 0.0,
+                motor_vibe: None,
+                motor_mask: 0,
+                motor_rpm: &[],
+                motor_rand: 0.0,
+                sample_dt_s: 0.001,
+            },
+        );
+        assert!((out.x - SITL_DEFAULT_ACCEL_NOISE).abs() < 1e-6);
+        assert!((out.z + 9.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_accel_noise_advances_vibe_time() {
+        let mut state = SitlAccelNoiseState::default();
+        let vibe = SitlVibeConfig {
+            vibe_freq_hz: Vector3f::new(10.0, 0.0, 0.0),
+            accel_noise: 0.5,
+            noise_variation: 0.0,
+            motors_on: true,
+        };
+        let _ = sitl_apply_accel_noise(
+            &mut state,
+            &SitlAccelNoiseInputs {
+                base: Vector3f::zero(),
+                white_rand: Vector3f::zero(),
+                base_accel_noise: SITL_DEFAULT_ACCEL_NOISE,
+                motor_accel_noise: 0.5,
+                motors_on: true,
+                vibe: Some(&vibe),
+                vibe_rand: 0.0,
+                motor_vibe: None,
+                motor_mask: 0,
+                motor_rpm: &[],
+                motor_rand: 0.0,
+                sample_dt_s: 0.002,
+            },
+        );
+        assert!((state.accel_time_s - 0.002).abs() < 1e-6);
     }
 
     #[test]
