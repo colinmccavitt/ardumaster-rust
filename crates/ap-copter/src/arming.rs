@@ -232,3 +232,223 @@ pub fn system_initialised_check(is_system_initialized: bool) -> Option<ArmRefusa
 pub fn pre_arm_checks_apply(already_armed: bool) -> bool {
     !already_armed
 }
+
+/// `FS_GCS_ENABLED_CONTINUE_MISSION`, the removed value 2 of `FS_GCS_ENABLE`.
+pub const FS_GCS_ENABLED_CONTINUE_MISSION: u8 = 2;
+
+/// The lowest `FS_THR_VALUE` upstream will accept.
+///
+/// A PPM encoder signals loss of signal by outputting 900 microseconds, so a
+/// failsafe threshold at or below that could never distinguish a lost link
+/// from a legitimately low stick.
+pub const MIN_FAILSAFE_THROTTLE_VALUE: u16 = 910;
+
+/// The margin `RC3_MIN` must clear `FS_THR_VALUE` by.
+///
+/// Without it a throttle resting at its own minimum would sit on the failsafe
+/// threshold, and the aircraft would failsafe the moment the stick was pulled
+/// fully down.
+pub const FAILSAFE_THROTTLE_MARGIN: u16 = 10;
+
+/// Why a parameter check refused, or warned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterRefusal {
+    /// `FS_THR_VALUE` is unusable against `RC3_MIN` or the encoder floor.
+    CheckFsThrValue,
+    /// `FS_GCS_ENABLE=2` was removed. **Does not block arming** — see
+    /// [`parameter_checks`].
+    FsGcsEnable2Removed,
+    /// The acro balance gains are negative or exceed the angle-P gains.
+    CheckAcroBalance,
+    /// `PILOT_SPD_UP` is not positive.
+    CheckPilotSpdUp,
+    /// A helicopter frame class on a multirotor build.
+    InvalidMulticopterFrameClass,
+    /// `RTL_ALT_TYPE` is above-terrain but there is no terrain data.
+    RtlTerrainNoData,
+    /// `RTL_ALT_TYPE` is above-terrain but there is no downward rangefinder.
+    RtlTerrainNoRangefinder,
+    /// `RTL_ALT_M` exceeds the rangefinder's maximum range.
+    RtlAltAboveRangefinderMax,
+    /// An ADS-B threat is active.
+    AdsbThreatDetected,
+    /// The position controller refused its own parameters.
+    BadPositionControllerParameter,
+    /// The attitude controller refused its own parameters.
+    BadAttitudeControllerParameter,
+}
+
+impl ParameterRefusal {
+    /// Whether this refusal actually prevents arming.
+    ///
+    /// All but one do. `FsGcsEnable2Removed` is reported and then execution
+    /// falls through to the next check — upstream calls `check_failed` without
+    /// returning, so the operator is told their parameter is obsolete without
+    /// being grounded by it. That is easy to miss reading the function, and
+    /// easy to "tidy" into a return.
+    #[must_use]
+    pub fn blocks_arming(self) -> bool {
+        self != Self::FsGcsEnable2Removed
+    }
+}
+
+/// Where `RTL_ALT_TYPE`'s terrain data would come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainSource {
+    /// No terrain source at all.
+    Unavailable,
+    /// A downward rangefinder.
+    Rangefinder,
+    /// The terrain database. Checked by the shared `AP_Arming`, not here.
+    Database,
+}
+
+/// Everything `parameter_checks` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ParameterState {
+    /// `check_enabled(Check::PARAMETERS)`.
+    pub parameter_check_enabled: bool,
+    /// `FS_THR_ENABLE`, non-zero meaning the throttle failsafe is on.
+    pub failsafe_throttle: u8,
+    /// `RC3_MIN`.
+    pub throttle_radio_min: u16,
+    /// `FS_THR_VALUE`.
+    pub failsafe_throttle_value: u16,
+    /// `FS_GCS_ENABLE`.
+    pub failsafe_gcs: u8,
+    /// `ACRO_BAL_ROLL`.
+    pub acro_balance_roll: f32,
+    /// `ACRO_BAL_PITCH`.
+    pub acro_balance_pitch: f32,
+    /// The attitude controller's roll angle-P gain.
+    pub angle_roll_p: f32,
+    /// The attitude controller's pitch angle-P gain.
+    pub angle_pitch_p: f32,
+    /// `PILOT_SPD_UP`, m/s.
+    pub pilot_speed_up_ms: f32,
+    /// The frame class is one of the helicopter ones.
+    pub frame_class_is_heli: bool,
+    /// `RTL_ALT_TYPE` is above-terrain.
+    pub rtl_alt_type_is_terrain: bool,
+    /// Where terrain data would come from.
+    pub terrain_source: TerrainSource,
+    /// A downward rangefinder is enabled and present.
+    pub rangefinder_available: bool,
+    /// `RTL_ALT_M`.
+    pub rtl_altitude_m: f32,
+    /// The rangefinder's maximum range, metres.
+    pub rangefinder_max_distance_m: f32,
+    /// An ADS-B failsafe is active.
+    pub adsb_failsafe: bool,
+    /// The position controller accepted its parameters.
+    pub pos_control_ok: bool,
+    /// The attitude controller accepted its parameters.
+    pub attitude_control_ok: bool,
+}
+
+/// The parameter pre-arm checks, upstream `AP_Arming_Copter::parameter_checks`.
+///
+/// Returns every refusal raised, in upstream's order. Most stop the ladder;
+/// [`ParameterRefusal::blocks_arming`] says which do not, and the list exists
+/// because the one that does not is followed by checks that still run.
+///
+/// # The throttle failsafe parameters are checked against each other
+///
+/// `FS_THR_VALUE` has to sit above the PPM encoder's loss-of-signal output
+/// *and* below `RC3_MIN` by a margin. Between them these say the threshold
+/// must be distinguishable from a dead link at one end and from a pilot
+/// holding the stick down at the other — a value satisfying neither would
+/// either never fire or fire constantly.
+///
+/// # Two slots, because two is the most one call can raise
+///
+/// Only one refusal is non-blocking, and it is followed by checks that still
+/// run — so a call yields at most the warning plus whichever blocking refusal
+/// comes after it. The array says that in the type.
+#[must_use]
+pub fn parameter_checks(state: &ParameterState) -> [Option<ParameterRefusal>; 2] {
+    if !state.parameter_check_enabled {
+        return [None, None];
+    }
+
+    // Above the warning: this rung returns, so nothing below it runs.
+    if state.failsafe_throttle != 0
+        && (state.throttle_radio_min <= state.failsafe_throttle_value + FAILSAFE_THROTTLE_MARGIN
+            || state.failsafe_throttle_value < MIN_FAILSAFE_THROTTLE_VALUE)
+    {
+        return [Some(ParameterRefusal::CheckFsThrValue), None];
+    }
+
+    // The one rung that reports and carries on, so it can be accompanied by
+    // whatever fires below it.
+    let warning = (state.failsafe_gcs == FS_GCS_ENABLED_CONTINUE_MISSION)
+        .then_some(ParameterRefusal::FsGcsEnable2Removed);
+
+    // Dense and in order: a caller reading slot 0 gets the first refusal
+    // raised, not a hole where the warning would have been. Only the warning
+    // can be followed by anything, so two slots is the most that is needed.
+    match (warning, first_blocking_parameter_refusal(state)) {
+        (Some(w), blocking) => [Some(w), blocking],
+        (None, blocking) => [blocking, None],
+    }
+}
+
+/// The rungs below the `FS_GCS_ENABLE` warning, in upstream's order.
+///
+/// Each of these returns, so at most one can fire.
+fn first_blocking_parameter_refusal(state: &ParameterState) -> Option<ParameterRefusal> {
+    if state.acro_balance_roll < 0.0
+        || state.acro_balance_pitch < 0.0
+        || state.acro_balance_roll > state.angle_roll_p
+        || state.acro_balance_pitch > state.angle_pitch_p
+    {
+        return Some(ParameterRefusal::CheckAcroBalance);
+    }
+
+    if state.pilot_speed_up_ms <= 0.0 {
+        return Some(ParameterRefusal::CheckPilotSpdUp);
+    }
+
+    if state.frame_class_is_heli {
+        return Some(ParameterRefusal::InvalidMulticopterFrameClass);
+    }
+
+    if state.rtl_alt_type_is_terrain {
+        if let Some(refusal) = above_terrain_rtl_refusal(state) {
+            return Some(refusal);
+        }
+    }
+
+    if state.adsb_failsafe {
+        return Some(ParameterRefusal::AdsbThreatDetected);
+    }
+
+    if !state.pos_control_ok {
+        return Some(ParameterRefusal::BadPositionControllerParameter);
+    }
+    if !state.attitude_control_ok {
+        return Some(ParameterRefusal::BadAttitudeControllerParameter);
+    }
+    None
+}
+
+/// The above-terrain RTL rungs, upstream's switch on the terrain source.
+///
+/// The database case is deliberately empty: upstream's comment says those
+/// checks are done in the shared `AP_Arming`, so duplicating them here would
+/// mean two places to keep in step.
+fn above_terrain_rtl_refusal(state: &ParameterState) -> Option<ParameterRefusal> {
+    match state.terrain_source {
+        TerrainSource::Unavailable => Some(ParameterRefusal::RtlTerrainNoData),
+        TerrainSource::Rangefinder => {
+            if !state.rangefinder_available {
+                return Some(ParameterRefusal::RtlTerrainNoRangefinder);
+            }
+            if state.rtl_altitude_m > state.rangefinder_max_distance_m {
+                return Some(ParameterRefusal::RtlAltAboveRangefinderMax);
+            }
+            None
+        }
+        TerrainSource::Database => None,
+    }
+}
