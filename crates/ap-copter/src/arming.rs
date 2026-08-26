@@ -787,3 +787,236 @@ pub fn gps_hdop_check(gps_sensor_count: u8, hdop: u16, hdop_good: u16) -> Option
     }
     None
 }
+
+/// Why the final arm check refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmCheckRefusal {
+    /// The AHRS is not healthy.
+    AhrsNotHealthy,
+    /// The compass is not healthy and the yaw source needs it.
+    CompassNotHealthy,
+    /// The current flight mode refuses to be armed by this method.
+    ModeNotArmable,
+    /// The aircraft is leaning past its maximum lean angle.
+    Leaning,
+    /// An ADS-B threat is active.
+    AdsbThreatDetected,
+    /// The throttle is above the deadband, or above zero in a manual mode.
+    ThrottleTooHigh,
+    /// The safety switch is in the disarmed position.
+    SafetySwitch,
+}
+
+/// How arming was requested, as far as these checks care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmingMethod {
+    /// The pilot's rudder stick or an auxiliary switch.
+    Pilot,
+    /// A ground station command.
+    GroundStation,
+    /// A Lua script.
+    Scripting,
+}
+
+impl ArmingMethod {
+    /// Whether this method can be exempted from the throttle check.
+    ///
+    /// Upstream tests `method_is_GCS(method) || method == SCRIPTING`. Both are
+    /// commands from software that has decided to arm deliberately, where a
+    /// raised throttle stick is a stale physical control rather than an
+    /// instruction.
+    #[must_use]
+    pub fn may_skip_throttle_check(self) -> bool {
+        matches!(self, Self::GroundStation | Self::Scripting)
+    }
+}
+
+/// Everything the final arm check reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ArmCheckState {
+    /// `ahrs.healthy()`.
+    pub ahrs_healthy: bool,
+    /// The yaw estimate comes from something other than the compass.
+    pub using_noncompass_for_yaw: bool,
+    /// `compass.healthy()`.
+    pub compass_healthy: bool,
+    /// The flight mode accepts this arming method.
+    pub mode_allows_arming: bool,
+    /// `ARMING_CHECK` disables everything.
+    pub skip_all_checks: bool,
+    /// `check_enabled(Check::INS)`.
+    pub ins_check_enabled: bool,
+    /// The total tilt from vertical, radians.
+    pub lean_angle_rad: f32,
+    /// The attitude controller's maximum lean angle, radians.
+    pub lean_angle_max_rad: f32,
+    /// `check_enabled(Check::PARAMETERS)`.
+    pub parameter_check_enabled: bool,
+    /// An ADS-B failsafe is active.
+    pub adsb_failsafe: bool,
+    /// `check_enabled(Check::RC)`.
+    pub rc_check_enabled: bool,
+    /// How arming was requested.
+    pub method: ArmingMethod,
+    /// The mode permits a high throttle when armed by ground station or
+    /// script.
+    pub mode_allows_gcs_arming_with_throttle_high: bool,
+    /// The pilot is commanding a climb.
+    pub pilot_climb_rate_positive: bool,
+    /// The mode flies on the pilot's throttle, or is DRIFT.
+    pub manual_throttle_mode: bool,
+    /// The throttle stick is off its stop.
+    pub throttle_control_in_positive: bool,
+    /// The safety switch is in the disarmed position.
+    pub safety_switch_disarmed: bool,
+}
+
+/// The final checks before arming, upstream `AP_Arming_Copter::arm_checks`.
+///
+/// # Three checks run even with every check disabled
+///
+/// The AHRS health, compass health and mode-allows-arming tests all sit
+/// *above* the `should_skip_all_checks()` shortcut. Turning off `ARMING_CHECK`
+/// does not turn those off — an operator who disables the checks to get a
+/// vehicle into the air still cannot arm one whose estimator is unhealthy or
+/// in a mode that refuses. That ordering is the difference between a
+/// parameter that skips the advisory checks and one that disables the safety
+/// interlocks, and it would be invisible if the shortcut moved to the top.
+///
+/// # Non-compass yaw skips the compass
+///
+/// A vehicle taking heading from GPS or an external source does not need a
+/// healthy compass, and requiring one would ground a working aircraft for a
+/// sensor it is not using.
+///
+/// # The throttle exemption is for software, not for pilots
+///
+/// A ground station or script arming a mode that permits it skips the
+/// throttle test entirely. The reasoning is that a raised stick is a stale
+/// physical control rather than an instruction when the decision to arm came
+/// from software — but a pilot arming with a raised stick is refused, because
+/// for them the stick *is* the instruction.
+#[must_use]
+pub fn arm_checks(state: &ArmCheckState) -> Option<ArmCheckRefusal> {
+    // Above the skip, deliberately.
+    if !state.ahrs_healthy {
+        return Some(ArmCheckRefusal::AhrsNotHealthy);
+    }
+    if !state.using_noncompass_for_yaw && !state.compass_healthy {
+        return Some(ArmCheckRefusal::CompassNotHealthy);
+    }
+    if !state.mode_allows_arming {
+        return Some(ArmCheckRefusal::ModeNotArmable);
+    }
+
+    if state.skip_all_checks {
+        return None;
+    }
+
+    if state.ins_check_enabled && state.lean_angle_rad > state.lean_angle_max_rad {
+        return Some(ArmCheckRefusal::Leaning);
+    }
+
+    if state.parameter_check_enabled && state.adsb_failsafe {
+        return Some(ArmCheckRefusal::AdsbThreatDetected);
+    }
+
+    if state.rc_check_enabled {
+        let exempt = state.method.may_skip_throttle_check()
+            && state.mode_allows_gcs_arming_with_throttle_high;
+        if !exempt {
+            if state.pilot_climb_rate_positive {
+                return Some(ArmCheckRefusal::ThrottleTooHigh);
+            }
+            if state.manual_throttle_mode && state.throttle_control_in_positive {
+                return Some(ArmCheckRefusal::ThrottleTooHigh);
+            }
+        }
+    }
+
+    if state.safety_switch_disarmed {
+        return Some(ArmCheckRefusal::SafetySwitch);
+    }
+
+    // Upstream calls the superclass last and says why: it has side effects
+    // that would need cleaning up if one of the checks above failed after it.
+    // The caller runs it; putting it here would mean this function had side
+    // effects too.
+    None
+}
+
+/// The total lean angle from vertical, upstream
+/// `acosf(cos_roll * cos_pitch)`.
+///
+/// Not the larger of roll and pitch: a vehicle leaning thirty degrees in both
+/// is tilted further than one leaning thirty in either alone, and this is the
+/// angle between its thrust axis and vertical.
+#[must_use]
+pub fn lean_angle_rad(cos_roll: f32, cos_pitch: f32) -> f32 {
+    libm::acosf(cos_roll * cos_pitch)
+}
+
+/// Combine the mandatory checks the way upstream does, in
+/// `AP_Arming_Copter::mandatory_checks`.
+///
+/// # Bitwise again
+///
+/// `result & AP_Arming::mandatory_checks(...)`, so the shared checks run even
+/// when the Copter ones have already failed. Same reasoning as the RC
+/// calibration check: the operator is told about everything wrong at once
+/// rather than discovering the next problem on the next attempt.
+///
+/// These are the checks that run when `ARMING_SKIPCHK` skips everything else
+/// or arming is forced — which is exactly when running all of them matters
+/// most.
+#[must_use]
+pub fn combine_mandatory_checks(position_ok: bool, alt_ok: bool, shared_ok: bool) -> bool {
+    // The Copter half accumulates rather than short-circuiting too: alt_checks
+    // runs whether or not the position checks passed.
+    let copter_half = position_ok & alt_ok;
+    copter_half & shared_ok
+}
+
+/// The object-avoidance pre-arm check's message handling, upstream
+/// `oa_checks`.
+///
+/// Like the mode pre-arm check in [`crate::mode_entry`], a refusal with no
+/// text is filled in with a generic one — a pilot shown an empty reason reads
+/// it as a broken ground station rather than a decision.
+#[must_use]
+pub fn oa_check_message(passed: bool, planner_message: &str) -> Option<&str> {
+    if passed {
+        return None;
+    }
+    if planner_message.is_empty() {
+        return Some("Check Object Avoidance");
+    }
+    Some(planner_message)
+}
+
+/// How close an object may be before arming is refused, upstream the
+/// `tolerance` in `proximity_checks`.
+pub const PROXIMITY_TOLERANCE_M: f32 = 0.6;
+
+/// The proximity pre-arm check, upstream `proximity_checks`.
+///
+/// Only applies when proximity avoidance is actually enabled: a vehicle that
+/// is not avoiding obstacles has no reason to refuse arming next to one, and
+/// a sensor reading close to a wall is normal for a vehicle sitting in a
+/// hangar.
+///
+/// The test is `<=`, so an object at exactly the tolerance refuses.
+#[must_use]
+pub fn proximity_check(
+    parameter_check_enabled: bool,
+    avoidance_enabled: bool,
+    closest_object_m: Option<f32>,
+) -> bool {
+    if !parameter_check_enabled || !avoidance_enabled {
+        return true;
+    }
+    match closest_object_m {
+        Some(distance) => distance > PROXIMITY_TOLERANCE_M,
+        None => true,
+    }
+}
