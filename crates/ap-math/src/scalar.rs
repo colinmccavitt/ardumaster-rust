@@ -403,6 +403,19 @@ pub const GRAVITY_MSS: f32 = 9.806_65;
 /// are reachable in this codebase — a limit computed from two parameters can
 /// invert when one is misconfigured — and upstream's answer in that case is a
 /// defined value rather than a crash, so the difference is not academic.
+///
+/// # A surviving mutant that cannot be killed
+///
+/// The mutation gate reports `amt > high` replaced by `>=` as untested, and it
+/// is untestable rather than untested. At `amt == high` the untaken branch
+/// falls through to `return amt`, which is `high`; and when the bounds cross,
+/// the earlier `amt < low` test has already returned. No input distinguishes
+/// the two, so no test can.
+///
+/// Its partner is not equivalent and is not skipped: `amt < low` replaced by
+/// `<=` *is* distinguishable, in exactly the crossed-bounds case above, and
+/// the tests catch it. The asymmetry is worth stating because the two lines
+/// look interchangeable and only one of them is.
 #[must_use]
 pub const fn constrain_int32(amt: i32, low: i32, high: i32) -> i32 {
     if amt < low {
