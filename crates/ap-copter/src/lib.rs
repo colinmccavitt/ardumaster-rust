@@ -17,6 +17,7 @@
 
 pub mod alt_hold;
 pub mod altitude;
+pub mod arming;
 pub mod auto_yaw;
 pub mod ground;
 pub mod land;
