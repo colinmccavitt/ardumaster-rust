@@ -4,7 +4,8 @@
 //! helpers and transition predicates are pure: the caller supplies distances
 //! and geometry; nothing here touches nav controllers or AHRS.
 
-use ap_math::scalar::wrap_180_cd;
+use ap_math::scalar::{degrees, is_zero, wrap_180, wrap_180_cd, Real};
+use ap_math::vector2::Vector2f;
 
 use crate::deepstall::{verify_breakout, LOITER_ALT_TOLERANCE_M};
 
@@ -119,6 +120,52 @@ pub fn fly_to_arc_may_advance(distance_to_arc_entry_m: f32, loiter_radius_m: f32
     distance_to_arc_entry_m <= libm::fabsf(2.0 * loiter_radius_m)
 }
 
+/// Heading alignment margin for arc completion, upstream the 10° check in
+/// `DEEPSTALL_STAGE_ARC`.
+pub const ARC_HEADING_MARGIN_DEG: f32 = 10.0;
+
+/// Groundspeed heading in degrees, upstream `degrees(atan2f(-y,-x)+PI)`.
+#[must_use]
+pub fn groundspeed_heading_deg(groundspeed_ne: Vector2f) -> f32 {
+    degrees(libm::atan2f(-groundspeed_ne.y, -groundspeed_ne.x) + Real::PI)
+}
+
+/// Heading error during the arc stage.
+#[must_use]
+pub fn arc_heading_error_deg(target_heading_deg: f32, groundspeed_ne: Vector2f) -> f32 {
+    wrap_180(target_heading_deg - groundspeed_heading_deg(groundspeed_ne))
+}
+
+/// Whether arc may advance to approach, upstream `DEEPSTALL_STAGE_ARC`.
+#[must_use]
+pub fn arc_may_advance(
+    reached_loiter: bool,
+    target_heading_deg: f32,
+    groundspeed_ne: Vector2f,
+) -> bool {
+    reached_loiter
+        && libm::fabsf(arc_heading_error_deg(target_heading_deg, groundspeed_ne))
+            < ARC_HEADING_MARGIN_DEG
+}
+
+/// Height above the landing point for travel prediction, upstream the
+/// `height_above_target` block in `DEEPSTALL_STAGE_APPROACH`.
+#[must_use]
+pub fn approach_height_above_target_m(
+    approach_alt_offset_m: f32,
+    position_alt_cm: Option<i32>,
+    landing_point_alt_cm: i32,
+    relative_d_home_m: Option<f32>,
+) -> f32 {
+    if is_zero(approach_alt_offset_m) {
+        relative_d_home_m.map(|d| -d).unwrap_or(0.0)
+    } else if let Some(alt) = position_alt_cm {
+        (alt - landing_point_alt_cm) as f32 * 0.01 + approach_alt_offset_m
+    } else {
+        approach_alt_offset_m
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +208,18 @@ mod tests {
     fn fly_to_arc_matches_fly_to_landing_radius_rule() {
         assert!(fly_to_arc_may_advance(150.0, 100.0));
         assert!(!fly_to_arc_may_advance(250.0, 100.0));
+    }
+
+    #[test]
+    fn arc_requires_loiter_and_heading_alignment() {
+        let gs = Vector2f::new(10.0, 0.0);
+        assert!(!arc_may_advance(false, 0.0, gs));
+        assert!(arc_may_advance(true, 0.0, gs));
+        assert!(!arc_may_advance(true, 0.0, Vector2f::new(0.0, 10.0)));
+    }
+
+    #[test]
+    fn approach_height_uses_home_when_offset_zero() {
+        assert!((approach_height_above_target_m(0.0, None, 0, Some(-50.0)) - 50.0).abs() < 1e-3);
     }
 }
