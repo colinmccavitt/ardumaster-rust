@@ -6,7 +6,8 @@
 //! sample is due.
 //!
 //! Random sensor noise (white noise and vibration) can be applied via
-//! [`sitl_apply_accel_noise`]; RPM-scaled motor harmonics are included.
+//! [`sitl_apply_accel_noise`] and [`sitl_apply_gyro_noise`]; RPM-scaled
+//! motor harmonics are included.
 //! Temperature *calibration* application and file playback are not here yet.
 //! The IMU warm-up temperature curve and per-instance fail masks are implemented.
 
@@ -352,6 +353,80 @@ pub fn sitl_apply_accel_noise(
     if let Some(motor) = inp.motor_vibe {
         sample += sitl_motor_vibe_offset(
             motor,
+            inp.motor_mask,
+            inp.motor_rpm,
+            &mut state.motor_phases,
+            inp.sample_dt_s,
+            inp.motor_rand,
+        );
+    }
+
+    sample
+}
+
+/// Persistent noise state for one SITL gyro instance.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SitlGyroNoiseState {
+    /// Phase clock for fixed-frequency vibration, upstream `gyro_time`.
+    pub gyro_time_s: f32,
+    /// Per-motor harmonic phase, upstream `gyro_motor_phase`.
+    pub motor_phases: [f32; 8],
+}
+
+/// Inputs for one noisy gyro sample, upstream `generate_gyro`.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlGyroNoiseInputs<'a> {
+    pub base: Vector3f,
+    pub white_rand: Vector3f,
+    pub background_rand: Vector3f,
+    pub motor_gyro_noise_deg: f32,
+    pub throttle: f32,
+    pub motors_on: bool,
+    pub vibe_freq_zero: bool,
+    pub vibe_motor_zero: bool,
+    pub vibe: Option<&'a SitlVibeConfig>,
+    pub vibe_rand: f32,
+    pub motor_vibe: Option<&'a SitlMotorVibeConfig>,
+    pub motor_mask: u32,
+    pub motor_rpm: &'a [f32],
+    pub motor_rand: f32,
+    pub sample_dt_s: f32,
+}
+
+/// Apply white noise and vibration to a base gyro sample, upstream `generate_gyro`.
+#[must_use]
+pub fn sitl_apply_gyro_noise(
+    state: &mut SitlGyroNoiseState,
+    inp: &SitlGyroNoiseInputs<'_>,
+) -> Vector3f {
+    let mut sample = inp.base;
+    sample += sitl_white_noise_offset(inp.white_rand, SITL_DEFAULT_GYRO_NOISE_RAD);
+
+    let gyro_amp = sitl_gyro_noise_amplitude(
+        SITL_DEFAULT_GYRO_NOISE_RAD,
+        inp.motor_gyro_noise_deg,
+        inp.throttle,
+        inp.motors_on,
+    );
+
+    if sitl_gyro_needs_background_noise(inp.vibe_freq_zero, inp.vibe_motor_zero) {
+        sample += sitl_white_noise_offset(inp.background_rand, gyro_amp);
+    }
+
+    if let Some(vibe) = inp.vibe {
+        let mut cfg = *vibe;
+        cfg.accel_noise = gyro_amp;
+        sample += sitl_vibe_freq_offset(&cfg, state.gyro_time_s, inp.vibe_rand);
+        if vibe.motors_on && !vibe.vibe_freq_hz.is_zero() {
+            state.gyro_time_s += inp.sample_dt_s;
+        }
+    }
+
+    if let Some(motor) = inp.motor_vibe {
+        let mut cfg = *motor;
+        cfg.accel_noise = gyro_amp;
+        sample += sitl_motor_vibe_offset(
+            &cfg,
             inp.motor_mask,
             inp.motor_rpm,
             &mut state.motor_phases,
@@ -820,6 +895,70 @@ mod tests {
         );
         assert!((out.x - SITL_DEFAULT_ACCEL_NOISE).abs() < 1e-6);
         assert!((out.z + 9.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_gyro_noise_adds_background_without_vibration() {
+        let mut state = SitlGyroNoiseState::default();
+        let out = sitl_apply_gyro_noise(
+            &mut state,
+            &SitlGyroNoiseInputs {
+                base: Vector3f::zero(),
+                white_rand: Vector3f::zero(),
+                background_rand: Vector3f::new(1.0, 0.0, 0.0),
+                motor_gyro_noise_deg: 20.0,
+                throttle: 0.5,
+                motors_on: false,
+                vibe_freq_zero: true,
+                vibe_motor_zero: true,
+                vibe: None,
+                vibe_rand: 0.0,
+                motor_vibe: None,
+                motor_mask: 0,
+                motor_rpm: &[],
+                motor_rand: 0.0,
+                sample_dt_s: 0.001,
+            },
+        );
+        let amp = sitl_gyro_noise_amplitude(
+            SITL_DEFAULT_GYRO_NOISE_RAD,
+            20.0,
+            0.5,
+            false,
+        );
+        assert!((out.x - amp).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_gyro_noise_advances_vibe_time() {
+        let mut state = SitlGyroNoiseState::default();
+        let vibe = SitlVibeConfig {
+            vibe_freq_hz: Vector3f::new(5.0, 0.0, 0.0),
+            accel_noise: 0.1,
+            noise_variation: 0.0,
+            motors_on: true,
+        };
+        let _ = sitl_apply_gyro_noise(
+            &mut state,
+            &SitlGyroNoiseInputs {
+                base: Vector3f::zero(),
+                white_rand: Vector3f::zero(),
+                background_rand: Vector3f::zero(),
+                motor_gyro_noise_deg: 20.0,
+                throttle: 0.5,
+                motors_on: true,
+                vibe_freq_zero: false,
+                vibe_motor_zero: true,
+                vibe: Some(&vibe),
+                vibe_rand: 0.0,
+                motor_vibe: None,
+                motor_mask: 0,
+                motor_rpm: &[],
+                motor_rand: 0.0,
+                sample_dt_s: 0.004,
+            },
+        );
+        assert!((state.gyro_time_s - 0.004).abs() < 1e-6);
     }
 
     #[test]
