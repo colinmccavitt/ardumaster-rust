@@ -2,6 +2,7 @@
 //!
 //! Slices: travel prediction, loiter breakout, L1 crosstrack steering.
 
+use ap_math::location::Location;
 use ap_math::scalar::{constrain_value, degrees, is_positive, radians, wrap_pi, Real};
 use ap_math::vector2::Vector2f;
 
@@ -157,6 +158,40 @@ pub fn deepstall_arc_heading_deg(target_heading_deg: f32, loiter_ccw: bool) -> f
     }
 }
 
+/// Extended approach point 1 km from the landing point, upstream
+/// `extended_approach.offset_bearing(target_heading_deg, 1000.0)`.
+#[must_use]
+pub fn deepstall_extended_approach(landing_point: Location, target_heading_deg: f32) -> Location {
+    let mut point = landing_point;
+    point.offset_bearing(target_heading_deg, 1000.0);
+    point
+}
+
+/// Arc exit along final bearing, upstream `arc_exit.offset_bearing(...)`.
+#[must_use]
+pub fn deepstall_arc_exit(
+    landing_point: Location,
+    target_heading_deg: f32,
+    approach_extension_m: f32,
+) -> Location {
+    let mut point = landing_point;
+    point.offset_bearing(target_heading_deg + 180.0, approach_extension_m);
+    point
+}
+
+/// Predicted stall entry point, upstream the `entry_point` calculation in
+/// `DEEPSTALL_STAGE_APPROACH`.
+#[must_use]
+pub fn deepstall_entry_point(
+    landing_point: Location,
+    target_heading_deg: f32,
+    travel_distance_m: f32,
+) -> Location {
+    let mut point = landing_point;
+    point.offset_bearing(target_heading_deg + 180.0, travel_distance_m);
+    point
+}
+
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
 #[must_use]
 pub fn deepstall_crosstrack_error(
@@ -275,5 +310,21 @@ mod tests {
     fn arc_heading_offsets_by_quarter_turn() {
         assert!((deepstall_arc_heading_deg(0.0, false) - 90.0).abs() < 1e-3);
         assert!((deepstall_arc_heading_deg(0.0, true) + 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn entry_point_lies_upwind_of_landing() {
+        let landing = Location::new(-35_000_000, 149_000_000);
+        let entry = deepstall_entry_point(landing, 0.0, 200.0);
+        let ne = landing.get_distance_ne(entry);
+        assert!(ne.x < -100.0, "entry should be south of landing, got {ne:?}");
+    }
+
+    #[test]
+    fn extended_approach_is_far_along_final_bearing() {
+        let landing = Location::new(-35_000_000, 149_000_000);
+        let ext = deepstall_extended_approach(landing, 0.0);
+        let ne = landing.get_distance_ne(ext);
+        assert!(ne.x > 900.0, "expected ~1 km north, got {ne:?}");
     }
 }
