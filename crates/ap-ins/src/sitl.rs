@@ -5,10 +5,10 @@
 //! orientation, lever-arm corrections, and the timer that decides when each
 //! sample is due.
 //!
-//! Random sensor noise, motor vibration, temperature *calibration*
-//! application, and file playback are not here yet — they need a noise source
-//! or more upstream surface area. The IMU warm-up temperature curve and
-//! per-instance fail masks are implemented.
+//! Random sensor noise and fixed-frequency motor vibration helpers are
+//! implemented; temperature *calibration* application and file playback are
+//! not here yet. The IMU warm-up temperature curve and per-instance fail
+//! masks are implemented.
 
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{is_zero, radians, Real};
@@ -120,6 +120,42 @@ pub fn sitl_imu_temperature(config: &SitlImuTemperature, elapsed_ms: u32) -> f32
 #[must_use]
 pub fn sitl_instance_failed(fail_mask: u32, index: u8) -> bool {
     (fail_mask & (1_u32 << index)) != 0
+}
+
+/// Motor vibration parameters for SITL noise injection.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlVibeConfig {
+    /// Per-axis vibration frequency, Hz.
+    pub vibe_freq_hz: Vector3f,
+    /// Base accelerometer noise amplitude, m/s².
+    pub accel_noise: f32,
+    /// Fractional variation applied via `sitl_calculate_noise`.
+    pub noise_variation: f32,
+    /// True when throttle is above the INS noise threshold.
+    pub motors_on: bool,
+}
+
+/// Scale a noise amplitude by a deterministic random unit, upstream
+/// `calculate_noise` with `rand_float()` replaced by `rand_unit` in [-1, 1].
+#[must_use]
+pub fn sitl_calculate_noise(noise: f32, noise_variation: f32, rand_unit: f32) -> f32 {
+    noise * (1.0 + noise_variation * rand_unit)
+}
+
+/// Fixed-frequency vibration offset for one accel/gyro sample, upstream
+/// `sinf(time * 2 * PI * vibe_freq) * calculate_noise(...)`.
+#[must_use]
+pub fn sitl_vibe_freq_offset(config: &SitlVibeConfig, time_s: f32, rand_unit: f32) -> Vector3f {
+    if !config.motors_on || config.vibe_freq_hz.is_zero() {
+        return Vector3f::zero();
+    }
+    let amp = sitl_calculate_noise(config.accel_noise, config.noise_variation, rand_unit);
+    let two_pi = core::f32::consts::PI * 2.0;
+    Vector3f::new(
+        libm::sinf(time_s * two_pi * config.vibe_freq_hz.x) * amp,
+        libm::sinf(time_s * two_pi * config.vibe_freq_hz.y) * amp,
+        libm::sinf(time_s * two_pi * config.vibe_freq_hz.z) * amp,
+    )
 }
 
 /// The slow triangular gyro drift SITL can inject, upstream `gyro_drift()`.
@@ -482,5 +518,22 @@ mod tests {
         assert!((backend.last_temperature_c - 20.0).abs() < 0.01);
         backend.timer_update(600_000_000, &state);
         assert!(backend.last_temperature_c > 40.0);
+    }
+
+    #[test]
+    fn calculate_noise_scales_with_rand_unit() {
+        assert!((sitl_calculate_noise(1.0, 0.05, 0.0) - 1.0).abs() < 1e-6);
+        assert!((sitl_calculate_noise(1.0, 0.05, 1.0) - 1.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vibe_freq_is_zero_without_motors() {
+        let cfg = SitlVibeConfig {
+            vibe_freq_hz: Vector3f::new(10.0, 0.0, 0.0),
+            accel_noise: 0.5,
+            noise_variation: 0.05,
+            motors_on: false,
+        };
+        assert!(sitl_vibe_freq_offset(&cfg, 0.1, 0.0).is_zero());
     }
 }
