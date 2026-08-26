@@ -30,12 +30,23 @@ from pymavlink import DFReader
 ANGLE_FIELDS = {"Roll", "Pitch", "Yaw", "DesRoll", "DesPitch", "DesYaw",
                 "NavRoll", "NavPitch"}
 
+# Generic vehicle state, plus the series that correspond to ported crates.
+# XKF1 not NKF1: this firmware runs EKF3, and NKF1 is EKF2's message -- it has
+# no samples at all here, which the tool used to report as "no shared
+# samples" and is a different fact entirely.
 SERIES = {
     "ATT": ("Roll", "Pitch", "Yaw", "DesRoll", "DesPitch", "DesYaw"),
     "POS": ("Lat", "Lng", "Alt", "RelHomeAlt"),
     "IMU": ("GyrX", "GyrY", "GyrZ", "AccX", "AccY", "AccZ"),
-    "NKF1": ("Roll", "Pitch", "Yaw", "VN", "VE", "VD"),
+    "XKF1": ("Roll", "Pitch", "Yaw", "VN", "VE", "VD"),
     "RCOU": ("C1", "C2", "C3", "C4"),
+    # ap-plane: nav_roll_cd and the limit it was constrained to.
+    "PLNR": ("nrc", "rlc", "nav", "rs", "ae", "pt"),
+    # ap-control: the rate controllers' output and their PID terms.
+    "RCTO": ("out", "tgt", "act", "P", "I", "D", "F"),
+    # ap-tecs: the speed and height controller's demands and state.
+    "TECI": ("hdem", "easd", "dbey", "thnu", "hafe"),
+    "TECK": ("prop", "appr", "flar", "glid", "uas"),
 }
 
 
@@ -93,7 +104,18 @@ def main():
         right = load(args.b, msg_type, fields)
         shared = [t for t in (set(left) & set(right)) if lo <= t <= hi]
         if not shared:
-            print("%-5s %8s  no shared samples in the window" % (msg_type, "-"))
+            # Distinguish a message this build never emits from one that is
+            # emitted but never lines up. The first is a mistake in this list;
+            # the second is a finding about the runs.
+            if not left and not right:
+                print("%-5s %8s  ABSENT from both logs -- this build does not "
+                      "emit it" % (msg_type, "-"))
+            elif not left or not right:
+                print("%-5s %8s  present in only one log (%d vs %d)"
+                      % (msg_type, "-", len(left), len(right)))
+            else:
+                print("%-5s %8s  %d and %d samples, none sharing a timestamp "
+                      "in the window" % (msg_type, "-", len(left), len(right)))
             continue
 
         per_sample = []
