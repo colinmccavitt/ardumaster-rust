@@ -25,7 +25,13 @@ local SCHEDULE = {
    { at =  8000, what = "mode", mode = 13 },   -- TAKEOFF
    { at = 40000, what = "mode", mode = 12 },   -- LOITER
    { at = 80000, what = "mode", mode = 11 },   -- RTL
-   { at = 120000, what = "done" },
+   -- Disarm at a fixed simulated moment so the run ends on simulated time.
+   -- With LOG_DISARMED off the log closes here, which is what lets the
+   -- runner stop without a stopwatch. Without this the vehicle loiters in
+   -- RTL forever and the run ends only when a wall-clock budget expires --
+   -- which is exactly what slice 1 warned against, and what the first Lua
+   -- runs did.
+   { at = 120000, what = "disarm" },
 }
 
 local next_step = 1
@@ -48,8 +54,10 @@ function update()
          vehicle:set_mode(step.mode)
          gcs:send_text(6, string.format("DRIVER %d mode %d", step.at, step.mode))
 
-      elseif step.what == "done" then
-         gcs:send_text(6, string.format("DRIVER %d done", step.at))
+      elseif step.what == "disarm" then
+         arming:disarm()
+         gcs:send_text(6, string.format("DRIVER %d disarm -> %s",
+                                        step.at, tostring(arming:is_armed())))
       end
 
       next_step = next_step + 1

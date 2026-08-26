@@ -6,11 +6,18 @@ SERIAL0 connection before it will run, so a socket attaches and drains bytes
 and does nothing else -- the same approach determinism_test.py used for the
 idle case.
 
-Termination is on SIMULATED time, not wall time: slice 1 recorded that the
-only sample-count difference it ever saw came from killing a run on the wall
-clock. The driver script announces "done" at a fixed simulated moment and the
-run is stopped a generous margin after that, measured by watching the log
-stop growing rather than by a stopwatch.
+Termination is on SIMULATED time, not wall time. The first version of this
+got it wrong in the way slice 1 predicted: the driver's schedule ended
+without stopping the vehicle, an RTL loiter never stops producing log data,
+and both runs ran to the wall-clock backstop -- 1380 seconds simulated
+against the 150 intended.
+
+Now the driver disarms at a fixed simulated moment and LOG_DISARMED is off,
+so the log closes when the vehicle does. The runner still waits for the log
+to stop growing, but that now happens because of a simulated-time event
+rather than because a timer expired. The wall-clock budget remains only as a
+backstop, and a run that hits it should be treated as failed rather than
+compared.
 """
 import os
 import shutil
@@ -56,7 +63,9 @@ def run_once(rundir: Path) -> Path | None:
     text += "\n".join([
         "",
         "SCR_ENABLE 1",
-        "LOG_DISARMED 1",
+        # Off deliberately: the log must close when the driver disarms, so
+        # the run ends on a simulated-time event rather than a stopwatch.
+        "LOG_DISARMED 0",
         "LOG_REPLAY 0",
         # The pre-arm checks depend on sensor settling and EKF health, which
         # is the wall-clock-shaped variability being removed. arm_force skips
@@ -103,6 +112,7 @@ def run_once(rundir: Path) -> Path | None:
     deadline = time.time() + budget
     logdir = rundir / "logs"
     last_size, stable_for = -1, 0.0
+    hit_backstop = True
     while time.time() < deadline:
         time.sleep(2.0)
         logs = sorted(logdir.glob("*.BIN")) if logdir.exists() else []
@@ -110,6 +120,7 @@ def run_once(rundir: Path) -> Path | None:
         if size > 0 and size == last_size:
             stable_for += 2.0
             if stable_for >= 10.0:
+                hit_backstop = False
                 break
         else:
             stable_for = 0.0
@@ -132,6 +143,10 @@ def run_once(rundir: Path) -> Path | None:
         return None
     biggest = max(logs, key=lambda p: p.stat().st_size)
     print("  log %s (%d bytes)" % (biggest.name, biggest.stat().st_size))
+    if hit_backstop:
+        print("  WARNING: hit the wall-clock backstop, so this run did not end")
+        print("  on a simulated-time event. Do not compare it.")
+        return None
     return biggest
 
 
