@@ -588,3 +588,202 @@ pub fn rc_calibration_passes(rc_check_enabled: bool, channels: &[RcChannelCalibr
 pub fn combine_rc_calibration(copter_half: bool, shared_half: bool) -> bool {
     copter_half & shared_half
 }
+
+/// Why a position-related pre-arm check refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionRefusal {
+    /// The AHRS refused; its own message follows.
+    Ahrs,
+    /// The flight mode, or `ARMING_REQUIRE`, needs a position and there is
+    /// none.
+    NeedPositionEstimate,
+    /// A fence needs a position and there is none. A different message from
+    /// the one above, deliberately.
+    FenceNeedsPositionEstimate,
+    /// The EKF reports the GPS glitching.
+    GpsGlitching,
+    /// An EKF variance is at or above `FS_EKF_THRESH`.
+    EkfVariance(EkfVariance),
+    /// HDOP is worse than `GPS_HDOP_GOOD`.
+    HighGpsHdop,
+}
+
+/// Which EKF variance exceeded the threshold.
+///
+/// The order is upstream's, and it is the order they are reported in — a
+/// pilot sees the first one that is bad, so which comes first decides what
+/// they are told when several are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EkfVariance {
+    /// Reported first.
+    Compass,
+    /// Second.
+    Position,
+    /// Third.
+    Velocity,
+    /// Fourth.
+    Height,
+}
+
+impl EkfVariance {
+    /// Upstream's word for this variance, as it appears in "EKF %s variance".
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Compass => "compass",
+            Self::Position => "position",
+            Self::Velocity => "velocity",
+            Self::Height => "height",
+        }
+    }
+}
+
+/// Whether the fence needs a position estimate, upstream the
+/// `AC_FENCE_TYPE_CIRCLE | AC_FENCE_TYPE_POLYGON` test.
+///
+/// An altitude-only fence does not: it can be enforced from the barometer
+/// alone. A circle or a polygon is defined against the ground, so a vehicle
+/// with no position cannot know which side of it the aircraft is on.
+#[must_use]
+pub fn fence_requires_position(circle_fence_enabled: bool, polygon_fence_enabled: bool) -> bool {
+    circle_fence_enabled || polygon_fence_enabled
+}
+
+/// Whether the vehicle needs GPS specifically, upstream `gps_checks`' two
+/// derived booleans.
+///
+/// # Needing a position is not the same as needing GPS
+///
+/// `mode_requires_gps` is `using_gps() && mode_requires_position`. A vehicle
+/// holding position from optical flow or a motion-capture system needs a
+/// position and no GPS at all, and upstream skips the GPS checks for it —
+/// otherwise indoor flight would be impossible to arm.
+///
+/// Super-simple mode is included in `mode_requires_position` even though it
+/// is not a mode: it rotates the pilot's stick inputs by the bearing from
+/// home, which cannot be computed without knowing where home is relative to
+/// here.
+#[must_use]
+pub fn mode_requires_position(
+    flightmode_requires_position: bool,
+    fence_requires_position: bool,
+    super_simple_mode: bool,
+) -> bool {
+    flightmode_requires_position || fence_requires_position || super_simple_mode
+}
+
+/// Upstream `gps_checks`' `mode_requires_gps`.
+#[must_use]
+pub fn mode_requires_gps(ahrs_using_gps: bool, mode_requires_position: bool) -> bool {
+    ahrs_using_gps && mode_requires_position
+}
+
+/// What `mandatory_position_checks` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct MandatoryPositionState {
+    /// The AHRS's own pre-arm check passed.
+    pub ahrs_pre_arm_ok: bool,
+    /// The flight mode needs a position.
+    pub mode_requires_position: bool,
+    /// `ARMING_REQUIRE` demands a location.
+    pub require_location: bool,
+    /// A circle or polygon fence is enabled.
+    pub fence_requires_position: bool,
+    /// `copter.position_ok()`.
+    pub position_ok: bool,
+    /// The EKF's filter status was readable.
+    pub filter_status_available: bool,
+    /// The EKF reports the GPS glitching.
+    pub gps_glitching: bool,
+    /// `FS_EKF_THRESH`. Zero or below disables the variance checks.
+    pub fs_ekf_thresh: f32,
+    /// The compass variance, as a vector length.
+    pub compass_variance: f32,
+    /// The position variance.
+    pub position_variance: f32,
+    /// The velocity variance.
+    pub velocity_variance: f32,
+    /// The height variance.
+    pub height_variance: f32,
+}
+
+/// The mandatory position checks, upstream `mandatory_position_checks`.
+///
+/// # Two different messages for the same missing thing
+///
+/// A vehicle with no position estimate is refused either way, but the message
+/// differs depending on *why* it needed one. Upstream's comment on the second
+/// says it exists "to clarify to user why they need GPS in non-GPS flight
+/// mode" — a pilot in Stabilize being told they need a position estimate
+/// would reasonably think the aircraft was broken, when in fact they enabled
+/// a fence.
+///
+/// # Everything below the position test is skipped when no position is needed
+///
+/// The `else` returns true immediately, so the glitch and variance checks run
+/// only for a vehicle that actually needs a position. A mode that does not
+/// need one is not refused for an EKF variance it will never use.
+///
+/// # The variance test is `>=`, not `>`
+///
+/// Upstream `continue`s while `value < threshold`, so a variance exactly at
+/// the threshold refuses. `FS_EKF_THRESH` is the failsafe threshold, and a
+/// vehicle sitting exactly on it is one the failsafe would fire for.
+#[must_use]
+pub fn mandatory_position_checks(state: &MandatoryPositionState) -> Option<PositionRefusal> {
+    if !state.ahrs_pre_arm_ok {
+        return Some(PositionRefusal::Ahrs);
+    }
+
+    if state.mode_requires_position || state.require_location {
+        if !state.position_ok {
+            return Some(PositionRefusal::NeedPositionEstimate);
+        }
+    } else if state.fence_requires_position {
+        if !state.position_ok {
+            return Some(PositionRefusal::FenceNeedsPositionEstimate);
+        }
+    } else {
+        // No position needed, so nothing below applies.
+        return None;
+    }
+
+    if state.filter_status_available && state.gps_glitching {
+        return Some(PositionRefusal::GpsGlitching);
+    }
+
+    if state.fs_ekf_thresh > 0.0 {
+        for (variance, value) in [
+            (EkfVariance::Compass, state.compass_variance),
+            (EkfVariance::Position, state.position_variance),
+            (EkfVariance::Velocity, state.velocity_variance),
+            (EkfVariance::Height, state.height_variance),
+        ] {
+            if value >= state.fs_ekf_thresh {
+                return Some(PositionRefusal::EkfVariance(variance));
+            }
+        }
+    }
+
+    None
+}
+
+/// The HDOP check, upstream the last rung of `gps_checks`.
+///
+/// # Reported separately from a missing fix
+///
+/// Upstream's comment says the separate message exists "to prevent user
+/// confusion with no gps lock". A pilot told their HDOP is high knows they
+/// have satellites and a poor geometry; one told they have no lock goes
+/// looking for a different problem.
+///
+/// The sensor-count test matters: with no GPS fitted at all the HDOP reading
+/// is meaningless, and refusing on it would ground a vehicle that never
+/// claimed to have one.
+#[must_use]
+pub fn gps_hdop_check(gps_sensor_count: u8, hdop: u16, hdop_good: u16) -> Option<PositionRefusal> {
+    if gps_sensor_count > 0 && hdop > hdop_good {
+        return Some(PositionRefusal::HighGpsHdop);
+    }
+    None
+}

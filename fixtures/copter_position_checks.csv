@@ -1,0 +1,322 @@
+#position
+idx,mode,requires_position,require_location,position_ok,ahrs_ok,glitching,thresh_tenths,var_index,passed,calls,first
+0,0,0,0,0,0,0,0,0,0,1,AHRS: EKF3 not started
+1,0,0,0,0,0,0,0,1,0,1,AHRS: EKF3 not started
+2,0,0,0,0,0,0,0,2,0,1,AHRS: EKF3 not started
+3,0,0,0,0,0,0,0,3,0,1,AHRS: EKF3 not started
+4,0,0,0,0,0,0,0,4,0,1,AHRS: EKF3 not started
+5,0,0,0,0,0,1,0,0,0,1,AHRS: EKF3 not started
+6,0,0,0,0,0,1,0,1,0,1,AHRS: EKF3 not started
+7,0,0,0,0,0,1,0,2,0,1,AHRS: EKF3 not started
+8,0,0,0,0,0,1,0,3,0,1,AHRS: EKF3 not started
+9,0,0,0,0,0,1,0,4,0,1,AHRS: EKF3 not started
+10,0,0,0,0,1,0,0,0,1,0,-
+11,0,0,0,0,1,0,0,1,1,0,-
+12,0,0,0,0,1,0,0,2,1,0,-
+13,0,0,0,0,1,0,0,3,1,0,-
+14,0,0,0,0,1,0,0,4,1,0,-
+15,0,0,0,0,1,1,0,0,1,0,-
+16,0,0,0,0,1,1,0,1,1,0,-
+17,0,0,0,0,1,1,0,2,1,0,-
+18,0,0,0,0,1,1,0,3,1,0,-
+19,0,0,0,0,1,1,0,4,1,0,-
+20,0,0,0,0,0,0,8,0,0,1,AHRS: EKF3 not started
+21,0,0,0,0,0,0,8,1,0,1,AHRS: EKF3 not started
+22,0,0,0,0,0,0,8,2,0,1,AHRS: EKF3 not started
+23,0,0,0,0,0,0,8,3,0,1,AHRS: EKF3 not started
+24,0,0,0,0,0,0,8,4,0,1,AHRS: EKF3 not started
+25,0,0,0,0,0,1,8,0,0,1,AHRS: EKF3 not started
+26,0,0,0,0,0,1,8,1,0,1,AHRS: EKF3 not started
+27,0,0,0,0,0,1,8,2,0,1,AHRS: EKF3 not started
+28,0,0,0,0,0,1,8,3,0,1,AHRS: EKF3 not started
+29,0,0,0,0,0,1,8,4,0,1,AHRS: EKF3 not started
+30,0,0,0,0,1,0,8,0,1,0,-
+31,0,0,0,0,1,0,8,1,1,0,-
+32,0,0,0,0,1,0,8,2,1,0,-
+33,0,0,0,0,1,0,8,3,1,0,-
+34,0,0,0,0,1,0,8,4,1,0,-
+35,0,0,0,0,1,1,8,0,1,0,-
+36,0,0,0,0,1,1,8,1,1,0,-
+37,0,0,0,0,1,1,8,2,1,0,-
+38,0,0,0,0,1,1,8,3,1,0,-
+39,0,0,0,0,1,1,8,4,1,0,-
+40,0,0,1,0,0,0,0,0,0,1,AHRS: EKF3 not started
+41,0,0,1,0,0,0,0,1,0,1,AHRS: EKF3 not started
+42,0,0,1,0,0,0,0,2,0,1,AHRS: EKF3 not started
+43,0,0,1,0,0,0,0,3,0,1,AHRS: EKF3 not started
+44,0,0,1,0,0,0,0,4,0,1,AHRS: EKF3 not started
+45,0,0,1,0,0,1,0,0,0,1,AHRS: EKF3 not started
+46,0,0,1,0,0,1,0,1,0,1,AHRS: EKF3 not started
+47,0,0,1,0,0,1,0,2,0,1,AHRS: EKF3 not started
+48,0,0,1,0,0,1,0,3,0,1,AHRS: EKF3 not started
+49,0,0,1,0,0,1,0,4,0,1,AHRS: EKF3 not started
+50,0,0,1,0,1,0,0,0,0,1,Need Position Estimate
+51,0,0,1,0,1,0,0,1,0,1,Need Position Estimate
+52,0,0,1,0,1,0,0,2,0,1,Need Position Estimate
+53,0,0,1,0,1,0,0,3,0,1,Need Position Estimate
+54,0,0,1,0,1,0,0,4,0,1,Need Position Estimate
+55,0,0,1,0,1,1,0,0,0,1,Need Position Estimate
+56,0,0,1,0,1,1,0,1,0,1,Need Position Estimate
+57,0,0,1,0,1,1,0,2,0,1,Need Position Estimate
+58,0,0,1,0,1,1,0,3,0,1,Need Position Estimate
+59,0,0,1,0,1,1,0,4,0,1,Need Position Estimate
+60,0,0,1,0,0,0,8,0,0,1,AHRS: EKF3 not started
+61,0,0,1,0,0,0,8,1,0,1,AHRS: EKF3 not started
+62,0,0,1,0,0,0,8,2,0,1,AHRS: EKF3 not started
+63,0,0,1,0,0,0,8,3,0,1,AHRS: EKF3 not started
+64,0,0,1,0,0,0,8,4,0,1,AHRS: EKF3 not started
+65,0,0,1,0,0,1,8,0,0,1,AHRS: EKF3 not started
+66,0,0,1,0,0,1,8,1,0,1,AHRS: EKF3 not started
+67,0,0,1,0,0,1,8,2,0,1,AHRS: EKF3 not started
+68,0,0,1,0,0,1,8,3,0,1,AHRS: EKF3 not started
+69,0,0,1,0,0,1,8,4,0,1,AHRS: EKF3 not started
+70,0,0,1,0,1,0,8,0,0,1,Need Position Estimate
+71,0,0,1,0,1,0,8,1,0,1,Need Position Estimate
+72,0,0,1,0,1,0,8,2,0,1,Need Position Estimate
+73,0,0,1,0,1,0,8,3,0,1,Need Position Estimate
+74,0,0,1,0,1,0,8,4,0,1,Need Position Estimate
+75,0,0,1,0,1,1,8,0,0,1,Need Position Estimate
+76,0,0,1,0,1,1,8,1,0,1,Need Position Estimate
+77,0,0,1,0,1,1,8,2,0,1,Need Position Estimate
+78,0,0,1,0,1,1,8,3,0,1,Need Position Estimate
+79,0,0,1,0,1,1,8,4,0,1,Need Position Estimate
+80,0,0,0,1,0,0,0,0,0,1,AHRS: EKF3 not started
+81,0,0,0,1,0,0,0,1,0,1,AHRS: EKF3 not started
+82,0,0,0,1,0,0,0,2,0,1,AHRS: EKF3 not started
+83,0,0,0,1,0,0,0,3,0,1,AHRS: EKF3 not started
+84,0,0,0,1,0,0,0,4,0,1,AHRS: EKF3 not started
+85,0,0,0,1,0,1,0,0,0,1,AHRS: EKF3 not started
+86,0,0,0,1,0,1,0,1,0,1,AHRS: EKF3 not started
+87,0,0,0,1,0,1,0,2,0,1,AHRS: EKF3 not started
+88,0,0,0,1,0,1,0,3,0,1,AHRS: EKF3 not started
+89,0,0,0,1,0,1,0,4,0,1,AHRS: EKF3 not started
+90,0,0,0,1,1,0,0,0,1,0,-
+91,0,0,0,1,1,0,0,1,1,0,-
+92,0,0,0,1,1,0,0,2,1,0,-
+93,0,0,0,1,1,0,0,3,1,0,-
+94,0,0,0,1,1,0,0,4,1,0,-
+95,0,0,0,1,1,1,0,0,1,0,-
+96,0,0,0,1,1,1,0,1,1,0,-
+97,0,0,0,1,1,1,0,2,1,0,-
+98,0,0,0,1,1,1,0,3,1,0,-
+99,0,0,0,1,1,1,0,4,1,0,-
+100,0,0,0,1,0,0,8,0,0,1,AHRS: EKF3 not started
+101,0,0,0,1,0,0,8,1,0,1,AHRS: EKF3 not started
+102,0,0,0,1,0,0,8,2,0,1,AHRS: EKF3 not started
+103,0,0,0,1,0,0,8,3,0,1,AHRS: EKF3 not started
+104,0,0,0,1,0,0,8,4,0,1,AHRS: EKF3 not started
+105,0,0,0,1,0,1,8,0,0,1,AHRS: EKF3 not started
+106,0,0,0,1,0,1,8,1,0,1,AHRS: EKF3 not started
+107,0,0,0,1,0,1,8,2,0,1,AHRS: EKF3 not started
+108,0,0,0,1,0,1,8,3,0,1,AHRS: EKF3 not started
+109,0,0,0,1,0,1,8,4,0,1,AHRS: EKF3 not started
+110,0,0,0,1,1,0,8,0,1,0,-
+111,0,0,0,1,1,0,8,1,1,0,-
+112,0,0,0,1,1,0,8,2,1,0,-
+113,0,0,0,1,1,0,8,3,1,0,-
+114,0,0,0,1,1,0,8,4,1,0,-
+115,0,0,0,1,1,1,8,0,1,0,-
+116,0,0,0,1,1,1,8,1,1,0,-
+117,0,0,0,1,1,1,8,2,1,0,-
+118,0,0,0,1,1,1,8,3,1,0,-
+119,0,0,0,1,1,1,8,4,1,0,-
+120,0,0,1,1,0,0,0,0,0,1,AHRS: EKF3 not started
+121,0,0,1,1,0,0,0,1,0,1,AHRS: EKF3 not started
+122,0,0,1,1,0,0,0,2,0,1,AHRS: EKF3 not started
+123,0,0,1,1,0,0,0,3,0,1,AHRS: EKF3 not started
+124,0,0,1,1,0,0,0,4,0,1,AHRS: EKF3 not started
+125,0,0,1,1,0,1,0,0,0,1,AHRS: EKF3 not started
+126,0,0,1,1,0,1,0,1,0,1,AHRS: EKF3 not started
+127,0,0,1,1,0,1,0,2,0,1,AHRS: EKF3 not started
+128,0,0,1,1,0,1,0,3,0,1,AHRS: EKF3 not started
+129,0,0,1,1,0,1,0,4,0,1,AHRS: EKF3 not started
+130,0,0,1,1,1,0,0,0,1,0,-
+131,0,0,1,1,1,0,0,1,1,0,-
+132,0,0,1,1,1,0,0,2,1,0,-
+133,0,0,1,1,1,0,0,3,1,0,-
+134,0,0,1,1,1,0,0,4,1,0,-
+135,0,0,1,1,1,1,0,0,0,1,GPS glitching
+136,0,0,1,1,1,1,0,1,0,1,GPS glitching
+137,0,0,1,1,1,1,0,2,0,1,GPS glitching
+138,0,0,1,1,1,1,0,3,0,1,GPS glitching
+139,0,0,1,1,1,1,0,4,0,1,GPS glitching
+140,0,0,1,1,0,0,8,0,0,1,AHRS: EKF3 not started
+141,0,0,1,1,0,0,8,1,0,1,AHRS: EKF3 not started
+142,0,0,1,1,0,0,8,2,0,1,AHRS: EKF3 not started
+143,0,0,1,1,0,0,8,3,0,1,AHRS: EKF3 not started
+144,0,0,1,1,0,0,8,4,0,1,AHRS: EKF3 not started
+145,0,0,1,1,0,1,8,0,0,1,AHRS: EKF3 not started
+146,0,0,1,1,0,1,8,1,0,1,AHRS: EKF3 not started
+147,0,0,1,1,0,1,8,2,0,1,AHRS: EKF3 not started
+148,0,0,1,1,0,1,8,3,0,1,AHRS: EKF3 not started
+149,0,0,1,1,0,1,8,4,0,1,AHRS: EKF3 not started
+150,0,0,1,1,1,0,8,0,1,0,-
+151,0,0,1,1,1,0,8,1,0,1,EKF compass variance
+152,0,0,1,1,1,0,8,2,0,1,EKF position variance
+153,0,0,1,1,1,0,8,3,0,1,EKF velocity variance
+154,0,0,1,1,1,0,8,4,0,1,EKF height variance
+155,0,0,1,1,1,1,8,0,0,1,GPS glitching
+156,0,0,1,1,1,1,8,1,0,1,GPS glitching
+157,0,0,1,1,1,1,8,2,0,1,GPS glitching
+158,0,0,1,1,1,1,8,3,0,1,GPS glitching
+159,0,0,1,1,1,1,8,4,0,1,GPS glitching
+160,5,1,0,0,0,0,0,0,0,1,AHRS: EKF3 not started
+161,5,1,0,0,0,0,0,1,0,1,AHRS: EKF3 not started
+162,5,1,0,0,0,0,0,2,0,1,AHRS: EKF3 not started
+163,5,1,0,0,0,0,0,3,0,1,AHRS: EKF3 not started
+164,5,1,0,0,0,0,0,4,0,1,AHRS: EKF3 not started
+165,5,1,0,0,0,1,0,0,0,1,AHRS: EKF3 not started
+166,5,1,0,0,0,1,0,1,0,1,AHRS: EKF3 not started
+167,5,1,0,0,0,1,0,2,0,1,AHRS: EKF3 not started
+168,5,1,0,0,0,1,0,3,0,1,AHRS: EKF3 not started
+169,5,1,0,0,0,1,0,4,0,1,AHRS: EKF3 not started
+170,5,1,0,0,1,0,0,0,0,1,Need Position Estimate
+171,5,1,0,0,1,0,0,1,0,1,Need Position Estimate
+172,5,1,0,0,1,0,0,2,0,1,Need Position Estimate
+173,5,1,0,0,1,0,0,3,0,1,Need Position Estimate
+174,5,1,0,0,1,0,0,4,0,1,Need Position Estimate
+175,5,1,0,0,1,1,0,0,0,1,Need Position Estimate
+176,5,1,0,0,1,1,0,1,0,1,Need Position Estimate
+177,5,1,0,0,1,1,0,2,0,1,Need Position Estimate
+178,5,1,0,0,1,1,0,3,0,1,Need Position Estimate
+179,5,1,0,0,1,1,0,4,0,1,Need Position Estimate
+180,5,1,0,0,0,0,8,0,0,1,AHRS: EKF3 not started
+181,5,1,0,0,0,0,8,1,0,1,AHRS: EKF3 not started
+182,5,1,0,0,0,0,8,2,0,1,AHRS: EKF3 not started
+183,5,1,0,0,0,0,8,3,0,1,AHRS: EKF3 not started
+184,5,1,0,0,0,0,8,4,0,1,AHRS: EKF3 not started
+185,5,1,0,0,0,1,8,0,0,1,AHRS: EKF3 not started
+186,5,1,0,0,0,1,8,1,0,1,AHRS: EKF3 not started
+187,5,1,0,0,0,1,8,2,0,1,AHRS: EKF3 not started
+188,5,1,0,0,0,1,8,3,0,1,AHRS: EKF3 not started
+189,5,1,0,0,0,1,8,4,0,1,AHRS: EKF3 not started
+190,5,1,0,0,1,0,8,0,0,1,Need Position Estimate
+191,5,1,0,0,1,0,8,1,0,1,Need Position Estimate
+192,5,1,0,0,1,0,8,2,0,1,Need Position Estimate
+193,5,1,0,0,1,0,8,3,0,1,Need Position Estimate
+194,5,1,0,0,1,0,8,4,0,1,Need Position Estimate
+195,5,1,0,0,1,1,8,0,0,1,Need Position Estimate
+196,5,1,0,0,1,1,8,1,0,1,Need Position Estimate
+197,5,1,0,0,1,1,8,2,0,1,Need Position Estimate
+198,5,1,0,0,1,1,8,3,0,1,Need Position Estimate
+199,5,1,0,0,1,1,8,4,0,1,Need Position Estimate
+200,5,1,1,0,0,0,0,0,0,1,AHRS: EKF3 not started
+201,5,1,1,0,0,0,0,1,0,1,AHRS: EKF3 not started
+202,5,1,1,0,0,0,0,2,0,1,AHRS: EKF3 not started
+203,5,1,1,0,0,0,0,3,0,1,AHRS: EKF3 not started
+204,5,1,1,0,0,0,0,4,0,1,AHRS: EKF3 not started
+205,5,1,1,0,0,1,0,0,0,1,AHRS: EKF3 not started
+206,5,1,1,0,0,1,0,1,0,1,AHRS: EKF3 not started
+207,5,1,1,0,0,1,0,2,0,1,AHRS: EKF3 not started
+208,5,1,1,0,0,1,0,3,0,1,AHRS: EKF3 not started
+209,5,1,1,0,0,1,0,4,0,1,AHRS: EKF3 not started
+210,5,1,1,0,1,0,0,0,0,1,Need Position Estimate
+211,5,1,1,0,1,0,0,1,0,1,Need Position Estimate
+212,5,1,1,0,1,0,0,2,0,1,Need Position Estimate
+213,5,1,1,0,1,0,0,3,0,1,Need Position Estimate
+214,5,1,1,0,1,0,0,4,0,1,Need Position Estimate
+215,5,1,1,0,1,1,0,0,0,1,Need Position Estimate
+216,5,1,1,0,1,1,0,1,0,1,Need Position Estimate
+217,5,1,1,0,1,1,0,2,0,1,Need Position Estimate
+218,5,1,1,0,1,1,0,3,0,1,Need Position Estimate
+219,5,1,1,0,1,1,0,4,0,1,Need Position Estimate
+220,5,1,1,0,0,0,8,0,0,1,AHRS: EKF3 not started
+221,5,1,1,0,0,0,8,1,0,1,AHRS: EKF3 not started
+222,5,1,1,0,0,0,8,2,0,1,AHRS: EKF3 not started
+223,5,1,1,0,0,0,8,3,0,1,AHRS: EKF3 not started
+224,5,1,1,0,0,0,8,4,0,1,AHRS: EKF3 not started
+225,5,1,1,0,0,1,8,0,0,1,AHRS: EKF3 not started
+226,5,1,1,0,0,1,8,1,0,1,AHRS: EKF3 not started
+227,5,1,1,0,0,1,8,2,0,1,AHRS: EKF3 not started
+228,5,1,1,0,0,1,8,3,0,1,AHRS: EKF3 not started
+229,5,1,1,0,0,1,8,4,0,1,AHRS: EKF3 not started
+230,5,1,1,0,1,0,8,0,0,1,Need Position Estimate
+231,5,1,1,0,1,0,8,1,0,1,Need Position Estimate
+232,5,1,1,0,1,0,8,2,0,1,Need Position Estimate
+233,5,1,1,0,1,0,8,3,0,1,Need Position Estimate
+234,5,1,1,0,1,0,8,4,0,1,Need Position Estimate
+235,5,1,1,0,1,1,8,0,0,1,Need Position Estimate
+236,5,1,1,0,1,1,8,1,0,1,Need Position Estimate
+237,5,1,1,0,1,1,8,2,0,1,Need Position Estimate
+238,5,1,1,0,1,1,8,3,0,1,Need Position Estimate
+239,5,1,1,0,1,1,8,4,0,1,Need Position Estimate
+240,5,1,0,1,0,0,0,0,0,1,AHRS: EKF3 not started
+241,5,1,0,1,0,0,0,1,0,1,AHRS: EKF3 not started
+242,5,1,0,1,0,0,0,2,0,1,AHRS: EKF3 not started
+243,5,1,0,1,0,0,0,3,0,1,AHRS: EKF3 not started
+244,5,1,0,1,0,0,0,4,0,1,AHRS: EKF3 not started
+245,5,1,0,1,0,1,0,0,0,1,AHRS: EKF3 not started
+246,5,1,0,1,0,1,0,1,0,1,AHRS: EKF3 not started
+247,5,1,0,1,0,1,0,2,0,1,AHRS: EKF3 not started
+248,5,1,0,1,0,1,0,3,0,1,AHRS: EKF3 not started
+249,5,1,0,1,0,1,0,4,0,1,AHRS: EKF3 not started
+250,5,1,0,1,1,0,0,0,1,0,-
+251,5,1,0,1,1,0,0,1,1,0,-
+252,5,1,0,1,1,0,0,2,1,0,-
+253,5,1,0,1,1,0,0,3,1,0,-
+254,5,1,0,1,1,0,0,4,1,0,-
+255,5,1,0,1,1,1,0,0,0,1,GPS glitching
+256,5,1,0,1,1,1,0,1,0,1,GPS glitching
+257,5,1,0,1,1,1,0,2,0,1,GPS glitching
+258,5,1,0,1,1,1,0,3,0,1,GPS glitching
+259,5,1,0,1,1,1,0,4,0,1,GPS glitching
+260,5,1,0,1,0,0,8,0,0,1,AHRS: EKF3 not started
+261,5,1,0,1,0,0,8,1,0,1,AHRS: EKF3 not started
+262,5,1,0,1,0,0,8,2,0,1,AHRS: EKF3 not started
+263,5,1,0,1,0,0,8,3,0,1,AHRS: EKF3 not started
+264,5,1,0,1,0,0,8,4,0,1,AHRS: EKF3 not started
+265,5,1,0,1,0,1,8,0,0,1,AHRS: EKF3 not started
+266,5,1,0,1,0,1,8,1,0,1,AHRS: EKF3 not started
+267,5,1,0,1,0,1,8,2,0,1,AHRS: EKF3 not started
+268,5,1,0,1,0,1,8,3,0,1,AHRS: EKF3 not started
+269,5,1,0,1,0,1,8,4,0,1,AHRS: EKF3 not started
+270,5,1,0,1,1,0,8,0,1,0,-
+271,5,1,0,1,1,0,8,1,0,1,EKF compass variance
+272,5,1,0,1,1,0,8,2,0,1,EKF position variance
+273,5,1,0,1,1,0,8,3,0,1,EKF velocity variance
+274,5,1,0,1,1,0,8,4,0,1,EKF height variance
+275,5,1,0,1,1,1,8,0,0,1,GPS glitching
+276,5,1,0,1,1,1,8,1,0,1,GPS glitching
+277,5,1,0,1,1,1,8,2,0,1,GPS glitching
+278,5,1,0,1,1,1,8,3,0,1,GPS glitching
+279,5,1,0,1,1,1,8,4,0,1,GPS glitching
+280,5,1,1,1,0,0,0,0,0,1,AHRS: EKF3 not started
+281,5,1,1,1,0,0,0,1,0,1,AHRS: EKF3 not started
+282,5,1,1,1,0,0,0,2,0,1,AHRS: EKF3 not started
+283,5,1,1,1,0,0,0,3,0,1,AHRS: EKF3 not started
+284,5,1,1,1,0,0,0,4,0,1,AHRS: EKF3 not started
+285,5,1,1,1,0,1,0,0,0,1,AHRS: EKF3 not started
+286,5,1,1,1,0,1,0,1,0,1,AHRS: EKF3 not started
+287,5,1,1,1,0,1,0,2,0,1,AHRS: EKF3 not started
+288,5,1,1,1,0,1,0,3,0,1,AHRS: EKF3 not started
+289,5,1,1,1,0,1,0,4,0,1,AHRS: EKF3 not started
+290,5,1,1,1,1,0,0,0,1,0,-
+291,5,1,1,1,1,0,0,1,1,0,-
+292,5,1,1,1,1,0,0,2,1,0,-
+293,5,1,1,1,1,0,0,3,1,0,-
+294,5,1,1,1,1,0,0,4,1,0,-
+295,5,1,1,1,1,1,0,0,0,1,GPS glitching
+296,5,1,1,1,1,1,0,1,0,1,GPS glitching
+297,5,1,1,1,1,1,0,2,0,1,GPS glitching
+298,5,1,1,1,1,1,0,3,0,1,GPS glitching
+299,5,1,1,1,1,1,0,4,0,1,GPS glitching
+300,5,1,1,1,0,0,8,0,0,1,AHRS: EKF3 not started
+301,5,1,1,1,0,0,8,1,0,1,AHRS: EKF3 not started
+302,5,1,1,1,0,0,8,2,0,1,AHRS: EKF3 not started
+303,5,1,1,1,0,0,8,3,0,1,AHRS: EKF3 not started
+304,5,1,1,1,0,0,8,4,0,1,AHRS: EKF3 not started
+305,5,1,1,1,0,1,8,0,0,1,AHRS: EKF3 not started
+306,5,1,1,1,0,1,8,1,0,1,AHRS: EKF3 not started
+307,5,1,1,1,0,1,8,2,0,1,AHRS: EKF3 not started
+308,5,1,1,1,0,1,8,3,0,1,AHRS: EKF3 not started
+309,5,1,1,1,0,1,8,4,0,1,AHRS: EKF3 not started
+310,5,1,1,1,1,0,8,0,1,0,-
+311,5,1,1,1,1,0,8,1,0,1,EKF compass variance
+312,5,1,1,1,1,0,8,2,0,1,EKF position variance
+313,5,1,1,1,1,0,8,3,0,1,EKF velocity variance
+314,5,1,1,1,1,0,8,4,0,1,EKF height variance
+315,5,1,1,1,1,1,8,0,0,1,GPS glitching
+316,5,1,1,1,1,1,8,1,0,1,GPS glitching
+317,5,1,1,1,1,1,8,2,0,1,GPS glitching
+318,5,1,1,1,1,1,8,3,0,1,GPS glitching
+319,5,1,1,1,1,1,8,4,0,1,GPS glitching
