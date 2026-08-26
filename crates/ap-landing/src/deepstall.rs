@@ -3,7 +3,7 @@
 //! Slices: travel prediction, loiter breakout, L1 crosstrack steering.
 
 use ap_math::location::Location;
-use ap_math::scalar::{constrain_value, degrees, is_positive, radians, wrap_pi, Real};
+use ap_math::scalar::{constrain_value, degrees, is_positive, is_zero, radians, wrap_pi, Real};
 use ap_math::vector2::Vector2f;
 
 /// Loiter altitude tolerance for breakout, upstream
@@ -271,6 +271,45 @@ pub fn deepstall_build_approach_path(
     }
 }
 
+/// Whether land-stage steering may run, upstream `override_servos`.
+#[must_use]
+pub fn deepstall_steering_may_run(
+    slew_progress: f32,
+    airspeed_ms: f32,
+    handoff_airspeed_ms: f32,
+) -> bool {
+    slew_progress >= 1.0 || airspeed_ms <= handoff_airspeed_ms
+}
+
+/// Travel limit scaler for deepstall steering, upstream the `travel_limit`
+/// calculation in `override_servos`.
+#[must_use]
+pub fn deepstall_travel_limit(
+    airspeed_ms: f32,
+    handoff_airspeed_ms: f32,
+    handoff_lower_limit_ms: f32,
+) -> f32 {
+    constrain_value(
+        (handoff_airspeed_ms - airspeed_ms) / (handoff_airspeed_ms - handoff_lower_limit_ms)
+            * 0.5
+            + 0.5,
+        0.5,
+        1.0,
+    )
+}
+
+/// Clamp steering PID output to the travel limit, upstream `override_servos`.
+#[must_use]
+pub fn deepstall_steering_output(pid: f32, travel_limit: f32) -> f32 {
+    constrain_value(pid, -travel_limit, travel_limit)
+}
+
+/// Whether a go-around is permitted, upstream `request_go_around`.
+#[must_use]
+pub fn deepstall_may_go_around(min_abort_alt_m: f32, relative_alt_m: f32) -> bool {
+    is_zero(min_abort_alt_m) || relative_alt_m > min_abort_alt_m
+}
+
 /// Elevator slew progress in land stage, upstream `override_servos`.
 #[must_use]
 pub fn deepstall_elevator_slew_progress(
@@ -363,6 +402,25 @@ mod tests {
         // Headwind along course: cos(offset) = -1, so stall_distance = 1*2*(-1)+5 = 3.
         let d = predict_travel_distance(&p, Vector2f::new(2.0, 0.0), 100.0);
         assert!((d - 3.0).abs() < 0.5, "got {d}");
+    }
+
+    #[test]
+    fn steering_runs_after_slew_or_below_handoff() {
+        assert!(deepstall_steering_may_run(1.0, 20.0, 12.0));
+        assert!(deepstall_steering_may_run(0.5, 10.0, 12.0));
+        assert!(!deepstall_steering_may_run(0.5, 15.0, 12.0));
+    }
+
+    #[test]
+    fn travel_limit_scales_with_airspeed() {
+        assert!((deepstall_travel_limit(12.0, 12.0, 8.0) - 0.5).abs() < 1e-3);
+        assert!((deepstall_travel_limit(8.0, 12.0, 8.0) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn go_around_blocked_near_ground() {
+        assert!(!deepstall_may_go_around(10.0, 5.0));
+        assert!(deepstall_may_go_around(0.0, 5.0));
     }
 
     #[test]
