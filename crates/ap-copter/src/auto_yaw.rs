@@ -407,3 +407,240 @@ pub fn fixed_yaw_step(
 pub fn angle_rate_step(yaw_angle_rad: f32, yaw_rate_rads: f32, dt_s: f32) -> f32 {
     yaw_angle_rad + yaw_rate_rads * dt_s
 }
+
+/// Minimum ground speed before the aircraft is aimed at its ground course,
+/// upstream `YAW_LOOK_AHEAD_MIN_SPEED_MS` (`config.h:459`).
+///
+/// Below it the velocity vector's direction is noise — a hovering aircraft
+/// drifting a few centimetres a second has a well-defined heading only in the
+/// arithmetic sense — so the last good heading is kept instead.
+pub const YAW_LOOK_AHEAD_MIN_SPEED_MS: f32 = 1.0;
+
+/// The look-ahead heading, upstream `Mode::AutoYaw::look_ahead_yaw_rad`.
+///
+/// Returns the updated heading. `held` is the previous value, which is what
+/// comes back unchanged when the aircraft is too slow or has no position —
+/// note it is *held*, not zeroed, so a brief slowdown does not swing the nose
+/// to north and back.
+///
+/// The threshold is compared on squared speed against the squared constant,
+/// avoiding a square root, so a port comparing `length()` against the
+/// constant would agree except where the square root rounds across the
+/// boundary.
+///
+/// # A mutant that cannot be killed
+///
+/// The mutation gate reports `MIN_SPEED * MIN_SPEED` replaced by
+/// `MIN_SPEED / MIN_SPEED` as untested. The constant is 1.0, so the two
+/// expressions are the same number and no input distinguishes them. Written
+/// as the square anyway, because that is what upstream means and what would
+/// still be right if the constant ever moved.
+#[must_use]
+pub fn look_ahead_yaw_rad(held: f32, position_ok: bool, vel_n_ms: f32, vel_e_ms: f32) -> f32 {
+    if !position_ok {
+        return held;
+    }
+    let speed_sq = vel_n_ms * vel_n_ms + vel_e_ms * vel_e_ms;
+    if speed_sq > YAW_LOOK_AHEAD_MIN_SPEED_MS * YAW_LOOK_AHEAD_MIN_SPEED_MS {
+        return libm::atan2f(vel_e_ms, vel_n_ms);
+    }
+    held
+}
+
+/// How a fixed-yaw command should be interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedYawDirection {
+    /// Turn whichever way is shorter.
+    Shortest,
+    /// Turn clockwise, going the long way if necessary.
+    Clockwise,
+    /// Turn counter-clockwise, going the long way if necessary.
+    CounterClockwise,
+}
+
+impl FixedYawDirection {
+    /// Upstream passes this as an `int8_t` where the sign is what matters.
+    #[must_use]
+    pub fn from_sign(direction: i8) -> Self {
+        if direction < 0 {
+            Self::CounterClockwise
+        } else if direction > 0 {
+            Self::Clockwise
+        } else {
+            Self::Shortest
+        }
+    }
+}
+
+/// The offset a fixed-yaw command should slew through, upstream the first
+/// half of `Mode::AutoYaw::set_fixed_yaw_rad`.
+///
+/// # Relative and absolute are different commands
+///
+/// A relative command is already an offset, so the direction only chooses its
+/// sign — and note that `direction >= 0` takes the positive branch, so
+/// "shortest" and "clockwise" are the same thing for a relative command.
+/// There is nothing to be shortest about when the caller has said how far to
+/// turn.
+///
+/// An absolute command names a heading, so the offset is the difference,
+/// wrapped to the shorter way round. The direction then *overrides* that:
+/// asking for counter-clockwise when the short way is clockwise subtracts a
+/// full turn, so the aircraft goes the long way deliberately. That is what
+/// makes `CONDITION_YAW` able to command three quarters of a turn one way
+/// rather than a quarter the other, which matters when a camera is tracking
+/// something on the way round.
+///
+/// `current_yaw_rad` is the *target* angle the machine is holding, not the
+/// aircraft's measured heading — except that a relative command entering from
+/// `HOLD` seeds it from the measurement first, because in `HOLD` there is no
+/// meaningful target to be relative to.
+#[must_use]
+pub fn fixed_yaw_offset_rad(
+    angle_rad: f32,
+    current_yaw_rad: f32,
+    direction: FixedYawDirection,
+    relative_angle: bool,
+) -> f32 {
+    if relative_angle {
+        // `direction >= 0 ? 1.0 : -1.0` upstream: zero counts as positive.
+        return if direction == FixedYawDirection::CounterClockwise {
+            -angle_rad
+        } else {
+            angle_rad
+        };
+    }
+
+    let mut offset = ap_math::scalar::wrap_pi(angle_rad - current_yaw_rad);
+    match direction {
+        FixedYawDirection::CounterClockwise if offset > 0.0 => {
+            offset -= core::f32::consts::TAU;
+        }
+        FixedYawDirection::Clockwise if offset < 0.0 => {
+            offset += core::f32::consts::TAU;
+        }
+        _ => {}
+    }
+    offset
+}
+
+/// The slew rate a fixed-yaw command should use, upstream the second half of
+/// `set_fixed_yaw_rad`.
+///
+/// A non-positive request means "no preference", which takes the controller's
+/// maximum. A positive one is capped by that maximum, so a caller cannot
+/// command a turn faster than the attitude controller will actually fly.
+#[must_use]
+pub fn fixed_yaw_slew_rate_rads(requested_rads: f32, controller_max_rads: f32) -> f32 {
+    if requested_rads <= 0.0 {
+        return controller_max_rads;
+    }
+    libm::fminf(controller_max_rads, requested_rads)
+}
+
+/// Whether a fixed-yaw slew has arrived, upstream
+/// `Mode::AutoYaw::reached_fixed_yaw_target`.
+///
+/// # Not being in FIXED reports arrival
+///
+/// Upstream returns true when the mode is not `FIXED`, with a comment saying
+/// it should not happen. Reporting "arrived" for a question that does not
+/// apply is the safe direction: a caller waiting on this is usually a mission
+/// command waiting to advance, and blocking forever on a mode that will never
+/// arrive would stall the mission.
+///
+/// # Two conditions, not one
+///
+/// The offset must be fully consumed *and* the aircraft must be within two
+/// degrees. The first says the target has finished moving; the second says
+/// the aircraft has caught up with it. A slew can be complete while the
+/// airframe is still swinging towards the final heading.
+#[must_use]
+pub fn reached_fixed_yaw_target(
+    mode: YawMode,
+    fixed_yaw_offset_rad: f32,
+    yaw_angle_rad: f32,
+    measured_yaw_rad: f32,
+) -> bool {
+    if mode != YawMode::Fixed {
+        return true;
+    }
+    if !ap_math::scalar::is_zero(fixed_yaw_offset_rad) {
+        return false;
+    }
+    let error = ap_math::scalar::wrap_pi(yaw_angle_rad - measured_yaw_rad);
+    libm::fabsf(error) <= 2.0_f32.to_radians()
+}
+
+/// The order `set_rate_rad` does its two things in, upstream
+/// `Mode::AutoYaw::set_rate_rad`.
+///
+/// # The order is the whole function
+///
+/// Upstream calls `set_mode(RATE)` *first* and assigns the rate *second*.
+/// That is not stylistic: entering `RATE` zeroes the stored rate (see
+/// [`yaw_mode_entry`]), so assigning first and switching second would discard
+/// the rate that was just commanded and leave the aircraft turning at zero.
+///
+/// This function exists to make the ordering something a caller cannot get
+/// wrong.
+///
+/// # The mutation gate cannot see the point of it
+///
+/// It reports the `== Some(ZeroYawRate)` test as untested, and it is
+/// untestable: the assignment below runs unconditionally, so whether the
+/// zeroing happened is unobservable from outside. That is equally true of
+/// upstream, where `set_mode` zeroes the rate and `set_rate_rad` immediately
+/// overwrites it.
+///
+/// The defect this guards against is not a mutation of this code — it is a
+/// caller writing the two statements the other way round, which no mutation
+/// of the correct version can express. That is a limit of the gate rather
+/// than a hole in the tests.
+pub fn set_rate(current: YawMode, turn_rate_rads: f32, stored_rate: &mut f32) -> YawMode {
+    // The mode change first, because it may zero the rate.
+    if yaw_mode_entry(current, YawMode::Rate) == Some(YawModeEntry::ZeroYawRate) {
+        *stored_rate = 0.0;
+    }
+    // Then the commanded rate, which must survive.
+    *stored_rate = turn_rate_rads;
+    YawMode::Rate
+}
+
+/// What a `set_roi` command does, upstream `Mode::AutoYaw::set_roi`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoiAction {
+    /// The location was empty, so the region of interest is cancelled and the
+    /// yaw mode returns to the operator's default.
+    Cancel,
+    /// Point the airframe at the location, because the mount cannot pan.
+    PointAirframe,
+    /// Leave the airframe alone: the mount can pan, so it tracks the target
+    /// on its own and yawing the aircraft as well would be redundant.
+    MountOnly,
+}
+
+/// Upstream `set_roi`'s decision.
+///
+/// # An uninitialised location means "stop", not "point at the equator"
+///
+/// A `Location` of all zeros is a real point off the coast of Africa, so
+/// upstream tests `initialised()` rather than the coordinates. A mission that
+/// clears its region of interest sends zeros, and reading that literally
+/// would swing the aircraft to face a point thousands of kilometres away.
+///
+/// # A panning mount does not need the airframe
+///
+/// If the mount can pan, it tracks the target itself and the aircraft is left
+/// to fly. Only a fixed mount makes the whole airframe the pointing
+/// mechanism.
+#[must_use]
+pub fn roi_action(location_initialised: bool, mount_has_pan_control: bool) -> RoiAction {
+    if !location_initialised {
+        return RoiAction::Cancel;
+    }
+    if mount_has_pan_control {
+        return RoiAction::MountOnly;
+    }
+    RoiAction::PointAirframe
+}
