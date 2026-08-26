@@ -2,7 +2,7 @@
 //!
 //! First slice: travel-distance prediction and loiter breakout predicate.
 
-use ap_math::scalar::{constrain_value, is_positive, radians, Real};
+use ap_math::scalar::{constrain_value, degrees, is_positive, radians, Real};
 use ap_math::vector2::Vector2f;
 
 /// Loiter altitude tolerance for breakout, upstream
@@ -70,6 +70,23 @@ pub fn predict_travel_distance(
 pub fn verify_breakout(heading_error_deg: f32, height_error_m: f32) -> bool {
     heading_error_deg <= BREAKOUT_HEADING_MARGIN_DEG
         && libm::fabsf(height_error_m) < LOITER_ALT_TOLERANCE_M
+}
+
+/// Heading error in degrees for breakout, upstream the angle between groundspeed
+/// and the vector to the target.
+#[must_use]
+pub fn heading_error_deg(groundspeed_ne: Vector2f, to_target_ne: Vector2f) -> f32 {
+    degrees(groundspeed_ne.angle_to(to_target_ne))
+}
+
+/// Breakout check from NE vectors, upstream `verify_breakout` with AHRS inputs.
+#[must_use]
+pub fn verify_breakout_vectors(
+    groundspeed_ne: Vector2f,
+    to_target_ne: Vector2f,
+    height_error_m: f32,
+) -> bool {
+    verify_breakout(heading_error_deg(groundspeed_ne, to_target_ne), height_error_m)
 }
 
 #[cfg(test)]
