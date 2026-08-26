@@ -5,9 +5,10 @@
 //! orientation, lever-arm corrections, and the timer that decides when each
 //! sample is due.
 //!
-//! Random sensor noise, motor vibration, temperature calibration, and file
-//! playback are not here yet — they need a noise source and more upstream
-//! surface area.
+//! Random sensor noise, motor vibration, temperature *calibration*
+//! application, and file playback are not here yet — they need a noise source
+//! or more upstream surface area. The IMU warm-up temperature curve and
+//! per-instance fail masks are implemented.
 
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{is_zero, radians, Real};
@@ -74,6 +75,51 @@ impl Default for SitlImuCalibration {
             accel_fail: 0.0,
         }
     }
+}
+
+/// IMU warm-up temperature parameters, upstream SITL `imu_temp_*`.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlImuTemperature {
+    /// When non-zero, temperature is fixed at this value (°C).
+    pub temp_fixed_c: f32,
+    /// Starting temperature before warm-up (°C).
+    pub temp_start_c: f32,
+    /// Asymptotic temperature after warm-up (°C).
+    pub temp_end_c: f32,
+    /// Time constant for the exponential warm-up curve (seconds).
+    pub temp_tconst_s: f32,
+}
+
+impl Default for SitlImuTemperature {
+    fn default() -> Self {
+        Self {
+            temp_fixed_c: 0.0,
+            temp_start_c: 20.0,
+            temp_end_c: 45.0,
+            temp_tconst_s: 300.0,
+        }
+    }
+}
+
+/// IMU temperature at `elapsed_ms` since the backend started, upstream
+/// `get_temperature`.
+#[must_use]
+pub fn sitl_imu_temperature(config: &SitlImuTemperature, elapsed_ms: u32) -> f32 {
+    if !is_zero(config.temp_fixed_c) {
+        return config.temp_fixed_c;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "milliseconds fit in f32 for SITL dt")]
+    let tsec = elapsed_ms as f32 * 0.001;
+    let t0 = config.temp_start_c;
+    let t1 = config.temp_end_c;
+    let tconst = config.temp_tconst_s;
+    t1 - (t1 - t0) * Real::exp(-tsec / tconst)
+}
+
+/// Return true when instance `index` is masked out of sample generation.
+#[must_use]
+pub fn sitl_instance_failed(fail_mask: u32, index: u8) -> bool {
+    (fail_mask & (1_u32 << index)) != 0
 }
 
 /// The slow triangular gyro drift SITL can inject, upstream `gyro_drift()`.
@@ -213,6 +259,17 @@ pub struct SitlImuBackend {
     pub drift_speed_dps: f32,
     /// SITL gyro drift period, minutes.
     pub drift_time_min: f32,
+    /// Backend instance index for fail-mask checks.
+    pub instance_index: u8,
+    /// Bit mask: set bits skip accelerometer sample generation.
+    pub accel_fail_mask: u32,
+    /// Bit mask: set bits skip gyro sample generation.
+    pub gyro_fail_mask: u32,
+    /// Warm-up temperature model parameters.
+    pub temperature: SitlImuTemperature,
+    temp_start_ms: Option<u32>,
+    /// Most recently computed IMU temperature (°C).
+    pub last_temperature_c: f32,
 }
 
 impl SitlImuBackend {
@@ -228,6 +285,12 @@ impl SitlImuBackend {
             next_accel_sample_us: 0,
             drift_speed_dps: 0.0,
             drift_time_min: 0.0,
+            instance_index: 0,
+            accel_fail_mask: 0,
+            gyro_fail_mask: 0,
+            temperature: SitlImuTemperature::default(),
+            temp_start_ms: None,
+            last_temperature_c: 20.0,
         }
     }
 
@@ -238,7 +301,16 @@ impl SitlImuBackend {
         let mut gyro_count = 0_u32;
         let mut accel_count = 0_u32;
 
-        if now_us >= self.next_accel_sample_us {
+        let now_ms = (now_us / 1000) as u32;
+        if self.temp_start_ms.is_none() {
+            self.temp_start_ms = Some(now_ms);
+        }
+        let elapsed_ms = now_ms.wrapping_sub(self.temp_start_ms.unwrap_or(now_ms));
+        self.last_temperature_c = sitl_imu_temperature(&self.temperature, elapsed_ms);
+
+        if now_us >= self.next_accel_sample_us
+            && !sitl_instance_failed(self.accel_fail_mask, self.instance_index)
+        {
             let sample = sitl_accel_sample(state, &self.cal);
             self.imu
                 .notify_accel_raw_sample(sample, now_us, self.accel_rate_hz, now_us);
@@ -246,7 +318,9 @@ impl SitlImuBackend {
             accel_count = 1;
         }
 
-        if now_us >= self.next_gyro_sample_us {
+        if now_us >= self.next_gyro_sample_us
+            && !sitl_instance_failed(self.gyro_fail_mask, self.instance_index)
+        {
             let drift = sitl_gyro_drift(now_us, self.drift_speed_dps, self.drift_time_min);
             let sample = sitl_gyro_sample(state, &self.cal, drift);
             self.imu
@@ -345,5 +419,68 @@ mod tests {
         let timing = LoopTiming::new(0.0025);
         assert!(backend.imu.get_delta_angle(&timing).is_some());
         assert!(backend.imu.get_delta_velocity(&timing).is_some());
+    }
+
+    #[test]
+    fn imu_temperature_warmup_follows_exponential_curve() {
+        let config = SitlImuTemperature {
+            temp_start_c: 20.0,
+            temp_end_c: 45.0,
+            temp_tconst_s: 100.0,
+            ..SitlImuTemperature::default()
+        };
+        let t0 = sitl_imu_temperature(&config, 0);
+        let t_mid = sitl_imu_temperature(&config, 100_000);
+        let t_late = sitl_imu_temperature(&config, 1_000_000);
+        assert!((t0 - 20.0).abs() < 0.01, "starts at temp_start, got {t0}");
+        assert!(t_mid > t0 && t_mid < 45.0, "mid warmup {t_mid}");
+        assert!((t_late - 45.0).abs() < 0.1, "settles at temp_end, got {t_late}");
+    }
+
+    #[test]
+    fn imu_temperature_honours_fixed_override() {
+        let config = SitlImuTemperature {
+            temp_fixed_c: 35.0,
+            ..SitlImuTemperature::default()
+        };
+        assert!((sitl_imu_temperature(&config, 0) - 35.0).abs() < 1e-6);
+        assert!((sitl_imu_temperature(&config, 999_999) - 35.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fail_mask_suppresses_samples_for_masked_instance() {
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.instance_index = 1;
+        backend.accel_fail_mask = 1 << 1;
+        backend.gyro_fail_mask = 1 << 1;
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let (g, a) = backend.timer_update(0, &state);
+        assert_eq!(g, 0);
+        assert_eq!(a, 0);
+
+        backend.accel_fail_mask = 0;
+        backend.gyro_fail_mask = 0;
+        let (g2, a2) = backend.timer_update(0, &state);
+        assert_eq!(g2, 1);
+        assert_eq!(a2, 1);
+    }
+
+    #[test]
+    fn the_backend_tracks_warmup_temperature() {
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.temperature = SitlImuTemperature {
+            temp_start_c: 20.0,
+            temp_end_c: 45.0,
+            temp_tconst_s: 100.0,
+            ..SitlImuTemperature::default()
+        };
+        let state = SitlBodyState::default();
+        backend.timer_update(0, &state);
+        assert!((backend.last_temperature_c - 20.0).abs() < 0.01);
+        backend.timer_update(600_000_000, &state);
+        assert!(backend.last_temperature_c > 40.0);
     }
 }
