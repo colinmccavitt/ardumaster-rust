@@ -37,9 +37,12 @@
 //! sculling compensation (upstream has none -- the delta velocity is a plain
 //! rectangular sum), multi-instance selection, vibration and clipping
 //! metrics, temperature calibration, board orientation, gyro/accel offset and
-//! scale calibration, and the FFT window.
+//! scale calibration, and the FFT window. The SITL backend's deterministic
+//! sample path lives in [`sitl`].
 
 #![no_std]
+
+pub mod sitl;
 
 use ap_filter::biquad::LowPassFilter2p;
 use ap_math::vector3::Vector3f;

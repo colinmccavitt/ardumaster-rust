@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 ap-math = { workspace = true }
 ap-filter = { workspace = true }
+libm = { workspace = true }
 
 [dev-dependencies]
 ap-sim = { workspace = true }

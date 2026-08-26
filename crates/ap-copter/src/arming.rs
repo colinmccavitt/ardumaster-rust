@@ -1020,3 +1020,101 @@ pub fn proximity_check(
         None => true,
     }
 }
+
+/// The winch pre-arm check, upstream `winch_checks`.
+///
+/// Only runs when parameter checks are enabled. No winch fitted means nothing
+/// to check — upstream returns before calling into `AP_Winch`.
+#[must_use]
+pub fn winch_check(
+    parameter_check_enabled: bool,
+    winch_present: bool,
+    winch_pre_arm_ok: bool,
+) -> bool {
+    if !parameter_check_enabled {
+        return true;
+    }
+    if !winch_present {
+        return true;
+    }
+    winch_pre_arm_ok
+}
+
+/// Whether the terrain database must be fully loaded before arming, upstream
+/// `AP_Arming_Copter::terrain_database_required`.
+///
+/// A vehicle whose primary terrain source is a rangefinder does not need the
+/// database at all. One using the database for RTL-above-terrain does.
+#[must_use]
+pub fn terrain_database_required(
+    terrain_source: TerrainSource,
+    rtl_alt_type_is_terrain: bool,
+    shared_requires_terrain: bool,
+) -> bool {
+    if terrain_source == TerrainSource::Rangefinder {
+        return false;
+    }
+    if terrain_source == TerrainSource::Database && rtl_alt_type_is_terrain {
+        return true;
+    }
+    shared_requires_terrain
+}
+
+/// Why a disarm request was refused before touching the motors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisarmRefusal {
+    /// A ground-station disarm while the vehicle still considers itself in
+    /// flight.
+    FlyingViaGroundStation,
+    /// A rudder-stick disarm in an auto-throttle mode while not landed.
+    FlyingViaRudder,
+}
+
+/// The guards upstream runs before `AP_Arming::disarm`, in
+/// `AP_Arming_Copter::disarm`.
+///
+/// Returns `None` when the request may proceed (including when already
+/// disarmed — upstream returns `true` immediately in that case).
+#[must_use]
+pub fn disarm_guard(
+    motors_armed: bool,
+    do_disarm_checks: bool,
+    method: ArmingMethod,
+    land_complete: bool,
+    manual_throttle_mode: bool,
+) -> Option<DisarmRefusal> {
+    if !motors_armed {
+        return None;
+    }
+    if do_disarm_checks && method == ArmingMethod::GroundStation && !land_complete {
+        return Some(DisarmRefusal::FlyingViaGroundStation);
+    }
+    if method == ArmingMethod::Pilot && !manual_throttle_mode && !land_complete {
+        return Some(DisarmRefusal::FlyingViaRudder);
+    }
+    None
+}
+
+/// What the arm entry guard decides before any side effects, upstream the
+/// top of `AP_Arming_Copter::arm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmEntry {
+    /// Re-entered while already inside `arm()` — refuse immediately.
+    Reentrant,
+    /// Already armed — succeed without doing anything.
+    AlreadyArmed,
+    /// Proceed with arming.
+    Proceed,
+}
+
+/// The re-entrancy and already-armed guards at the top of `arm()`.
+#[must_use]
+pub fn arm_entry(in_arm_motors: bool, already_armed: bool) -> ArmEntry {
+    if in_arm_motors {
+        return ArmEntry::Reentrant;
+    }
+    if already_armed {
+        return ArmEntry::AlreadyArmed;
+    }
+    ArmEntry::Proceed
+}
