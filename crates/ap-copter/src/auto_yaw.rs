@@ -229,3 +229,181 @@ pub fn yaw_rate_source(mode: YawMode) -> YawRateSource {
         YawMode::AngleRate | YawMode::Rate | YawMode::Weathervane => YawRateSource::Unchanged,
     }
 }
+
+/// How the attitude controller should read the heading command.
+///
+/// Upstream `AC_AttitudeControl::HeadingMode`. `Angle_Only` exists in the
+/// enum but `get_heading` never selects it — every yaw mode is either a rate
+/// or both — so it is here for completeness of the type rather than because
+/// this module produces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadingMode {
+    /// 0 — an angle with no rate.
+    AngleOnly,
+    /// 1 — an angle and the rate to approach it at.
+    AngleAndRate,
+    /// 2 — a rate alone, with no angle to hold.
+    RateOnly,
+}
+
+/// Which kind of heading command a yaw mode produces, upstream the switch at
+/// the end of `Mode::AutoYaw::get_heading`.
+///
+/// The split is between modes that know where they want the nose pointed and
+/// modes that only know how fast they want it moving. Handing an angle the
+/// caller does not have would make the attitude controller chase a stale
+/// target; handing none where there is one would throw away the only thing
+/// that stops drift.
+#[must_use]
+pub fn heading_mode(mode: YawMode) -> HeadingMode {
+    match mode {
+        YawMode::Hold | YawMode::Rate | YawMode::PilotRate | YawMode::Weathervane => {
+            HeadingMode::RateOnly
+        }
+        YawMode::LookAtNextWp
+        | YawMode::Roi
+        | YawMode::Fixed
+        | YawMode::LookAhead
+        | YawMode::ResetToArmedYaw
+        | YawMode::AngleRate
+        | YawMode::Circle => HeadingMode::AngleAndRate,
+    }
+}
+
+/// What the pilot's yaw stick does to the yaw mode, upstream the top of
+/// `Mode::AutoYaw::get_heading`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PilotYawOverride {
+    /// Leave the mode alone.
+    None,
+    /// The pilot is asking for yaw, so hand them the axis.
+    TakeControl,
+    /// The pilot had the axis and can no longer have it. Upstream goes to
+    /// `HOLD` rather than back to whatever preceded `PILOT_RATE`.
+    ReleaseToHold,
+}
+
+/// Whether the pilot takes or loses the yaw axis this iteration.
+///
+/// # Losing it goes to HOLD, not back
+///
+/// When the radio fails or the mode stops accepting pilot yaw, upstream sets
+/// `HOLD` rather than restoring the mode that was running before the pilot
+/// took over. That is deliberate and worth not "improving": the previous mode
+/// may have been pointing at something the aircraft can no longer see, and
+/// holding zero rate is the one answer that is safe without knowing why the
+/// pilot's input went away.
+///
+/// # Any non-zero stick takes control
+///
+/// The test is `!is_zero(rate)`, not a deadzone — the deadzone has already
+/// been applied by `get_pilot_desired_yaw_rate_rads`, so a rate that arrives
+/// here at all is one the pilot meant.
+#[must_use]
+pub fn pilot_yaw_override(
+    current: YawMode,
+    has_valid_input: bool,
+    mode_uses_pilot_yaw: bool,
+    pilot_yaw_rate_rads: f32,
+) -> PilotYawOverride {
+    if has_valid_input && mode_uses_pilot_yaw {
+        if !ap_math::scalar::is_zero(pilot_yaw_rate_rads) {
+            return PilotYawOverride::TakeControl;
+        }
+        return PilotYawOverride::None;
+    }
+
+    if current == YawMode::PilotRate {
+        return PilotYawOverride::ReleaseToHold;
+    }
+    PilotYawOverride::None
+}
+
+/// What the weathervane controller decided this iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeathervaneAction {
+    /// Nothing to do: weathervaning is not active and was not active.
+    None,
+    /// Take the yaw axis and turn at the rate the controller asked for.
+    Engage,
+    /// Give the axis back to the mode that had it before.
+    ReleaseTo(YawMode),
+    /// Give the axis back, but to the default mode rather than to what was
+    /// recorded. See [`weathervane_action`].
+    ReleaseToDefault,
+}
+
+/// Whether weathervaning takes or releases the yaw axis, upstream
+/// `Mode::AutoYaw::update_weathervane`.
+///
+/// # Releasing to `HOLD` means releasing to the default instead
+///
+/// Upstream restores `_last_mode` unless that was `HOLD`, in which case it
+/// calls `set_mode_to_default(false)`. The asymmetry looks arbitrary and is
+/// not: `HOLD` is what the pilot-override path leaves behind when it takes the
+/// axis away, so a recorded `HOLD` usually means "nothing chose this", and
+/// restoring it would strand the aircraft holding zero rate for the rest of
+/// the mission. Consulting `WP_YAW_BEHAVIOR` instead gives the operator's
+/// standing preference, which is the best available answer to "what should
+/// the nose do now".
+///
+/// Note the `rtl` argument to that default is hard-coded false, even if the
+/// aircraft is in fact returning. Reproduced as written.
+#[must_use]
+pub fn weathervane_action(
+    current: YawMode,
+    last_mode: YawMode,
+    allows_weathervaning: bool,
+    controller_wants_yaw: bool,
+) -> WeathervaneAction {
+    if allows_weathervaning && controller_wants_yaw {
+        return WeathervaneAction::Engage;
+    }
+
+    if current == YawMode::Weathervane {
+        if last_mode == YawMode::Hold {
+            return WeathervaneAction::ReleaseToDefault;
+        }
+        return WeathervaneAction::ReleaseTo(last_mode);
+    }
+
+    WeathervaneAction::None
+}
+
+/// The fixed-yaw slew, upstream the `FIXED` arm of `Mode::AutoYaw::yaw_rad`.
+///
+/// Returns the new `(yaw_angle_rad, remaining_offset_rad)`.
+///
+/// # The offset is consumed, not tracked
+///
+/// A fixed-yaw command arrives as an *offset* to fly through, and each
+/// iteration takes as much of it as the slew rate allows and subtracts that
+/// from what remains. So the target walks towards the commanded heading at a
+/// bounded rate and stops when the offset reaches zero — no separate
+/// "finished" flag is needed, and an interrupted slew simply resumes from
+/// wherever it got to.
+///
+/// The step is constrained symmetrically, so a negative offset slews the
+/// other way at the same rate.
+#[must_use]
+pub fn fixed_yaw_step(
+    yaw_angle_rad: f32,
+    offset_rad: f32,
+    slew_rate_rads: f32,
+    dt_s: f32,
+) -> (f32, f32) {
+    let limit = dt_s * slew_rate_rads;
+    let step = ap_math::scalar::constrain_value(offset_rad, -limit, limit);
+    (yaw_angle_rad + step, offset_rad - step)
+}
+
+/// The angle-rate integration, upstream the `ANGLE_RATE` arm of
+/// `Mode::AutoYaw::yaw_rad`.
+///
+/// Plain rectangular integration of the commanded rate. Unlike the fixed
+/// slew there is no target to converge on: the caller commanded a rate from a
+/// starting angle and this advances the angle for as long as the mode lasts.
+#[must_use]
+pub fn angle_rate_step(yaw_angle_rad: f32, yaw_rate_rads: f32, dt_s: f32) -> f32 {
+    yaw_angle_rad + yaw_rate_rads * dt_s
+}
