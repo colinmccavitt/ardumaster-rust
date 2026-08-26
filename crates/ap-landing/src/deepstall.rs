@@ -192,6 +192,38 @@ pub fn deepstall_entry_point(
     point
 }
 
+/// Arc loiter center, upstream `arc.offset_bearing(arc_heading_deg, radius)`.
+#[must_use]
+pub fn deepstall_arc_center(
+    arc_exit: Location,
+    target_heading_deg: f32,
+    loiter_ccw: bool,
+    loiter_radius_m: f32,
+) -> Location {
+    let mut point = arc_exit;
+    point.offset_bearing(
+        deepstall_arc_heading_deg(target_heading_deg, loiter_ccw).into(),
+        libm::fabsf(loiter_radius_m).into(),
+    );
+    point
+}
+
+/// Arc loiter entry point, upstream `arc_entry.offset_bearing(..., 2 * radius)`.
+#[must_use]
+pub fn deepstall_arc_entry(
+    arc_exit: Location,
+    target_heading_deg: f32,
+    loiter_ccw: bool,
+    loiter_radius_m: f32,
+) -> Location {
+    let mut point = arc_exit;
+    point.offset_bearing(
+        deepstall_arc_heading_deg(target_heading_deg, loiter_ccw).into(),
+        (libm::fabsf(loiter_radius_m) * 2.0).into(),
+    );
+    point
+}
+
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
 #[must_use]
 pub fn deepstall_crosstrack_error(
@@ -326,5 +358,16 @@ mod tests {
         let ext = deepstall_extended_approach(landing, 0.0);
         let ne = landing.get_distance_ne(ext);
         assert!(ne.x > 900.0, "expected ~1 km north, got {ne:?}");
+    }
+
+    #[test]
+    fn arc_entry_is_twice_radius_from_exit() {
+        let exit = Location::new(-35_000_000, 149_000_000);
+        let center = deepstall_arc_center(exit, 0.0, false, 100.0);
+        let entry = deepstall_arc_entry(exit, 0.0, false, 100.0);
+        let r_center = exit.get_distance_ne(center).length();
+        let r_entry = exit.get_distance_ne(entry).length();
+        assert!((r_center - 100.0).abs() < 5.0, "center radius {r_center}");
+        assert!((r_entry - 200.0).abs() < 5.0, "entry radius {r_entry}");
     }
 }
