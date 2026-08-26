@@ -308,6 +308,41 @@ pub fn migrate_scalar<S: Storage + ?Sized>(
     }
 }
 
+/// One rename/rehome row, upstream `ConversionInfo` plus its destination.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParameterMigration {
+    pub old: ConversionInfo,
+    pub new_header: ParamHeader,
+    pub new_type: VarType,
+    pub scaler: f32,
+    pub flags: ConvertFlags,
+}
+
+/// Run a migration table, upstream `convert_old_parameters`.
+pub fn migrate_parameters<S: Storage + ?Sized>(
+    storage: &mut S,
+    migrations: &[ParameterMigration],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for m in migrations {
+        let dest = configured_in_storage(storage, m.new_header);
+        match migrate_scalar(
+            storage,
+            m.old,
+            m.new_header,
+            m.new_type,
+            dest,
+            m.scaler,
+            m.flags,
+        )? {
+            ConvertOutcome::Saved => stats.saved += 1,
+            ConvertOutcome::SkippedConfigured | ConvertOutcome::Unchanged => stats.skipped += 1,
+            ConvertOutcome::NotFound => stats.not_found += 1,
+        }
+    }
+    Ok(stats)
+}
+
 /// One member of a converted group, upstream `GroupInfo` fields used by
 /// `AP_Param::convert_class`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,6 +641,42 @@ mod tests {
         )
         .expect("read back");
         assert_eq!(v, ParamValue::Float(50.0));
+    }
+
+    #[test]
+    fn migrate_parameters_runs_table() {
+        let mut s = Ram::formatted();
+        let old_a = ParamHeader::new(1, VarType::Int8.as_u8(), 101);
+        save(&mut s, old_a, ParamValue::Int8(1), None, false).expect("old a");
+        let old_b = ParamHeader::new(1, VarType::Float.as_u8(), 293);
+        save(&mut s, old_b, ParamValue::Float(10.0), None, false).expect("old b");
+        let table = [
+            ParameterMigration {
+                old: ConversionInfo {
+                    old_key: 1,
+                    old_group_element: 101,
+                    old_type: VarType::Int8,
+                },
+                new_header: ParamHeader::new(2, VarType::Int8.as_u8(), 0),
+                new_type: VarType::Int8,
+                scaler: 1.0,
+                flags: ConvertFlags(0),
+            },
+            ParameterMigration {
+                old: ConversionInfo {
+                    old_key: 1,
+                    old_group_element: 293,
+                    old_type: VarType::Float,
+                },
+                new_header: ParamHeader::new(2, VarType::Float.as_u8(), 1),
+                new_type: VarType::Float,
+                scaler: 1.0,
+                flags: ConvertFlags(0),
+            },
+        ];
+        let stats = migrate_parameters(&mut s, &table).expect("migrate");
+        assert_eq!(stats.saved, 2);
+        assert_eq!(stats.not_found, 0);
     }
 
     #[test]

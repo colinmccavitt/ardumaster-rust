@@ -49,9 +49,9 @@ pub mod storage;
 
 pub use conversion::{
     configured_in_storage, convert_class, convert_class_entry, convert_parameter_width,
-    convert_scalar, eeprom_header_valid, find_old_parameter, format_storage, migrate_centi_parameter, migrate_parameter_width, migrate_scalar,
+    convert_scalar, eeprom_header_valid, find_old_parameter, format_storage, migrate_centi_parameter, migrate_parameter_width, migrate_parameters, migrate_scalar,
     old_group_element_for_member, scalar_from_f32, ConversionInfo, ConvertClassStats,
-    ConvertFlags, ConvertOutcome, GroupMemberDescriptor,
+    ConvertFlags, ConvertOutcome, GroupMemberDescriptor, ParameterMigration,
 };
 pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
