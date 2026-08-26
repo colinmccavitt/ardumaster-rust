@@ -5,13 +5,13 @@
 //! orientation, lever-arm corrections, and the timer that decides when each
 //! sample is due.
 //!
-//! Random sensor noise and fixed-frequency motor vibration helpers are
-//! implemented; temperature *calibration* application and file playback are
-//! not here yet. The IMU warm-up temperature curve and per-instance fail
-//! masks are implemented.
+//! Random sensor noise, fixed-frequency vibration, and RPM-scaled motor
+//! harmonics are implemented; temperature *calibration* application and
+//! file playback are not here yet. The IMU warm-up temperature curve and
+//! per-instance fail masks are implemented.
 
 use ap_math::rotations_gen::{rotate, Rotation};
-use ap_math::scalar::{is_zero, radians, Real};
+use ap_math::scalar::{is_zero, radians, wrap_pi, Real};
 use ap_math::vector3::Vector3f;
 
 use crate::ImuInstance;
@@ -156,6 +156,104 @@ pub fn sitl_vibe_freq_offset(config: &SitlVibeConfig, time_s: f32, rand_unit: f3
         libm::sinf(time_s * two_pi * config.vibe_freq_hz.y) * amp,
         libm::sinf(time_s * two_pi * config.vibe_freq_hz.z) * amp,
     )
+}
+
+/// Motor RPM-scaled vibration parameters, upstream the `VIB_MOT_MAX` block.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlMotorVibeConfig {
+    /// Master enable; zero disables motor vibration.
+    pub vibe_motor: f32,
+    /// Scales accelerometer noise for motor harmonics.
+    pub vibe_motor_scale: f32,
+    /// Harmonic bitmask — set bit *n* (1-based) adds a term at `phase * n`.
+    pub vibe_motor_harmonics: u32,
+    pub accel_noise: f32,
+    pub noise_variation: f32,
+    pub freq_variation: f32,
+    pub motors_on: bool,
+}
+
+/// Harmonic vibration offset for one motor at the current phase, upstream the
+/// inner loop over `vibe_motor_harmonics`.
+#[must_use]
+pub fn sitl_motor_vibe_harmonics_offset(
+    motor_phase: f32,
+    harmonics: u32,
+    accel_noise: f32,
+    vibe_motor_scale: f32,
+    noise_variation: f32,
+    rand_unit: f32,
+) -> Vector3f {
+    if harmonics == 0 {
+        return Vector3f::zero();
+    }
+    let amp = sitl_calculate_noise(accel_noise * vibe_motor_scale, noise_variation, rand_unit);
+    let mut offset = Vector3f::zero();
+    let mut remaining = harmonics;
+    while remaining != 0 {
+        let bit = remaining.trailing_zeros() + 1;
+        remaining &= !(1_u32 << (bit - 1));
+        let s = libm::sinf(motor_phase * bit as f32) * amp;
+        offset.x += s;
+        offset.y += s;
+        offset.z += s;
+    }
+    offset
+}
+
+/// Advance one motor's vibration phase after a sample, upstream
+/// `accel_motor_phase[motor] = wrap_PI(phase + phase_incr)`.
+#[must_use]
+pub fn sitl_motor_phase_advance(
+    rpm: f32,
+    freq_variation: f32,
+    rand_unit: f32,
+    motor_phase: f32,
+    sample_dt_s: f32,
+) -> f32 {
+    let base_freq = sitl_calculate_noise(rpm / 60.0, freq_variation, rand_unit);
+    let phase_incr = base_freq * 2.0 * core::f32::consts::PI * sample_dt_s;
+    wrap_pi(motor_phase + phase_incr)
+}
+
+/// Accumulate motor vibration across every bit set in `motor_mask`.
+#[must_use]
+pub fn sitl_motor_vibe_offset(
+    config: &SitlMotorVibeConfig,
+    motor_mask: u32,
+    motor_rpm: &[f32],
+    motor_phases: &mut [f32],
+    sample_dt_s: f32,
+    rand_unit: f32,
+) -> Vector3f {
+    if !config.motors_on || is_zero(config.vibe_motor) || config.vibe_motor_harmonics == 0 {
+        return Vector3f::zero();
+    }
+    let mut total = Vector3f::zero();
+    let mut mask = motor_mask;
+    while mask != 0 {
+        let motor = mask.trailing_zeros() as usize;
+        mask &= !(1_u32 << motor);
+        if motor >= motor_rpm.len() || motor >= motor_phases.len() {
+            continue;
+        }
+        total += sitl_motor_vibe_harmonics_offset(
+            motor_phases[motor],
+            config.vibe_motor_harmonics,
+            config.accel_noise,
+            config.vibe_motor_scale,
+            config.noise_variation,
+            rand_unit,
+        );
+        motor_phases[motor] = sitl_motor_phase_advance(
+            motor_rpm[motor],
+            config.freq_variation,
+            rand_unit,
+            motor_phases[motor],
+            sample_dt_s,
+        );
+    }
+    total
 }
 
 /// The slow triangular gyro drift SITL can inject, upstream `gyro_drift()`.
@@ -535,5 +633,50 @@ mod tests {
             motors_on: false,
         };
         assert!(sitl_vibe_freq_offset(&cfg, 0.1, 0.0).is_zero());
+    }
+
+    #[test]
+    fn motor_vibe_harmonic_uses_phase_times_bit() {
+        let off = sitl_motor_vibe_harmonics_offset(
+            core::f32::consts::FRAC_PI_2,
+            0b1,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+        );
+        assert!((off.x - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn motor_vibe_offset_advances_phase_with_rpm() {
+        let cfg = SitlMotorVibeConfig {
+            vibe_motor: 1.0,
+            vibe_motor_scale: 1.0,
+            vibe_motor_harmonics: 0b1,
+            accel_noise: 0.5,
+            noise_variation: 0.0,
+            freq_variation: 0.0,
+            motors_on: true,
+        };
+        let mut phases = [0.0_f32; 4];
+        let rpm = [6000.0, 0.0, 0.0, 0.0];
+        let _ = sitl_motor_vibe_offset(&cfg, 0b1, &rpm, &mut phases, 0.001, 0.0);
+        assert!(phases[0] > 0.0);
+    }
+
+    #[test]
+    fn motor_vibe_disabled_when_motors_off() {
+        let cfg = SitlMotorVibeConfig {
+            vibe_motor: 1.0,
+            vibe_motor_scale: 1.0,
+            vibe_motor_harmonics: 0b1,
+            accel_noise: 0.5,
+            noise_variation: 0.0,
+            freq_variation: 0.0,
+            motors_on: false,
+        };
+        let mut phases = [0.0_f32; 1];
+        assert!(sitl_motor_vibe_offset(&cfg, 0b1, &[1000.0], &mut phases, 0.001, 0.0).is_zero());
     }
 }
