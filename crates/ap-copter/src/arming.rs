@@ -452,3 +452,139 @@ fn above_terrain_rtl_refusal(state: &ParameterState) -> Option<ParameterRefusal>
         TerrainSource::Database => None,
     }
 }
+
+/// How far the barometer and inertial-nav altitudes may disagree, upstream
+/// `PREARM_MAX_ALT_DISPARITY_M` (`config.h:97`).
+pub const PREARM_MAX_ALT_DISPARITY_M: f32 = 1.0;
+
+/// The highest `RCn_MIN` a calibrated channel may have, upstream
+/// `RC_Channel::RC_CALIB_MIN_LIMIT_PWM`.
+pub const RC_CALIB_MIN_LIMIT_PWM: u16 = 1300;
+
+/// The lowest `RCn_MAX` a calibrated channel may have, upstream
+/// `RC_Channel::RC_CALIB_MAX_LIMIT_PWM`.
+pub const RC_CALIB_MAX_LIMIT_PWM: u16 = 1700;
+
+/// The barometer pre-arm check, upstream the Copter half of
+/// `barometer_checks`.
+///
+/// # Only when the EKF is using an absolute height reference
+///
+/// The comparison is skipped when the estimator is producing a *ground
+/// relative* height, because that legitimately differs from the barometer as
+/// the baro drifts. Upstream derives "using an absolute reference" from the
+/// two prediction-status flags: absolute position predicted, relative not.
+///
+/// Checking regardless would refuse arming on any vehicle flying terrain-
+/// relative, which is exactly the configuration where the disparity is
+/// expected rather than a fault.
+///
+/// # It does not return early
+///
+/// Upstream sets a flag and falls through, so this check runs alongside the
+/// shared `AP_Arming::barometer_checks` rather than pre-empting it.
+#[must_use]
+pub fn altitude_disparity_check(
+    baro_check_enabled: bool,
+    predicts_relative_position: bool,
+    predicts_absolute_position: bool,
+    inertial_height_m: f32,
+    baro_altitude_m: f32,
+) -> bool {
+    if !baro_check_enabled {
+        return true;
+    }
+    let using_baro_reference = !predicts_relative_position && predicts_absolute_position;
+    if !using_baro_reference {
+        return true;
+    }
+    libm::fabsf(inertial_height_m - baro_altitude_m) <= PREARM_MAX_ALT_DISPARITY_M
+}
+
+/// The Copter half of `ins_checks`, upstream's EKF attitude test.
+///
+/// Upstream's comment names the usual cause: a bad EKF attitude is normally
+/// the gyro biases still settling. It is worth knowing because the message a
+/// pilot sees says "EKF attitude is bad", which sounds like a fault rather
+/// than like "wait a moment".
+#[must_use]
+pub fn ekf_attitude_check(ins_check_enabled: bool, ekf_attitude_ok: bool) -> bool {
+    if !ins_check_enabled {
+        return true;
+    }
+    ekf_attitude_ok
+}
+
+/// Which end of a channel's calibration is wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcCalibrationFault {
+    /// `RCn_MIN` is above the limit — the stick cannot reach low enough.
+    MinTooHigh,
+    /// `RCn_MAX` is below the limit — the stick cannot reach high enough.
+    MaxTooLow,
+}
+
+/// One channel's calibration limits.
+#[derive(Debug, Clone, Copy)]
+pub struct RcChannelCalibration {
+    /// `RCn_MIN`.
+    pub radio_min: u16,
+    /// `RCn_MAX`.
+    pub radio_max: u16,
+}
+
+/// Both faults a single channel can have, upstream `rc_checks_copter_sub`'s
+/// loop body.
+///
+/// # A channel can be wrong at both ends
+///
+/// Upstream tests the two independently and sets its failure flag from each,
+/// so a channel that was never calibrated at all is reported twice — once for
+/// each end. Returning at the first would tell the operator to fix the
+/// minimum and let them discover the maximum on the next attempt.
+#[must_use]
+pub fn rc_channel_calibration_faults(
+    channel: &RcChannelCalibration,
+) -> [Option<RcCalibrationFault>; 2] {
+    [
+        (channel.radio_min > RC_CALIB_MIN_LIMIT_PWM).then_some(RcCalibrationFault::MinTooHigh),
+        (channel.radio_max < RC_CALIB_MAX_LIMIT_PWM).then_some(RcCalibrationFault::MaxTooLow),
+    ]
+}
+
+/// The four channels the calibration check covers, in upstream's order.
+///
+/// The order is the order the messages arrive in, which is the order an
+/// operator works through them.
+pub const RC_CALIBRATION_CHANNEL_NAMES: [&str; 4] = ["Roll", "Pitch", "Throttle", "Yaw"];
+
+/// Whether every channel's calibration passes, upstream
+/// `rc_checks_copter_sub`.
+#[must_use]
+pub fn rc_calibration_passes(rc_check_enabled: bool, channels: &[RcChannelCalibration; 4]) -> bool {
+    if !rc_check_enabled {
+        return true;
+    }
+    channels
+        .iter()
+        .all(|c| rc_channel_calibration_faults(c).iter().all(Option::is_none))
+}
+
+/// Combine the two halves of `rc_calibration_checks` the way upstream does.
+///
+/// # Bitwise, not logical
+///
+/// Upstream writes `rc_checks_copter_sub(...) & AP_Arming::rc_calibration_checks(...)`
+/// with a bitwise `&` and a comment saying it "ensures all checks are run".
+/// A logical `&&` would short-circuit, and a vehicle failing the first half
+/// would never run the second — so the operator would fix the reported
+/// problem, try again, and be told about a different one.
+///
+/// The two spellings are one character apart and behave identically as far as
+/// the returned bool is concerned. The difference is entirely in the messages
+/// the pilot gets, which is why this is a named function rather than an
+/// operator at a call site.
+#[must_use]
+pub fn combine_rc_calibration(copter_half: bool, shared_half: bool) -> bool {
+    copter_half & shared_half
+}
