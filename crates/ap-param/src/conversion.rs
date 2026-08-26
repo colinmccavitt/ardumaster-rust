@@ -263,6 +263,173 @@ pub fn migrate_scalar<S: Storage + ?Sized>(
     }
 }
 
+/// One member of a converted group, upstream `GroupInfo` fields used by
+/// `AP_Param::convert_class`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupMemberDescriptor {
+    /// Byte offset of the live value within the object image.
+    pub offset: usize,
+    /// Stored type of the member.
+    pub var_type: VarType,
+    /// Index within the group; six bits per nesting level.
+    pub idx: u8,
+}
+
+/// Summary of a [`convert_class`] pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ConvertClassStats {
+    /// Members written to storage.
+    pub saved: u16,
+    /// Members skipped because the destination was already configured.
+    pub skipped: u16,
+    /// Members with no old value in storage.
+    pub not_found: u16,
+}
+
+/// Whether a parameter header has a record in storage, upstream
+/// `AP_Param::configured_in_storage`.
+#[must_use]
+pub fn configured_in_storage<S: Storage + ?Sized>(storage: &S, header: ParamHeader) -> bool {
+    matches!(scan(storage, header), ScanResult::Found(_))
+}
+
+/// Group-element shift for one nesting level, upstream `group_shift` in
+/// `convert_class`.
+#[must_use]
+pub const fn convert_class_group_shift(is_top_level: bool) -> u8 {
+    if is_top_level {
+        0
+    } else {
+        crate::GROUP_LEVEL_SHIFT
+    }
+}
+
+/// Old storage path for one group member, upstream
+/// `(idx << group_shift) + old_index` with the index-zero workaround.
+#[must_use]
+pub const fn old_group_element_for_member(idx: u8, old_index: u32, is_top_level: bool) -> u32 {
+    let shift = convert_class_group_shift(is_top_level);
+    let mut effective = idx as u32;
+    if shift != 0 && idx == 0 {
+        effective = 63;
+    }
+    (effective << shift) + old_index
+}
+
+fn encode_value_to_object(value: ParamValue, dest: &mut [u8]) -> bool {
+    match value {
+        ParamValue::Int8(v) => {
+            if dest.is_empty() {
+                return false;
+            }
+            dest[0] = v as u8;
+            true
+        }
+        ParamValue::Int16(v) => {
+            if dest.len() < 2 {
+                return false;
+            }
+            dest[..2].copy_from_slice(&v.to_le_bytes());
+            true
+        }
+        ParamValue::Int32(v) | ParamValue::Float(v) => {
+            if dest.len() < 4 {
+                return false;
+            }
+            let bytes = match value {
+                ParamValue::Int32(x) => x.to_le_bytes(),
+                ParamValue::Float(x) => x.to_le_bytes(),
+                _ => unreachable!(),
+            };
+            dest[..4].copy_from_slice(&bytes);
+            true
+        }
+        ParamValue::Vector3f(v) => {
+            if dest.len() < 12 {
+                return false;
+            }
+            for (i, c) in v.iter().enumerate() {
+                dest[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
+            }
+            true
+        }
+    }
+}
+
+/// Migrate one group member from an old layout, upstream one loop body of
+/// `AP_Param::convert_class`.
+pub fn convert_class_entry<S: Storage + ?Sized>(
+    storage: &mut S,
+    param_key: u16,
+    old_index: u32,
+    is_top_level: bool,
+    member: GroupMemberDescriptor,
+    object_bytes: &mut [u8],
+) -> Result<ConvertOutcome, StorageError> {
+    if matches!(member.var_type, VarType::None | VarType::Group) {
+        return Ok(ConvertOutcome::NotFound);
+    }
+
+    let old_group_element = old_group_element_for_member(member.idx, old_index, is_top_level);
+    let info = ConversionInfo {
+        old_key: param_key,
+        old_group_element,
+        old_type: member.var_type,
+    };
+
+    let Some((value, _)) = find_old_parameter(storage, info) else {
+        return Ok(ConvertOutcome::NotFound);
+    };
+
+    let new_header = ParamHeader::new(param_key, member.var_type.as_u8(), old_group_element);
+    if configured_in_storage(storage, new_header) {
+        return Ok(ConvertOutcome::SkippedConfigured);
+    }
+
+    let size = member.var_type.size() as usize;
+    let obj = object_bytes
+        .get_mut(member.offset..member.offset.saturating_add(size))
+        .ok_or(StorageError::WriteFailed {
+            offset: member.offset as u16,
+        })?;
+    if !encode_value_to_object(value, obj) {
+        return Ok(ConvertOutcome::NotFound);
+    }
+
+    match save(storage, new_header, value, None, true)? {
+        SaveOutcome::Updated | SaveOutcome::Appended => Ok(ConvertOutcome::Saved),
+        _ => Ok(ConvertOutcome::Unchanged),
+    }
+}
+
+/// Descriptor-driven `AP_Param::convert_class` without the vehicle object graph.
+pub fn convert_class<S: Storage + ?Sized>(
+    storage: &mut S,
+    param_key: u16,
+    old_index: u32,
+    is_top_level: bool,
+    members: &[GroupMemberDescriptor],
+    object_bytes: &mut [u8],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for member in members {
+        match convert_class_entry(
+            storage,
+            param_key,
+            old_index,
+            is_top_level,
+            *member,
+            object_bytes,
+        )? {
+            ConvertOutcome::Saved => stats.saved += 1,
+            ConvertOutcome::SkippedConfigured => stats.skipped += 1,
+            ConvertOutcome::NotFound | ConvertOutcome::Unchanged => stats.not_found += 1,
+        }
+    }
+    Ok(stats)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,4 +565,63 @@ mod tests {
         .expect("new");
         assert_eq!(v, ParamValue::Float(10.0));
     }
+    #[test]
+    fn old_group_element_applies_index_zero_workaround() {
+        assert_eq!(old_group_element_for_member(0, 0, true), 0);
+        assert_eq!(old_group_element_for_member(1, 0, true), 1);
+        assert_eq!(old_group_element_for_member(0, 0, false), 63);
+        assert_eq!(old_group_element_for_member(1, 0, false), 64);
+    }
+
+    #[test]
+    fn convert_class_entry_copies_old_value_and_saves() {
+        let mut s = Ram::formatted();
+        let key = 20u16;
+        let old_h = ParamHeader::new(key, VarType::Float.as_u8(), 2);
+        save(&mut s, old_h, ParamValue::Float(7.25), None, false).expect("save old");
+        let mut obj = [0u8; 16];
+        let members = [GroupMemberDescriptor {
+            offset: 4,
+            var_type: VarType::Float,
+            idx: 2,
+        }];
+        let stats = convert_class(&mut s, key, 0, true, &members, &mut obj).expect("convert");
+        assert_eq!(stats.saved, 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.not_found, 0);
+        let got = f32::from_le_bytes([obj[4], obj[5], obj[6], obj[7]]);
+        assert!((got - 7.25).abs() < 1e-6);
+        let new_h = ParamHeader::new(key, VarType::Float.as_u8(), 2);
+        assert!(configured_in_storage(&s, new_h));
+    }
+
+    #[test]
+    fn convert_class_skips_when_destination_configured() {
+        let mut s = Ram::formatted();
+        let key = 21u16;
+        let old_h = ParamHeader::new(key, VarType::Int16.as_u8(), 1);
+        save(&mut s, old_h, ParamValue::Int16(500), None, false).expect("save old");
+        let dest_h = ParamHeader::new(key, VarType::Int16.as_u8(), 1);
+        save(&mut s, dest_h, ParamValue::Int16(999), None, false).expect("save dest");
+        let mut obj = [0u8; 8];
+        let members = [GroupMemberDescriptor {
+            offset: 0,
+            var_type: VarType::Int16,
+            idx: 1,
+        }];
+        let stats = convert_class(&mut s, key, 0, true, &members, &mut obj).expect("convert");
+        assert_eq!(stats.saved, 0);
+        assert_eq!(stats.skipped, 1);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: key,
+                old_group_element: 1,
+                old_type: VarType::Int16,
+            },
+        )
+        .expect("still dest");
+        assert_eq!(v, ParamValue::Int16(999));
+    }
+
 }
