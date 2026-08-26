@@ -4,7 +4,7 @@
 //! helpers and transition predicates are pure: the caller supplies distances
 //! and geometry; nothing here touches nav controllers or AHRS.
 
-use ap_math::scalar::{degrees, is_zero, wrap_180, wrap_180_cd, Real};
+use ap_math::scalar::{degrees, is_zero, wrap_180, wrap_180_cd};
 use ap_math::vector2::Vector2f;
 
 use crate::deepstall::{verify_breakout, LOITER_ALT_TOLERANCE_M};
@@ -127,7 +127,7 @@ pub const ARC_HEADING_MARGIN_DEG: f32 = 10.0;
 /// Groundspeed heading in degrees, upstream `degrees(atan2f(-y,-x)+PI)`.
 #[must_use]
 pub fn groundspeed_heading_deg(groundspeed_ne: Vector2f) -> f32 {
-    degrees(libm::atan2f(-groundspeed_ne.y, -groundspeed_ne.x) + Real::PI)
+    degrees(libm::atan2f(-groundspeed_ne.y, -groundspeed_ne.x) + core::f32::consts::PI)
 }
 
 /// Heading error during the arc stage.
