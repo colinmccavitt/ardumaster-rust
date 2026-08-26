@@ -32,6 +32,8 @@
 
 #![no_std]
 
+pub mod sitl;
+
 use ap_math::scalar::{constrain_value, is_positive, is_zero, Real};
 
 /// Earth's radius as the 1976 model defines it, metres.
