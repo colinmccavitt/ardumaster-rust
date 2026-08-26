@@ -5,7 +5,7 @@
 //! orientation, lever-arm corrections, and the timer that decides when each
 //! sample is due.
 //!
-//! Random sensor noise, fixed-frequency vibration, and RPM-scaled motor
+//! Random sensor noise (white noise and vibration), RPM-scaled motor
 //! harmonics are implemented; temperature *calibration* application and
 //! file playback are not here yet. The IMU warm-up temperature curve and
 //! per-instance fail masks are implemented.
@@ -135,11 +135,56 @@ pub struct SitlVibeConfig {
     pub motors_on: bool,
 }
 
+/// Default accelerometer white-noise floor, upstream the 0.01 m/s² minimum.
+pub const SITL_DEFAULT_ACCEL_NOISE: f32 = 0.01;
+
+/// Default gyro white-noise floor, upstream `radians(0.04f)`.
+pub const SITL_DEFAULT_GYRO_NOISE_RAD: f32 = 0.04 * core::f32::consts::PI / 180.0;
+
 /// Scale a noise amplitude by a deterministic random unit, upstream
 /// `calculate_noise` with `rand_float()` replaced by `rand_unit` in [-1, 1].
 #[must_use]
 pub fn sitl_calculate_noise(noise: f32, noise_variation: f32, rand_unit: f32) -> f32 {
     noise * (1.0 + noise_variation * rand_unit)
+}
+
+/// Per-axis white noise offset, upstream `Vector3f{rand_float(), ...} * noise`.
+#[must_use]
+pub fn sitl_white_noise_offset(rand_unit: Vector3f, amplitude: f32) -> Vector3f {
+    Vector3f::new(
+        rand_unit.x * amplitude,
+        rand_unit.y * amplitude,
+        rand_unit.z * amplitude,
+    )
+}
+
+/// Active accelerometer noise amplitude, upstream the motor-on branch in
+/// `generate_accel`.
+#[must_use]
+pub fn sitl_accel_noise_amplitude(base: f32, motor: f32, motors_on: bool) -> f32 {
+    if motors_on { motor } else { base }
+}
+
+/// Active gyro noise amplitude, upstream the motor-on branch in `generate_gyro`.
+#[must_use]
+pub fn sitl_gyro_noise_amplitude(
+    base_rad: f32,
+    motor_noise_deg: f32,
+    throttle: f32,
+    motors_on: bool,
+) -> f32 {
+    if motors_on {
+        radians(motor_noise_deg) * throttle
+    } else {
+        base_rad
+    }
+}
+
+/// Whether gyro gets an extra background noise term, upstream the block that
+/// runs when both `vibe_freq` and `vibe_motor` are zero.
+#[must_use]
+pub fn sitl_gyro_needs_background_noise(vibe_freq_zero: bool, vibe_motor_zero: bool) -> bool {
+    vibe_freq_zero && vibe_motor_zero
 }
 
 /// Fixed-frequency vibration offset for one accel/gyro sample, upstream
@@ -622,6 +667,32 @@ mod tests {
     fn calculate_noise_scales_with_rand_unit() {
         assert!((sitl_calculate_noise(1.0, 0.05, 0.0) - 1.0).abs() < 1e-6);
         assert!((sitl_calculate_noise(1.0, 0.05, 1.0) - 1.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn white_noise_scales_each_axis() {
+        let off = sitl_white_noise_offset(Vector3f::new(1.0, -1.0, 0.5), 0.01);
+        assert!((off.x - 0.01).abs() < 1e-6);
+        assert!((off.y + 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn accel_noise_switches_with_motors() {
+        assert!((sitl_accel_noise_amplitude(0.01, 0.5, false) - 0.01).abs() < 1e-6);
+        assert!((sitl_accel_noise_amplitude(0.01, 0.5, true) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gyro_noise_scales_with_throttle_when_motors_on() {
+        let off = sitl_gyro_noise_amplitude(SITL_DEFAULT_GYRO_NOISE_RAD, 20.0, 0.5, true);
+        let expected = radians(20.0) * 0.5;
+        assert!((off - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gyro_background_noise_only_without_vibration() {
+        assert!(sitl_gyro_needs_background_noise(true, true));
+        assert!(!sitl_gyro_needs_background_noise(false, true));
     }
 
     #[test]
