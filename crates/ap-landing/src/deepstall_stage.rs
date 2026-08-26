@@ -4,6 +4,7 @@
 //! helpers and transition predicates are pure: the caller supplies distances
 //! and geometry; nothing here touches nav controllers or AHRS.
 
+use ap_math::location::Location;
 use ap_math::scalar::{degrees, is_zero, wrap_180, wrap_180_cd};
 use ap_math::vector2::Vector2f;
 
@@ -148,6 +149,34 @@ pub fn arc_may_advance(
             < ARC_HEADING_MARGIN_DEG
 }
 
+/// Outcome of the approach finish-line checks in `DEEPSTALL_STAGE_APPROACH`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApproachAdvance {
+    /// Still on the approach segment — keep navigating to the entry point.
+    Continue,
+    /// Passed the extended approach but not the entry point — reset upstream.
+    RecoverFlyToLanding,
+    /// Passed the predicted stall entry point — advance to land.
+    AdvanceToLand,
+}
+
+/// Whether the approach stage may advance, upstream `DEEPSTALL_STAGE_APPROACH`.
+#[must_use]
+pub fn approach_advance(
+    current: Location,
+    arc_exit: Location,
+    entry_point: Location,
+    extended_approach: Location,
+) -> ApproachAdvance {
+    if !current.past_interval_finish_line(arc_exit, entry_point) {
+        if current.past_interval_finish_line(arc_exit, extended_approach) {
+            return ApproachAdvance::RecoverFlyToLanding;
+        }
+        return ApproachAdvance::Continue;
+    }
+    ApproachAdvance::AdvanceToLand
+}
+
 /// Height above the landing point for travel prediction, upstream the
 /// `height_above_target` block in `DEEPSTALL_STAGE_APPROACH`.
 #[must_use]
@@ -221,5 +250,50 @@ mod tests {
     #[test]
     fn approach_height_uses_home_when_offset_zero() {
         assert!((approach_height_above_target_m(0.0, None, 0, Some(-50.0)) - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn approach_advance_waits_before_entry_point() {
+        let arc_exit = Location::new(-35_000_000, 149_000_000);
+        let mut entry = arc_exit;
+        entry.offset_bearing(0.0, 200.0);
+        let mut extended = arc_exit;
+        extended.offset_bearing(0.0, 400.0);
+        let mut mid = arc_exit;
+        mid.offset_bearing(0.0, 100.0);
+        assert_eq!(
+            approach_advance(mid, arc_exit, entry, extended),
+            ApproachAdvance::Continue
+        );
+    }
+
+    #[test]
+    fn approach_advance_recovers_on_flyaway() {
+        let arc_exit = Location::new(-35_000_000, 149_000_000);
+        let mut extended = arc_exit;
+        extended.offset_bearing(0.0, 200.0);
+        let mut entry = arc_exit;
+        entry.offset_bearing(0.0, 400.0);
+        let mut past_extended = arc_exit;
+        past_extended.offset_bearing(0.0, 250.0);
+        assert_eq!(
+            approach_advance(past_extended, arc_exit, entry, extended),
+            ApproachAdvance::RecoverFlyToLanding
+        );
+    }
+
+    #[test]
+    fn approach_advance_to_land_past_entry() {
+        let arc_exit = Location::new(-35_000_000, 149_000_000);
+        let mut entry = arc_exit;
+        entry.offset_bearing(0.0, 200.0);
+        let mut extended = arc_exit;
+        extended.offset_bearing(0.0, 400.0);
+        let mut past_entry = arc_exit;
+        past_entry.offset_bearing(0.0, 250.0);
+        assert_eq!(
+            approach_advance(past_entry, arc_exit, entry, extended),
+            ApproachAdvance::AdvanceToLand
+        );
     }
 }

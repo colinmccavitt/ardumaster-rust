@@ -793,6 +793,13 @@ upstream's and reproducing it is the point"
         (vec1.x * vec2.x + vec1.y * vec2.y) / dsquared
     }
 
+    /// Whether this location has passed the finish line between two waypoints,
+    /// upstream `Location::past_interval_finish_line`.
+    #[must_use]
+    pub fn past_interval_finish_line(self, point1: Self, point2: Self) -> bool {
+        self.line_path_proportion(point1, point2) >= 1.0
+    }
+
     /// The longitude scale is taken at the midpoint of the two latitudes, so
     /// the answer is symmetric rather than biased toward the origin.
     #[must_use]
