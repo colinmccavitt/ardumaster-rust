@@ -4,7 +4,7 @@
 //! helpers and transition predicates are pure: the caller supplies distances
 //! and geometry; nothing here touches nav controllers or AHRS.
 
-use ap_math::location::Location;
+use ap_math::location::{AltFrame, Location};
 use ap_math::scalar::{degrees, is_zero, wrap_180, wrap_180_cd};
 use ap_math::vector2::Vector2f;
 
@@ -149,6 +149,27 @@ pub fn arc_may_advance(
             < ARC_HEADING_MARGIN_DEG
 }
 
+/// Approach altitude offset from a mission command, upstream `do_land`.
+#[must_use]
+pub fn deepstall_approach_alt_offset_m(landing: Location, cmd_p1_m: f32) -> f32 {
+    if landing.alt_frame() == AltFrame::Absolute {
+        cmd_p1_m
+    } else {
+        0.0
+    }
+}
+
+/// Next stage after an approach finish-line check, upstream the transitions in
+/// `DEEPSTALL_STAGE_APPROACH`.
+#[must_use]
+pub fn deepstall_stage_after_approach(advance: ApproachAdvance) -> Option<DeepstallStage> {
+    match advance {
+        ApproachAdvance::Continue => None,
+        ApproachAdvance::RecoverFlyToLanding => Some(DeepstallStage::FlyToLanding),
+        ApproachAdvance::AdvanceToLand => Some(DeepstallStage::Land),
+    }
+}
+
 /// Outcome of the approach finish-line checks in `DEEPSTALL_STAGE_APPROACH`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApproachAdvance {
@@ -250,6 +271,27 @@ mod tests {
     #[test]
     fn approach_height_uses_home_when_offset_zero() {
         assert!((approach_height_above_target_m(0.0, None, 0, Some(-50.0)) - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn approach_alt_offset_only_for_absolute_frame() {
+        let abs = Location::new(-35_000_000, 149_000_000);
+        assert!((deepstall_approach_alt_offset_m(abs, 12.0) - 12.0).abs() < 1e-6);
+        let rel = Location::new_with_alt(-35_000_000, 149_000_000, 100, AltFrame::AboveHome);
+        assert!(is_zero(deepstall_approach_alt_offset_m(rel, 12.0)));
+    }
+
+    #[test]
+    fn stage_after_approach_maps_outcomes() {
+        assert_eq!(
+            deepstall_stage_after_approach(ApproachAdvance::AdvanceToLand),
+            Some(DeepstallStage::Land)
+        );
+        assert_eq!(
+            deepstall_stage_after_approach(ApproachAdvance::RecoverFlyToLanding),
+            Some(DeepstallStage::FlyToLanding)
+        );
+        assert!(deepstall_stage_after_approach(ApproachAdvance::Continue).is_none());
     }
 
     #[test]

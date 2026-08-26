@@ -271,6 +271,32 @@ pub fn deepstall_build_approach_path(
     }
 }
 
+/// Elevator slew progress in land stage, upstream `override_servos`.
+#[must_use]
+pub fn deepstall_elevator_slew_progress(
+    stall_entry_ms: u32,
+    now_ms: u32,
+    slew_speed: f32,
+) -> f32 {
+    if slew_speed <= 0.0 {
+        return 1.0;
+    }
+    let elapsed = now_ms.wrapping_sub(stall_entry_ms) as f32;
+    constrain_value(elapsed / (100.0 * slew_speed), 0.0, 1.0)
+}
+
+/// Interpolated elevator PWM during deepstall slew, upstream `linear_interpolate`.
+#[must_use]
+pub fn deepstall_elevator_output_pwm(
+    initial_pwm: u16,
+    target_pwm: u16,
+    slew_progress: f32,
+) -> u16 {
+    let t = constrain_value(slew_progress, 0.0, 1.0);
+    let out = f32::from(initial_pwm) + (f32::from(target_pwm) - f32::from(initial_pwm)) * t;
+    out.round() as u16
+}
+
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
 #[must_use]
 pub fn deepstall_crosstrack_error(
@@ -337,6 +363,18 @@ mod tests {
         // Headwind along course: cos(offset) = -1, so stall_distance = 1*2*(-1)+5 = 3.
         let d = predict_travel_distance(&p, Vector2f::new(2.0, 0.0), 100.0);
         assert!((d - 3.0).abs() < 0.5, "got {d}");
+    }
+
+    #[test]
+    fn elevator_slew_reaches_target_when_complete() {
+        let pwm = deepstall_elevator_output_pwm(1500, 1900, 1.0);
+        assert_eq!(pwm, 1900);
+    }
+
+    #[test]
+    fn elevator_slew_progress_clamps() {
+        assert!((deepstall_elevator_slew_progress(0, 50_000, 1.0) - 1.0).abs() < 1e-6);
+        assert!(deepstall_elevator_slew_progress(0, 0, 1.0) <= 0.01);
     }
 
     #[test]
