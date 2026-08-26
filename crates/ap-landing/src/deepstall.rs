@@ -119,6 +119,44 @@ pub struct DeepstallSteeringInputs {
     pub hold_level: bool,
 }
 
+/// Target approach heading from wind or current yaw, upstream
+/// `build_approach_path`.
+#[must_use]
+pub fn deepstall_target_heading_deg(
+    wind_ne: Vector2f,
+    use_current_heading: bool,
+    current_yaw_deg: f32,
+) -> f32 {
+    if use_current_heading {
+        current_yaw_deg
+    } else {
+        degrees(libm::atan2f(-wind_ne.y, -wind_ne.x))
+    }
+}
+
+/// Approach extension distance along final bearing, upstream the `MAX(...)` in
+/// `build_approach_path`.
+#[must_use]
+pub fn deepstall_approach_extension_m(
+    expected_travel_m: f32,
+    approach_extension_m: f32,
+    loiter_radius_m: f32,
+) -> f32 {
+    let base = expected_travel_m + approach_extension_m;
+    let min_ext = libm::fabsf(loiter_radius_m) * 0.5;
+    base.max(min_ext)
+}
+
+/// Tangent heading for the turnaround arc, upstream `arc_heading_deg`.
+#[must_use]
+pub fn deepstall_arc_heading_deg(target_heading_deg: f32, loiter_ccw: bool) -> f32 {
+    if loiter_ccw {
+        target_heading_deg - 90.0
+    } else {
+        target_heading_deg + 90.0
+    }
+}
+
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
 #[must_use]
 pub fn deepstall_crosstrack_error(
@@ -219,5 +257,23 @@ mod tests {
             },
         );
         assert!((err - wrap_pi(-0.1)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn target_heading_honours_current_yaw_override() {
+        let h = deepstall_target_heading_deg(Vector2f::new(10.0, 10.0), true, 42.0);
+        assert!((h - 42.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn approach_extension_respects_half_loiter_radius() {
+        let ext = deepstall_approach_extension_m(10.0, 5.0, 100.0);
+        assert!((ext - 50.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn arc_heading_offsets_by_quarter_turn() {
+        assert!((deepstall_arc_heading_deg(0.0, false) - 90.0).abs() < 1e-3);
+        assert!((deepstall_arc_heading_deg(0.0, true) + 90.0).abs() < 1e-3);
     }
 }
