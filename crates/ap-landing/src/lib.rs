@@ -33,6 +33,7 @@
 
 #![no_std]
 
+pub mod go_around;
 pub mod slope_stage;
 
 use ap_math::location::{AltContext, AltFrame, Location};

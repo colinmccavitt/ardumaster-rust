@@ -17,6 +17,7 @@ pub mod entry_state;
 pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
+pub mod servo_mix;
 pub mod target_altitude;
 pub mod throttle_rules;
 
