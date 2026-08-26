@@ -216,6 +216,51 @@ pub fn convert_parameter_width<S: Storage + ?Sized>(
     }
 }
 
+/// Migrate a parameter whose width or units changed in place, upstream
+/// `_convert_parameter_width` plus save.
+pub fn migrate_parameter_width<S: Storage + ?Sized>(
+    storage: &mut S,
+    header: ParamHeader,
+    old_type: VarType,
+    new_type: VarType,
+    dest_configured: bool,
+    scale_factor: f32,
+    bitmask: bool,
+) -> Result<ConvertOutcome, StorageError> {
+    if dest_configured {
+        return Ok(ConvertOutcome::SkippedConfigured);
+    }
+    let Some(new_value) =
+        convert_parameter_width(storage, header, old_type, new_type, scale_factor, bitmask)
+    else {
+        return Ok(ConvertOutcome::NotFound);
+    };
+    match save(storage, header, new_value, None, true)? {
+        SaveOutcome::Updated | SaveOutcome::Appended => Ok(ConvertOutcome::Saved),
+        _ => Ok(ConvertOutcome::Unchanged),
+    }
+}
+
+/// Centi-unit migration (`_CM` / `_CD` to metres or degrees), upstream
+/// `convert_centi_parameter`.
+pub fn migrate_centi_parameter<S: Storage + ?Sized>(
+    storage: &mut S,
+    header: ParamHeader,
+    old_type: VarType,
+    new_type: VarType,
+    dest_configured: bool,
+) -> Result<ConvertOutcome, StorageError> {
+    migrate_parameter_width(
+        storage,
+        header,
+        old_type,
+        new_type,
+        dest_configured,
+        0.01,
+        false,
+    )
+}
+
 /// Outcome of migrating one old parameter to a new header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvertOutcome {
@@ -540,6 +585,37 @@ mod tests {
         )
         .expect("convert");
         assert_eq!(out, ParamValue::Int16(255));
+    }
+
+    #[test]
+    fn migrate_centi_scales_stored_centi_value() {
+        let mut s = Ram::formatted();
+        let old_h = ParamHeader::new(10, VarType::Int16.as_u8(), 0);
+        save(&mut s, old_h, ParamValue::Int16(5000), None, false).expect("old");
+        let new_h = ParamHeader::new(10, VarType::Float.as_u8(), 0);
+        let r = migrate_centi_parameter(&mut s, new_h, VarType::Int16, VarType::Float, false)
+            .expect("migrate");
+        assert_eq!(r, ConvertOutcome::Saved);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: 10,
+                old_group_element: 0,
+                old_type: VarType::Float,
+            },
+        )
+        .expect("read back");
+        assert_eq!(v, ParamValue::Float(50.0));
+    }
+
+    #[test]
+    fn migrate_centi_skips_when_destination_configured() {
+        let mut s = Ram::formatted();
+        let h = ParamHeader::new(10, VarType::Float.as_u8(), 0);
+        save(&mut s, h, ParamValue::Float(1.0), None, false).expect("dest");
+        let r = migrate_centi_parameter(&mut s, h, VarType::Int16, VarType::Float, true)
+            .expect("migrate");
+        assert_eq!(r, ConvertOutcome::SkippedConfigured);
     }
 
     #[test]
