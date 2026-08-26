@@ -6,7 +6,7 @@
 
 use ap_math::scalar::{constrain_value, is_equal};
 
-use crate::save::{save, scan, write_sentinel, ScanResult};
+use crate::save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 use crate::storage::{ParamValue, Storage, StorageError};
 use crate::{
     EepromHeader, ParamHeader, VarType, EEPROM_HEADER_SIZE, EEPROM_MAGIC, EEPROM_REVISION,
@@ -256,7 +256,7 @@ pub fn migrate_scalar<S: Storage + ?Sized>(
         }
     }
     match save(storage, new_header, new_value, None, true)? {
-        crate::save::SaveOutcome::Updated | crate::save::SaveOutcome::Appended => {
+        SaveOutcome::Updated | SaveOutcome::Appended => {
             Ok(ConvertOutcome::Saved)
         }
         _ => Ok(ConvertOutcome::Unchanged),
@@ -271,8 +271,10 @@ pub struct GroupMemberDescriptor {
     pub offset: usize,
     /// Stored type of the member.
     pub var_type: VarType,
-    /// Index within the group; six bits per nesting level.
+    /// Index within the old group; six bits per nesting level.
     pub idx: u8,
+    /// Destination [`ParamHeader::group_element`] in the new layout.
+    pub dest_group_element: u32,
 }
 
 /// Summary of a [`convert_class`] pass.
@@ -332,16 +334,18 @@ fn encode_value_to_object(value: ParamValue, dest: &mut [u8]) -> bool {
             dest[..2].copy_from_slice(&v.to_le_bytes());
             true
         }
-        ParamValue::Int32(v) | ParamValue::Float(v) => {
+        ParamValue::Int32(v) => {
             if dest.len() < 4 {
                 return false;
             }
-            let bytes = match value {
-                ParamValue::Int32(x) => x.to_le_bytes(),
-                ParamValue::Float(x) => x.to_le_bytes(),
-                _ => unreachable!(),
-            };
-            dest[..4].copy_from_slice(&bytes);
+            dest[..4].copy_from_slice(&v.to_le_bytes());
+            true
+        }
+        ParamValue::Float(v) => {
+            if dest.len() < 4 {
+                return false;
+            }
+            dest[..4].copy_from_slice(&v.to_le_bytes());
             true
         }
         ParamValue::Vector3f(v) => {
@@ -360,7 +364,8 @@ fn encode_value_to_object(value: ParamValue, dest: &mut [u8]) -> bool {
 /// `AP_Param::convert_class`.
 pub fn convert_class_entry<S: Storage + ?Sized>(
     storage: &mut S,
-    param_key: u16,
+    old_key: u16,
+    new_key: u16,
     old_index: u32,
     is_top_level: bool,
     member: GroupMemberDescriptor,
@@ -372,7 +377,7 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
 
     let old_group_element = old_group_element_for_member(member.idx, old_index, is_top_level);
     let info = ConversionInfo {
-        old_key: param_key,
+        old_key,
         old_group_element,
         old_type: member.var_type,
     };
@@ -381,7 +386,11 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
         return Ok(ConvertOutcome::NotFound);
     };
 
-    let new_header = ParamHeader::new(param_key, member.var_type.as_u8(), old_group_element);
+    let new_header = ParamHeader::new(
+        new_key,
+        member.var_type.as_u8(),
+        member.dest_group_element,
+    );
     if configured_in_storage(storage, new_header) {
         return Ok(ConvertOutcome::SkippedConfigured);
     }
@@ -405,7 +414,8 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
 /// Descriptor-driven `AP_Param::convert_class` without the vehicle object graph.
 pub fn convert_class<S: Storage + ?Sized>(
     storage: &mut S,
-    param_key: u16,
+    old_key: u16,
+    new_key: u16,
     old_index: u32,
     is_top_level: bool,
     members: &[GroupMemberDescriptor],
@@ -415,7 +425,8 @@ pub fn convert_class<S: Storage + ?Sized>(
     for member in members {
         match convert_class_entry(
             storage,
-            param_key,
+            old_key,
+            new_key,
             old_index,
             is_top_level,
             *member,
@@ -433,7 +444,6 @@ pub fn convert_class<S: Storage + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::save::SaveOutcome;
 
     struct Ram {
         bytes: [u8; 128],
@@ -565,57 +575,79 @@ mod tests {
         .expect("new");
         assert_eq!(v, ParamValue::Float(10.0));
     }
-    #[test]
-    fn old_group_element_applies_index_zero_workaround() {
-        assert_eq!(old_group_element_for_member(0, 0, true), 0);
-        assert_eq!(old_group_element_for_member(1, 0, true), 1);
-        assert_eq!(old_group_element_for_member(0, 0, false), 63);
-        assert_eq!(old_group_element_for_member(1, 0, false), 64);
-    }
-
-    #[test]
     fn convert_class_entry_copies_old_value_and_saves() {
         let mut s = Ram::formatted();
-        let key = 20u16;
-        let old_h = ParamHeader::new(key, VarType::Float.as_u8(), 2);
+        let old_key = 50u16;
+        let new_key = 55u16;
+        let old_h = ParamHeader::new(old_key, VarType::Float.as_u8(), 67);
         save(&mut s, old_h, ParamValue::Float(7.25), None, false).expect("save old");
         let mut obj = [0u8; 16];
         let members = [GroupMemberDescriptor {
             offset: 4,
             var_type: VarType::Float,
-            idx: 2,
+            idx: 1,
+            dest_group_element: 1,
         }];
-        let stats = convert_class(&mut s, key, 0, true, &members, &mut obj).expect("convert");
+        let stats = convert_class(
+            &mut s,
+            old_key,
+            new_key,
+            3,
+            false,
+            &members,
+            &mut obj,
+        )
+        .expect("convert");
         assert_eq!(stats.saved, 1);
         assert_eq!(stats.skipped, 0);
         assert_eq!(stats.not_found, 0);
         let got = f32::from_le_bytes([obj[4], obj[5], obj[6], obj[7]]);
         assert!((got - 7.25).abs() < 1e-6);
-        let new_h = ParamHeader::new(key, VarType::Float.as_u8(), 2);
+        let new_h = ParamHeader::new(new_key, VarType::Float.as_u8(), 1);
         assert!(configured_in_storage(&s, new_h));
     }
 
     #[test]
+    fn old_group_element_applies_index_zero_workaround() {
+        assert_eq!(old_group_element_for_member(0, 0, true), 0);
+        assert_eq!(old_group_element_for_member(1, 0, true), 1);
+        assert_eq!(old_group_element_for_member(0, 0, false), 63 << 6);
+        assert_eq!(old_group_element_for_member(1, 0, false), 64);
+    }
+
+
+    #[test]
     fn convert_class_skips_when_destination_configured() {
         let mut s = Ram::formatted();
-        let key = 21u16;
-        let old_h = ParamHeader::new(key, VarType::Int16.as_u8(), 1);
+        let old_key = 51u16;
+        let new_key = 56u16;
+        let old_h = ParamHeader::new(old_key, VarType::Int16.as_u8(), 65);
         save(&mut s, old_h, ParamValue::Int16(500), None, false).expect("save old");
-        let dest_h = ParamHeader::new(key, VarType::Int16.as_u8(), 1);
+        let dest_h = ParamHeader::new(new_key, VarType::Int16.as_u8(), 1);
         save(&mut s, dest_h, ParamValue::Int16(999), None, false).expect("save dest");
         let mut obj = [0u8; 8];
         let members = [GroupMemberDescriptor {
             offset: 0,
             var_type: VarType::Int16,
             idx: 1,
+            dest_group_element: 1,
         }];
-        let stats = convert_class(&mut s, key, 0, true, &members, &mut obj).expect("convert");
+        let stats = convert_class(
+            &mut s,
+            old_key,
+            new_key,
+            1,
+            false,
+            &members,
+            &mut obj,
+        )
+        .expect("convert");
         assert_eq!(stats.saved, 0);
         assert_eq!(stats.skipped, 1);
         let (v, _) = find_old_parameter(
             &s,
             ConversionInfo {
-                old_key: key,
+                old_key: new_key,
                 old_group_element: 1,
                 old_type: VarType::Int16,
             },
