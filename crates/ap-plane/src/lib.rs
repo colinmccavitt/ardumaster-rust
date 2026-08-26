@@ -18,6 +18,7 @@ pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
 pub mod target_altitude;
+pub mod throttle_rules;
 
 /// The roll demand handed to the attitude controller, upstream's
 /// `Plane::nav_roll_cd`.
