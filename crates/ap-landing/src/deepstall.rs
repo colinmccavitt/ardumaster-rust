@@ -159,11 +159,11 @@ pub fn deepstall_arc_heading_deg(target_heading_deg: f32, loiter_ccw: bool) -> f
 }
 
 /// Extended approach point 1 km from the landing point, upstream
-/// `extended_approach.offset_bearing(target_heading_deg, 1000.0)`.
+/// `extended_approach.offset_bearing(target_heading_deg.into(), 1000.0.into())`.
 #[must_use]
 pub fn deepstall_extended_approach(landing_point: Location, target_heading_deg: f32) -> Location {
     let mut point = landing_point;
-    point.offset_bearing(target_heading_deg, 1000.0);
+    point.offset_bearing(target_heading_deg.into(), 1000.0.into());
     point
 }
 
@@ -175,7 +175,7 @@ pub fn deepstall_arc_exit(
     approach_extension_m: f32,
 ) -> Location {
     let mut point = landing_point;
-    point.offset_bearing(target_heading_deg + 180.0, approach_extension_m);
+    point.offset_bearing((target_heading_deg + 180.0).into(), approach_extension_m.into());
     point
 }
 
@@ -188,7 +188,7 @@ pub fn deepstall_entry_point(
     travel_distance_m: f32,
 ) -> Location {
     let mut point = landing_point;
-    point.offset_bearing(target_heading_deg + 180.0, travel_distance_m);
+    point.offset_bearing((target_heading_deg + 180.0).into(), travel_distance_m.into());
     point
 }
 
