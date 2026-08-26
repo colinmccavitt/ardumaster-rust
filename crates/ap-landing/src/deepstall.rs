@@ -1,8 +1,8 @@
 //! Deepstall landing, upstream `AP_Landing_Deepstall`. FW-029.
 //!
-//! First slice: travel-distance prediction and loiter breakout predicate.
+//! Slices: travel prediction, loiter breakout, L1 crosstrack steering.
 
-use ap_math::scalar::{constrain_value, degrees, is_positive, radians, Real};
+use ap_math::scalar::{constrain_value, degrees, is_positive, radians, wrap_pi, Real};
 use ap_math::vector2::Vector2f;
 
 /// Loiter altitude tolerance for breakout, upstream
@@ -89,6 +89,79 @@ pub fn verify_breakout_vectors(
     verify_breakout(heading_error_deg(groundspeed_ne, to_target_ne), height_error_m)
 }
 
+/// L1 crosstrack steering tuning, upstream deepstall L1 parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DeepstallSteeringParams {
+    pub target_heading_deg: f32,
+    pub l1_period: f32,
+    pub l1_i: f32,
+    pub time_constant: f32,
+    pub yaw_rate_limit_deg: f32,
+}
+
+/// Persistent L1 integrator state for deepstall steering.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeepstallSteeringState {
+    pub l1_xtrack_i: f32,
+    pub crosstrack_error: f32,
+}
+
+/// One steering update's geometry, upstream `update_steering` inputs.
+#[derive(Debug, Clone, Copy)]
+pub struct DeepstallSteeringInputs {
+    /// NE vector from extended approach to arc exit.
+    pub approach_to_arc_ne: Vector2f,
+    /// NE vector from current position to arc exit.
+    pub current_to_arc_ne: Vector2f,
+    pub yaw_rad: f32,
+    pub yaw_rate_rps: f32,
+    pub dt_s: f32,
+    pub hold_level: bool,
+}
+
+/// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
+#[must_use]
+pub fn deepstall_crosstrack_error(
+    approach_to_arc_ne: Vector2f,
+    current_to_arc_ne: Vector2f,
+) -> f32 {
+    let ab = approach_to_arc_ne.normalized().unwrap_or_else(Vector2f::zero);
+    current_to_arc_ne.cross(ab)
+}
+
+/// Yaw-rate PID error for deepstall steering, upstream `update_steering` before
+/// `ds_PID.get_pid`.
+#[must_use]
+pub fn deepstall_steering_pid_error(
+    params: &DeepstallSteeringParams,
+    state: &mut DeepstallSteeringState,
+    inp: &DeepstallSteeringInputs,
+) -> f32 {
+    let mut desired_change = 0.0_f32;
+
+    if !inp.hold_level {
+        state.crosstrack_error =
+            deepstall_crosstrack_error(inp.approach_to_arc_ne, inp.current_to_arc_ne);
+        let l1_period = params.l1_period.max(0.1);
+        let sine_nu1 = constrain_value(state.crosstrack_error / l1_period, -0.7071, 0.7107);
+        let mut nu1 = Real::asin(sine_nu1);
+
+        if params.l1_i > 0.0 && inp.dt_s > 0.0 {
+            state.l1_xtrack_i += nu1 * params.l1_i / inp.dt_s;
+            state.l1_xtrack_i = constrain_value(state.l1_xtrack_i, -0.5, 0.5);
+            nu1 += state.l1_xtrack_i;
+        }
+
+        desired_change = wrap_pi(
+            radians(params.target_heading_deg) + nu1 - inp.yaw_rad,
+        ) / params.time_constant;
+    }
+
+    let yaw_rate_limit_rps = radians(params.yaw_rate_limit_deg);
+    let limited = constrain_value(desired_change, -yaw_rate_limit_rps, yaw_rate_limit_rps);
+    wrap_pi(limited - inp.yaw_rate_rps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +185,39 @@ mod tests {
         // Headwind along course: cos(offset) = -1, so stall_distance = 1*2*(-1)+5 = 3.
         let d = predict_travel_distance(&p, Vector2f::new(2.0, 0.0), 100.0);
         assert!((d - 3.0).abs() < 0.5, "got {d}");
+    }
+
+    #[test]
+    fn steering_on_track_has_near_zero_crosstrack() {
+        let err = deepstall_crosstrack_error(
+            Vector2f::new(100.0, 0.0),
+            Vector2f::new(50.0, 0.0),
+        );
+        assert!(err.abs() < 1e-3);
+    }
+
+    #[test]
+    fn hold_level_seeks_zero_yaw_rate() {
+        let params = DeepstallSteeringParams {
+            target_heading_deg: 0.0,
+            l1_period: 20.0,
+            l1_i: 0.1,
+            time_constant: 2.0,
+            yaw_rate_limit_deg: 30.0,
+        };
+        let mut state = DeepstallSteeringState::default();
+        let err = deepstall_steering_pid_error(
+            &params,
+            &mut state,
+            &DeepstallSteeringInputs {
+                approach_to_arc_ne: Vector2f::new(100.0, 0.0),
+                current_to_arc_ne: Vector2f::new(50.0, 10.0),
+                yaw_rad: 0.0,
+                yaw_rate_rps: 0.1,
+                dt_s: 0.05,
+                hold_level: true,
+            },
+        );
+        assert!((err - wrap_pi(-0.1)).abs() < 1e-4);
     }
 }
