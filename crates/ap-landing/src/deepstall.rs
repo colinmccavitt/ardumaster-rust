@@ -224,6 +224,53 @@ pub fn deepstall_arc_entry(
     point
 }
 
+/// Computed deepstall approach geometry, upstream `build_approach_path`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeepstallApproachPath {
+    pub target_heading_deg: f32,
+    pub approach_extension_m: f32,
+    pub expected_travel_m: f32,
+    pub extended_approach: Location,
+    pub arc_exit: Location,
+    pub arc_center: Location,
+    pub arc_entry: Location,
+}
+
+/// Build the deepstall approach path from landing point and wind, upstream
+/// `AP_Landing_Deepstall::build_approach_path`.
+#[must_use]
+pub fn deepstall_build_approach_path(
+    landing_point: Location,
+    wind_ne: Vector2f,
+    use_current_heading: bool,
+    current_yaw_deg: f32,
+    loiter_ccw: bool,
+    loiter_radius_m: f32,
+    approach_extension_param_m: f32,
+    predict_params: &DeepstallPredictParams,
+    height_above_target_m: f32,
+) -> DeepstallApproachPath {
+    let target_heading_deg =
+        deepstall_target_heading_deg(wind_ne, use_current_heading, current_yaw_deg);
+    let expected_travel_m =
+        predict_travel_distance(predict_params, wind_ne, height_above_target_m);
+    let approach_extension_m = deepstall_approach_extension_m(
+        expected_travel_m,
+        approach_extension_param_m,
+        loiter_radius_m,
+    );
+    let arc_exit = deepstall_arc_exit(landing_point, target_heading_deg, approach_extension_m);
+    DeepstallApproachPath {
+        target_heading_deg,
+        approach_extension_m,
+        expected_travel_m,
+        extended_approach: deepstall_extended_approach(landing_point, target_heading_deg),
+        arc_exit,
+        arc_center: deepstall_arc_center(arc_exit, target_heading_deg, loiter_ccw, loiter_radius_m),
+        arc_entry: deepstall_arc_entry(arc_exit, target_heading_deg, loiter_ccw, loiter_radius_m),
+    }
+}
+
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
 #[must_use]
 pub fn deepstall_crosstrack_error(
@@ -358,6 +405,33 @@ mod tests {
         let ext = deepstall_extended_approach(landing, 0.0);
         let ne = landing.get_distance_ne(ext);
         assert!(ne.x > 900.0, "expected ~1 km north, got {ne:?}");
+    }
+
+    #[test]
+    fn build_approach_path_composes_geometry() {
+        let landing = Location::new(-35_000_000, 149_000_000);
+        let params = DeepstallPredictParams {
+            forward_speed_ms: 10.0,
+            slope_a: 1.0,
+            slope_b: 5.0,
+            down_speed_ms: 2.0,
+            target_heading_deg: 0.0,
+        };
+        let path = deepstall_build_approach_path(
+            landing,
+            Vector2f::new(2.0, 0.0),
+            false,
+            0.0,
+            false,
+            100.0,
+            50.0,
+            &params,
+            30.0,
+        );
+        assert!(path.approach_extension_m >= 50.0);
+        assert!(path.expected_travel_m > 0.0);
+        let ext_dist = landing.get_distance_ne(path.extended_approach).length();
+        assert!(ext_dist > 900.0, "extended distance {ext_dist}");
     }
 
     #[test]
