@@ -644,3 +644,89 @@ pub fn roi_action(location_initialised: bool, mount_has_pan_control: bool) -> Ro
     }
     RoiAction::PointAirframe
 }
+
+/// The heading towards the region of interest, upstream
+/// `Mode::AutoYaw::roi_yaw_rad`.
+///
+/// `position_ne_m` is the vehicle's position relative to the EKF origin, and
+/// `roi_ne_m` the target's in the same frame — both north-east, so the
+/// bearing is a plain `atan2` wrapped to a full turn by
+/// [`get_bearing_rad`](ap_math::location::get_bearing_rad).
+///
+/// # No position means hold the target, not point north
+///
+/// When the position estimate is unavailable upstream returns the attitude
+/// controller's *current target* yaw rather than zero or the measured
+/// heading. Returning zero would swing the aircraft to north; returning the
+/// measurement would let the target drift with every gust the airframe took.
+/// Returning the standing target leaves the demand exactly where it was, so
+/// a momentary loss of position produces no yaw at all.
+#[must_use]
+pub fn roi_yaw_rad(
+    position_ne_m: Option<(f32, f32)>,
+    roi_ne_m: (f32, f32),
+    attitude_target_yaw_rad: f32,
+) -> f32 {
+    match position_ne_m {
+        Some((n, e)) => ap_math::location::get_bearing_rad(
+            ap_math::vector2::Vector2f::new(n, e),
+            ap_math::vector2::Vector2f::new(roi_ne_m.0, roi_ne_m.1),
+        ),
+        None => attitude_target_yaw_rad,
+    }
+}
+
+/// The state a yaw command leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct YawCommand {
+    /// The target angle, radians.
+    pub yaw_angle_rad: f32,
+    /// The target rate, radians per second.
+    pub yaw_rate_rads: f32,
+    /// The mode to enter.
+    pub mode: YawMode,
+}
+
+/// An absolute angle and rate, upstream
+/// `Mode::AutoYaw::set_yaw_angle_and_rate_rad`.
+///
+/// Both are taken as given — this is the `SET_POSITION_TARGET` path, where a
+/// companion computer has said exactly what it wants and there is nothing to
+/// derive.
+///
+/// Note the mode is `ANGLE_RATE`, whose entry initialises nothing, so unlike
+/// [`set_rate`] the order of the assignments does not matter here. That is
+/// worth knowing precisely because the two functions look parallel and only
+/// one of them is order-sensitive.
+#[must_use]
+pub fn set_yaw_angle_and_rate(yaw_angle_rad: f32, yaw_rate_rads: f32) -> YawCommand {
+    YawCommand {
+        yaw_angle_rad,
+        yaw_rate_rads,
+        mode: YawMode::AngleRate,
+    }
+}
+
+/// A relative angle change, upstream `Mode::AutoYaw::set_yaw_angle_offset_deg`.
+///
+/// # Wrapped to a full turn, not to a half
+///
+/// The new angle is `wrap_2PI(current + offset)`, so it lands in 0..2π rather
+/// than −π..π. That differs from the fixed-yaw path, which wraps to ±π — and
+/// the difference is not cosmetic, because these two produce the same
+/// physical heading with different numbers, and anything comparing the target
+/// against a −π..π measurement has to account for it.
+///
+/// # The rate is zeroed
+///
+/// An offset command says where to end up, not how fast. Leaving a previously
+/// commanded rate in place would have the aircraft sail past the new target,
+/// since `ANGLE_RATE` integrates the rate into the angle every iteration.
+#[must_use]
+pub fn set_yaw_angle_offset(current_yaw_angle_rad: f32, offset_deg: f32) -> YawCommand {
+    YawCommand {
+        yaw_angle_rad: ap_math::scalar::wrap_2pi(current_yaw_angle_rad + offset_deg.to_radians()),
+        yaw_rate_rads: 0.0,
+        mode: YawMode::AngleRate,
+    }
+}
