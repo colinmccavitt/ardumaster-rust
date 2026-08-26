@@ -20,6 +20,7 @@ pub mod altitude;
 pub mod auto_yaw;
 pub mod ground;
 pub mod land;
+pub mod land_horizontal;
 pub mod mode_entry;
 pub mod pilot_input;
 pub mod stick_nav;
