@@ -76,6 +76,7 @@ dependencies = [
  "ap-filter",
  "ap-math",
  "ap-sim",
+ "libm",
 ]
 
 [[package]]

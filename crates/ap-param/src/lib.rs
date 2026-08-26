@@ -1,4 +1,4 @@
-//! Port of `AP_Param`'s on-storage format. Tracked as FW-004, slice 1.
+//! Port of `AP_Param`'s on-storage format and conversion. Tracked as FW-004.
 //!
 //! ADR-0010 requires byte compatibility with ArduPilot's parameter storage, so
 //! this layer is not free to be tidy: it reproduces upstream's encoding
@@ -42,10 +42,16 @@
 
 #![no_std]
 
+pub mod conversion;
 pub mod info;
 pub mod save;
 pub mod storage;
 
+pub use conversion::{
+    convert_parameter_width, convert_scalar, eeprom_header_valid, find_old_parameter,
+    format_storage, migrate_scalar, scalar_from_f32, ConversionInfo, ConvertFlags,
+    ConvertOutcome,
+};
 pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 

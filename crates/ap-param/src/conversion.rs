@@ -1,0 +1,401 @@
+//! Parameter conversion and first-boot storage setup, upstream
+//! `AP_Param::convert_*` and `setup`. FW-004 slice 4.
+//!
+//! The vehicle object graph and name lookup arrive in a later slice; here are
+//! the storage-facing primitives those callers will use.
+
+use ap_math::scalar::{constrain_value, is_equal};
+
+use crate::save::{save, scan, write_sentinel, ScanResult};
+use crate::storage::{ParamValue, Storage, StorageError};
+use crate::{
+    EepromHeader, ParamHeader, VarType, EEPROM_HEADER_SIZE, EEPROM_MAGIC, EEPROM_REVISION,
+    PARAM_HEADER_SIZE,
+};
+
+/// Old parameter location for a rename or regroup, upstream `ConversionInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConversionInfo {
+    /// Top-level key the value was stored under.
+    pub old_key: u16,
+    /// Group path in the old layout.
+    pub old_group_element: u32,
+    /// Stored type of the old value.
+    pub old_type: VarType,
+}
+
+/// Flags for [`convert_scalar`], upstream `CONVERT_FLAG_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConvertFlags(u8);
+
+impl ConvertFlags {
+    /// Convert `_REV` (-1/0) to `_REVERSED` (1/0).
+    pub const REVERSE: Self = Self(1);
+    /// Write even when the destination is already configured.
+    pub const FORCE: Self = Self(2);
+
+    /// Whether `flag` is set.
+    #[must_use]
+    pub const fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+}
+
+/// Whether storage has a readable header, upstream `AP_Param::setup`.
+#[must_use]
+pub fn eeprom_header_valid<S: Storage + ?Sized>(storage: &S) -> bool {
+    let mut buf = [0u8; EEPROM_HEADER_SIZE];
+    if !storage.read(0, &mut buf) {
+        return false;
+    }
+    EepromHeader::from_bytes(buf).is_valid()
+}
+
+/// Wipe storage to a fresh header and sentinel, upstream `erase_all`.
+///
+/// Upstream erases the whole backing store first; callers with a typed
+/// [`Storage`] implementation should zero-fill before calling if they need
+/// bit-identical behaviour.
+pub fn format_storage<S: Storage + ?Sized>(storage: &mut S) -> Result<(), StorageError> {
+    let hdr = EepromHeader::default().to_bytes();
+    if !storage.write(0, &hdr) {
+        return Err(StorageError::WriteFailed { offset: 0 });
+    }
+    write_sentinel(storage, EEPROM_HEADER_SIZE as u16)
+}
+
+/// Load an old parameter from storage, upstream `find_old_parameter`.
+pub fn find_old_parameter<S: Storage + ?Sized>(
+    storage: &S,
+    info: ConversionInfo,
+) -> Option<(ParamValue, u16)> {
+    let header = ParamHeader::new(info.old_key, info.old_type.as_u8(), info.old_group_element);
+    let ScanResult::Found(ofs) = scan(storage, header) else {
+        return None;
+    };
+    let mut buf = [0u8; 12];
+    let size = info.old_type.size() as usize;
+    let at = ofs + PARAM_HEADER_SIZE as u16;
+    if !storage.read(at, &mut buf[..size]) {
+        return None;
+    }
+    decode_stored(info.old_type, &buf[..size]).map(|v| (v, ofs))
+}
+
+fn decode_stored(ty: VarType, bytes: &[u8]) -> Option<ParamValue> {
+    Some(match ty {
+        VarType::Int8 => ParamValue::Int8(*bytes.first()? as i8),
+        VarType::Int16 => ParamValue::Int16(i16::from_le_bytes([*bytes.first()?, *bytes.get(1)?])),
+        VarType::Int32 => ParamValue::Int32(i32::from_le_bytes([
+            *bytes.first()?,
+            *bytes.get(1)?,
+            *bytes.get(2)?,
+            *bytes.get(3)?,
+        ])),
+        VarType::Float => ParamValue::Float(f32::from_le_bytes([
+            *bytes.first()?,
+            *bytes.get(1)?,
+            *bytes.get(2)?,
+            *bytes.get(3)?,
+        ])),
+        VarType::Vector3f => {
+            let mut v = [0f32; 3];
+            for (i, out) in v.iter_mut().enumerate() {
+                let b = bytes.get(i * 4..i * 4 + 4)?;
+                *out = f32::from_le_bytes([*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]);
+            }
+            ParamValue::Vector3f(v)
+        }
+        VarType::None | VarType::Group => return None,
+    })
+}
+
+/// Scalar types that participate in conversion, upstream `<= AP_PARAM_FLOAT`.
+#[must_use]
+pub const fn is_scalar_type(ty: VarType) -> bool {
+    matches!(
+        ty,
+        VarType::Int8 | VarType::Int16 | VarType::Int32 | VarType::Float
+    )
+}
+
+/// Build a scalar value from a float, upstream `AP_Param::set_float`.
+#[must_use]
+pub fn scalar_from_f32(ty: VarType, value: f32) -> Option<ParamValue> {
+    if !value.is_finite() {
+        return None;
+    }
+    let mut rounding = 0.01_f32;
+    Some(match ty {
+        VarType::Float => ParamValue::Float(value),
+        VarType::Int32 => {
+            if value < 0.0 {
+                rounding = -rounding;
+            }
+            let v = constrain_value(value + rounding, i32::MIN as f32, i32::MAX as f32);
+            ParamValue::Int32(v as i32)
+        }
+        VarType::Int16 => {
+            if value < 0.0 {
+                rounding = -rounding;
+            }
+            let v = constrain_value(value + rounding, i16::MIN as f32, i16::MAX as f32);
+            ParamValue::Int16(v as i16)
+        }
+        VarType::Int8 => {
+            if value < 0.0 {
+                rounding = -rounding;
+            }
+            let v = constrain_value(value + rounding, i8::MIN as f32, i8::MAX as f32);
+            ParamValue::Int8(v as i8)
+        }
+        _ => return None,
+    })
+}
+
+/// Convert one stored scalar to another, upstream `convert_old_parameter`'s
+/// scalar branch.
+#[must_use]
+pub fn convert_scalar(
+    old: ParamValue,
+    old_type: VarType,
+    new_type: VarType,
+    scaler: f32,
+    flags: ConvertFlags,
+) -> Option<ParamValue> {
+    if !is_scalar_type(old_type) || !is_scalar_type(new_type) {
+        return None;
+    }
+    if old_type == new_type && is_equal(scaler, 1.0) && flags.0 == 0 {
+        return Some(old);
+    }
+    let mut v = old.as_f32();
+    if flags.contains(ConvertFlags::REVERSE) {
+        v = if is_equal(v, -1.0) { 1.0 } else { 0.0 };
+    }
+    scalar_from_f32(new_type, v * scaler)
+}
+
+/// Widen a stored scalar in place, upstream `_convert_parameter_width`.
+///
+/// Returns the converted value when storage holds `old_type` at `header` and
+/// the live type is `new_type`.
+pub fn convert_parameter_width<S: Storage + ?Sized>(
+    storage: &S,
+    header: ParamHeader,
+    old_type: VarType,
+    new_type: VarType,
+    scale_factor: f32,
+    bitmask: bool,
+) -> Option<ParamValue> {
+    if !is_scalar_type(old_type) || !is_scalar_type(new_type) {
+        return None;
+    }
+    let probe = ParamHeader::new(header.key, old_type.as_u8(), header.group_element);
+    let ScanResult::Found(ofs) = scan(storage, probe) else {
+        return None;
+    };
+    let mut buf = [0u8; 4];
+    let size = old_type.size() as usize;
+    let at = ofs + PARAM_HEADER_SIZE as u16;
+    if !storage.read(at, &mut buf[..size]) {
+        return None;
+    }
+    let old = decode_stored(old_type, &buf[..size])?;
+
+    if bitmask {
+        let mask = match old {
+            ParamValue::Int8(v) => u32::from(v as u8),
+            ParamValue::Int16(v) => u32::from(v as u16),
+            ParamValue::Int32(v) => v as u32,
+            _ => return None,
+        };
+        scalar_from_f32(new_type, mask as f32)
+    } else {
+        convert_scalar(old, old_type, new_type, scale_factor, ConvertFlags(0))
+    }
+}
+
+/// Outcome of migrating one old parameter to a new header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConvertOutcome {
+    /// Nothing in storage under the old location.
+    NotFound,
+    /// Destination already configured and `force` was not set.
+    SkippedConfigured,
+    /// Value unchanged after conversion.
+    Unchanged,
+    /// Record written or updated.
+    Saved,
+}
+
+/// Read an old value, convert, and save under a new header when appropriate.
+pub fn migrate_scalar<S: Storage + ?Sized>(
+    storage: &mut S,
+    info: ConversionInfo,
+    new_header: ParamHeader,
+    new_type: VarType,
+    dest_configured: bool,
+    scaler: f32,
+    flags: ConvertFlags,
+) -> Result<ConvertOutcome, StorageError> {
+    let Some((old, _)) = find_old_parameter(storage, info) else {
+        return Ok(ConvertOutcome::NotFound);
+    };
+    if dest_configured && !flags.contains(ConvertFlags::FORCE) {
+        return Ok(ConvertOutcome::SkippedConfigured);
+    }
+    let Some(new_value) = convert_scalar(old, info.old_type, new_type, scaler, flags) else {
+        return Ok(ConvertOutcome::NotFound);
+    };
+    if new_type == info.old_type && is_equal(scaler, 1.0) && flags.0 == 0 {
+        // Same type: only save when the bytes differ from what is already live.
+        // The caller passes `dest_configured`; when false we still append/update.
+        if dest_configured {
+            return Ok(ConvertOutcome::Unchanged);
+        }
+    }
+    match save(storage, new_header, new_value, None, true)? {
+        crate::save::SaveOutcome::Updated | crate::save::SaveOutcome::Appended => {
+            Ok(ConvertOutcome::Saved)
+        }
+        _ => Ok(ConvertOutcome::Unchanged),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::save::SaveOutcome;
+
+    struct Ram {
+        bytes: [u8; 128],
+    }
+
+    impl Ram {
+        fn formatted() -> Self {
+            let mut s = Self { bytes: [0xFF; 128] };
+            s.bytes[0] = EEPROM_MAGIC[0];
+            s.bytes[1] = EEPROM_MAGIC[1];
+            s.bytes[2] = EEPROM_REVISION;
+            s.bytes[3] = 0;
+            let sentinel = ParamHeader::sentinel().to_bytes();
+            s.bytes[4..8].copy_from_slice(&sentinel);
+            s
+        }
+    }
+
+    impl Storage for Ram {
+        fn read(&self, offset: u16, buf: &mut [u8]) -> bool {
+            buf.copy_from_slice(&self.bytes[offset as usize..offset as usize + buf.len()]);
+            true
+        }
+
+        fn write(&mut self, offset: u16, buf: &[u8]) -> bool {
+            self.bytes[offset as usize..offset as usize + buf.len()].copy_from_slice(buf);
+            true
+        }
+
+        fn size(&self) -> u16 {
+            self.bytes.len() as u16
+        }
+    }
+
+    #[test]
+    fn format_storage_writes_header_and_sentinel() {
+        let mut s = Ram {
+            bytes: [0; 128],
+        };
+        format_storage(&mut s).expect("format");
+        assert!(eeprom_header_valid(&s));
+        let missing = ParamHeader::new(1, VarType::Float.as_u8(), 0);
+        assert!(matches!(scan(&s, missing), ScanResult::Sentinel(4)));
+    }
+
+    #[test]
+    fn find_old_parameter_loads_a_stored_scalar() {
+        let mut s = Ram::formatted();
+        let h = ParamHeader::new(42, VarType::Float.as_u8(), 0);
+        save(&mut s, h, ParamValue::Float(3.5), None, false).expect("save");
+        let info = ConversionInfo {
+            old_key: 42,
+            old_group_element: 0,
+            old_type: VarType::Float,
+        };
+        let (v, _) = find_old_parameter(&s, info).expect("found");
+        assert_eq!(v, ParamValue::Float(3.5));
+    }
+
+    #[test]
+    fn reverse_flag_maps_rev_to_reversed() {
+        let v = convert_scalar(
+            ParamValue::Float(-1.0),
+            VarType::Float,
+            VarType::Float,
+            1.0,
+            ConvertFlags::REVERSE,
+        )
+        .expect("convert");
+        assert_eq!(v, ParamValue::Float(1.0));
+        let v = convert_scalar(
+            ParamValue::Float(0.0),
+            VarType::Float,
+            VarType::Float,
+            1.0,
+            ConvertFlags::REVERSE,
+        )
+        .expect("convert");
+        assert_eq!(v, ParamValue::Float(0.0));
+    }
+
+    #[test]
+    fn int8_minus_one_widens_to_int16_255_via_bitmask() {
+        let mut s = Ram::formatted();
+        let h = ParamHeader::new(7, VarType::Int8.as_u8(), 0);
+        save(&mut s, h, ParamValue::Int8(-1), None, false).expect("save");
+        let out = convert_parameter_width(
+            &s,
+            h,
+            VarType::Int8,
+            VarType::Int16,
+            1.0,
+            true,
+        )
+        .expect("convert");
+        assert_eq!(out, ParamValue::Int16(255));
+    }
+
+    #[test]
+    fn migrate_scalar_appends_converted_value() {
+        let mut s = Ram::formatted();
+        let old = ConversionInfo {
+            old_key: 10,
+            old_group_element: 0,
+            old_type: VarType::Int16,
+        };
+        let old_h = ParamHeader::new(10, VarType::Int16.as_u8(), 0);
+        save(&mut s, old_h, ParamValue::Int16(100), None, false).expect("old");
+        let new_h = ParamHeader::new(10, VarType::Float.as_u8(), 0);
+        let r = migrate_scalar(
+            &mut s,
+            old,
+            new_h,
+            VarType::Float,
+            false,
+            0.1,
+            ConvertFlags(0),
+        )
+        .expect("migrate");
+        assert_eq!(r, ConvertOutcome::Saved);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: 10,
+                old_group_element: 0,
+                old_type: VarType::Float,
+            },
+        )
+        .expect("new");
+        assert_eq!(v, ParamValue::Float(10.0));
+    }
+}

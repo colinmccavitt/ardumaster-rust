@@ -33,6 +33,7 @@
 
 #![no_std]
 
+pub mod deepstall;
 pub mod go_around;
 pub mod slope_stage;
 

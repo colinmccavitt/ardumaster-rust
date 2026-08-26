@@ -44,6 +44,20 @@ pub fn channel_function_mixer(inp: MixerInputs) -> MixerOutputs {
     MixerOutputs { out1, out2 }
 }
 
+/// Flaperon mixer, upstream `Plane::flaperon_update`.
+///
+/// Flaps add equally to both surfaces; aileron differential is preserved by
+/// adding flap on the left and subtracting on the right.
+#[must_use]
+pub fn flaperon_outputs(aileron: f32, flap_percent: f32) -> MixerOutputs {
+    let left = constrain_value(aileron + flap_percent * 45.0, -4500.0, 4500.0);
+    let right = constrain_value(aileron - flap_percent * 45.0, -4500.0, 4500.0);
+    MixerOutputs {
+        out1: left,
+        out2: right,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +102,14 @@ mod tests {
         });
         assert_eq!(base.out2, 2000.0);
         assert_eq!(scaled.out2, 2500.0);
+    }
+
+    #[test]
+    fn flaperons_mix_aileron_and_flaps() {
+        let o = flaperon_outputs(1000.0, 50.0);
+        assert_eq!(o.out1, 1000.0 + 50.0 * 45.0);
+        assert_eq!(o.out1, 3250.0);
+        assert_eq!(o.out2, 1000.0 - 50.0 * 45.0);
+        assert_eq!(o.out2, -1250.0);
     }
 }
