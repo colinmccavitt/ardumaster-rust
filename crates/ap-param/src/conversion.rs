@@ -6,7 +6,7 @@
 
 use ap_math::scalar::{constrain_value, is_equal};
 
-use crate::save::{save, scan, write_sentinel, ScanResult};
+use crate::save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 use crate::storage::{ParamValue, Storage, StorageError};
 use crate::{
     EepromHeader, ParamHeader, VarType, EEPROM_HEADER_SIZE, EEPROM_MAGIC, EEPROM_REVISION,
@@ -256,7 +256,7 @@ pub fn migrate_scalar<S: Storage + ?Sized>(
         }
     }
     match save(storage, new_header, new_value, None, true)? {
-        crate::save::SaveOutcome::Updated | crate::save::SaveOutcome::Appended => {
+        SaveOutcome::Updated | SaveOutcome::Appended => {
             Ok(ConvertOutcome::Saved)
         }
         _ => Ok(ConvertOutcome::Unchanged),
@@ -332,16 +332,18 @@ fn encode_value_to_object(value: ParamValue, dest: &mut [u8]) -> bool {
             dest[..2].copy_from_slice(&v.to_le_bytes());
             true
         }
-        ParamValue::Int32(v) | ParamValue::Float(v) => {
+        ParamValue::Int32(v) => {
             if dest.len() < 4 {
                 return false;
             }
-            let bytes = match value {
-                ParamValue::Int32(x) => x.to_le_bytes(),
-                ParamValue::Float(x) => x.to_le_bytes(),
-                _ => unreachable!(),
-            };
-            dest[..4].copy_from_slice(&bytes);
+            dest[..4].copy_from_slice(&v.to_le_bytes());
+            true
+        }
+        ParamValue::Float(v) => {
+            if dest.len() < 4 {
+                return false;
+            }
+            dest[..4].copy_from_slice(&v.to_le_bytes());
             true
         }
         ParamValue::Vector3f(v) => {
@@ -381,7 +383,12 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
         return Ok(ConvertOutcome::NotFound);
     };
 
-    let new_header = ParamHeader::new(param_key, member.var_type.as_u8(), old_group_element);
+    let new_group_element = if is_top_level {
+        member.idx as u32
+    } else {
+        old_group_element
+    };
+    let new_header = ParamHeader::new(param_key, member.var_type.as_u8(), new_group_element);
     if configured_in_storage(storage, new_header) {
         return Ok(ConvertOutcome::SkippedConfigured);
     }
@@ -433,7 +440,7 @@ pub fn convert_class<S: Storage + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::save::SaveOutcome;
+    use SaveOutcome;
 
     struct Ram {
         bytes: [u8; 128],
@@ -569,7 +576,7 @@ mod tests {
     fn old_group_element_applies_index_zero_workaround() {
         assert_eq!(old_group_element_for_member(0, 0, true), 0);
         assert_eq!(old_group_element_for_member(1, 0, true), 1);
-        assert_eq!(old_group_element_for_member(0, 0, false), 63);
+        assert_eq!(old_group_element_for_member(0, 0, false), 63 << 6);
         assert_eq!(old_group_element_for_member(1, 0, false), 64);
     }
 
@@ -577,7 +584,8 @@ mod tests {
     fn convert_class_entry_copies_old_value_and_saves() {
         let mut s = Ram::formatted();
         let key = 20u16;
-        let old_h = ParamHeader::new(key, VarType::Float.as_u8(), 2);
+        let old_ge = old_group_element_for_member(2, 1, true);
+        let old_h = ParamHeader::new(key, VarType::Float.as_u8(), old_ge);
         save(&mut s, old_h, ParamValue::Float(7.25), None, false).expect("save old");
         let mut obj = [0u8; 16];
         let members = [GroupMemberDescriptor {
@@ -585,7 +593,7 @@ mod tests {
             var_type: VarType::Float,
             idx: 2,
         }];
-        let stats = convert_class(&mut s, key, 0, true, &members, &mut obj).expect("convert");
+        let stats = convert_class(&mut s, key, 1, true, &members, &mut obj).expect("convert");
         assert_eq!(stats.saved, 1);
         assert_eq!(stats.skipped, 0);
         assert_eq!(stats.not_found, 0);
