@@ -15,6 +15,7 @@ use ap_math::scalar::constrain_int32;
 
 pub mod entry_state;
 pub mod mode;
+pub mod mode_run;
 pub mod mode_table;
 
 /// The roll demand handed to the attitude controller, upstream's
