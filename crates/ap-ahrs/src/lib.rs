@@ -28,12 +28,14 @@ pub mod drift;
 pub mod yaw_drift;
 
 pub use dcm_drift_loop::{
-    dcm_step_with_drift_from_ins, DcmDriftLoop, DRIFT_CORRECTION_INTERVAL_S,
+    dcm_step_with_drift_from_ins, dcm_step_with_drift_from_ins_yaw, DcmDriftLoop,
+    YawUpdateInputs, DRIFT_CORRECTION_INTERVAL_S,
 };
 pub use dcm_loop::{dcm_matrix_step_from_ins, dcm_matrix_update_from_ins, DcmDriftOmega};
 pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
 pub use yaw_drift::{
-    YawCompassSample, YawDriftCorrector, YawDriftGains, YawDriftInputs, YawDriftOutcome,
+    YawCompassSample, YawDriftContext, YawDriftCorrector, YawDriftGains, YawDriftInputs,
+    YawDriftOutcome, YawDriftResult, YawGpsSample, YawMatrixAction, GPS_SPEED_MIN,
 };
 
 use ap_math::matrix3::Matrix3f;
