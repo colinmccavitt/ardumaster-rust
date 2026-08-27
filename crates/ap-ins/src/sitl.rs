@@ -12,7 +12,8 @@
 //! [`SitlImuBackend::board_trim`] applies SIM_BRD_TRIM to both sensors.
 //! In-memory INS file playback mirrors upstream SIM_ACC_FILE_RW /
 //! SIM_GYR_FILE_RW (`/tmp/accelN.dat`, `/tmp/gyroN.dat` on the host). Host code
-//! supplies byte buffers; temperature *calibration* application is not here yet.
+//! supplies byte buffers. Temperature calibration on the kinematic path mirrors
+//! upstream `sitl_apply_accel` / `sitl_apply_gyro` (file playback skips it).
 //! The IMU warm-up temperature curve and per-instance fail masks are implemented.
 
 use ap_math::matrix3::Matrix3f;
@@ -126,6 +127,61 @@ pub fn sitl_imu_temperature(config: &SitlImuTemperature, elapsed_ms: u32) -> f32
 #[must_use]
 pub fn sitl_instance_failed(fail_mask: u32, index: u8) -> bool {
     (fail_mask & (1_u32 << index)) != 0
+}
+
+/// Parameter scale divisor for temperature-cal polynomial coefficients,
+/// upstream `INV_SCALE_FACTOR` (GUI params are stored × 1e6).
+pub const SITL_TEMPCAL_INV_SCALE: f32 = 1.0e-6;
+
+/// Third-order temperature calibration coefficients for one sensor.
+///
+/// Upstream stores three [`Vector3f`] groups (`ACC1`/`ACC2`/`ACC3` or
+/// `GYR1`/`GYR2`/`GYR3`), one per polynomial order.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SitlInsTempCalCoeffs {
+    pub c0: Vector3f,
+    pub c1: Vector3f,
+    pub c2: Vector3f,
+}
+
+/// SITL temperature calibration model, upstream `AP_InertialSensor_TCal` applied
+/// via `sitl_apply_accel` / `sitl_apply_gyro`.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlInsTempCal {
+    pub temp_min_c: f32,
+    pub temp_max_c: f32,
+    pub accel: SitlInsTempCalCoeffs,
+    pub gyro: SitlInsTempCalCoeffs,
+}
+
+impl Default for SitlInsTempCal {
+    fn default() -> Self {
+        Self {
+            temp_min_c: 0.0,
+            temp_max_c: 70.0,
+            accel: SitlInsTempCalCoeffs::default(),
+            gyro: SitlInsTempCalCoeffs::default(),
+        }
+    }
+}
+
+/// Evaluate the order-3 polynomial (no constant term), upstream
+/// `AP_InertialSensor_TCal::polynomial_eval`.
+#[must_use]
+pub fn sitl_tempcal_polynomial_eval(tdiff: f32, coeff: &SitlInsTempCalCoeffs) -> Vector3f {
+    (coeff.c0 + (coeff.c1 + coeff.c2 * tdiff) * tdiff) * tdiff * SITL_TEMPCAL_INV_SCALE
+}
+
+/// Apply SITL accelerometer temperature correction, upstream `sitl_apply_accel`.
+pub fn sitl_tempcal_apply_accel(tcal: &SitlInsTempCal, temperature_c: f32, accel: &mut Vector3f) {
+    let tmid = 0.5 * (tcal.temp_min_c + tcal.temp_max_c);
+    *accel += sitl_tempcal_polynomial_eval(temperature_c - tmid, &tcal.accel);
+}
+
+/// Apply SITL gyro temperature correction, upstream `sitl_apply_gyro`.
+pub fn sitl_tempcal_apply_gyro(tcal: &SitlInsTempCal, temperature_c: f32, gyro: &mut Vector3f) {
+    let tmid = 0.5 * (tcal.temp_min_c + tcal.temp_max_c);
+    *gyro += sitl_tempcal_polynomial_eval(temperature_c - tmid, &tcal.gyro);
 }
 
 /// Motor vibration parameters for SITL noise injection.
@@ -823,6 +879,8 @@ pub struct SitlImuBackend {
     pub last_temperature_c: f32,
     /// When set, white noise and vibration are applied in [`Self::timer_update`].
     pub noise_config: Option<SitlInsNoiseConfig>,
+    /// When set, kinematic samples get upstream `sitl_apply_*` temperature drift.
+    pub temp_cal: Option<SitlInsTempCal>,
     accel_noise_state: SitlAccelNoiseState,
     gyro_noise_state: SitlGyroNoiseState,
     /// Accel file playback mode (SIM_ACC_FILE_RW).
@@ -864,6 +922,7 @@ impl SitlImuBackend {
             temp_start_ms: None,
             last_temperature_c: 20.0,
             noise_config: None,
+            temp_cal: None,
             accel_noise_state: SitlAccelNoiseState::default(),
             gyro_noise_state: SitlGyroNoiseState::default(),
             accel_file_mode: SitlInsFileMode::None,
@@ -930,7 +989,7 @@ impl SitlImuBackend {
                 SitlInsFileMode::None | SitlInsFileMode::Write
             ) {
                 let base = sitl_accel_sample(state, &self.cal, self.board_trim);
-                let sample = if let Some(cfg) = &self.noise_config {
+                let mut sample = if let Some(cfg) = &self.noise_config {
                     let dt = 1.0 / f32::from(self.accel_rate_hz);
                     let white = sitl_rand_vector3(now_us);
                     let motor_vibe = (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
@@ -954,6 +1013,9 @@ impl SitlImuBackend {
                 } else {
                     base
                 };
+                if let Some(tcal) = &self.temp_cal {
+                    sitl_tempcal_apply_accel(tcal, self.last_temperature_c, &mut sample);
+                }
                 let _ = sitl_ins_file_write_sample(
                     self.accel_file_mode,
                     &mut self.accel_write_buf,
@@ -988,7 +1050,7 @@ impl SitlImuBackend {
             ) {
                 let drift = sitl_gyro_drift(now_us, self.drift_speed_dps, self.drift_time_min);
                 let base = sitl_gyro_sample(state, &self.cal, drift, self.board_trim);
-                let sample = if let Some(cfg) = &self.noise_config {
+                let mut sample = if let Some(cfg) = &self.noise_config {
                     let dt = 1.0 / f32::from(self.gyro_rate_hz);
                     let white = sitl_rand_vector3(now_us.wrapping_add(100));
                     let motor_vibe = (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
@@ -1015,6 +1077,9 @@ impl SitlImuBackend {
                 } else {
                     base
                 };
+                if let Some(tcal) = &self.temp_cal {
+                    sitl_tempcal_apply_gyro(tcal, self.last_temperature_c, &mut sample);
+                }
                 let _ = sitl_ins_file_write_sample(
                     self.gyro_file_mode,
                     &mut self.gyro_write_buf,
@@ -1543,6 +1608,86 @@ mod tests {
             backend.accel_write_buf[11],
         ]);
         assert!((z + 9.80665).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tempcal_polynomial_is_zero_without_coefficients() {
+        let coeff = SitlInsTempCalCoeffs::default();
+        assert!(sitl_tempcal_polynomial_eval(10.0, &coeff).is_zero());
+    }
+
+    #[test]
+    fn tempcal_polynomial_matches_upstream_scaling() {
+        let coeff = SitlInsTempCalCoeffs {
+            c0: Vector3f::new(1_000_000.0, 0.0, 0.0),
+            ..SitlInsTempCalCoeffs::default()
+        };
+        let tdiff = 10.0;
+        let got = sitl_tempcal_polynomial_eval(tdiff, &coeff);
+        assert!((got.x - 10.0).abs() < 1e-6, "c0-only term at t=10, got {}", got.x);
+    }
+
+    #[test]
+    fn tempcal_apply_accel_uses_midpoint_reference() {
+        let tcal = SitlInsTempCal {
+            temp_min_c: 0.0,
+            temp_max_c: 70.0,
+            accel: SitlInsTempCalCoeffs {
+                c0: Vector3f::new(1_000_000.0, 0.0, 0.0),
+                ..SitlInsTempCalCoeffs::default()
+            },
+            ..SitlInsTempCal::default()
+        };
+        let mut accel = Vector3f::new(0.0, 0.0, -9.8);
+        sitl_tempcal_apply_accel(&tcal, 45.0, &mut accel);
+        assert!((accel.x - 10.0).abs() < 1e-6, "45C is 10 above tmid 35, got {}", accel.x);
+        assert!((accel.z + 9.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn backend_applies_tempcal_on_kinematic_path_only() {
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.temp_cal = Some(SitlInsTempCal {
+            temp_min_c: 0.0,
+            temp_max_c: 70.0,
+            accel: SitlInsTempCalCoeffs {
+                c0: Vector3f::new(1_000_000.0, 0.0, 0.0),
+                ..SitlInsTempCalCoeffs::default()
+            },
+            ..SitlInsTempCal::default()
+        });
+        backend.temperature = SitlImuTemperature {
+            temp_fixed_c: 45.0,
+            ..SitlImuTemperature::default()
+        };
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        backend.timer_update(0, &state, SitlTimerFileData::default());
+        backend.imu.update_accel();
+        assert!(
+            backend.imu.accel().x > 9.0,
+            "temp cal should add +10 on x at 45C, got {}",
+            backend.imu.accel().x
+        );
+
+        backend.accel_file_mode = SitlInsFileMode::Read;
+        let file = encode_ins_file_sample(Vector3f::new(0.0, 0.0, -4.0));
+        backend.timer_update(
+            1_000_000,
+            &state,
+            SitlTimerFileData {
+                accel: Some(&file),
+                gyro: None,
+            },
+        );
+        backend.imu.update_accel();
+        assert!(
+            (backend.imu.accel().x).abs() < 1e-5,
+            "file playback must skip temp cal, got {}",
+            backend.imu.accel().x
+        );
     }
 
     #[test]
