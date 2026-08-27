@@ -34,7 +34,7 @@ pub mod wind_estimation;
 pub mod yaw_drift;
 
 pub use backend::{active_backend_kind, backend_for_kind, AhrsBackendKind};
-pub use ekf3_loop::{ekf3_step_from_ins, Ekf3Loop};
+pub use ekf3_loop::{ekf3_full_update_from_ins, ekf3_step_from_ins, Ekf3Loop, Ekf3UpdateOutcome};
 pub use dcm_drift_loop::{
     dcm_step_with_drift_from_ins, dcm_step_with_drift_from_ins_yaw, DcmDriftLoop,
     DriftMotionInputs, YawUpdateInputs, DRIFT_CORRECTION_INTERVAL_S,

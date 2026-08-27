@@ -5,7 +5,7 @@
 //! path reads on the next tasks.
 
 use ap_ahrs::{
-    active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, ekf3_step_from_ins,
+    active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, ekf3_full_update_from_ins,
     AhrsBackendKind, Dcm, DcmDriftLoop, DriftMotionInputs, Ekf3Loop, MatrixHealth, YawCompassSample,
     YawDriftContext, YawGpsSample, YawUpdateInputs,
 };
@@ -126,7 +126,7 @@ impl AhrsFeed {
         yaw: Option<YawUpdateInputs>,
         motion: DriftMotionInputs,
     ) -> (MatrixHealth, AhrsAttitude) {
-        let health = ekf3_step_from_ins(
+        let outcome = ekf3_full_update_from_ins(
             &mut self.ekf3,
             &mut self.dcm,
             &mut self.drift,
@@ -135,7 +135,7 @@ impl AhrsFeed {
             yaw,
             motion,
         );
-        (health, attitude_from_dcm(&self.dcm))
+        (outcome.health, attitude_from_dcm(&self.dcm))
     }
 }
 

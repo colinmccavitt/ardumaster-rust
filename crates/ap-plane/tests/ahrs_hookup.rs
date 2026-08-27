@@ -206,3 +206,26 @@ fn multi_accel_dead_reckoning_wired_through_drift_motion() {
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
     assert!(feed.drift.position.have_position);
 }
+
+#[test]
+fn ekf3_unhealthy_falls_back_active_backend_to_dcm() {
+    let mut feed = AhrsFeed::default();
+    feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
+    feed.dcm.matrix.a.x = f32::NAN;
+    let ins = ap_ins::InertialSensorFrontend::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+    feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
+    assert!(!feed.ekf_healthy);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+}
+
+#[test]
+fn ekf3_full_update_tracks_update_count() {
+    let mut feed = AhrsFeed::default();
+    feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
+    let ins = ap_ins::InertialSensorFrontend::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+    feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
+    feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
+    assert_eq!(feed.ekf3.update_count, 2);
+}
