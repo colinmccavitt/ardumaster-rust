@@ -34,6 +34,7 @@
 #![no_std]
 
 pub mod deepstall;
+pub mod deepstall_override;
 pub mod deepstall_stage;
 pub mod go_around;
 pub mod landing_controller;
