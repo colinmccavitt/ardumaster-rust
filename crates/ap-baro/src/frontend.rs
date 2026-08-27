@@ -55,6 +55,36 @@ pub fn baro_altitude_m(
     altitude.is_finite().then_some(altitude)
 }
 
+/// Frontend calibration offsets from the BARO_* parameter group.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaroFrontendParams {
+    pub field_elevation_m: f32,
+    pub alt_offset_m: f32,
+    pub ground_temp_c: f32,
+}
+
+impl Default for BaroFrontendParams {
+    fn default() -> Self {
+        Self {
+            field_elevation_m: 0.0,
+            alt_offset_m: 0.0,
+            ground_temp_c: 0.0,
+        }
+    }
+}
+
+impl BaroFrontendParams {
+    #[must_use]
+    pub fn apply_alt_offset(self, altitude_m: f32) -> f32 {
+        altitude_m + self.alt_offset_m
+    }
+
+    pub fn apply_to_frontend(self, frontend: &mut BaroFrontend) {
+        frontend.field_elevation_m = self.field_elevation_m;
+        frontend.alt_offset_m = self.alt_offset_m;
+    }
+}
+
 /// Frontend holding per-instance calibration and computed altitude.
 #[derive(Debug, Clone)]
 pub struct BaroFrontend {

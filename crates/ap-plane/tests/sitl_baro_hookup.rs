@@ -303,3 +303,19 @@ fn ground_pressure_relative_altitude_hookup() {
     let rel = out.relative_altitude_m.expect("relative alt");
     assert!((rel - 50.0).abs() < 2.0, "rel={rel}");
 }
+
+#[test]
+fn apply_baro_params_alt_offset_shifts_relative_altitude() {
+    let mut hookup = SitlBaroHookup::default();
+    let mut params = ap_baro::BaroParams::default();
+    params.frontend.alt_offset_m = 10.0;
+    hookup.apply_baro_params(params);
+    hookup.truth.sim_altitude_m = 100.0;
+    hookup.truth.now_ms = 1000;
+    let _ = hookup.publish();
+    hookup.truth.sim_altitude_m = 150.0;
+    hookup.truth.now_ms = 2000;
+    let out = hookup.publish();
+    let rel = out.relative_altitude_m.expect("relative alt");
+    assert!((rel - 60.0).abs() < 2.0, "rel={rel}");
+}

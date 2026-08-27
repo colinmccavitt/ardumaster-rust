@@ -299,6 +299,10 @@ impl SitlBaroBackend {
     }
 
     /// Run the 100 Hz timer path. `noise_sample` stands in for `rand_float()`.
+    pub fn set_config(&mut self, config: SitlBaroConfig) {
+        self.config = config;
+    }
+
     pub fn timer_tick(
         &mut self,
         sim_altitude_m: f32,

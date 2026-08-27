@@ -34,6 +34,7 @@
 
 pub mod sitl;
 pub mod frontend;
+pub mod params;
 
 use ap_math::scalar::{constrain_value, is_positive, is_zero, Real};
 
@@ -567,3 +568,5 @@ mod tests {
         assert!(altitude_from_pressure(p).is_some());
     }
 }
+
+pub use params::{BaroInstanceParams, BaroParams, SIM_BARO_RND_DEFAULT};
