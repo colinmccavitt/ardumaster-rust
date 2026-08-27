@@ -423,7 +423,7 @@ impl BaroHealthFlags {
     #[must_use]
     pub fn primary_healthy(&self) -> bool {
         let i = self.primary as usize;
-        i < self.instance_count as usize && self.healthy[i]
+        i < self.instance_count as usize && self.healthy[i] && self.have_sample[i]
     }
 }
 
@@ -725,6 +725,17 @@ mod tests {
         assert!(!flags.healthy[0]);
         assert!(flags.healthy[1]);
         assert!(flags.primary_healthy());
+    }
+
+    #[test]
+    fn primary_healthy_requires_have_sample() {
+        let flags = BaroHealthFlags {
+            instance_count: 1,
+            healthy: [true, false],
+            have_sample: [false, false],
+            primary: 0,
+        };
+        assert!(!flags.primary_healthy());
     }
 
 }

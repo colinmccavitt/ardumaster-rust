@@ -48,6 +48,17 @@ fn baro_pre_arm_requires_failover_primary_healthy() {
 }
 
 #[test]
+fn baro_pre_arm_refuses_primary_without_sample() {
+    let no_sample = BaroHealthFlags {
+        instance_count: 1,
+        healthy: [true, false],
+        have_sample: [false, false],
+        primary: 0,
+    };
+    assert!(!baro_pre_arm_check(no_sample, true));
+}
+
+#[test]
 fn plane_pre_arm_checks_baro_preserves_prior_refusal() {
     let mode = pre_arm_checks(false, "mode blocked");
     assert_eq!(

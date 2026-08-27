@@ -162,3 +162,16 @@ fn main_loop_pre_arm_passes_after_baro_failover() {
     assert!(vehicle.baro_pre_arm_ok);
     assert!(vehicle.pre_arm_ok);
 }
+
+#[test]
+fn main_loop_pre_arm_refuses_before_first_baro_tick() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.sitl_baro = Some(SitlBaroHookup::default());
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.baro_health.primary_healthy());
+    assert!(!vehicle.baro_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
