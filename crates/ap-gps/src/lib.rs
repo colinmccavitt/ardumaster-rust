@@ -34,12 +34,20 @@ pub mod lag_buffer;
 pub mod status;
 pub mod velocity;
 pub mod health;
+pub mod blend;
+pub mod dual;
 pub mod sitl;
 
 pub use lag_buffer::GpsLagBuffer;
 pub use status::GpsStatus;
 pub use velocity::{GpsVelocityProducer, GpsVelocitySample};
 pub use health::{GpsHealthFlags, GPS_MIN_NSATS};
+pub use blend::{
+    GpsAutoSwitch, GpsBlendAccuracy, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT,
+    BLEND_MASK_USE_HPOS_ACC, BLEND_MASK_USE_SPD_ACC, BLEND_MASK_USE_VPOS_ACC,
+    GPS_BLENDED_INSTANCE, GPS_MAX_RECEIVERS,
+};
+pub use dual::{GpsDualStub, GpsInstanceTruth};
 pub use sitl::{
     velocity_to_speed_course, GpsFixState, SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC,
     SITL_GPS_UPDATE_MS,

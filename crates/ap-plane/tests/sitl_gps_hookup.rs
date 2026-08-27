@@ -191,3 +191,45 @@ fn main_loop_pre_arm_refuses_when_gps_unhealthy() {
     assert!(!vehicle.pre_arm_ok);
 }
 
+#[test]
+fn dual_gps_blend_publishes_blended_output() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.velocity_ned = Vector3f::new(6.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    let status = hookup.gps_status_publish();
+    assert!(status.have_fix);
+    assert!((status.velocity_ned.x - 8.0).abs() < 0.5);
+    assert!(hookup.gps_output_is_blended());
+}
+
+#[test]
+fn main_loop_dual_gps_blend_sets_blended_flag() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.velocity_ned = Vector3f::new(6.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+
+    vehicle.ahrs_update();
+
+    assert!(vehicle.gps_output_is_blended);
+    let vel = vehicle.gps_velocity.expect("velocity");
+    assert!((vel.velocity_ned.x - 8.0).abs() < 0.5);
+}
+

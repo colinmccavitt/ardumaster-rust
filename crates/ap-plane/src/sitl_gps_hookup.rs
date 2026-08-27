@@ -3,7 +3,10 @@
 //! [`SitlGpsHookup`] runs the [`SitlGpsBackend`] read path and fills
 //! [`SitlYawPublish`] GPS fields before compass/GPS samples reach the DCM.
 
-use ap_gps::{GpsHealthFlags, GpsStatus, GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend};
+use ap_gps::{
+    GpsAutoSwitch, GpsDualStub, GpsHealthFlags, GpsInstanceTruth, GpsStatus,
+    GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend,
+};
 use ap_math::vector3::Vector3f;
 
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish, SitlYawSamples};
@@ -32,6 +35,7 @@ impl Default for SitlGpsTruth {
 #[derive(Debug, Clone, Copy)]
 pub struct SitlGpsHookup {
     backend: SitlGpsBackend,
+    pub dual: Option<GpsDualStub>,
     pub truth: SitlGpsTruth,
     pub fly_forward: bool,
     pub compass_use_for_yaw: bool,
@@ -42,6 +46,7 @@ impl Default for SitlGpsHookup {
     fn default() -> Self {
         Self {
             backend: SitlGpsBackend::default(),
+            dual: None,
             truth: SitlGpsTruth::default(),
             fly_forward: true,
             compass_use_for_yaw: true,
@@ -66,9 +71,34 @@ impl SitlGpsHookup {
         self.backend.delayed_state(self.truth.now_ms)
     }
 
+    fn sync_dual_truth(&mut self) {
+        if let Some(dual) = self.dual.as_mut() {
+            dual.primary_truth = GpsInstanceTruth {
+                velocity_ned: self.truth.velocity_ned,
+                latitude_deg: self.truth.latitude_deg,
+                longitude_deg: self.truth.longitude_deg,
+                altitude_m: self.truth.altitude_m,
+                now_ms: self.truth.now_ms,
+            };
+        }
+    }
+
+    /// Enable dual-GPS stub with blending, upstream `GPS2_TYPE` + `GPS_AUTO_SWITCH`.
+    pub fn enable_dual_gps(&mut self, auto_switch: GpsAutoSwitch) {
+        let mut dual = GpsDualStub::default();
+        dual.dual_enabled = true;
+        dual.auto_switch = auto_switch;
+        self.dual = Some(dual);
+        self.sync_dual_truth();
+    }
+
     /// Lag-buffered GPS status for vehicle consumers, upstream `AP_GPS::status()`.
     #[must_use]
     pub fn gps_status_publish(&mut self) -> GpsStatus {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            return dual.output_status();
+        }
         self.backend.read(
             self.truth.velocity_ned,
             self.truth.latitude_deg,
@@ -83,6 +113,10 @@ impl SitlGpsHookup {
     /// Lag-buffered NED velocity for AHRS drift, upstream `state.velocity`.
     #[must_use]
     pub fn gps_velocity_publish(&mut self) -> GpsVelocitySample {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            return dual.output_velocity();
+        }
         let status = self.gps_status_publish();
         GpsVelocityProducer::publish_status(&status)
     }
@@ -90,8 +124,18 @@ impl SitlGpsHookup {
     /// GPS health flags for arming and drift gating, upstream `isHealthy()`.
     #[must_use]
     pub fn gps_health_publish(&mut self) -> GpsHealthFlags {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            return dual.output_health();
+        }
         let status = self.gps_status_publish();
         GpsHealthFlags::from_status(&status)
+    }
+
+    /// Whether the active GPS output is the blended virtual instance.
+    #[must_use]
+    pub fn gps_output_is_blended(&self) -> bool {
+        self.dual.is_some_and(|dual| dual.output_is_blended())
     }
 
     #[must_use]

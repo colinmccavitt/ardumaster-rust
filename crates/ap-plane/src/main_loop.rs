@@ -156,6 +156,8 @@ pub struct PlaneMainLoop {
     pub gps_velocity: Option<ap_gps::GpsVelocitySample>,
     /// GPS health flags from the fix producer, upstream `AP_GPS::isHealthy()`.
     pub gps_health: Option<ap_gps::GpsHealthFlags>,
+    /// Whether GPS output is the blended virtual instance.
+    pub gps_output_is_blended: bool,
     /// Vehicle context for compass vs GPS yaw selection.
     pub yaw_ctx: YawDriftContext,
     /// True airspeed for no-GPS drift and wind estimation, m/s.
@@ -387,6 +389,7 @@ impl Default for PlaneMainLoop {
             gps_status: None,
             gps_velocity: None,
             gps_health: None,
+            gps_output_is_blended: false,
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             eas2tas: 1.0,
@@ -580,6 +583,7 @@ impl PlaneMainLoop {
             self.gps_status = Some(gps.gps_status_publish());
             self.gps_velocity = Some(gps.gps_velocity_publish());
             self.gps_health = Some(gps.gps_health_publish());
+            self.gps_output_is_blended = gps.gps_output_is_blended();
             if let Some(health) = self.gps_health {
                 self.yaw_ctx.have_gps = health.usable_for_drift();
             }
