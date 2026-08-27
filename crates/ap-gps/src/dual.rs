@@ -170,6 +170,51 @@ impl GpsDualStub {
         stub
     }
 
+
+    fn clear_blend_output(&mut self) {
+        self.blender = GpsBlender::new(GPS_BLEND_MASK_DEFAULT);
+    }
+
+    /// Blend output with freshness fallback, upstream `AP_GPS` blended instance.
+    #[must_use]
+    fn blend_output_status(&mut self) -> GpsStatus {
+        let p_health = self.instance_health_at(0, self.primary_truth.now_ms);
+        let s_health = self.instance_health_at(1, self.secondary_truth.now_ms);
+        let p_fresh = p_health.fix_fresh && p_health.is_healthy();
+        let s_fresh = s_health.fix_fresh && s_health.is_healthy();
+        match (p_fresh, s_fresh) {
+            (true, true) => {
+                let instances = self.blend_instances();
+                if self.blender.calc_weights(&instances) {
+                    self.blender.calc_state(&instances)
+                } else {
+                    self.clear_blend_output();
+                    if self.primary_status().have_fix {
+                        self.primary_status()
+                    } else {
+                        self.secondary_status()
+                    }
+                }
+            }
+            (true, false) => {
+                self.clear_blend_output();
+                self.primary_status()
+            }
+            (false, true) => {
+                self.clear_blend_output();
+                self.secondary_status()
+            }
+            (false, false) => {
+                self.clear_blend_output();
+                if self.primary_status().have_fix {
+                    self.primary_status()
+                } else {
+                    self.secondary_status()
+                }
+            }
+        }
+    }
+
     fn blend_instances(&mut self) -> [GpsBlendInstance; 2] {
         [
             GpsBlendInstance::from_status(self.primary_status()),
@@ -198,16 +243,7 @@ impl GpsDualStub {
                     self.primary_status()
                 }
             }
-            GpsAutoSwitch::Blend => {
-                let instances = self.blend_instances();
-                if self.blender.calc_weights(&instances) {
-                    self.blender.calc_state(&instances)
-                } else if self.primary_status().have_fix {
-                    self.primary_status()
-                } else {
-                    self.secondary_status()
-                }
-            }
+            GpsAutoSwitch::Blend => self.blend_output_status(),
         }
     }
 
@@ -352,6 +388,8 @@ mod tests {
         assert_eq!(stub.primary_instance, 1);
         let status = stub.output_status();
         assert!((status.velocity_ned.x - 8.0).abs() < 1e-3);
+        assert_eq!(stub.output_active_instance(), 1);
+    }
 
     #[test]
     fn use_primary_failover_skips_stale_primary() {
@@ -391,7 +429,24 @@ mod tests {
         let status = stub.output_status();
         assert!((status.velocity_ned.x - 9.0).abs() < 1e-3);
     }
-        assert_eq!(stub.output_active_instance(), 1);
+
+    #[test]
+    fn blend_falls_back_to_fresh_secondary_when_primary_stale() {
+        let mut stub = GpsDualStub::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::Blend;
+        stub.primary.num_sats = 18;
+        stub.secondary.num_sats = 12;
+        stub.primary_truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+        stub.secondary_truth.velocity_ned = Vector3f::new(7.0, 0.0, 0.0);
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        let _ = stub.primary_status();
+        let _ = stub.secondary_status();
+        stub.primary_truth.now_ms = 5000;
+        let status = stub.output_status();
+        assert!((status.velocity_ned.x - 7.0).abs() < 1e-3);
+        assert!(!stub.output_is_blended());
     }
 
 }

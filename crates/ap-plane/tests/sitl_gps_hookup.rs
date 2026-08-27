@@ -512,6 +512,27 @@ fn dual_gps_use_best_prefers_fresh_secondary_over_stale_primary() {
 }
 
 #[test]
+fn dual_gps_blend_falls_back_to_fresh_secondary_when_primary_stale() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 18;
+        dual.secondary.num_sats = 12;
+        dual.secondary_truth.velocity_ned = Vector3f::new(7.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    let _ = hookup.gps_status_publish();
+    hookup.truth.now_ms = 5000;
+    let status = hookup.gps_status_publish();
+    assert!((status.velocity_ned.x - 7.0).abs() < 1e-3);
+    assert!(!hookup.gps_output_is_blended());
+}
+
+#[test]
 fn main_loop_use_best_follows_fresh_secondary_when_primary_stale() {
     use ap_gps::GpsAutoSwitch;
 
@@ -542,5 +563,35 @@ fn main_loop_use_best_follows_fresh_secondary_when_primary_stale() {
     assert_eq!(vehicle.gps_active_instance, 1);
     assert!(vehicle.gps_pre_arm_ok);
     assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_blend_follows_fresh_secondary_when_primary_stale() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 18;
+        dual.secondary.num_sats = 12;
+        dual.secondary_truth.velocity_ned = Vector3f::new(7.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    if let Some(gps) = vehicle.sitl_gps.as_mut() {
+        gps.truth.now_ms = 5000;
+    }
+    vehicle.ahrs_update();
+
+    let vel = vehicle.gps_velocity.expect("velocity");
+    assert!((vel.velocity_ned.x - 7.0).abs() < 1e-3);
 }
 
