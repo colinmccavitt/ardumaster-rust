@@ -1,12 +1,12 @@
 # ArduPilot Rust Port — Progress Tracker
 
 **Updated:** 2026-08-27 05:00  
-**Main:** (pending full batch 14 merge)
+**Main:** `2a3dbfe`
 
 | Field | Value |
 |-------|-------|
 | **fw-rust progress** | ~54%+ |
-| **Last commit** | batch 14 integration in progress |
+| **Last commit** | `2a3dbfe` |
 | **Tests** | ✅ `cargo test --workspace` pass on main |
 
 ### Parallel batch — merged slices (batch 14)
@@ -26,9 +26,15 @@
 |--------|---|------|
 | **FW-029** | 100 | Done |
 | **FW-004** | 100 | Done |
+<<<<<<< HEAD
 | **FW-011** | 88 | SITL file playback hookup |
 | **FW-008** | 65 | EKF3 backend wiring |
 | **FW-020** | 62 | Mode table wiring for scheduler |
+=======
+| **FW-011** | 68 | INS→AHRS publish |
+| **FW-008** | 65 | GPS lag buffer (ra_delayed) |
+| **FW-020** | 15 | Wire AHRS feed, stabilize/set_servos |
+>>>>>>> 9ddca0a (FW-008: update progress tracker after backend selection stub)
 
 ## Session log (recent)
 
