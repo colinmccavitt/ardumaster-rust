@@ -8,7 +8,7 @@ use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
-use crate::ahrs_hookup::{yaw_update_inputs, AhrsAttitude, AhrsFeed};
+use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::deepstall_stage::DeepstallStage;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
@@ -80,6 +80,8 @@ pub struct PlaneMainLoop {
     pub gps_yaw: Option<YawGpsSample>,
     /// Vehicle context for compass vs GPS yaw selection.
     pub yaw_ctx: YawDriftContext,
+    /// True airspeed for no-GPS drift and wind estimation, m/s.
+    pub airspeed_tas: f32,
     /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
@@ -135,6 +137,7 @@ impl Default for PlaneMainLoop {
             compass: None,
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
+            airspeed_tas: 0.0,
             sitl_yaw: None,
             controllers: StabilizeControllers::default(),
             nav_tecs: NavTecsPublish::default(),
@@ -183,10 +186,17 @@ impl PlaneMainLoop {
             self.yaw_ctx = samples.yaw_ctx;
         }
         let yaw = yaw_update_inputs(self.compass, self.gps_yaw, self.yaw_ctx);
+        let motion = drift_motion_inputs(
+            self.yaw_ctx,
+            self.gps_yaw,
+            self.airspeed_tas,
+            &mut self.ahrs.last_gps_fix_ms,
+        );
         let (_health, attitude) = self.ahrs.update_from_ins(
             &self.ins,
             &self.loop_timing,
             yaw,
+            motion,
         );
         self.attitude = attitude;
     }

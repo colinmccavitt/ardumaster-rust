@@ -5,11 +5,12 @@
 //! path reads on the next tasks.
 
 use ap_ahrs::{
-    dcm_step_with_drift_from_ins_yaw, Dcm, DcmDriftLoop, MatrixHealth, YawCompassSample,
-    YawDriftContext, YawGpsSample, YawUpdateInputs,
+    dcm_step_with_drift_from_ins_yaw, Dcm, DcmDriftLoop, DriftMotionInputs, MatrixHealth,
+    YawCompassSample, YawDriftContext, YawGpsSample, YawUpdateInputs,
 };
 use ap_ins::{InertialSensorFrontend, LoopTiming};
-use ap_math::scalar::{rad_to_cd, wrap_180_cd, wrap_360_cd};
+use ap_math::scalar::{rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
+use ap_math::vector3::Vector3f;
 
 /// Attitude sensors published each loop, upstream `AP_AHRS` roll/pitch/yaw_sensor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct AhrsFeed {
     pub dcm: Dcm,
     /// Roll/pitch drift and compass yaw correction.
     pub drift: DcmDriftLoop,
+    pub(crate) last_gps_fix_ms: u32,
 }
 
 impl Default for AhrsFeed {
@@ -36,6 +38,7 @@ impl Default for AhrsFeed {
         Self {
             dcm: Dcm::new(),
             drift: DcmDriftLoop::default(),
+            last_gps_fix_ms: 0,
         }
     }
 }
@@ -62,6 +65,7 @@ impl AhrsFeed {
         ins: &InertialSensorFrontend,
         timing: &LoopTiming,
         yaw: Option<YawUpdateInputs>,
+        motion: DriftMotionInputs,
     ) -> (MatrixHealth, AhrsAttitude) {
         let health = dcm_step_with_drift_from_ins_yaw(
             &mut self.dcm,
@@ -69,6 +73,7 @@ impl AhrsFeed {
             ins,
             timing,
             yaw,
+            motion,
         );
         (health, attitude_from_dcm(&self.dcm))
     }
@@ -91,3 +96,44 @@ pub fn yaw_update_inputs(
         })
     }
 }
+
+/// Build drift motion inputs from GPS course/speed and vehicle context.
+#[must_use]
+pub fn drift_motion_inputs(
+    ctx: YawDriftContext,
+    gps: Option<YawGpsSample>,
+    airspeed_tas: f32,
+    last_gps_fix_ms: &mut u32,
+) -> DriftMotionInputs {
+    let new_gps_fix = gps
+        .map(|sample| sample.last_fix_time_ms != *last_gps_fix_ms)
+        .unwrap_or(false);
+    if let Some(sample) = gps {
+        if new_gps_fix {
+            *last_gps_fix_ms = sample.last_fix_time_ms;
+        }
+    }
+
+    let gps_velocity = gps.and_then(|sample| {
+        if !ctx.have_gps {
+            return None;
+        }
+        let course = radians(sample.ground_course_deg);
+        Some(Vector3f::new(
+            sample.ground_speed * Real::cos(course),
+            sample.ground_speed * Real::sin(course),
+            0.0,
+        ))
+    });
+
+    DriftMotionInputs {
+        now_ms: ctx.now_ms,
+        gps_velocity,
+        new_gps_fix,
+        have_gps: ctx.have_gps,
+        fly_forward: ctx.fly_forward,
+        airspeed_tas,
+        ..DriftMotionInputs::default()
+    }
+}
+

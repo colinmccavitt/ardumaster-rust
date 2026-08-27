@@ -48,7 +48,7 @@ fn ahrs_feed_update_from_ins_with_no_samples_keeps_attitude() {
     let ins = ap_ins::InertialSensorFrontend::default();
     let timing = LoopTiming::new(1.0 / 400.0);
 
-    let (health, attitude) = feed.update_from_ins(&ins, &timing, None);
+    let (health, attitude) = feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
 
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
     assert_eq!(attitude, AhrsAttitude::default());
@@ -75,5 +75,28 @@ fn yaw_update_inputs_includes_gps_when_context_set() {
     let got = inputs.gps.expect("gps sample");
     assert_eq!(got.ground_course_deg, gps.ground_course_deg);
     assert!(inputs.ctx.have_gps);
+}
+
+#[test]
+fn drift_motion_inputs_builds_gps_velocity() {
+    use ap_ahrs::{YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::ahrs_hookup::drift_motion_inputs;
+
+    let mut last_fix = 0;
+    let gps = YawGpsSample {
+        ground_course_deg: 90.0,
+        ground_speed: GPS_SPEED_MIN + 2.0,
+        last_fix_time_ms: 500,
+    };
+    let ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 500,
+        ..YawDriftContext::default()
+    };
+    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, &mut last_fix);
+    assert!(motion.new_gps_fix);
+    let vel = motion.gps_velocity.expect("gps velocity");
+    assert!(vel.x.abs() < 0.01, "east course => near-zero north");
+    assert!(vel.y > GPS_SPEED_MIN);
 }
 
