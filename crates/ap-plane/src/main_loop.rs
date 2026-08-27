@@ -70,6 +70,10 @@ use crate::mode_transition_throttle_hookup::{
 use crate::throttle_context_hookup::{
     throttle_context_tick, ThrottleContextInputs,
 };
+use crate::yaw_throttle_glue_hookup::{
+    pilot_throttle_glue_tick, vtol_yaw_stick_glue_tick, PilotThrottleGlueInputs,
+    VtolYawStickGlueInputs,
+};
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -311,6 +315,14 @@ pub struct PlaneMainLoop {
     pub idle_gov_manual: bool,
     /// Nav scripting active this tick.
     pub nav_scripting_active: bool,
+    /// `TRIM_THROTTLE` parameter, percent.
+    pub trim_throttle: f32,
+    /// `THR_MIN` parameter, percent.
+    pub throttle_min: f32,
+    /// `THR_MAX` parameter, percent.
+    pub throttle_max: f32,
+    /// Pack voltage ratio for battery throttle compensation.
+    pub battery_voltage_ratio: f32,
     /// Altitude above home/reference, metres. Upstream `relative_altitude`.
     pub relative_altitude_m: f32,
     /// Servo outputs about to be published, upstream `set_servos` state.
@@ -539,6 +551,10 @@ impl Default for PlaneMainLoop {
             quadplane_available: false,
             idle_gov_manual: false,
             nav_scripting_active: false,
+            trim_throttle: crate::stabilize_hookup::AP_PLANE_TRIM_THROTTLE_DEFAULT,
+            throttle_min: 0.0,
+            throttle_max: 100.0,
+            battery_voltage_ratio: 1.0,
             relative_altitude_m: 0.0,
             servos: ServoOutputState::default(),
         }
@@ -715,6 +731,20 @@ impl PlaneMainLoop {
         self.throttle_use_battery_comp = thr_ctx.use_battery_compensation;
         self.pilot_throttle_source = thr_ctx.pilot_throttle_source;
 
+        let pilot_throttle = pilot_throttle_glue_tick(&PilotThrottleGlueInputs {
+            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+            pilot_throttle_source: self.pilot_throttle_source,
+            trim_throttle: self.trim_throttle,
+            throttle_min: self.throttle_min,
+            throttle_max: self.throttle_max,
+            use_throttle_limits: self.throttle_use_limits,
+            use_battery_compensation: self.throttle_use_battery_comp,
+            battery_voltage_ratio: self.battery_voltage_ratio,
+        });
+        self.stabilize_demands.throttle_scaled = pilot_throttle;
+        self.servos.throttle_scaled = pilot_throttle;
+
         let mode_pre_arm = pre_arm_checks(true, "");
         let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
         let require_gps = self.sitl_gps.is_some();
@@ -794,6 +824,14 @@ impl PlaneMainLoop {
         );
         self.last_stabilize_run = out.run;
         self.stabilize_servos = out.servos;
+        self.stabilize_servos.rudder_scaled = vtol_yaw_stick_glue_tick(
+            self.stabilize_servos.rudder_scaled,
+            &VtolYawStickGlueInputs {
+                stick_mixing: self.stick_mixing,
+                yaw_norm_dz: self.rc_sticks.yaw_norm_dz,
+                rudder_limit_scaled: 4500.0,
+            },
+        );
     }
 
     /// Upstream `Plane::set_servos`. Publishes scaled/PWM demands from stabilize,

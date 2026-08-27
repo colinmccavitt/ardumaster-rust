@@ -47,10 +47,13 @@ impl Default for RcFailsafeConfig {
 pub struct RcFailsafeSchedulerInputs {
     pub roll_pwm: Option<u16>,
     pub pitch_pwm: Option<u16>,
+    pub yaw_pwm: Option<u16>,
     pub throttle_pwm: Option<u16>,
     pub has_valid_input: bool,
     pub roll_cfg: RcChannelConfig,
     pub pitch_cfg: RcChannelConfig,
+    pub yaw_cfg: RcChannelConfig,
+    pub throttle_cfg: RcChannelConfig,
     pub failsafe_cfg: RcFailsafeConfig,
     /// Flap aux channel PWM, upstream `channel_flap->get_radio_in()`.
     pub flap_pwm: Option<u16>,
@@ -62,10 +65,13 @@ impl Default for RcFailsafeSchedulerInputs {
         Self {
             roll_pwm: None,
             pitch_pwm: None,
+            yaw_pwm: None,
             throttle_pwm: None,
             has_valid_input: false,
             roll_cfg: RcChannelConfig::default(),
             pitch_cfg: RcChannelConfig::default(),
+            yaw_cfg: RcChannelConfig::default(),
+            throttle_cfg: RcChannelConfig::default(),
             failsafe_cfg: RcFailsafeConfig::default(),
             flap_pwm: None,
             flap_cfg: RcChannelConfig::default(),
@@ -167,6 +173,10 @@ pub fn rc_failsafe_scheduler_tick(inp: &RcFailsafeSchedulerInputs) -> RcFailsafe
         .pitch_pwm
         .map(|pwm| norm_input_dz(pwm, &inp.pitch_cfg))
         .unwrap_or(0.0);
+    let yaw_norm_dz = inp
+        .yaw_pwm
+        .map(|pwm| norm_input_dz(pwm, &inp.yaw_cfg))
+        .unwrap_or(0.0);
 
     let manual_flap_percent = inp
         .flap_pwm
@@ -177,6 +187,7 @@ pub fn rc_failsafe_scheduler_tick(inp: &RcFailsafeSchedulerInputs) -> RcFailsafe
         rc_sticks: RcStickInputs {
             roll_norm_dz,
             pitch_norm_dz,
+            yaw_norm_dz,
         },
         manual_flap_percent,
         in_rc_failsafe: false,

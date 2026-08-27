@@ -421,9 +421,12 @@ fn scheduler_tick_reads_rc_channels() {
         has_valid_input: true,
         roll_pwm: Some(1700),
         pitch_pwm: Some(1300),
+        yaw_pwm: None,
         throttle_pwm: Some(1100),
         roll_cfg: RcChannelConfig::default(),
         pitch_cfg: RcChannelConfig::default(),
+        yaw_cfg: RcChannelConfig::default(),
+        throttle_cfg: RcChannelConfig::default(),
         flap_pwm: None,
         flap_cfg: RcChannelConfig::default(),
         failsafe_cfg: RcFailsafeConfig {
@@ -642,10 +645,14 @@ fn scheduler_tick_publishes_throttle_pwm_after_set_servos() {
     let tasks = plane_fast_tasks();
     let mut last = [0u16; 4];
     let mut vehicle = PlaneMainLoop::default();
-    vehicle.servos = ServoOutputState {
-        throttle_scaled: 1000.0,
-        ..ServoOutputState::default()
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(2000);
+    vehicle.rc_failsafe_inputs.throttle_cfg = ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig {
+        radio_min: 1000,
+        radio_max: 2000,
+        ..Default::default()
     };
+    vehicle.pilot_throttle_source = ap_plane::mode_run::PilotThrottleSource::Direct;
     vehicle.srv_output.registry.assign(Function::THROTTLE, 1 << 0);
 
     let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
@@ -773,4 +780,35 @@ fn update_control_mode_sets_battery_comp_in_fbwb() {
     vehicle.update_control_mode();
     assert!(vehicle.throttle_use_limits);
     assert!(vehicle.throttle_use_battery_comp);
+}
+
+
+#[test]
+fn update_control_mode_maps_pilot_throttle_from_rc() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(2000);
+    vehicle.rc_failsafe_inputs.throttle_cfg = ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig {
+        radio_min: 1000,
+        radio_max: 2000,
+        ..Default::default()
+    };
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+    vehicle.pilot_throttle_source = ap_plane::mode_run::PilotThrottleSource::Direct;
+    vehicle.update_control_mode();
+    assert!((vehicle.servos.throttle_scaled - 100.0).abs() < 0.1);
+    assert!((vehicle.stabilize_demands.throttle_scaled - 100.0).abs() < 0.1);
+}
+
+#[test]
+fn stabilize_applies_vtol_yaw_stick_mixing() {
+    use ap_plane::mode_run::StickMixing;
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.stick_mixing = Some(StickMixing::VtolYaw);
+    vehicle.rc_sticks.yaw_norm_dz = 1.0;
+    vehicle.last_stabilize = ap_plane::main_loop::StabilizeDispatch {
+        yaw: true,
+        ..Default::default()
+    };
+    vehicle.stabilize();
+    assert!(vehicle.stabilize_servos.rudder_scaled > 4000.0);
 }

@@ -78,6 +78,8 @@ pub struct NavCommandInputs {
 pub struct RcStickInputs {
     pub roll_norm_dz: f32,
     pub pitch_norm_dz: f32,
+    /// Yaw stick with deadzone, upstream `channel_rudder->norm_input_dz()`.
+    pub yaw_norm_dz: f32,
 }
 
 /// Parameters for speed scaler computation, upstream `calc_speed_scaler`.

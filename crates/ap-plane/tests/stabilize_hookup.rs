@@ -174,6 +174,7 @@ fn stick_mixing_shifts_nav_roll() {
         &RcStickInputs {
             roll_norm_dz: 1.0,
             pitch_norm_dz: 0.0,
+            ..Default::default()
         },
         true,
         false,
@@ -214,6 +215,7 @@ fn prepare_stabilize_path_applies_stick_mixing_when_enabled() {
         &RcStickInputs {
             roll_norm_dz: 0.5,
             pitch_norm_dz: 0.0,
+            ..Default::default()
         },
         Some(StickMixing::Fbw),
         0,

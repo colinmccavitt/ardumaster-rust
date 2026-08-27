@@ -70,6 +70,7 @@ fn scheduler_tick_publishes_sticks_when_valid() {
             throttle_failsafe_enabled: true,
             throttle_failsafe_pwm: 975,
         },
+        ..RcFailsafeSchedulerInputs::default()
     });
     assert!(!out.in_rc_failsafe);
     assert!(out.rc_sticks.roll_norm_dz > 0.4);
@@ -102,6 +103,7 @@ fn scheduler_tick_publishes_manual_flap_from_rc() {
             throttle_failsafe_enabled: true,
             throttle_failsafe_pwm: 975,
         },
+        ..RcFailsafeSchedulerInputs::default()
     });
     assert_eq!(out.manual_flap_percent, 70);
 }
