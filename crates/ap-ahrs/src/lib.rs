@@ -22,8 +22,10 @@
 
 #![no_std]
 
+pub mod dcm_loop;
 pub mod drift;
 
+pub use dcm_loop::{dcm_matrix_step_from_ins, dcm_matrix_update_from_ins, DcmDriftOmega};
 pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
 
 use ap_math::matrix3::Matrix3f;

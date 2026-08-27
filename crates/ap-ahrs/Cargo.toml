@@ -7,9 +7,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ap-ins = { workspace = true }
 ap-math = { workspace = true }
 
 [dev-dependencies]
+ap-ins = { workspace = true }
 ap-replay = { workspace = true }
 ap-sim = { workspace = true }
 
