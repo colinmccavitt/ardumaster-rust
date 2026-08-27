@@ -106,7 +106,12 @@ impl SitlBaroHookup {
         };
         let healthy = health.primary_healthy();
         self.climb_rate
-            .update_primary(sample.altitude_m, sample.last_sample_time_ms, healthy);
+            .update_primary(
+            sample.altitude_m,
+            sample.last_sample_time_ms,
+            healthy,
+            health.primary,
+        );
         SitlBaroPublish {
             sample,
             eas2tas,

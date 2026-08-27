@@ -399,14 +399,39 @@ impl SitlBaroBackend {
 
 
 /// Climb-rate estimate from primary altitude, upstream `AP_Baro::_climb_rate_filter`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct BaroClimbRate {
     filter: DerivativeFilter<7>,
+    last_primary: u8,
+}
+
+impl Default for BaroClimbRate {
+    fn default() -> Self {
+        Self {
+            filter: DerivativeFilter::default(),
+            last_primary: 0,
+        }
+    }
 }
 
 impl BaroClimbRate {
-    /// Feed primary altitude when healthy, upstream `read()` climb filter update.
-    pub fn update_primary(&mut self, altitude_m: f32, last_update_ms: u32, healthy: bool) {
+    /// Reset climb filter, upstream primary baro instance change.
+    pub fn reset(&mut self) {
+        self.filter.reset();
+    }
+
+    /// Feed primary altitude when healthy; reset on primary failover.
+    pub fn update_primary(
+        &mut self,
+        altitude_m: f32,
+        last_update_ms: u32,
+        healthy: bool,
+        primary: u8,
+    ) {
+        if self.last_primary != primary {
+            self.reset();
+            self.last_primary = primary;
+        }
         if healthy {
             self.filter.update(altitude_m, last_update_ms);
         }
@@ -771,12 +796,40 @@ mod tests {
         for _ in 0..20 {
             t += dt_ms;
             alt += step_m;
-            climb.update_primary(alt, t, true);
+            climb.update_primary(alt, t, true, 0);
         }
         let got = climb.climb_rate_mps();
         assert!(
             (got - rate_mps).abs() < 0.15,
             "expected ~{rate_mps} m/s, got {got}"
+        );
+    }
+
+
+    #[test]
+    fn climb_rate_resets_on_primary_failover() {
+        let mut climb = BaroClimbRate::default();
+        let rate_mps = 2.0_f32;
+        let dt_ms = 10_u32;
+        let step_m = rate_mps * dt_ms as f32 * 0.001;
+        let mut alt = 100.0_f32;
+        let mut t = 0_u32;
+        for _ in 0..20 {
+            t += dt_ms;
+            alt += step_m;
+            climb.update_primary(alt, t, true, 0);
+        }
+        let before = climb.climb_rate_mps();
+        assert!(
+            (before - rate_mps).abs() < 0.15,
+            "expected ~{rate_mps} m/s before failover, got {before}"
+        );
+
+        climb.update_primary(alt, t, true, 1);
+        let after = climb.climb_rate_mps();
+        assert!(
+            after.abs() < 0.15,
+            "expected fresh climb rate after failover, got {after}"
         );
     }
 
