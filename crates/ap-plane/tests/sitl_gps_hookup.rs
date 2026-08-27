@@ -682,3 +682,28 @@ fn apply_gps_params_enables_dual_from_table() {
     assert!(hookup.dual.is_some());
     assert_eq!(hookup.dual.unwrap().auto_switch, ap_gps::GpsAutoSwitch::Blend);
 }
+
+#[test]
+fn dual_gps_min_nsats_from_params_applies_to_both_instances() {
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = ap_gps::GpsParams::default();
+    params.gps2.gps_type = ap_gps::GPS_TYPE_SITL;
+    params.min_nsats = 10;
+    hookup.apply_gps_params(params);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 8;
+        dual.secondary.num_sats = 8;
+    }
+    let _ = hookup.gps_status_publish();
+    assert!(!hookup.gps_dual_pre_arm_ok());
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 12;
+        dual.secondary.num_sats = 12;
+        dual.primary_truth.now_ms = 201;
+        dual.secondary_truth.now_ms = 201;
+    }
+    hookup.truth.now_ms = 201;
+    let _ = hookup.gps_status_publish();
+    assert!(hookup.gps_dual_pre_arm_ok());
+}

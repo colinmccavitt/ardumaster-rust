@@ -29,13 +29,18 @@ impl GpsHealthFlags {
 
     #[must_use]
     pub fn from_status_at(status: &GpsStatus, now_ms: u32) -> Self {
+        Self::from_status_at_min(status, now_ms, GPS_MIN_NSATS)
+    }
+
+    #[must_use]
+    pub fn from_status_at_min(status: &GpsStatus, now_ms: u32, min_nsats: u8) -> Self {
         let has_3d_fix = status.has_3d_fix();
         let fix_fresh = status.have_fix
             && now_ms.wrapping_sub(status.last_fix_time_ms) <= GPS_FIX_TIMEOUT_MS;
         Self {
             have_fix: status.have_fix,
             has_3d_fix,
-            num_sats_ok: status.num_sats >= GPS_MIN_NSATS,
+            num_sats_ok: status.num_sats >= min_nsats,
             velocity_valid: status.have_fix && has_3d_fix,
             fix_fresh,
         }
@@ -144,5 +149,27 @@ mod tests {
         assert!(!stale.fix_fresh);
         assert!(!stale.is_healthy());
         assert!(!stale.usable_for_drift());
+    }
+
+    #[test]
+    fn param_min_nsats_lowers_sat_gate() {
+        let fix = GpsFixState {
+            fix_type: FixType::Fix3D,
+            num_sats: 4,
+            velocity_ned: Vector3f::zero(),
+            ground_speed: 0.0,
+            ground_course_deg: 0.0,
+            last_fix_time_ms: 200,
+            latitude_deg: 51.0,
+            longitude_deg: -0.1,
+            altitude_m: 100.0,
+            have_fix: true,
+        };
+        let status = GpsStatus::from_fix(&fix, 0.1);
+        let default_gate = GpsHealthFlags::from_status_at(&status, 200);
+        assert!(!default_gate.num_sats_ok);
+        let relaxed = GpsHealthFlags::from_status_at_min(&status, 200, 4);
+        assert!(relaxed.num_sats_ok);
+        assert!(relaxed.is_healthy());
     }
 }

@@ -60,3 +60,27 @@ fn plane_pre_arm_checks_gps_refuses_unhealthy_gps() {
         PreArmResult::Refused(GPS_REFUSAL),
     );
 }
+
+#[test]
+fn gps_pre_arm_respects_param_min_nsats_in_health_flags() {
+    use ap_gps::{FixType, GpsFixState, GpsHealthFlags, GpsStatus};
+    use ap_math::vector3::Vector3f;
+
+    let fix = GpsFixState {
+        fix_type: FixType::Fix3D,
+        num_sats: 5,
+        velocity_ned: Vector3f::zero(),
+        ground_speed: 0.0,
+        ground_course_deg: 0.0,
+        last_fix_time_ms: 200,
+        latitude_deg: 51.0,
+        longitude_deg: -0.1,
+        altitude_m: 100.0,
+        have_fix: true,
+    };
+    let status = GpsStatus::from_fix(&fix, 0.1);
+    let default_health = GpsHealthFlags::from_status_at(&status, 200);
+    assert!(!gps_pre_arm_check(Some(default_health), true));
+    let relaxed = GpsHealthFlags::from_status_at_min(&status, 200, 5);
+    assert!(gps_pre_arm_check(Some(relaxed), true));
+}

@@ -8,7 +8,7 @@ use crate::blend::{
     GPS_BLENDED_INSTANCE,
 };
 use crate::params::GpsParams;
-use crate::health::GpsHealthFlags;
+use crate::health::{GpsHealthFlags, GPS_MIN_NSATS};
 use crate::sitl::{GpsFixState, SitlGpsBackend, SITL_GPS_UPDATE_MS};
 use crate::status::GpsStatus;
 use crate::velocity::{GpsVelocityProducer, GpsVelocitySample};
@@ -35,6 +35,7 @@ pub struct GpsDualStub {
     pub primary_instance: u8,
     blender: GpsBlender,
     pub dual_enabled: bool,
+    min_nsats: u8,
 }
 
 impl Default for GpsDualStub {
@@ -56,6 +57,7 @@ impl Default for GpsDualStub {
             primary_instance: 0,
             blender: GpsBlender::new(GPS_BLEND_MASK_DEFAULT),
             dual_enabled: false,
+            min_nsats: GPS_MIN_NSATS,
         }
     }
 }
@@ -66,6 +68,7 @@ impl GpsDualStub {
         self.auto_switch = params.auto_switch;
         self.primary_instance = params.primary.min(1);
         self.blender = GpsBlender::new(params.blend_mask);
+        self.min_nsats = params.min_nsats;
         params.apply_instance(0, &mut self.primary);
         params.apply_instance(1, &mut self.secondary);
     }
@@ -130,7 +133,7 @@ impl GpsDualStub {
             let fix = Self::read_instance(backend, truth);
             GpsStatus::from_fix(&fix, backend.lag_sec())
         };
-        GpsHealthFlags::from_status_at(&status, now_ms)
+        GpsHealthFlags::from_status_at_min(&status, now_ms, self.min_nsats)
     }
 
     /// Pick the best healthy instance for UseBest, upstream `AP_GPS` auto-switch.

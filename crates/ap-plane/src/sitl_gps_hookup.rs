@@ -5,7 +5,7 @@
 
 use ap_gps::{
     GpsAutoSwitch, GpsDualStub, GpsHealthFlags, GpsInstanceTruth, GpsParams, GpsStatus,
-    GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend,
+    GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend, GPS_MIN_NSATS,
 };
 use ap_math::vector3::Vector3f;
 
@@ -40,6 +40,7 @@ pub struct SitlGpsHookup {
     pub fly_forward: bool,
     pub compass_use_for_yaw: bool,
     pub wind_speed_xy: f32,
+    min_nsats: u8,
 }
 
 impl Default for SitlGpsHookup {
@@ -51,6 +52,7 @@ impl Default for SitlGpsHookup {
             fly_forward: true,
             compass_use_for_yaw: true,
             wind_speed_xy: 0.0,
+            min_nsats: GPS_MIN_NSATS,
         }
     }
 }
@@ -90,6 +92,7 @@ impl SitlGpsHookup {
     }
 
     pub fn apply_gps_params(&mut self, params: GpsParams) {
+        self.min_nsats = params.min_nsats;
         params.apply_instance(0, &mut self.backend);
         if params.dual_enabled() {
             let mut dual = params
@@ -166,7 +169,7 @@ impl SitlGpsHookup {
         }
         let fix = self.backend.delayed_state(now_ms);
         let status = GpsStatus::from_fix(&fix, self.gps_lag_sec());
-        GpsHealthFlags::from_status_at(&status, now_ms)
+        GpsHealthFlags::from_status_at_min(&status, now_ms, self.min_nsats)
     }
 
     /// Whether the active GPS output is the blended virtual instance.
@@ -269,5 +272,6 @@ pub fn hookup_with_disabled_primary() -> SitlGpsHookup {
         fly_forward: true,
         compass_use_for_yaw: true,
         wind_speed_xy: 0.0,
+        min_nsats: GPS_MIN_NSATS,
     }
 }
