@@ -444,6 +444,129 @@ pub fn migrate_named_parameters<S: Storage + ?Sized>(
     Ok(stats)
 }
 
+/// Old RC channel parameter mapped to `RCx_OPTION`, upstream `RCConversionInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RcOptionConversion {
+    pub old_key: u16,
+    pub old_group_element: u32,
+    /// New value for `RCx_OPTION`, upstream `RC_Channel::AUX_FUNC`.
+    pub aux_func: i16,
+}
+
+/// Parameter name for a 1-based RC channel (`RC1_OPTION` … `RC16_OPTION`).
+#[must_use]
+pub const fn rc_option_param_name(channel: u8) -> Option<&'static str> {
+    match channel {
+        1 => Some("RC1_OPTION"),
+        2 => Some("RC2_OPTION"),
+        3 => Some("RC3_OPTION"),
+        4 => Some("RC4_OPTION"),
+        5 => Some("RC5_OPTION"),
+        6 => Some("RC6_OPTION"),
+        7 => Some("RC7_OPTION"),
+        8 => Some("RC8_OPTION"),
+        9 => Some("RC9_OPTION"),
+        10 => Some("RC10_OPTION"),
+        11 => Some("RC11_OPTION"),
+        12 => Some("RC12_OPTION"),
+        13 => Some("RC13_OPTION"),
+        14 => Some("RC14_OPTION"),
+        15 => Some("RC15_OPTION"),
+        16 => Some("RC16_OPTION"),
+        _ => None,
+    }
+}
+
+/// Migrate old channel params to per-channel `RCx_OPTION`, upstream
+/// `rc_option_conversion` loop in `Parameters.cpp`.
+pub fn migrate_rc_options<S: Storage + ?Sized>(
+    storage: &mut S,
+    table: &[crate::ParamInfo<'_>],
+    filter: crate::EnumFilter,
+    conversions: &[RcOptionConversion],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for entry in conversions {
+        let info = ConversionInfo {
+            old_key: entry.old_key,
+            old_group_element: entry.old_group_element,
+            old_type: VarType::Int8,
+        };
+        let Some((ParamValue::Int8(chan), _)) = find_old_parameter(storage, info) else {
+            stats.not_found += 1;
+            continue;
+        };
+        if chan <= 0 {
+            stats.not_found += 1;
+            continue;
+        }
+        let Some(name) = rc_option_param_name(chan as u8) else {
+            continue;
+        };
+        let Some(dest) = crate::find_by_name(table, filter, name) else {
+            continue;
+        };
+        let dest_header = ParamHeader::new(dest.key, dest.ptype, dest.group_element);
+        if configured_in_storage(storage, dest_header) {
+            stats.skipped += 1;
+            continue;
+        }
+        match save(
+            storage,
+            dest_header,
+            ParamValue::Int16(entry.aux_func),
+            None,
+            true,
+        )? {
+            SaveOutcome::Updated | SaveOutcome::Appended => stats.saved += 1,
+            _ => stats.skipped += 1,
+        }
+    }
+    Ok(stats)
+}
+
+/// One G2 sub-object moved out of `ParametersG2`, upstream `G2ObjectConversion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct G2ObjectConversionEntry {
+    /// Index in the old `g2` group layout.
+    pub old_index: u32,
+    /// Destination object name (for callers resolving `var_info`).
+    pub object_name: &'static str,
+}
+
+/// One G2 migration with member layout supplied by the caller.
+#[derive(Debug, Clone, Copy)]
+pub struct G2ObjectConversion<'a> {
+    pub old_index: u32,
+    pub new_key: u16,
+    pub members: &'a [GroupMemberDescriptor],
+}
+
+/// Migrate objects formerly nested under `g2`, upstream `convert_g2_objects`.
+pub fn convert_g2_objects<S: Storage + ?Sized>(
+    storage: &mut S,
+    g2_old_key: u16,
+    conversions: &[G2ObjectConversion<'_>],
+    object_bytes: &mut [u8],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for c in conversions {
+        let sub = convert_class(
+            storage,
+            g2_old_key,
+            c.new_key,
+            c.old_index,
+            false,
+            c.members,
+            object_bytes,
+        )?;
+        stats.saved += sub.saved;
+        stats.skipped += sub.skipped;
+        stats.not_found += sub.not_found;
+    }
+    Ok(stats)
+}
+
 /// Group-element shift for one nesting level, upstream `group_shift` in
 /// `convert_class`.
 #[must_use]
@@ -1055,6 +1178,69 @@ mod tests {
         assert_eq!(v, ParamValue::Int8(1));
     }
 
+    #[test]
+    fn migrate_rc_options_resolves_plane_table() {
+        use crate::info::{find_by_name, EnumFilter, ParamInfo, FRAME_PLANE};
+        use crate::plane::PLANE_RC_OPTION_CONVERSIONS;
+
+        static RC: [ParamInfo<'static>; 1] = [ParamInfo {
+            name: "RC3_OPTION",
+            key: 126,
+            ptype: VarType::Int16.as_u8(),
+            flags: 0,
+            group: None,
+        }];
+
+        let filter = EnumFilter::for_frame(FRAME_PLANE);
+        let dest = find_by_name(&RC, filter, "RC3_OPTION").expect("descriptor");
+        assert_eq!(PLANE_RC_OPTION_CONVERSIONS[0].aux_func, 208);
+
+        let mut s = Ram::formatted();
+        let old_h = ParamHeader::new(58, VarType::Int8.as_u8(), 0);
+        save(&mut s, old_h, ParamValue::Int8(3), None, false).expect("old chan");
+        let stats = migrate_rc_options(&mut s, &RC, filter, PLANE_RC_OPTION_CONVERSIONS)
+            .expect("migrate");
+        assert_eq!(stats.saved, 1);
+        assert_eq!(stats.not_found, 6);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: dest.key,
+                old_group_element: dest.group_element,
+                old_type: VarType::Int16,
+            },
+        )
+        .expect("migrated");
+        assert_eq!(v, ParamValue::Int16(208));
+    }
+
+    #[test]
+    fn convert_g2_objects_runs_plane_table() {
+        use crate::plane::{PLANE_G2_CONVERSIONS, PLANE_G2_OLD_KEY};
+
+        let mut s = Ram::formatted();
+        let old_ge = old_group_element_for_member(1, PLANE_G2_CONVERSIONS[0].old_index, false);
+        let old_h = ParamHeader::new(PLANE_G2_OLD_KEY, VarType::Float.as_u8(), old_ge);
+        save(&mut s, old_h, ParamValue::Float(1.5), None, false).expect("old g2");
+
+        let mut obj = [0u8; 8];
+        let members = [GroupMemberDescriptor {
+            offset: 0,
+            var_type: VarType::Float,
+            idx: 1,
+            dest_group_element: 0,
+        }];
+        let conversions = [G2ObjectConversion {
+            old_index: PLANE_G2_CONVERSIONS[0].old_index,
+            new_key: 240,
+            members: &members,
+        }];
+        let stats = convert_g2_objects(&mut s, PLANE_G2_OLD_KEY, &conversions, &mut obj)
+            .expect("convert");
+        assert_eq!(stats.saved, 1);
+        let got = f32::from_le_bytes([obj[0], obj[1], obj[2], obj[3]]);
+        assert!((got - 1.5).abs() < 1e-6);
+    }
 
 
 }

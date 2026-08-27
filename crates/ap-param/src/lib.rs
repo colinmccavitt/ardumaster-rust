@@ -52,13 +52,18 @@ pub use conversion::{
     configured_in_storage, convert_class, convert_class_entry, convert_parameter_width,
     convert_scalar, eeprom_header_valid, find_old_parameter, format_storage, migrate_centi_parameter, migrate_parameter_width, migrate_parameters, migrate_scalar,
     old_group_element_for_member, scalar_from_f32, ConversionInfo, ConvertClassStats,
-    ConvertFlags, ConvertOutcome, GroupMemberDescriptor, NamedParameterMigration, ParameterMigration,
-    migrate_named_parameters, resolve_named_migration,
+    ConvertFlags, ConvertOutcome, G2ObjectConversion, G2ObjectConversionEntry, GroupMemberDescriptor,
+    NamedParameterMigration, ParameterMigration, RcOptionConversion,
+    convert_g2_objects, migrate_named_parameters, migrate_rc_options, rc_option_param_name,
+    resolve_named_migration,
 };
 pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 
-pub use plane::{PLANE_FENCE_CONVERSIONS, PLANE_GCS_CONVERSIONS, PLANE_NOTCH_CONVERSIONS};
+pub use plane::{
+    PLANE_FENCE_CONVERSIONS, PLANE_G2_CONVERSIONS, PLANE_G2_OLD_KEY, PLANE_GCS_CONVERSIONS,
+    PLANE_NOTCH_CONVERSIONS, PLANE_RC_OPTION_CONVERSIONS,
+};
 pub use info::{
     check_frame_type, enumerate, find_by_name, group_id, EnumFilter, GroupInfo, ParamInfo, ParamName, ParamRef,
     FLAG_DEFAULT_POINTER, FLAG_ENABLE, FLAG_HIDDEN, FLAG_INFO_POINTER, FLAG_INTERNAL_USE_ONLY,
