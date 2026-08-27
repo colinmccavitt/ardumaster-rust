@@ -263,12 +263,8 @@ pub fn stabilize_controllers(
     dt: f32,
 ) -> StabilizeOutputs {
     let gyro = imu.gyro();
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "upstream promotes int32 attitude sensors to float the same way"
-    )]
-    let roll_rad = cd_to_rad(attitude.roll_sensor_cd as f32);
-    let pitch_rad = cd_to_rad(attitude.pitch_sensor_cd as f32);
+    let roll_rad = attitude.roll_rad();
+    let pitch_rad = attitude.pitch_rad();
 
     let mut servos = StabilizeServoDemands::default();
     let mut run = StabilizeRun::default();

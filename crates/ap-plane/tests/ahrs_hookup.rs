@@ -557,3 +557,38 @@ fn main_loop_wires_ahrs_consumers_into_stabilize() {
     assert_eq!(vehicle.stabilize_ctx.accel_bias_y, 0.0);
 }
 
+#[test]
+fn main_loop_publishes_attitude_radians_from_ahrs() {
+    use ap_ahrs::AhrsBackendKind;
+    use ap_math::scalar::cd_to_rad;
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Dcm);
+
+    vehicle.ahrs_update();
+
+    assert!((vehicle.roll_rad - vehicle.attitude.roll_rad()).abs() < f32::EPSILON);
+    assert!((vehicle.pitch_rad - vehicle.attitude.pitch_rad()).abs() < f32::EPSILON);
+    assert!((vehicle.yaw_rad - vehicle.attitude.yaw_rad()).abs() < f32::EPSILON);
+    assert!((vehicle.roll_rad - cd_to_rad(vehicle.attitude.roll_sensor_cd as f32)).abs() < 1e-6);
+}
+
+#[test]
+fn main_loop_pre_arm_ok_requires_healthy_ahrs() {
+    use ap_ahrs::AhrsBackendKind;
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.ahrs.dcm.matrix.a.x = f32::NAN;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.ahrs_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
+

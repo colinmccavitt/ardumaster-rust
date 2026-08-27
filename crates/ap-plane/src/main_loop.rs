@@ -11,6 +11,8 @@ use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
+use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
+use crate::mode_run::{pre_arm_checks, PreArmResult};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::landing_state_machine::VerifyLandEffects;
 use ap_landing::deepstall_stage::DeepstallStage;
@@ -124,6 +126,12 @@ pub struct PlaneMainLoop {
     pub loop_timing: LoopTiming,
     /// Attitude sensors published by the latest `ahrs_update`.
     pub attitude: AhrsAttitude,
+    /// Roll attitude radians, upstream `AP_AHRS::get_roll_rad()`.
+    pub roll_rad: f32,
+    /// Pitch attitude radians, upstream `AP_AHRS::get_pitch_rad()`.
+    pub pitch_rad: f32,
+    /// Yaw attitude radians, upstream `AP_AHRS::get_yaw_rad()`.
+    pub yaw_rad: f32,
     /// Optional compass sample for yaw drift correction.
     pub compass: Option<YawCompassSample>,
     /// Optional GPS sample for yaw drift fallback.
@@ -234,6 +242,8 @@ pub struct PlaneMainLoop {
     pub ahrs_using_gps: bool,
     /// Pre-arm AHRS gate, upstream `AP_AHRS::pre_arm_check(false)`.
     pub ahrs_pre_arm_ok: bool,
+    /// Combined mode + AHRS pre-arm result for arming.
+    pub pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
     /// Dead-reckoning east offset (m) when GPS absent.
@@ -307,6 +317,9 @@ impl Default for PlaneMainLoop {
             ins: InertialSensorFrontend::default(),
             loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
             attitude: AhrsAttitude::default(),
+            roll_rad: 0.0,
+            pitch_rad: 0.0,
+            yaw_rad: 0.0,
             compass: None,
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
@@ -445,6 +458,7 @@ impl Default for PlaneMainLoop {
             ahrs_healthy: false,
             ahrs_using_gps: false,
             ahrs_pre_arm_ok: false,
+            pre_arm_ok: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
             have_dead_reckoning_position: false,
@@ -550,6 +564,9 @@ impl PlaneMainLoop {
             motion,
         );
         self.attitude = attitude;
+        self.roll_rad = attitude.roll_rad();
+        self.pitch_rad = attitude.pitch_rad();
+        self.yaw_rad = attitude.yaw_rad();
         self.estimated_wind = self.ahrs.wind_estimate();
         self.ekf_healthy = self.ahrs.ekf_healthy;
         self.ekf3_initialized = self.ahrs.ekf3.initialized;
@@ -603,6 +620,12 @@ impl PlaneMainLoop {
             self.mode.control_mode,
             self.stick_mixing,
             &self.features,
+        );
+
+        let mode_pre_arm = pre_arm_checks(true, "");
+        self.pre_arm_ok = matches!(
+            plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok),
+            PreArmResult::Allowed
         );
 
         if self.flight_stage_is_land {
