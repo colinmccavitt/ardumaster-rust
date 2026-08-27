@@ -134,11 +134,13 @@ name = "ap-plane"
 version = "0.1.0"
 dependencies = [
  "ap-control",
+ "ap-hal",
  "ap-landing",
  "ap-math",
  "ap-nav",
  "ap-pid",
  "ap-replay",
+ "ap-scheduler",
  "ap-servo",
 ]
 

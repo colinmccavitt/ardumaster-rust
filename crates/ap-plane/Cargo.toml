@@ -7,10 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ap-hal = { workspace = true }
 ap-landing = { workspace = true }
 ap-math = { workspace = true }
+ap-scheduler = { workspace = true }
 
 [dev-dependencies]
+ap-hal = { workspace = true }
 # The first test that composes ported modules rather than checking one alone.
 ap-control = { workspace = true }
 ap-landing = { workspace = true }
@@ -18,7 +21,9 @@ ap-math = { workspace = true, features = ["ekf-double"] }
 ap-nav = { workspace = true, features = ["replay"] }
 ap-pid = { workspace = true }
 ap-replay = { workspace = true }
+ap-scheduler = { workspace = true }
 ap-servo = { workspace = true }
 
 [lints]
 workspace = true
+
