@@ -11,7 +11,7 @@ fn baro_pre_arm_skips_when_baro_not_required() {
 }
 
 #[test]
-fn baro_pre_arm_requires_any_healthy_instance_when_configured() {
+fn baro_pre_arm_requires_primary_healthy_when_configured() {
     let healthy = BaroHealthFlags {
         instance_count: 1,
         healthy: [true, false],
@@ -20,13 +20,31 @@ fn baro_pre_arm_requires_any_healthy_instance_when_configured() {
     };
     assert!(baro_pre_arm_check(healthy, true));
     assert!(!baro_pre_arm_check(BaroHealthFlags::default(), true));
-    let dual_secondary_ok = BaroHealthFlags {
+    let dual_without_failover = BaroHealthFlags {
         instance_count: 2,
         healthy: [false, true],
         have_sample: [false, true],
         primary: 0,
     };
-    assert!(baro_pre_arm_check(dual_secondary_ok, true));
+    assert!(!baro_pre_arm_check(dual_without_failover, true));
+    let dual_after_failover = BaroHealthFlags {
+        instance_count: 2,
+        healthy: [false, true],
+        have_sample: [false, true],
+        primary: 1,
+    };
+    assert!(baro_pre_arm_check(dual_after_failover, true));
+}
+
+#[test]
+fn baro_pre_arm_requires_failover_primary_healthy() {
+    let pre_failover = BaroHealthFlags {
+        instance_count: 2,
+        healthy: [false, true],
+        have_sample: [true, true],
+        primary: 0,
+    };
+    assert!(!baro_pre_arm_check(pre_failover, true));
 }
 
 #[test]

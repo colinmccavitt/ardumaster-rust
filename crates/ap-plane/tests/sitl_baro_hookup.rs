@@ -141,3 +141,24 @@ fn main_loop_pre_arm_refuses_when_baro_unhealthy() {
     assert!(!vehicle.baro_pre_arm_ok);
     assert!(!vehicle.pre_arm_ok);
 }
+
+#[test]
+fn main_loop_pre_arm_passes_after_baro_failover() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_baro = Some(hookup_with_disabled_primary());
+    vehicle.sitl_baro.as_mut().unwrap().truth = SitlBaroTruth {
+        sim_altitude_m: 150.0,
+        now_ms: 10,
+        ..SitlBaroTruth::default()
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.baro_health.primary, 1);
+    assert!(vehicle.baro_health.primary_healthy());
+    assert!(vehicle.baro_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}

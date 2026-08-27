@@ -17,7 +17,7 @@ pub fn baro_pre_arm_check(health: BaroHealthFlags, require_baro: bool) -> bool {
     if !require_baro {
         return true;
     }
-    health.any_healthy()
+    health.primary_healthy()
 }
 
 /// Chain baro pre-arm after mode + AHRS + GPS checks.
