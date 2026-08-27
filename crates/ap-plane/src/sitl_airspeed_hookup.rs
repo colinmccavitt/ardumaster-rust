@@ -4,8 +4,10 @@
 //! publishes pitot TAS/EAS samples and health before
 //! [`PlaneMainLoop::ahrs_update`] builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
+use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
+    ARSPD_RATIO_DEFAULT,
 };
 use ap_math::vector3::Vector3f;
 
@@ -29,6 +31,7 @@ impl Default for SitlAirspeedTruth {
 #[derive(Debug, Clone)]
 pub struct SitlAirspeedHookup {
     cluster: SitlAirspeedCluster,
+    params: AirspeedParams,
     pub truth: SitlAirspeedTruth,
 }
 
@@ -36,6 +39,7 @@ impl Default for SitlAirspeedHookup {
     fn default() -> Self {
         Self {
             cluster: SitlAirspeedCluster::default(),
+            params: AirspeedParams::default(),
             truth: SitlAirspeedTruth::default(),
         }
     }
@@ -47,6 +51,8 @@ pub struct SitlAirspeedPublish {
     pub sample: AirspeedSampleState,
     pub healthy: bool,
     pub health: AirspeedHealthFlags,
+    /// Primary instance pitot ratio, upstream `ARSPD_RATIO`.
+    pub ratio: f32,
 }
 
 impl SitlAirspeedHookup {
@@ -57,8 +63,27 @@ impl SitlAirspeedHookup {
         let _ = cluster.register(SitlAirspeedBackend::default());
         Self {
             cluster,
+            params: AirspeedParams::default(),
             truth: SitlAirspeedTruth::default(),
         }
+    }
+
+    #[must_use]
+    pub const fn airspeed_params(&self) -> &AirspeedParams {
+        &self.params
+    }
+
+    pub fn apply_airspeed_params(&mut self, params: AirspeedParams) {
+        self.params = params;
+        params.apply_to_cluster(&mut self.cluster);
+    }
+
+    /// Set `ARSPD_RATIO` on every enabled instance.
+    pub fn set_pitot_ratio(&mut self, ratio: f32) {
+        let mut params = self.params;
+        params.airspeed1.ratio = ratio;
+        params.airspeed2.ratio = ratio;
+        self.apply_airspeed_params(params);
     }
 
     #[must_use]
@@ -88,10 +113,16 @@ impl SitlAirspeedHookup {
             .primary_sample()
             .unwrap_or(*self.cluster.backend(self.cluster.primary()).unwrap().state());
         let healthy = health.primary_healthy();
+        let ratio = self
+            .cluster
+            .backend(self.cluster.primary())
+            .map(|backend| backend.config().ratio)
+            .unwrap_or(ARSPD_RATIO_DEFAULT);
         SitlAirspeedPublish {
             sample,
             healthy,
             health,
+            ratio,
         }
     }
 }
@@ -99,8 +130,11 @@ impl SitlAirspeedHookup {
 /// Mark primary instance unhealthy when disabled, for dual-airspeed tests.
 #[must_use]
 pub fn hookup_with_disabled_primary() -> SitlAirspeedHookup {
+    let mut params = AirspeedParams::default();
+    params.airspeed1.disabled = true;
     SitlAirspeedHookup {
         cluster: SitlAirspeedCluster::cluster_with_disabled_primary(),
+        params,
         truth: SitlAirspeedTruth::default(),
     }
 }

@@ -85,6 +85,7 @@ use crate::airspeed_offset_calibration_hookup::{
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
+use ap_airspeed::sitl::ARSPD_RATIO_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
@@ -231,6 +232,8 @@ pub struct PlaneMainLoop {
     pub airspeed_calibrate_requested: bool,
     /// True after a successful pitot offset latch, upstream `calibrate()`.
     pub airspeed_offset_calibrated: bool,
+    /// Primary pitot tube ratio, upstream `ARSPD_RATIO`.
+    pub airspeed_ratio: f32,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
     pub mag_sample: Option<MagSampleState>,
     /// Whether the SITL compass backend is healthy, upstream `AP_Compass::healthy()`.
@@ -521,6 +524,7 @@ impl Default for PlaneMainLoop {
             airspeed_health: AirspeedHealthFlags::default(),
             airspeed_calibrate_requested: false,
             airspeed_offset_calibrated: false,
+            airspeed_ratio: ARSPD_RATIO_DEFAULT,
             baro_sample: None,
             mag_sample: None,
             compass_healthy: false,
@@ -872,6 +876,10 @@ impl PlaneMainLoop {
             self.airspeed_sample = Some(out.sample);
             self.airspeed_healthy = out.healthy;
             self.airspeed_health = out.health;
+            self.airspeed_ratio = airspeed
+                .backend()
+                .map(|backend| backend.config().ratio)
+                .unwrap_or(ARSPD_RATIO_DEFAULT);
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }

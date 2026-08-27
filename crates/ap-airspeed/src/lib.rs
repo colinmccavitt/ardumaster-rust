@@ -6,10 +6,15 @@
 
 #![no_std]
 
+pub mod params;
 pub mod sitl;
 
 pub use sitl::{
-    eas_from_tas, pitot_tas_from_body, AirspeedHealthFlags, AirspeedSampleState,
-    SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig,
-    SITL_AIRSPEED_MAX_INSTANCES, SITL_AIRSPEED_UPDATE_MS,
+    apply_pitot_ratio, eas_from_tas, pitot_tas_from_body, AirspeedHealthFlags,
+    AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig,
+    ARSPD_RATIO_DEFAULT, SITL_AIRSPEED_MAX_INSTANCES, SITL_AIRSPEED_UPDATE_MS,
+};
+
+pub use params::{
+    AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };

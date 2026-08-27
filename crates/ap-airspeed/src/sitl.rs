@@ -13,6 +13,9 @@ pub const SITL_AIRSPEED_UPDATE_MS: u32 = 10;
 /// Maximum SITL airspeed instances registered in the cluster.
 pub const SITL_AIRSPEED_MAX_INSTANCES: usize = 2;
 
+/// Upstream `ARSPD_RATIO` default (pitot tube ratio).
+pub const ARSPD_RATIO_DEFAULT: f32 = 2.0;
+
 /// Pitot sample from one backend read, upstream `get_airspeed()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AirspeedSampleState {
@@ -30,6 +33,8 @@ pub struct SitlAirspeedConfig {
     pub offset_mps: f32,
     /// Skip startup / requested calibration, upstream `ARSPD_SKIP_CAL`.
     pub skip_cal: bool,
+    /// Pitot tube ratio, upstream `ARSPD_RATIO`.
+    pub ratio: f32,
 }
 
 impl Default for SitlAirspeedConfig {
@@ -38,6 +43,7 @@ impl Default for SitlAirspeedConfig {
             disabled: false,
             offset_mps: 0.0,
             skip_cal: false,
+            ratio: ARSPD_RATIO_DEFAULT,
         }
     }
 }
@@ -48,6 +54,16 @@ impl Default for SitlAirspeedConfig {
 pub fn pitot_tas_from_body(airspeed_bf: Vector3f) -> f32 {
     if is_positive(airspeed_bf.x) {
         airspeed_bf.x
+    } else {
+        0.0
+    }
+}
+
+/// Scale pitot TAS by `ARSPD_RATIO` / default, leaving default ratio at unity.
+#[must_use]
+pub fn apply_pitot_ratio(tas_mps: f32, ratio: f32) -> f32 {
+    if ratio > 0.0 {
+        (tas_mps * (ratio / ARSPD_RATIO_DEFAULT)).max(0.0)
     } else {
         0.0
     }
@@ -121,6 +137,10 @@ impl SitlAirspeedBackend {
         self.config = config;
     }
 
+    pub fn set_ratio(&mut self, ratio: f32) {
+        self.config.ratio = ratio;
+    }
+
     /// Latch current raw TAS as the pitot offset, upstream `AP_Airspeed::calibrate()`.
     #[must_use]
     pub fn calibrate_offset(&mut self) -> bool {
@@ -149,7 +169,7 @@ impl SitlAirspeedBackend {
 
         let raw_tas = pitot_tas_from_body(airspeed_bf);
         self.raw_tas_mps = raw_tas;
-        let tas_mps = (raw_tas - self.config.offset_mps).max(0.0);
+        let tas_mps = apply_pitot_ratio((raw_tas - self.config.offset_mps).max(0.0), self.config.ratio);
         let eas_mps = eas_from_tas(tas_mps, eas2tas);
         self.pending = AirspeedSampleState {
             tas_mps,
@@ -255,6 +275,16 @@ impl SitlAirspeedCluster {
     #[must_use]
     pub fn backend(&self, index: u8) -> Option<&SitlAirspeedBackend> {
         (index < self.instance_count).then(|| &self.backends[index as usize])
+    }
+
+    pub fn backend_mut(&mut self, index: u8) -> Option<&mut SitlAirspeedBackend> {
+        (index < self.instance_count).then(|| &mut self.backends[index as usize])
+    }
+
+    pub fn set_ratio_all(&mut self, ratio: f32) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_ratio(ratio);
+        }
     }
 
     pub fn timer_tick_all(
@@ -403,5 +433,24 @@ mod tests {
         assert!(cluster.calibrate_offsets());
         assert!((cluster.backend(0).unwrap().config().offset_mps - 2.5).abs() < 1e-6);
         assert!((cluster.backend(1).unwrap().config().offset_mps - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_ratio_leaves_tas_unchanged() {
+        let mut backend = SitlAirspeedBackend::default();
+        assert!((backend.config().ratio - ARSPD_RATIO_DEFAULT).abs() < 1e-6);
+        assert!(backend.timer_tick(Vector3f::new(16.0, 0.0, 0.0), 1.0, 10));
+        assert!((backend.state().tas_mps - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn half_ratio_halves_pitot_tas() {
+        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+            ratio: 1.0,
+            ..SitlAirspeedConfig::default()
+        });
+        assert!(backend.timer_tick(Vector3f::new(20.0, 0.0, 0.0), 1.0, 10));
+        assert!((backend.state().tas_mps - 10.0).abs() < 1e-6);
+        assert!((backend.state().eas_mps - 10.0).abs() < 1e-6);
     }
 }
