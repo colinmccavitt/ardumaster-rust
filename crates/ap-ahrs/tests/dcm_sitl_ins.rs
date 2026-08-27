@@ -248,7 +248,7 @@ fn sitl_ins_drift_correction_limits_gyro_bias() {
         backend.imu.update_accel();
         timing.delta_time = LOOP_DT;
         assert_eq!(
-            ap_ahrs::dcm_step_with_drift_from_ins(&mut dcm, &mut drift, &backend.imu, &timing),
+            ap_ahrs::dcm_step_with_drift_from_ins(&mut dcm, &mut drift, &backend.imu, &timing, None),
             MatrixHealth::Ok
         );
         sim.step(rates, LOOP_DT as f64);

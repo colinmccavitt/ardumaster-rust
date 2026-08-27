@@ -282,4 +282,10 @@ impl DriftCorrector {
     pub const fn pending_integral(&self) -> (Vector3f, f32) {
         (self.omega_i_sum, self.omega_i_sum_time)
     }
+
+    /// Add yaw drift integral from [`crate::YawDriftCorrector`], upstream
+    /// `_omega_I_sum.z += error_z * _ki_yaw * yaw_deltat`.
+    pub fn add_yaw_integral_z(&mut self, delta: f32) {
+        self.omega_i_sum.z += delta;
+    }
 }
