@@ -1,6 +1,7 @@
 //! Inertial sensor frontend: instance registration and sensor-rate hooks.
 //! Upstream `AP_InertialSensor` register_gyro/register_accel and
-//! `_notify_new_*_sensor_rate_sample`. FW-011.
+//! `_notify_new_*_sensor_rate_sample`, primary instance selection, and
+//! the flight-loop `update()` pass. FW-011.
 
 use ap_math::vector3::Vector3f;
 
@@ -65,6 +66,14 @@ pub struct InertialSensorFrontend {
     /// Sensor-rate sample hooks (batch logging, FFT prep).
     pub sensor_rate_hooks: InsSensorRateHooks,
     next_sitl_bus_id: u8,
+    /// INS_USE / INS_USE2 / INS_USE3 — which instances participate.
+    ins_use: [bool; INS_MAX_INSTANCES],
+    /// Primary IMU for AHRS/FFT, upstream `_primary`.
+    primary: u8,
+    /// First healthy enabled gyro, upstream `_first_usable_gyro`.
+    first_usable_gyro: u8,
+    /// First healthy enabled accel, upstream `_first_usable_accel`.
+    first_usable_accel: u8,
 }
 
 impl Default for InertialSensorFrontend {
@@ -86,6 +95,10 @@ impl InertialSensorFrontend {
             accel_ids: [0; INS_MAX_INSTANCES],
             sensor_rate_hooks: InsSensorRateHooks::default(),
             next_sitl_bus_id: 0,
+            ins_use: [true, true, true],
+            primary: 0,
+            first_usable_gyro: 0,
+            first_usable_accel: 0,
         }
     }
 
@@ -206,6 +219,126 @@ impl InertialSensorFrontend {
     pub fn imu(&self, instance: u8) -> Option<&ImuInstance> {
         self.instances.get(instance as usize)
     }
+
+    /// Whether instance `i` is enabled, upstream `_use(i)`.
+    #[must_use]
+    pub fn ins_use(&self, instance: u8) -> bool {
+        self.ins_use
+            .get(instance as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Enable or disable an instance (INS_USE parameters).
+    pub fn set_ins_use(&mut self, instance: u8, enabled: bool) {
+        if let Some(slot) = self.ins_use.get_mut(instance as usize) {
+            *slot = enabled;
+        }
+    }
+
+    /// Force INS_USE3 on when INS_USE and INS_USE2 are set and INS_USE3 is off,
+    /// upstream init safety for boards that require three IMUs.
+    pub fn apply_ins_use_safety(&mut self) {
+        if self.ins_use[0] && self.ins_use[1] && !self.ins_use[2] {
+            self.ins_use[2] = true;
+        }
+    }
+
+    /// Primary IMU index, upstream `_primary`.
+    #[must_use]
+    pub const fn primary(&self) -> u8 {
+        self.primary
+    }
+
+    /// Notify AHRS of a new primary, upstream `set_primary`.
+    pub fn set_primary(&mut self, instance: u8) {
+        self.primary = instance;
+    }
+
+    /// First healthy enabled gyro, upstream `get_first_usable_gyro`.
+    #[must_use]
+    pub const fn first_usable_gyro(&self) -> u8 {
+        self.first_usable_gyro
+    }
+
+    /// First healthy enabled accel, upstream `get_first_usable_accel`.
+    #[must_use]
+    pub const fn first_usable_accel(&self) -> u8 {
+        self.first_usable_accel
+    }
+
+    /// Gyro health for an enabled instance, upstream `get_gyro_health(instance) && _use(instance)`.
+    #[must_use]
+    pub fn gyro_usable(&self, instance: u8) -> bool {
+        self.ins_use(instance)
+            && self
+                .instances
+                .get(instance as usize)
+                .is_some_and(|imu| imu.gyro_healthy())
+    }
+
+    /// Accel health for an enabled instance.
+    #[must_use]
+    pub fn accel_usable(&self, instance: u8) -> bool {
+        self.ins_use(instance)
+            && self
+                .instances
+                .get(instance as usize)
+                .is_some_and(|imu| imu.accel_healthy())
+    }
+
+    /// Primary IMU accumulation state.
+    #[must_use]
+    pub fn primary_imu(&self) -> Option<&ImuInstance> {
+        self.imu(self.primary)
+    }
+
+    /// Mutable primary IMU.
+    pub fn primary_imu_mut(&mut self) -> Option<&mut ImuInstance> {
+        self.imu_mut(self.primary)
+    }
+
+    /// Mark every instance unhealthy before backends publish, upstream
+    /// `AP_InertialSensor::update`.
+    pub fn begin_update(&mut self) {
+        for imu in self.instances.iter_mut().take(self.gyro_count as usize) {
+            imu.clear_health();
+        }
+    }
+
+    /// Publish accumulated samples and recompute primary selection, upstream
+    /// `AP_InertialSensor::update` after backend `update()`.
+    pub fn update(&mut self) {
+        for i in 0..self.gyro_count as usize {
+            self.instances[i].update_gyro();
+            self.instances[i].update_accel();
+        }
+        self.select_primary();
+    }
+
+    fn select_primary(&mut self) {
+        self.apply_ins_use_safety();
+
+        self.first_usable_gyro = 0;
+        for i in 0..INS_MAX_INSTANCES {
+            if self.gyro_usable(i as u8) {
+                self.first_usable_gyro = i as u8;
+                break;
+            }
+        }
+
+        self.first_usable_accel = 0;
+        for i in 0..INS_MAX_INSTANCES {
+            if self.accel_usable(i as u8) {
+                self.first_usable_accel = i as u8;
+                break;
+            }
+        }
+
+        // Upstream sets `_primary = _first_usable_gyro` when AP_AHRS is disabled;
+        // Plane always has AHRS but AHRS may override via `set_primary` later.
+        self.primary = self.first_usable_gyro;
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +390,67 @@ mod tests {
         unsafe {
             assert_eq!(GYRO_SEEN, 1);
         }
+    }
+
+    fn feed_gyro(imu: &mut ImuInstance, t: &mut u64) {
+        *t += 125;
+        imu.notify_gyro_raw_sample(Vector3f::new(0.5, 0.0, 0.0), *t, 8000, *t);
+    }
+
+    fn feed_accel(imu: &mut ImuInstance, t: &mut u64) {
+        *t += 125;
+        imu.notify_accel_raw_sample(Vector3f::new(0.0, 0.0, -9.80665), *t, 8000, *t);
+    }
+
+    #[test]
+    fn primary_skips_disabled_instance() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+        fe.set_ins_use(0, false);
+
+        let mut t = 1_000_000_u64;
+        for _ in 0..801 {
+            feed_gyro(&mut fe.instances[1], &mut t);
+            feed_accel(&mut fe.instances[1], &mut t);
+        }
+        fe.begin_update();
+        fe.update();
+
+        assert_eq!(fe.first_usable_gyro(), 1);
+        assert_eq!(fe.first_usable_accel(), 1);
+        assert_eq!(fe.primary(), 1);
+        assert!(!fe.gyro_usable(0));
+        assert!(fe.gyro_usable(1));
+    }
+
+    #[test]
+    fn ins_use_safety_forces_third_imu() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.set_ins_use(0, true);
+        fe.set_ins_use(1, true);
+        fe.set_ins_use(2, false);
+        fe.apply_ins_use_safety();
+        assert!(fe.ins_use(2));
+    }
+
+    #[test]
+    fn set_primary_overrides_auto_selection() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+
+        let mut t = 1_000_000_u64;
+        for _ in 0..801 {
+            feed_gyro(&mut fe.instances[0], &mut t);
+            feed_accel(&mut fe.instances[0], &mut t);
+        }
+        fe.begin_update();
+        fe.update();
+        assert_eq!(fe.primary(), 0);
+
+        fe.set_primary(1);
+        assert_eq!(fe.primary(), 1);
+        assert_eq!(fe.primary_imu().unwrap().gyro().x, 0.0);
     }
 }

@@ -35,7 +35,7 @@
 //! ahead of it in upstream's chain, so when it lands it goes in front of
 //! [`ImuInstance::set_gyro_filter`]'s filter rather than after. Also absent:
 //! sculling compensation (upstream has none -- the delta velocity is a plain
-//! rectangular sum), multi-instance selection, vibration and clipping
+//! rectangular sum), vibration and clipping
 //! metrics, temperature calibration, board orientation, gyro/accel offset and
 //! scale calibration, and the FFT window. The SITL backend's deterministic
 //! sample path lives in [`sitl`].
@@ -470,6 +470,14 @@ the difference is a sample interval, not an absolute time"
     #[must_use]
     pub const fn accel_healthy(&self) -> bool {
         self.accel_healthy
+    }
+
+    /// Clear published health at the start of an update cycle, upstream
+    /// `AP_InertialSensor::update` marking every instance unhealthy before
+    /// backends publish.
+    pub fn clear_health(&mut self) {
+        self.gyro_healthy = false;
+        self.accel_healthy = false;
     }
 
     /// The rotation accumulated but not yet published, and its interval.

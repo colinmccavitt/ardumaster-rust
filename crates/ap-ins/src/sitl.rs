@@ -1286,6 +1286,8 @@ impl SitlInsCluster {
             gyro_total += g;
             accel_total += a;
         }
+        self.frontend.begin_update();
+        self.frontend.update();
         (gyro_total, accel_total)
     }
 }
