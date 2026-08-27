@@ -31,10 +31,7 @@
 //!
 //! # What this slice does not include
 //!
-//! The **harmonic notch**. The two-pole low pass is here; the notch runs
-//! ahead of it in upstream's chain, so when it lands it goes in front of
-//! [`ImuInstance::set_gyro_filter`]'s filter rather than after. Also absent:
-//! sculling compensation (upstream has none -- the delta velocity is a plain
+//! Sculling compensation (upstream has none -- the delta velocity is a plain
 //! rectangular sum), vibration and clipping
 //! metrics, temperature calibration, board orientation, gyro/accel offset and
 //! scale calibration, and the FFT window. The SITL backend's deterministic
@@ -45,12 +42,14 @@
 pub mod frontend;
 pub mod sitl;
 
+pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,
 };
 
 use ap_filter::biquad::LowPassFilter2p;
+use ap_filter::harmonic::HarmonicNotchFilter;
 use ap_math::vector3::Vector3f;
 
 /// A gap this long between samples means the sensor was unhealthy, so the
@@ -154,6 +153,7 @@ pub struct ImuInstance {
     /// Likewise for the accelerometer.
     accel_filtered: Vector3f,
 
+    gyro_notch: HarmonicNotchFilter<Vector3f>,
     gyro_filter: LowPassFilter2p<Vector3f>,
     accel_filter: LowPassFilter2p<Vector3f>,
 
@@ -279,11 +279,12 @@ the difference is a sample interval, not an absolute time"
         self.last_raw_gyro = gyro;
 
         // Upstream runs the harmonic notch first and the low pass last, so
-        // the low pass attenuates whatever noise the notch introduces. The
-        // notch is not ported; when it lands it goes ahead of this.
-        let filtered = self.gyro_filter.apply(gyro);
+        // the low pass attenuates whatever noise the notch introduces.
+        let notched = self.gyro_notch.apply(gyro);
+        let filtered = self.gyro_filter.apply(notched);
         if filtered.is_nan() || filtered.is_inf() {
             // Reset and keep the last good value rather than publish a NaN.
+            self.gyro_notch.reset();
             self.gyro_filter.reset();
         } else {
             self.gyro_filtered = filtered;
@@ -427,6 +428,26 @@ the difference is a sample interval, not an absolute time"
         } else {
             None
         }
+    }
+
+    /// Configure the harmonic notch bank ahead of the gyro low pass,
+    /// upstream `update_gyro_filters` / `HarmonicNotchFilter::init`.
+    ///
+    /// Until [`Self::set_gyro_notch`] reserves and initialises the bank it
+    /// passes samples through untouched, matching upstream with
+    /// `INS_HNTCH_ENABLE` off.
+    pub fn set_gyro_notch(
+        &mut self,
+        sample_rate_hz: f32,
+        params: HarmonicNotchParams,
+        num_notches: u8,
+    ) {
+        self.gyro_notch.allocate_filters(
+            num_notches,
+            params.harmonics,
+            params.composite_notches,
+        );
+        self.gyro_notch.init(sample_rate_hz, params);
     }
 
     /// Set the gyro low-pass cutoff, upstream `update_gyro_filters`.
@@ -767,5 +788,60 @@ leaves a coning term here computed from state it just discarded"
         imu.notify_gyro_raw_sample(Vector3f::new(1.0, 0.0, 0.0), 0, 30, 1_000_000);
         assert_eq!(imu.pending_delta_angle(), (Vector3f::zero(), 0.0));
         assert!(!imu.gyro_healthy());
+    }
+
+    /// An unconfigured harmonic notch passes samples through, so existing
+    /// accumulation tests remain valid without calling `set_gyro_notch`.
+    #[test]
+    fn an_unconfigured_notch_passes_samples_through() {
+        let mut imu = ImuInstance::new();
+        let mut t = 1_000_000_u64;
+        feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        feed(&mut imu, Vector3f::new(0.5, 0.0, 0.0), &mut t);
+        imu.update_gyro();
+        assert_eq!(imu.gyro(), Vector3f::new(0.5, 0.0, 0.0));
+    }
+
+    /// Configured, the harmonic notch runs ahead of the two-pole low pass and
+    /// attenuates energy at the configured centre frequency.
+    #[test]
+    fn a_configured_notch_attenuates_its_centre_frequency() {
+        let notch_params = HarmonicNotchParams {
+            center_freq_hz: 80.0,
+            bandwidth_hz: 40.0,
+            attenuation_db: 40.0,
+            harmonics: 1,
+            composite_notches: CompositeNotches::Single,
+            tracking_mode: TrackingMode::Fixed,
+            ..Default::default()
+        };
+
+        let mut with_notch = ImuInstance::new();
+        with_notch.set_gyro_notch(8000.0, notch_params, 1);
+        with_notch.set_gyro_filter(8000.0, DEFAULT_GYRO_FILTER_HZ);
+
+        let mut without_notch = ImuInstance::new();
+        without_notch.set_gyro_filter(8000.0, DEFAULT_GYRO_FILTER_HZ);
+
+        let sample_rate = 8000.0;
+        let mut t = 1_000_000_u64;
+        feed(&mut with_notch, Vector3f::zero(), &mut t);
+        feed(&mut without_notch, Vector3f::zero(), &mut t);
+
+        for i in 1_u16..=8000 {
+            let phase = 2.0 * core::f32::consts::PI * 80.0 * (f32::from(i) / sample_rate);
+            let gyro = Vector3f::new(libm::sinf(phase), 0.0, 0.0);
+            feed(&mut with_notch, gyro, &mut t);
+            feed(&mut without_notch, gyro, &mut t);
+        }
+        with_notch.update_gyro();
+        without_notch.update_gyro();
+
+        let notched = with_notch.gyro().x.abs();
+        let plain = without_notch.gyro().x.abs();
+        assert!(
+            notched < plain * 0.5,
+            "80 Hz tone should be attenuated by the notch (notched={notched}, plain={plain})"
+        );
     }
 }
