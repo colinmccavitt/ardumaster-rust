@@ -5,7 +5,7 @@
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
 use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
-use ap_ins::sitl::SitlBodyState;
+use ap_ins::sitl::{SitlBodyState, SitlInsInstanceFiles, SITL_INS_MAX_INSTANCES};
 use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
@@ -20,6 +20,8 @@ use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedul
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
+use crate::sitl_ins_host_files::sitl_ins_host_files_fill;
+use crate::sitl_ins_host_files::SitlInsHostFiles;
 use crate::sitl_ins_noise_hookup::{
     sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
 };
@@ -102,6 +104,7 @@ pub struct PlaneMainLoop {
     pub sitl_body: SitlBodyState,
     /// Monotonic time in microseconds for SITL INS timer_update.
     pub sitl_now_us: u64,
+    pub sitl_ins_host_files: [SitlInsHostFiles; SITL_INS_MAX_INSTANCES],
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
     /// L1/TECS navigation publish source refreshed before stabilize.
@@ -175,6 +178,7 @@ impl Default for PlaneMainLoop {
             sitl_ins_motor: SitlInsMotorRuntime::default(),
             sitl_body: SitlBodyState::default(),
             sitl_now_us: 0,
+            sitl_ins_host_files: [SitlInsHostFiles::default(); SITL_INS_MAX_INSTANCES],
             controllers: StabilizeControllers::default(),
             nav_tecs: NavTecsPublish::default(),
             nav_commands: NavCommandInputs::default(),
@@ -299,11 +303,18 @@ impl PlaneMainLoop {
             self.yaw_ctx = samples.yaw_ctx;
         }
         if let Some(hookup) = self.sitl_ins_noise.as_mut() {
+            let mut file_views = [SitlInsInstanceFiles::default(); SITL_INS_MAX_INSTANCES];
+            let files = sitl_ins_host_files_fill(
+                &self.sitl_ins_host_files,
+                hookup.cluster.instance_count(),
+                &mut file_views,
+            );
             let _ = sitl_ins_noise_scheduler_tick(
                 hookup,
                 &SitlInsNoiseSchedulerInputs {
                     body: self.sitl_body,
                     motor: self.sitl_ins_motor,
+                    files,
                     now_us: self.sitl_now_us,
                 },
             );

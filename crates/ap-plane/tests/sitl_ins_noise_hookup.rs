@@ -1,9 +1,10 @@
 //! SITL INS noise hookup in the plane scheduler tick.
 
 use ap_ins::sitl::{SitlBodyState, SitlImuBackend, SitlInsCluster};
-use ap_ins::{SitlInsMotorRuntime, SitlInsNoiseParams};
+use ap_ins::{SitlInsFilePlaybackParams, SitlInsMotorRuntime, SitlInsNoiseParams};
 use ap_plane::main_loop::PlaneMainLoop;
 use ap_plane::sitl_ins_noise_hookup::SitlInsNoiseHookup;
+use ap_math::vector3::Vector3f;
 use ap_sim::{AttitudeSim, PlaneMotorFrame};
 
 fn motor_runtime_from_frame(frame: PlaneMotorFrame) -> SitlInsMotorRuntime {
@@ -34,6 +35,7 @@ fn scheduler_tick_feeds_noisy_ins_into_ahrs_update() {
     let mut hookup = SitlInsNoiseHookup {
         cluster: SitlInsCluster::new(),
         noise_params: SitlInsNoiseParams::default(),
+        file_playback_params: SitlInsFilePlaybackParams::default(),
     };
     hookup.cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
     vehicle.sitl_ins_noise = Some(hookup);
@@ -81,4 +83,33 @@ fn hookup_tick_runs_before_ins_publish_in_main_loop() {
         .unwrap()
         .noise_config
         .is_some());
+}
+
+
+#[test]
+fn file_playback_runtime_feeds_recorded_accel_into_ahrs_update() {
+    fn encode(v: Vector3f) -> [u8; 12] {
+        let mut out = [0_u8; 12];
+        for (i, c) in [v.x, v.y, v.z].into_iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
+        }
+        out
+    }
+
+    let mut vehicle = PlaneMainLoop::default();
+    let mut hookup = SitlInsNoiseHookup {
+        cluster: SitlInsCluster::new(),
+        noise_params: SitlInsNoiseParams::default(),
+        file_playback_params: SitlInsFilePlaybackParams::from_sim_file_rw(1, 0),
+    };
+    hookup.cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+    vehicle.sitl_ins_noise = Some(hookup);
+    let frame = encode(Vector3f::new(0.0, 0.0, -4.0));
+    vehicle.sitl_ins_host_files[0].accel[..12].copy_from_slice(&frame);
+    vehicle.sitl_ins_host_files[0].accel_len = 12;
+    vehicle.sitl_body = SitlBodyState { z_accel: -9.80665, ..SitlBodyState::default() };
+    vehicle.sitl_now_us = 0;
+    vehicle.ahrs_update();
+    let imu = vehicle.ins.primary_imu().expect("primary IMU");
+    assert!((imu.accel().z + 4.0).abs() < 1e-3, "got {}", imu.accel().z);
 }
