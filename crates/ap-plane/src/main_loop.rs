@@ -83,7 +83,7 @@ impl Default for PlaneMainLoop {
             last_stabilize: StabilizeDispatch::default(),
             last_stabilize_run: StabilizeRun::default(),
             ahrs: AhrsFeed::default(),
-            imu: ImuInstance::default(),
+            ins: InertialSensorFrontend::default(),
             loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
             attitude: AhrsAttitude::default(),
             compass: None,

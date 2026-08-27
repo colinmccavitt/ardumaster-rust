@@ -45,7 +45,7 @@ fn ahrs_update_publishes_attitude_on_main_loop() {
 #[test]
 fn ahrs_feed_update_from_ins_with_no_samples_keeps_attitude() {
     let mut feed = AhrsFeed::default();
-    let imu = ap_ins::InertialSensorFrontend::default();
+    let ins = ap_ins::InertialSensorFrontend::default();
     let timing = LoopTiming::new(1.0 / 400.0);
 
     let (health, attitude) = feed.update_from_ins(&ins, &timing, None);
