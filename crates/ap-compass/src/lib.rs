@@ -6,8 +6,11 @@
 
 #![no_std]
 
+pub mod declination;
 pub mod params;
 pub mod sitl;
+
+pub use declination::{CompassDeclinationState, GpsDeclinationFix};
 
 pub use sitl::{
     mag_field_body_ned, CompassHealthFlags, MagSampleState, SitlCompassBackend,

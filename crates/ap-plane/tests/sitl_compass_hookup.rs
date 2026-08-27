@@ -16,7 +16,7 @@ fn sitl_compass_publish_emits_body_field_and_health() {
         longitude_deg: -0.154,
         now_ms: 10,
     };
-    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    let published = hookup.publish(Matrix3f::identity(), 0.0025, None);
     assert!(published.sample.have_sample);
     assert!(published.sample.mag_body.length() > 0.1);
     assert!(published.healthy);
@@ -32,7 +32,7 @@ fn dual_compass_failover_publishes_secondary_when_primary_disabled() {
         longitude_deg: -0.154,
         now_ms: 10,
     };
-    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    let published = hookup.publish(Matrix3f::identity(), 0.0025, None);
     assert_eq!(published.health.instance_count, 2);
     assert_eq!(published.health.primary, 1);
     assert!(published.health.primary_healthy());
@@ -127,7 +127,7 @@ fn apply_compass_params_disables_yaw_when_primary_use_for_yaw_false() {
         longitude_deg: -0.154,
         now_ms: 10,
     };
-    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    let published = hookup.publish(Matrix3f::identity(), 0.0025, None);
     assert!(published.healthy);
     assert!(published.yaw_compass.is_none());
 }
@@ -143,7 +143,39 @@ fn apply_compass_params_failover_when_primary_disabled() {
         longitude_deg: -0.154,
         now_ms: 10,
     };
-    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    let published = hookup.publish(Matrix3f::identity(), 0.0025, None);
     assert_eq!(published.health.primary, 1);
     assert!(published.health.primary_healthy());
+}
+
+#[test]
+fn auto_declination_latches_from_gps_fix_into_yaw_sample() {
+    use ap_compass::GpsDeclinationFix;
+    use ap_math::scalar::degrees;
+    let mut hookup = SitlCompassHookup::default();
+    hookup.truth = SitlCompassTruth { latitude_deg: 51.875, longitude_deg: -0.154, now_ms: 10 };
+    let gps = GpsDeclinationFix { latitude_deg: 51.875, longitude_deg: -0.154, have_fix: true };
+    let published = hookup.publish(Matrix3f::identity(), 0.0025, Some(gps));
+    let yaw = published.yaw_compass.expect("yaw");
+    assert!(yaw.declination_rad.abs() > 0.0);
+    let mut params = CompassParams::default();
+    params.auto_declination = false;
+    params.declination_rad = degrees(15.0);
+    hookup.apply_compass_params(params);
+    let manual = hookup.publish(Matrix3f::identity(), 0.0025, Some(gps));
+    assert!((manual.yaw_compass.unwrap().declination_rad - degrees(15.0)).abs() < 1e-4);
+}
+#[test]
+fn ahrs_update_applies_auto_declination_when_gps_configured() {
+    use ap_ins::LoopTiming;
+    use ap_plane::main_loop::PlaneMainLoop;
+    use ap_plane::sitl_gps_hookup::{SitlGpsHookup, SitlGpsTruth};
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing = LoopTiming::new(1.0 / 400.0);
+    vehicle.sitl_gps = Some(SitlGpsHookup::default());
+    vehicle.sitl_gps.as_mut().unwrap().truth = SitlGpsTruth { latitude_deg: 51.875, longitude_deg: -0.154, now_ms: 200, ..Default::default() };
+    vehicle.sitl_compass = Some(SitlCompassHookup::with_dual_backends());
+    vehicle.sitl_compass.as_mut().unwrap().truth = SitlCompassTruth { latitude_deg: 51.875, longitude_deg: -0.154, now_ms: 200 };
+    vehicle.ahrs_update();
+    assert!(vehicle.compass.unwrap().declination_rad.abs() > 0.0);
 }

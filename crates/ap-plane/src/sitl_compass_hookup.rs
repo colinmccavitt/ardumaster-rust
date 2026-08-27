@@ -5,7 +5,7 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`YawUpdateInputs`](ap_ahrs::YawUpdateInputs).
 
 use ap_ahrs::YawCompassSample;
-use ap_compass::CompassParams;
+use ap_compass::{CompassDeclinationState, CompassParams, GpsDeclinationFix};
 use ap_compass::sitl::{
     CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
 };
@@ -34,6 +34,7 @@ impl Default for SitlCompassTruth {
 pub struct SitlCompassHookup {
     cluster: SitlCompassCluster,
     params: CompassParams,
+    declination: CompassDeclinationState,
     pub truth: SitlCompassTruth,
     pub compass_use_for_yaw: bool,
 }
@@ -43,6 +44,7 @@ impl Default for SitlCompassHookup {
         Self {
             cluster: SitlCompassCluster::default(),
             params: CompassParams::default(),
+            declination: CompassDeclinationState::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
         }
@@ -67,6 +69,7 @@ impl SitlCompassHookup {
         Self {
             cluster,
             params: CompassParams::default(),
+            declination: CompassDeclinationState::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
         }
@@ -95,7 +98,8 @@ impl SitlCompassHookup {
 
     /// Run timer tick and publish mag sample + yaw drift input.
     #[must_use]
-    pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32) -> SitlCompassPublish {
+    pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32, gps: Option<GpsDeclinationFix>) -> SitlCompassPublish {
+        self.declination.try_set_initial_location(&self.params, gps, true);
         self.cluster.timer_tick_all(
             self.truth.latitude_deg,
             self.truth.longitude_deg,
@@ -111,7 +115,7 @@ impl SitlCompassHookup {
         let healthy = health.primary_healthy();
         let yaw_compass = (healthy && self.compass_use_for_yaw).then_some(YawCompassSample {
             mag_body: sample.mag_body,
-            declination_rad: sample.declination_rad,
+            declination_rad: self.declination.effective_declination_rad(&self.params),
             update_interval_s: Some(loop_dt),
             calibrating: false,
         });
@@ -130,6 +134,7 @@ pub fn hookup_with_disabled_primary() -> SitlCompassHookup {
     SitlCompassHookup {
         cluster: SitlCompassCluster::cluster_with_disabled_primary(),
         params: CompassParams::default(),
+        declination: CompassDeclinationState::default(),
         truth: SitlCompassTruth::default(),
         compass_use_for_yaw: true,
     }

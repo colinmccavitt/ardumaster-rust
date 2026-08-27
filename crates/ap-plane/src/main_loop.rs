@@ -697,10 +697,22 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
+        if let Some(gps) = self.sitl_gps.as_mut() {
+            let _ = gps.gps_status_publish();
+        }
+        let gps_declination_fix = self.sitl_gps.as_ref().map(|gps| {
+            let fix = gps.current_fix();
+            ap_compass::GpsDeclinationFix {
+                latitude_deg: fix.latitude_deg,
+                longitude_deg: fix.longitude_deg,
+                have_fix: fix.have_fix,
+            }
+        });
         if let Some(compass) = self.sitl_compass.as_mut() {
             let published = compass.publish(
                 self.ahrs.dcm.matrix,
                 self.loop_timing.delta_time,
+                gps_declination_fix,
             );
             self.mag_sample = Some(published.sample);
             self.compass_healthy = published.healthy;
