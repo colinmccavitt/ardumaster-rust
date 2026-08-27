@@ -53,3 +53,27 @@ fn ahrs_feed_update_from_ins_with_no_samples_keeps_attitude() {
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
     assert_eq!(attitude, AhrsAttitude::default());
 }
+
+#[test]
+fn yaw_update_inputs_includes_gps_when_context_set() {
+    use ap_ahrs::{YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::ahrs_hookup::yaw_update_inputs;
+
+    let gps = YawGpsSample {
+        ground_course_deg: 90.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 1000,
+    };
+    let ctx = YawDriftContext {
+        fly_forward: true,
+        have_gps: true,
+        compass_use_for_yaw: false,
+        ..YawDriftContext::default()
+    };
+    let inputs = yaw_update_inputs(None, Some(gps), ctx).expect("gps yaw inputs");
+    assert!(inputs.compass.is_none());
+    let got = inputs.gps.expect("gps sample");
+    assert_eq!(got.ground_course_deg, gps.ground_course_deg);
+    assert!(inputs.ctx.have_gps);
+}
+

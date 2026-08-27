@@ -4,7 +4,10 @@
 //! module owns the DCM state and publishes roll/pitch/yaw sensors the stabilize
 //! path reads on the next tasks.
 
-use ap_ahrs::{dcm_step_with_drift_from_ins, Dcm, DcmDriftLoop, MatrixHealth, YawCompassSample};
+use ap_ahrs::{
+    dcm_step_with_drift_from_ins_yaw, Dcm, DcmDriftLoop, MatrixHealth, YawCompassSample,
+    YawDriftContext, YawGpsSample, YawUpdateInputs,
+};
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::{rad_to_cd, wrap_180_cd, wrap_360_cd};
 
@@ -58,15 +61,33 @@ impl AhrsFeed {
         &mut self,
         ins: &InertialSensorFrontend,
         timing: &LoopTiming,
-        compass: Option<YawCompassSample>,
+        yaw: Option<YawUpdateInputs>,
     ) -> (MatrixHealth, AhrsAttitude) {
-        let health = dcm_step_with_drift_from_ins(
+        let health = dcm_step_with_drift_from_ins_yaw(
             &mut self.dcm,
             &mut self.drift,
             ins,
             timing,
-            compass,
+            yaw,
         );
         (health, attitude_from_dcm(&self.dcm))
+    }
+}
+
+/// Build yaw correction inputs when compass, GPS, or context is available.
+#[must_use]
+pub fn yaw_update_inputs(
+    compass: Option<YawCompassSample>,
+    gps: Option<YawGpsSample>,
+    ctx: YawDriftContext,
+) -> Option<YawUpdateInputs> {
+    if compass.is_none() && gps.is_none() && !ctx.have_gps && !ctx.compass_use_for_yaw {
+        None
+    } else {
+        Some(YawUpdateInputs {
+            compass,
+            gps,
+            ctx,
+        })
     }
 }
