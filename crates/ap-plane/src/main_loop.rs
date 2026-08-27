@@ -100,6 +100,7 @@ use crate::manual_mode_hookup::{
     ManualModeServosInputs,
 };
 use crate::stabilize_mode_hookup::{stabilize_mode_nav_tick, StabilizeModeNavInputs};
+use crate::acro_mode_hookup::{acro_mode_nav_tick, AcroModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -406,6 +407,16 @@ pub struct PlaneMainLoop {
     pub fbwa_mode_nav_applied: bool,
     /// Whether Stabilize nav zeroing ran this tick.
     pub stabilize_mode_nav_applied: bool,
+    /// Whether Acro nav lock/mirror ran this tick.
+    pub acro_mode_nav_applied: bool,
+    /// Upstream `acro_state.locked_roll`.
+    pub acro_locked_roll: bool,
+    /// Upstream `acro_state.locked_pitch`.
+    pub acro_locked_pitch: bool,
+    /// Upstream `acro_state.locked_roll_err`.
+    pub acro_locked_roll_err: f32,
+    /// Upstream `acro_state.locked_pitch_cd`.
+    pub acro_locked_pitch_cd: i32,
     /// Whether manual-mode RC passthrough ran in set_servos.
     pub manual_mode_servos_applied: bool,
     /// `THR_PASS_STAB` parameter.
@@ -689,6 +700,11 @@ impl Default for PlaneMainLoop {
             manual_mode_nav_applied: false,
             fbwa_mode_nav_applied: false,
             stabilize_mode_nav_applied: false,
+            acro_mode_nav_applied: false,
+            acro_locked_roll: false,
+            acro_locked_pitch: false,
+            acro_locked_roll_err: 0.0,
+            acro_locked_pitch_cd: 0,
             manual_mode_servos_applied: false,
             throttle_passthru_stabilize: false,
             guided_throttle_passthru: false,
@@ -1109,6 +1125,22 @@ impl PlaneMainLoop {
         if stabilize_nav.applied {
             self.nav_tecs.nav_roll_cd = stabilize_nav.nav_roll_cd;
             self.navigation_scheduler_inputs.commanded_pitch_cd = stabilize_nav.nav_pitch_cd;
+        }
+
+        let acro_nav = acro_mode_nav_tick(&AcroModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            locked_roll: self.acro_locked_roll,
+            locked_pitch: self.acro_locked_pitch,
+            locked_roll_err: self.acro_locked_roll_err,
+            locked_pitch_cd: self.acro_locked_pitch_cd,
+            roll_sensor_cd: self.attitude.roll_sensor_cd,
+            pitch_sensor_cd: self.attitude.pitch_sensor_cd,
+        });
+        self.acro_mode_nav_applied = acro_nav.applied;
+        if acro_nav.applied {
+            self.nav_tecs.nav_roll_cd = acro_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = acro_nav.nav_pitch_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
