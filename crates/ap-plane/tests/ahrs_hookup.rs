@@ -139,3 +139,42 @@ fn ekf3_path_dispatches_through_update_hook() {
     assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Ekf3);
 }
 
+
+
+#[test]
+fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
+    use ap_ahrs::{YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::ahrs_hookup::drift_motion_inputs;
+
+    let mut feed = AhrsFeed::default();
+    let ins = ap_ins::InertialSensorFrontend::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+    let mut last_fix = 0;
+    let gps = YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    };
+    let ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        ..YawDriftContext::default()
+    };
+    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, &mut last_fix);
+    assert!(motion.have_gps);
+    assert!(motion.new_gps_fix);
+    feed.update_from_ins(&ins, &timing, None, motion);
+    let gps2 = YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 600,
+    };
+    let ctx2 = YawDriftContext {
+        have_gps: true,
+        now_ms: 600,
+        ..YawDriftContext::default()
+    };
+    let motion2 = drift_motion_inputs(ctx2, Some(gps2), 0.0, &mut last_fix);
+    let (health, _) = feed.update_from_ins(&ins, &timing, None, motion2);
+    assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
+}

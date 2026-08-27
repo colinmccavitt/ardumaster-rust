@@ -13,7 +13,7 @@ use crate::yaw_drift::{
     YawCompassSample, YawDriftContext, YawDriftCorrector, YawDriftGains, YawDriftInputs,
     YawGpsSample, YawMatrixAction,
 };
-use crate::{Dcm, DriftCorrector, DriftGains, DriftInputs, DriftOutcome, MatrixHealth};
+use crate::{Dcm, DriftCorrector, DriftGains, DriftInputs, DriftOutcome, GpsLagBuffer, MatrixHealth};
 
 /// Minimum interval before running drift correction without GPS, upstream
 /// fallback when `_ra_deltat < 0.2f`.
@@ -77,6 +77,8 @@ pub struct DcmDriftLoop {
     last_velocity: Vector3f,
     have_gps_lock: bool,
     drift_velocity_initialized: bool,
+    /// GPS lag delay line for drift correction, upstream `_ra_delay_buffer`.
+    gps_lag: GpsLagBuffer,
 }
 
 impl Default for DcmDriftLoop {
@@ -100,6 +102,7 @@ impl DcmDriftLoop {
             last_velocity: Vector3f::zero(),
             have_gps_lock: false,
             drift_velocity_initialized: false,
+            gps_lag: GpsLagBuffer::default(),
         }
     }
 
@@ -214,9 +217,10 @@ impl DcmDriftLoop {
             dcm_matrix: dcm.matrix,
             omega: dcm.omega,
             ins_healthy: ins.get_gyro_health() && ins.get_accel_health(),
+            using_gps_corrections: self.have_gps_lock && motion.have_gps,
         };
 
-        let outcome = self.corrector.correct(&inputs, &self.gains);
+        let outcome = self.corrector.correct(&inputs, &self.gains, &mut self.gps_lag);
         if outcome == DriftOutcome::Corrected {
             if let Some(v) = velocity {
                 self.last_velocity = v;

@@ -26,6 +26,7 @@ pub mod backend;
 pub mod dcm_drift_loop;
 pub mod dcm_loop;
 pub mod drift;
+pub mod gps_lag;
 pub mod ekf3_loop;
 pub mod wind_estimation;
 pub mod yaw_drift;
@@ -38,6 +39,7 @@ pub use dcm_drift_loop::{
 };
 pub use dcm_loop::{dcm_matrix_step_from_ins, dcm_matrix_update_from_ins, DcmDriftOmega};
 pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
+pub use gps_lag::GpsLagBuffer;
 pub use wind_estimation::{WindEstimateInputs, WindEstimator};
 pub use yaw_drift::{
     YawCompassSample, YawDriftContext, YawDriftCorrector, YawDriftGains, YawDriftInputs,

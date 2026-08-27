@@ -31,12 +31,11 @@
 //! # What this slice does not include
 //!
 //! Yaw correction (`drift_correction_yaw`), the multi-accelerometer selection
-//! that picks whichever sensor gives the smallest error, the GPS lag buffer
-//! (`ra_delayed`), wind estimation and dead-reckoning position. Those are
-//! separate concerns with their own inputs; this is the roll and pitch
-//! correction core.
+//! that picks whichever sensor gives the smallest error, wind estimation
+//! and dead-reckoning position. GPS lag buffering lives in [`crate::GpsLagBuffer`].
 
 use ap_math::matrix3::Matrix3f;
+use crate::GpsLagBuffer;
 use ap_math::scalar::{constrain_value, radians};
 use ap_math::vector3::Vector3f;
 
@@ -110,6 +109,9 @@ pub struct DriftInputs {
     /// Whether the inertial sensors are healthy. When they are not, upstream
     /// zeroes the error rather than trusting it.
     pub ins_healthy: bool,
+    /// Apply GPS lag delay to the measured gravity vector, upstream
+    /// `using_gps_corrections`.
+    pub using_gps_corrections: bool,
 }
 
 /// Why a correction cycle produced nothing.
@@ -186,7 +188,12 @@ impl DriftCorrector {
     /// Returns what happened; on anything but [`DriftOutcome::Corrected`] the
     /// caller should leave the accumulator alone and try again next cycle,
     /// exactly as upstream's early returns do.
-    pub fn correct(&mut self, inp: &DriftInputs, gains: &DriftGains) -> DriftOutcome {
+    pub fn correct(
+        &mut self,
+        inp: &DriftInputs,
+        gains: &DriftGains,
+        gps_lag: &mut GpsLagBuffer,
+    ) -> DriftOutcome {
         if inp.ra_deltat <= 0.0 {
             return DriftOutcome::NotEnoughData;
         }
@@ -207,6 +214,9 @@ impl DriftCorrector {
         }
 
         let mut ga_b = inp.ra_sum * ra_scale;
+        if inp.using_gps_corrections {
+            ga_b = gps_lag.ra_delayed(ga_b);
+        }
         if ga_b.is_zero() || !ga_b.normalize() || ga_b.is_inf() {
             return DriftOutcome::NoUsableAcceleration;
         }

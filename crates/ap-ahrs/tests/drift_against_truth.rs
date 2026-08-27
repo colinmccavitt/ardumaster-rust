@@ -24,7 +24,7 @@
 boundary is the interface being exercised"
 )]
 
-use ap_ahrs::{Dcm, DriftCorrector, DriftGains, DriftInputs, DriftOutcome, MatrixHealth};
+use ap_ahrs::{Dcm, DriftCorrector, DriftGains, DriftInputs, DriftOutcome, GpsLagBuffer, MatrixHealth};
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector3::Vector3f;
 use ap_sim::{level, AttitudeSim, V3};
@@ -83,8 +83,9 @@ impl Estimator {
                 dcm_matrix: self.dcm.matrix,
                 omega: self.dcm.omega,
                 ins_healthy: true,
+                using_gps_corrections: false,
             };
-            let outcome = self.drift.correct(&inputs, &self.gains);
+            let outcome = self.drift.correct(&inputs, &self.gains, &mut GpsLagBuffer::default());
             assert_eq!(outcome, DriftOutcome::Corrected, "correction should run");
             self.ra_sum = Vector3f::zero();
             self.ra_deltat = 0.0;
@@ -321,17 +322,19 @@ fn fast_gains_scale_the_proportional_term_and_not_the_integral() {
         dcm_matrix: Matrix3f::identity(),
         omega: Vector3f::zero(),
         ins_healthy: true,
+        using_gps_corrections: false,
     };
 
     let mut normal = DriftCorrector::new();
     let mut fast = DriftCorrector::new();
-    normal.correct(&inputs, &DriftGains::default());
+    normal.correct(&inputs, &DriftGains::default(), &mut GpsLagBuffer::default());
     fast.correct(
         &inputs,
         &DriftGains {
             fast_gains: true,
             ..DriftGains::default()
         },
+        &mut GpsLagBuffer::default(),
     );
 
     println!(
