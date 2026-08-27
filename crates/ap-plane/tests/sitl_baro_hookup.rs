@@ -4,7 +4,7 @@ use ap_baro::sitl::BaroHealthFlags;
 use ap_ins::LoopTiming;
 use ap_math::vector3::Vector3f;
 use ap_plane::main_loop::PlaneMainLoop;
-use ap_plane::sitl_baro_hookup::{
+use ap_plane::sitl_baro_hookup::{SitlBaroPublish, 
     hookup_with_disabled_primary, hookup_with_disabled_secondary, SitlBaroHookup, SitlBaroTruth,
 };
 
@@ -161,6 +161,57 @@ fn main_loop_pre_arm_passes_after_baro_failover() {
     assert!(vehicle.baro_health.primary_healthy());
     assert!(vehicle.baro_pre_arm_ok);
     assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn sitl_baro_publish_includes_climb_rate() {
+    let mut hookup = SitlBaroHookup::default();
+    let rate_mps = 3.0;
+    let dt_ms = 10;
+    let step_m = rate_mps * dt_ms as f32 * 0.001;
+    let mut alt = 50.0_f32;
+    let mut t = 0_u32;
+    let mut last = SitlBaroPublish::default();
+    for _ in 0..25 {
+        t += dt_ms;
+        alt += step_m;
+        hookup.truth = SitlBaroTruth {
+            sim_altitude_m: alt,
+            now_ms: t,
+            ..SitlBaroTruth::default()
+        };
+        last = hookup.publish();
+    }
+    assert!(last.climb_rate_mps > 0.5);
+    assert!(
+        (last.climb_rate_mps - rate_mps).abs() < 0.5,
+        "got {}",
+        last.climb_rate_mps
+    );
+}
+
+#[test]
+fn ahrs_update_publishes_baro_climb_rate() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_baro = Some(SitlBaroHookup::default());
+    let rate_mps = 2.5;
+    let dt_ms = 10;
+    let step_m = rate_mps * dt_ms as f32 * 0.001;
+    let mut alt = 120.0_f32;
+    let mut t = 0_u32;
+    for _ in 0..25 {
+        t += dt_ms;
+        alt += step_m;
+        vehicle.sitl_baro.as_mut().unwrap().truth = SitlBaroTruth {
+            sim_altitude_m: alt,
+            now_ms: t,
+            ..SitlBaroTruth::default()
+        };
+        vehicle.ahrs_update();
+    }
+    assert!(vehicle.baro_climb_rate_mps > 0.5);
+    assert!((vehicle.baro_climb_rate_mps - rate_mps).abs() < 0.5);
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //! and temperature the frontend receives. Random noise uses an injected sample
 //! so tests stay deterministic.
 
+use ap_filter::derivative::DerivativeFilter;
 use ap_math::scalar::{is_positive, Real};
 use ap_math::vector3::Vector3f;
 
@@ -397,6 +398,27 @@ impl SitlBaroBackend {
 }
 
 
+/// Climb-rate estimate from primary altitude, upstream `AP_Baro::_climb_rate_filter`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BaroClimbRate {
+    filter: DerivativeFilter<7>,
+}
+
+impl BaroClimbRate {
+    /// Feed primary altitude when healthy, upstream `read()` climb filter update.
+    pub fn update_primary(&mut self, altitude_m: f32, last_update_ms: u32, healthy: bool) {
+        if healthy {
+            self.filter.update(altitude_m, last_update_ms);
+        }
+    }
+
+    /// Current climb rate in m/s, upstream `AP_Baro::get_climb_rate()`.
+    #[must_use]
+    pub fn climb_rate_mps(&mut self) -> f32 {
+        self.filter.slope() * 1.0e3
+    }
+}
+
 /// Dual-instance capacity, upstream `BARO_MAX_INSTANCES`.
 pub const SITL_BARO_MAX_INSTANCES: usize = 2;
 
@@ -736,6 +758,26 @@ mod tests {
             primary: 0,
         };
         assert!(!flags.primary_healthy());
+    }
+
+    #[test]
+    fn climb_rate_tracks_constant_ascent() {
+        let mut climb = BaroClimbRate::default();
+        let rate_mps = 2.0_f32;
+        let dt_ms = 10_u32;
+        let step_m = rate_mps * dt_ms as f32 * 0.001;
+        let mut alt = 100.0_f32;
+        let mut t = 0_u32;
+        for _ in 0..20 {
+            t += dt_ms;
+            alt += step_m;
+            climb.update_primary(alt, t, true);
+        }
+        let got = climb.climb_rate_mps();
+        assert!(
+            (got - rate_mps).abs() < 0.15,
+            "expected ~{rate_mps} m/s, got {got}"
+        );
     }
 
 }

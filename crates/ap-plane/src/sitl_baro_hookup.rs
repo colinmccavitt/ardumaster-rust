@@ -6,7 +6,8 @@
 
 use ap_baro::eas2tas_for_alt_amsl;
 use ap_baro::sitl::{
-    BaroHealthFlags, BaroSampleState, SitlBaroBackend, SitlBaroCluster, SitlBaroConfig,
+    BaroClimbRate, BaroHealthFlags, BaroSampleState, SitlBaroBackend, SitlBaroCluster,
+    SitlBaroConfig,
 };
 use ap_math::vector3::Vector3f;
 
@@ -34,6 +35,7 @@ impl Default for SitlBaroTruth {
 #[derive(Debug, Clone)]
 pub struct SitlBaroHookup {
     cluster: SitlBaroCluster,
+    climb_rate: BaroClimbRate,
     pub truth: SitlBaroTruth,
 }
 
@@ -41,6 +43,7 @@ impl Default for SitlBaroHookup {
     fn default() -> Self {
         Self {
             cluster: SitlBaroCluster::default(),
+            climb_rate: BaroClimbRate::default(),
             truth: SitlBaroTruth::default(),
         }
     }
@@ -54,6 +57,8 @@ pub struct SitlBaroPublish {
     /// Primary instance healthy, upstream `AP_Baro::healthy()`.
     pub healthy: bool,
     pub health: BaroHealthFlags,
+    /// Filtered climb rate from primary altitude, upstream `get_climb_rate()`.
+    pub climb_rate_mps: f32,
 }
 
 impl SitlBaroHookup {
@@ -64,6 +69,7 @@ impl SitlBaroHookup {
         let _ = cluster.register(SitlBaroBackend::default());
         Self {
             cluster,
+            climb_rate: BaroClimbRate::default(),
             truth: SitlBaroTruth::default(),
         }
     }
@@ -98,11 +104,15 @@ impl SitlBaroHookup {
         } else {
             1.0
         };
+        let healthy = health.primary_healthy();
+        self.climb_rate
+            .update_primary(sample.altitude_m, sample.last_sample_time_ms, healthy);
         SitlBaroPublish {
             sample,
             eas2tas,
-            healthy: health.primary_healthy(),
+            healthy,
             health,
+            climb_rate_mps: self.climb_rate.climb_rate_mps(),
         }
     }
 }
@@ -124,6 +134,7 @@ pub fn secondary_disabled_cluster() -> SitlBaroCluster {
 pub fn hookup_with_disabled_secondary() -> SitlBaroHookup {
     SitlBaroHookup {
         cluster: secondary_disabled_cluster(),
+        climb_rate: BaroClimbRate::default(),
         truth: SitlBaroTruth::default(),
     }
 }
@@ -133,6 +144,7 @@ pub fn hookup_with_disabled_secondary() -> SitlBaroHookup {
 pub fn hookup_with_disabled_primary() -> SitlBaroHookup {
     SitlBaroHookup {
         cluster: SitlBaroCluster::cluster_with_disabled_primary(),
+        climb_rate: BaroClimbRate::default(),
         truth: SitlBaroTruth::default(),
     }
 }

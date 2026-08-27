@@ -188,6 +188,8 @@ pub struct PlaneMainLoop {
     pub baro_healthy: bool,
     /// Per-instance baro health flags, upstream `AP_Baro` frontend.
     pub baro_health: BaroHealthFlags,
+    /// Filtered baro climb rate, upstream `AP_Baro::get_climb_rate()`.
+    pub baro_climb_rate_mps: f32,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
     /// Optional INS harmonic notch hookup; configures gyro filters each tick.
@@ -416,6 +418,7 @@ impl Default for PlaneMainLoop {
             baro_sample: None,
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
+            baro_climb_rate_mps: 0.0,
             sitl_ins_noise: None,
             ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
@@ -665,6 +668,7 @@ impl PlaneMainLoop {
             self.baro_sample = Some(published.sample);
             self.baro_healthy = published.healthy;
             self.baro_health = published.health;
+            self.baro_climb_rate_mps = published.climb_rate_mps;
             self.eas2tas = published.eas2tas;
         }
         if let Some(vane) = self.wind_vane {

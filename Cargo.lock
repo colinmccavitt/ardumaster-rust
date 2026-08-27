@@ -16,6 +16,7 @@ dependencies = [
 name = "ap-baro"
 version = "0.1.0"
 dependencies = [
+ "ap-filter",
  "ap-math",
 ]
 
@@ -134,6 +135,7 @@ name = "ap-plane"
 version = "0.1.0"
 dependencies = [
  "ap-ahrs",
+ "ap-baro",
  "ap-control",
  "ap-declination",
  "ap-gps",
