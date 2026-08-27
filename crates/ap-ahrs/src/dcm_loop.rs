@@ -3,11 +3,11 @@
 //! `update()`.
 //!
 //! This is the seam where FW-011 meets FW-008: the flight loop publishes
-//! accumulated gyro data from [`ImuInstance::update_gyro`], and the AHRS
-//! reads [`ImuInstance::get_delta_angle`] and [`ImuInstance::gyro`] to
+//! accumulated gyro data from [`InertialSensorFrontend::update`], and the AHRS
+//! reads [`InertialSensorFrontend::get_delta_angle`] and [`InertialSensorFrontend::get_gyro`] to
 //! advance the direction cosine matrix.
 
-use ap_ins::{ImuInstance, LoopTiming};
+use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::vector3::Vector3f;
 
 use crate::{Dcm, MatrixHealth};
@@ -28,20 +28,20 @@ pub struct DcmDriftOmega {
 
 /// Advance the DCM matrix from the primary IMU, upstream `matrix_update`.
 ///
-/// The caller must have called [`ImuInstance::update_gyro`] since the last
+/// The caller must have called [`InertialSensorFrontend::update`] since the last
 /// loop tick so accumulated delta angles are published.
 pub fn dcm_matrix_update_from_ins(
     dcm: &mut Dcm,
-    imu: &ImuInstance,
+    ins: &InertialSensorFrontend,
     timing: &LoopTiming,
     drift: DcmDriftOmega,
 ) {
-    let delta_angle = imu
+    let delta_angle = ins
         .get_delta_angle(timing)
         .filter(|(_, dt)| *dt > 0.0);
     dcm.matrix_update(
         delta_angle,
-        imu.gyro(),
+        ins.get_gyro(),
         drift.omega_i,
         drift.omega_p,
         drift.omega_yaw_p,
@@ -52,10 +52,10 @@ pub fn dcm_matrix_update_from_ins(
 /// `normalize` within `AP_AHRS_DCM::update`.
 pub fn dcm_matrix_step_from_ins(
     dcm: &mut Dcm,
-    imu: &ImuInstance,
+    ins: &InertialSensorFrontend,
     timing: &LoopTiming,
     drift: DcmDriftOmega,
 ) -> MatrixHealth {
-    dcm_matrix_update_from_ins(dcm, imu, timing, drift);
+    dcm_matrix_update_from_ins(dcm, ins, timing, drift);
     dcm.normalize()
 }

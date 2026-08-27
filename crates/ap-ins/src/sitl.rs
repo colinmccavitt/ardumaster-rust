@@ -1285,6 +1285,8 @@ impl SitlInsCluster {
             );
             gyro_total += g;
             accel_total += a;
+            self.frontend
+                .receive_backend_imu(backend.gyro_instance, &backend.imu);
         }
         self.frontend.begin_update();
         self.frontend.update();

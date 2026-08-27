@@ -5,7 +5,7 @@
 
 use ap_math::vector3::Vector3f;
 
-use crate::ImuInstance;
+use crate::{ImuInstance, LoopTiming};
 
 /// Maximum IMU instances, upstream `INS_MAX_INSTANCES` for Plane.
 pub const INS_MAX_INSTANCES: usize = 3;
@@ -298,6 +298,57 @@ impl InertialSensorFrontend {
         self.imu_mut(self.primary)
     }
 
+
+    /// Copy a backend's accumulated IMU state into an instance slot before
+    /// publish, upstream the SITL backend handoff into `_update`.
+    pub fn receive_backend_imu(&mut self, instance: u8, imu: &ImuInstance) {
+        if let Some(slot) = self.imu_mut(instance) {
+            *slot = imu.clone();
+        }
+    }
+
+    /// Published gyro from the primary IMU, upstream `get_gyro()`.
+    #[must_use]
+    pub fn get_gyro(&self) -> Vector3f {
+        self.primary_imu()
+            .map(ImuInstance::gyro)
+            .unwrap_or(Vector3f::zero())
+    }
+
+    /// Published accelerometer from the primary IMU, upstream `get_accel()`.
+    #[must_use]
+    pub fn get_accel(&self) -> Vector3f {
+        self.primary_imu()
+            .map(ImuInstance::accel)
+            .unwrap_or(Vector3f::zero())
+    }
+
+    /// Delta angle from the primary IMU since the last publish, upstream
+    /// `get_delta_angle`.
+    #[must_use]
+    pub fn get_delta_angle(&self, timing: &LoopTiming) -> Option<(Vector3f, f32)> {
+        self.primary_imu()?.get_delta_angle(timing)
+    }
+
+    /// Delta velocity from the primary IMU since the last publish, upstream
+    /// `get_delta_velocity`.
+    #[must_use]
+    pub fn get_delta_velocity(&self, timing: &LoopTiming) -> Option<(Vector3f, f32)> {
+        self.primary_imu()?.get_delta_velocity(timing)
+    }
+
+    /// Primary gyro health, upstream `get_gyro_health()`.
+    #[must_use]
+    pub fn get_gyro_health(&self) -> bool {
+        self.gyro_usable(self.primary)
+    }
+
+    /// Primary accelerometer health, upstream `get_accel_health()`.
+    #[must_use]
+    pub fn get_accel_health(&self) -> bool {
+        self.accel_usable(self.primary)
+    }
+
     /// Mark every instance unhealthy before backends publish, upstream
     /// `AP_InertialSensor::update`.
     pub fn begin_update(&mut self) {
@@ -432,6 +483,29 @@ mod tests {
         fe.set_ins_use(2, false);
         fe.apply_ins_use_safety();
         assert!(fe.ins_use(2));
+    }
+
+
+    #[test]
+    fn publish_accessors_read_primary_after_update() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+
+        let mut t = 1_000_000_u64;
+        for _ in 0..801 {
+            feed_gyro(&mut fe.instances[0], &mut t);
+            feed_accel(&mut fe.instances[0], &mut t);
+        }
+        fe.begin_update();
+        fe.update();
+
+        let timing = LoopTiming::new(0.0025);
+        assert!(fe.get_gyro_health());
+        assert!(fe.get_accel_health());
+        assert!(fe.get_gyro().x > 0.0);
+        assert!(fe.get_accel().z < 0.0);
+        assert!(fe.get_delta_angle(&timing).is_some());
+        assert!(fe.get_delta_velocity(&timing).is_some());
     }
 
     #[test]

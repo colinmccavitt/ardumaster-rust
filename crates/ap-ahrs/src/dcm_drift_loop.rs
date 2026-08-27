@@ -2,7 +2,7 @@
 //! the DCM matrix update, upstream `AP_AHRS_DCM::drift_correction` with
 //! compass yaw correction; GPS and multi-accel paths not yet.
 
-use ap_ins::{ImuInstance, LoopTiming};
+use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::Real;
 use ap_math::vector3::Vector3f;
 
@@ -64,11 +64,11 @@ impl DcmDriftLoop {
     pub fn accumulate_from_ins(
         &mut self,
         dcm: &Dcm,
-        imu: &ImuInstance,
+        ins: &InertialSensorFrontend,
         timing: &LoopTiming,
         loop_dt: f32,
     ) {
-        let Some((delta_velocity, delta_velocity_dt)) = imu.get_delta_velocity(timing) else {
+        let Some((delta_velocity, delta_velocity_dt)) = ins.get_delta_velocity(timing) else {
             return;
         };
         if delta_velocity_dt <= 0.0 {
@@ -80,7 +80,7 @@ impl DcmDriftLoop {
 
     /// Run roll/pitch correction once enough has accumulated. Resets the
     /// accumulator on success, upstream's post-correction memset of `_ra_sum`.
-    pub fn try_correct(&mut self, dcm: &Dcm, imu: &ImuInstance) -> DriftOutcome {
+    pub fn try_correct(&mut self, dcm: &Dcm, ins: &InertialSensorFrontend) -> DriftOutcome {
         if self.ra_deltat < DRIFT_CORRECTION_INTERVAL_S {
             return DriftOutcome::NotEnoughData;
         }
@@ -91,7 +91,7 @@ impl DcmDriftLoop {
             velocity_delta: None,
             dcm_matrix: dcm.matrix,
             omega: dcm.omega,
-            ins_healthy: imu.gyro_healthy() && imu.accel_healthy(),
+            ins_healthy: ins.get_gyro_health() && ins.get_accel_health(),
         };
 
         let outcome = self.corrector.correct(&inputs, &self.gains);
@@ -123,16 +123,16 @@ impl DcmDriftLoop {
 pub fn dcm_step_with_drift_from_ins(
     dcm: &mut Dcm,
     drift: &mut DcmDriftLoop,
-    imu: &ImuInstance,
+    ins: &InertialSensorFrontend,
     timing: &LoopTiming,
     compass: Option<YawCompassSample>,
 ) -> MatrixHealth {
-    let health = dcm_matrix_step_from_ins(dcm, imu, timing, drift.drift_omega());
-    drift.accumulate_from_ins(dcm, imu, timing, timing.delta_time());
-    let _ = drift.try_correct(dcm, imu);
+    let health = dcm_matrix_step_from_ins(dcm, ins, timing, drift.drift_omega());
+    drift.accumulate_from_ins(dcm, ins, timing, timing.delta_time());
+    let _ = drift.try_correct(dcm, ins);
     if let Some(sample) = compass {
         let accel_ef_xy_mag = {
-            let ef = dcm.matrix * imu.accel();
+            let ef = dcm.matrix * ins.get_accel();
             (ef.x * ef.x + ef.y * ef.y).sqrt()
         };
         drift.correct_yaw(dcm, sample, accel_ef_xy_mag);

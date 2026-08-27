@@ -13,7 +13,7 @@ boundary is the interface being exercised"
 
 use ap_ahrs::{dcm_matrix_step_from_ins, Dcm, DcmDriftOmega, MatrixHealth};
 use ap_ins::sitl::{SitlBodyState, SitlImuBackend, SitlTimerFileData};
-use ap_ins::{LoopTiming, DEFAULT_GYRO_FILTER_HZ};
+use ap_ins::{InertialSensorFrontend, LoopTiming, DEFAULT_GYRO_FILTER_HZ};
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector3::Vector3f;
 use ap_sim::{steady_roll, tumbling, turning, AttitudeSim, RateProfile, V3, GRAVITY, M3};
@@ -82,16 +82,46 @@ fn init_dcm_from_truth(sim: &AttitudeSim) -> Dcm {
     dcm
 }
 
-fn setup_backend() -> SitlImuBackend {
-    let mut backend = SitlImuBackend::new(GYRO_HZ, ACCEL_HZ);
-    backend
-        .imu
-        .set_gyro_filter(f32::from(GYRO_HZ), DEFAULT_GYRO_FILTER_HZ);
-    backend
-        .imu
-        .set_accel_filter(f32::from(ACCEL_HZ), DEFAULT_GYRO_FILTER_HZ);
-    backend
+
+/// SITL backend registered with the INS frontend for loop-rate publish.
+struct SitlInsHookup {
+    frontend: InertialSensorFrontend,
+    backend: SitlImuBackend,
 }
+
+impl SitlInsHookup {
+    fn new() -> Self {
+        let mut frontend = InertialSensorFrontend::new();
+        let mut backend = SitlImuBackend::new(GYRO_HZ, ACCEL_HZ);
+        backend
+            .imu
+            .set_gyro_filter(f32::from(GYRO_HZ), DEFAULT_GYRO_FILTER_HZ);
+        backend
+            .imu
+            .set_accel_filter(f32::from(ACCEL_HZ), DEFAULT_GYRO_FILTER_HZ);
+        assert!(backend.start(&mut frontend));
+        Self { frontend, backend }
+    }
+
+    fn timer_update(
+        &mut self,
+        now_us: u64,
+        state: &SitlBodyState,
+        files: SitlTimerFileData<'_>,
+    ) {
+        let _ = self.backend.timer_update(now_us, state, files);
+    }
+
+    fn publish(&mut self) {
+        self.frontend
+            .receive_backend_imu(self.backend.gyro_instance, &self.backend.imu);
+        self.frontend.begin_update();
+        self.frontend.update();
+        self.backend.imu.update_gyro();
+        self.backend.imu.update_accel();
+    }
+}
+
 
 /// Run one motion profile through SITL INS into DCM and return worst attitude
 /// error in degrees.
@@ -100,7 +130,7 @@ fn run_sitl_ins_profile(
     duration_s: f64,
     sim: &mut AttitudeSim,
 ) -> f64 {
-    let mut backend = setup_backend();
+    let mut hookup = SitlInsHookup::new();
     let mut dcm = init_dcm_from_truth(sim);
     let mut timing = LoopTiming::new(LOOP_DT);
     let drift = DcmDriftOmega::default();
@@ -115,14 +145,13 @@ fn run_sitl_ins_profile(
         let rates = profile(sim.time_s);
         let gravity = gravity_in_body(&sim);
         let state = body_state_from_rates(rates, gravity);
-        let _ = backend.timer_update(now_us, &state, SitlTimerFileData::default());
+        let _ = hookup.timer_update(now_us, &state, SitlTimerFileData::default());
 
         if now_us >= next_loop_us {
-            backend.imu.update_gyro();
-            backend.imu.update_accel();
+            hookup.publish();
             timing.delta_time = LOOP_DT;
             assert_eq!(
-                dcm_matrix_step_from_ins(&mut dcm, &backend.imu, &timing, drift),
+                dcm_matrix_step_from_ins(&mut dcm, &hookup.frontend, &timing, drift),
                 MatrixHealth::Ok,
                 "matrix should stay healthy at t={now_us} us"
             );
@@ -142,7 +171,7 @@ fn run_sitl_ins_profile(
 #[test]
 fn sitl_ins_stationary_holds_attitude() {
     let mut sim = AttitudeSim::from_euler(0.2, -0.1, 1.0);
-    let mut backend = setup_backend();
+    let mut hookup = SitlInsHookup::new();
     let mut dcm = init_dcm_from_truth(&sim);
     let mut timing = LoopTiming::new(LOOP_DT);
     let drift = DcmDriftOmega::default();
@@ -155,14 +184,13 @@ fn sitl_ins_stationary_holds_attitude() {
         let gravity = gravity_in_body(&sim);
         let state = body_state_from_rates(rates, gravity);
         for _ in 0..gyro_per_loop {
-            let _ = backend.timer_update(now_us, &state, SitlTimerFileData::default());
+            let _ = hookup.timer_update(now_us, &state, SitlTimerFileData::default());
             now_us += GYRO_DT_US;
         }
-        backend.imu.update_gyro();
-        backend.imu.update_accel();
+        hookup.publish();
         timing.delta_time = LOOP_DT;
         assert_eq!(
-            dcm_matrix_step_from_ins(&mut dcm, &backend.imu, &timing, drift),
+            dcm_matrix_step_from_ins(&mut dcm, &hookup.frontend, &timing, drift),
             MatrixHealth::Ok
         );
         sim.step(rates, LOOP_DT as f64);
@@ -196,12 +224,12 @@ fn sitl_ins_dead_reckoning_tracks_truth() {
 /// The hookup reads published samples, not raw accumulation.
 #[test]
 fn dcm_update_skips_rotation_without_publish() {
-    let mut backend = setup_backend();
+    let mut hookup = SitlInsHookup::new();
     let state = SitlBodyState {
         roll_rate_dps: 57.295_78,
         ..SitlBodyState::default()
     };
-    let _ = backend.timer_update(0, &state, SitlTimerFileData::default());
+    let _ = hookup.timer_update(0, &state, SitlTimerFileData::default());
 
     let mut dcm = Dcm::new();
     let before = dcm.matrix;
@@ -209,9 +237,9 @@ fn dcm_update_skips_rotation_without_publish() {
     timing.delta_time = LOOP_DT;
     let drift = DcmDriftOmega::default();
 
-    // Raw samples exist but update_gyro was not called, so get_delta_angle
+    // Raw samples exist but frontend publish was not called, so get_delta_angle
     // has nothing to hand over and the matrix must not rotate.
-    dcm_matrix_step_from_ins(&mut dcm, &backend.imu, &timing, drift);
+    dcm_matrix_step_from_ins(&mut dcm, &hookup.frontend, &timing, drift);
 
     assert_eq!(dcm.omega, Vector3f::zero());
     assert_eq!(
@@ -227,7 +255,7 @@ fn sitl_ins_drift_correction_limits_gyro_bias() {
     let mut sim = AttitudeSim::new();
     sim.errors.gyro_bias = V3::new(1.0_f64.to_radians(), 0.0, 0.0);
 
-    let mut backend = setup_backend();
+    let mut hookup = SitlInsHookup::new();
     let mut dcm = init_dcm_from_truth(&sim);
     let mut drift = ap_ahrs::DcmDriftLoop::default();
     let mut timing = LoopTiming::new(LOOP_DT);
@@ -241,14 +269,13 @@ fn sitl_ins_drift_correction_limits_gyro_bias() {
         let gravity = gravity_in_body(&sim);
         let state = body_state_from_rates(rates, gravity);
         for _ in 0..gyro_per_loop {
-            let _ = backend.timer_update(now_us, &state, SitlTimerFileData::default());
+            let _ = hookup.timer_update(now_us, &state, SitlTimerFileData::default());
             now_us += GYRO_DT_US;
         }
-        backend.imu.update_gyro();
-        backend.imu.update_accel();
+        hookup.publish();
         timing.delta_time = LOOP_DT;
         assert_eq!(
-            ap_ahrs::dcm_step_with_drift_from_ins(&mut dcm, &mut drift, &backend.imu, &timing, None),
+            ap_ahrs::dcm_step_with_drift_from_ins(&mut dcm, &mut drift, &hookup.frontend, &timing, None),
             MatrixHealth::Ok
         );
         sim.step(rates, LOOP_DT as f64);
