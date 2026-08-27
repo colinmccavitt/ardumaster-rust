@@ -984,3 +984,41 @@ fn set_servos_applies_auto_flap_from_airspeed_via_glue() {
     assert_eq!(vehicle.last_auto_flap_percent, 100);
 }
 
+#[test]
+fn altitude_tecs_feed_runs_in_update_control() {
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.baro_healthy = true;
+    vehicle.relative_altitude_m = 120.0;
+    vehicle.baro_climb_rate_mps = 1.0;
+    vehicle.home_altitude_m = 100.0;
+    vehicle.next_wp_alt_m = 150.0;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.tracked_control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = false;
+
+    vehicle.update_control_mode();
+
+    assert!(vehicle.last_altitude_tecs_ran);
+    assert!(vehicle.tecs_throttle_demand > 0.0);
+}
+
+#[test]
+fn set_servos_calc_throttle_uses_tecs_in_auto() {
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = true;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.tecs_throttle_demand = 62.0;
+    vehicle.throttle_nudge = 2;
+    vehicle.servos.throttle_scaled = 0.0;
+    vehicle.stabilize_demands.throttle_scaled = 0.0;
+
+    vehicle.set_servos();
+
+    assert!(vehicle.last_set_servos_calc_throttle);
+    assert!((vehicle.servos.throttle_scaled - 64.0).abs() < 1e-6);
+}
+

@@ -15,6 +15,9 @@ use ap_math::scalar::constrain_int32;
 
 pub mod ahrs_hookup;
 pub mod altitude_glue_hookup;
+pub mod set_servos_glue_hookup;
+pub mod altitude_tecs_feed_hookup;
+pub mod tecs_baro_hookup;
 pub mod ahrs_pre_arm_hookup;
 pub mod gps_pre_arm_hookup;
 pub mod baro_pre_arm_hookup;

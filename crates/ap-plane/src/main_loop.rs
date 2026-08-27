@@ -9,6 +9,8 @@ use ap_math::scalar::degrees;
 use ap_ins::sitl::{SitlBodyState, SitlInsInstanceFiles, SITL_INS_MAX_INSTANCES};
 use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
+use ap_tecs::params::FlightStage;
+use ap_tecs::tecs::Tecs;
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
@@ -45,6 +47,8 @@ use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafe
 use crate::mission_scheduler_hookup::{mission_scheduler_tick, MissionContext, MissionSchedulerInputs};
 use crate::target_altitude::TargetAltitude;
 use crate::altitude_glue_hookup::{altitude_glue_tick, AltitudeGlueInputs};
+use crate::altitude_tecs_feed_hookup::{altitude_tecs_feed_tick, AltitudeTecsFeedInputs};
+use crate::set_servos_glue_hookup::{set_servos_calc_throttle_tick, SetServosGlueInputs};
 use crate::calc_throttle_glue_hookup::{calc_throttle_glue_tick, CalcThrottleGlueInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::nav_tecs_scheduler_hookup::nav_tecs_scheduler_publish_tick;
@@ -124,7 +128,7 @@ pub struct StabilizeRun {
 }
 
 /// Vehicle state the main loop carries between scheduler ticks.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PlaneMainLoop {
     pub mode: ModeState,
     /// State cleared on each mode change, upstream `Mode::enter`.
@@ -209,10 +213,19 @@ pub struct PlaneMainLoop {
     pub controllers: StabilizeControllers,
     /// HAL inputs for navigation scheduler tick glue.
     pub navigation_scheduler_inputs: NavigationSchedulerInputs,
+    /// TECS controller, upstream `TECS_controller`.
+    pub tecs: Tecs,
     /// TECS throttle demand 0..100 for calc_throttle glue.
     pub tecs_throttle_demand: f32,
     /// Throttle nudge from mission/GCS.
     pub throttle_nudge: i16,
+    pub target_airspeed_cm: f32,
+    pub mission_alt_offset_cm: i32,
+    pub rangefinder_correction_m: f32,
+    pub next_wp_alt_m: f32,
+    pub tecs_flight_stage: FlightStage,
+    pub last_altitude_tecs_ran: bool,
+    pub last_set_servos_calc_throttle: bool,
     /// L1/TECS navigation publish source refreshed before stabilize.
     pub nav_tecs: NavTecsPublish,
     /// Raw navigation commands before limiting, upstream nav_controller/TECS.
@@ -439,8 +452,16 @@ impl Default for PlaneMainLoop {
             sitl_ins_host_files: [SitlInsHostFiles::default(); SITL_INS_MAX_INSTANCES],
             controllers: StabilizeControllers::default(),
             navigation_scheduler_inputs: NavigationSchedulerInputs::default(),
+            tecs: Tecs::default(),
             tecs_throttle_demand: 0.0,
             throttle_nudge: 0,
+            target_airspeed_cm: 1500.0,
+            mission_alt_offset_cm: 0,
+            rangefinder_correction_m: 0.0,
+            next_wp_alt_m: 0.0,
+            tecs_flight_stage: FlightStage::Normal,
+            last_altitude_tecs_ran: false,
+            last_set_servos_calc_throttle: false,
             nav_tecs: NavTecsPublish::default(),
             nav_commands: NavCommandInputs::default(),
             rc_sticks: RcStickInputs::default(),
@@ -796,6 +817,46 @@ impl PlaneMainLoop {
         );
         self.last_target_altitude = mission_out.target;
         self.mission_advanced = mission_out.advanced;
+        if mission_out.ran {
+            self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
+        }
+
+        let have_baro = self
+            .baro_sample
+            .map(|s| s.have_sample)
+            .unwrap_or(self.baro_healthy);
+        let tecs_out = altitude_tecs_feed_tick(
+            &mut self.tecs,
+            &AltitudeTecsFeedInputs {
+                relative_altitude_m: self.relative_altitude_m,
+                baro_climb_rate_mps: self.baro_climb_rate_mps,
+                have_baro_sample: have_baro,
+                baro_healthy: self.baro_healthy,
+                home_altitude_m: self.home_altitude_m,
+                next_wp_alt_m: self.next_wp_alt_m,
+                mission_alt_offset_cm: self.mission_alt_offset_cm,
+                rangefinder_correction_m: self.rangefinder_correction_m,
+                target: self.last_target_altitude,
+                throttle_suppressed: self.mode_entry.throttle_suppressed,
+                throttle_nudge: self.throttle_nudge,
+                target_airspeed_cm: self.target_airspeed_cm,
+                flight_stage: self.tecs_flight_stage,
+                pitch_rad: self.pitch_rad,
+                cos_roll: ap_math::scalar::Real::cos(self.attitude.roll_rad()),
+                use_airspeed: self.airspeed_tas > 1.0,
+                pitch_trim_deg: 0.0,
+                now_ms: ap_hal::time::Millis(self.yaw_ctx.now_ms),
+                dt: self.loop_timing.delta_time,
+            },
+        );
+        self.last_altitude_tecs_ran = tecs_out.ran;
+        if tecs_out.ran {
+            self.tecs_throttle_demand = tecs_out.tecs_throttle_demand;
+            self.nav_tecs.tecs_pitch_demand_rad = tecs_out.tecs_pitch_demand_rad;
+            self.navigation_scheduler_inputs.commanded_pitch_cd =
+                ap_math::scalar::rad_to_cd(tecs_out.tecs_pitch_demand_rad) as i32;
+        }
+
 
         let nav_out = if self.navigation_scheduler_inputs.commanded_roll_cd != 0
             || self.navigation_scheduler_inputs.commanded_pitch_cd != 0
@@ -1042,6 +1103,26 @@ impl PlaneMainLoop {
         );
         self.disarm_throttle_applied = arm_out.applied;
         self.servos = arm_out.servos;
+
+        let calc_out = set_servos_calc_throttle_tick(
+            self.servos,
+            &SetServosGlueInputs {
+                control_mode: self.mode.control_mode,
+                features: self.features,
+                tecs_throttle_demand: self.tecs_throttle_demand,
+                throttle_nudge: self.throttle_nudge,
+                landing_throttle_applied: self.landing_throttle_applied,
+                disarm_throttle_applied: self.disarm_throttle_applied,
+                mode_entry_applied: self.mode_entry_throttle_applied,
+                mode_glue_throttle_restored: self.mode_glue_throttle_restored,
+                pilot_throttle: self.pilot_throttle_glue_inputs(),
+            },
+        );
+        self.last_set_servos_calc_throttle = calc_out.applied;
+        if calc_out.applied {
+            self.stabilize_demands.throttle_scaled = calc_out.stabilize_throttle;
+        }
+        self.servos = calc_out.servos;
 
         self.last_go_around_latched = apply_landing_go_around_latch(
             &mut self.landing.flags,
