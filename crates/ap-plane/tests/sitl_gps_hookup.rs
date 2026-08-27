@@ -154,3 +154,40 @@ fn main_loop_gates_yaw_ctx_on_gps_health() {
     assert!(vehicle.ahrs_using_gps || health.usable_for_drift());
 }
 
+#[test]
+fn main_loop_pre_arm_passes_with_healthy_sitl_gps() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert!(vehicle.gps_health.expect("health").is_healthy());
+    assert!(vehicle.gps_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_refuses_when_gps_unhealthy() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.sitl_gps = Some(SitlGpsHookup::default());
+    vehicle.ahrs_pre_arm_ok = true;
+    vehicle.gps_health = Some(ap_gps::GpsHealthFlags {
+        have_fix: false,
+        has_3d_fix: false,
+        num_sats_ok: false,
+        velocity_valid: false,
+    });
+
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.gps_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
+

@@ -12,6 +12,7 @@ use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
+use crate::gps_pre_arm_hookup::{gps_pre_arm_check, plane_pre_arm_checks_gps};
 use crate::mode_run::{pre_arm_checks, PreArmResult};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::landing_state_machine::VerifyLandEffects;
@@ -264,7 +265,9 @@ pub struct PlaneMainLoop {
     pub ahrs_using_gps: bool,
     /// Pre-arm AHRS gate, upstream `AP_AHRS::pre_arm_check(false)`.
     pub ahrs_pre_arm_ok: bool,
-    /// Combined mode + AHRS pre-arm result for arming.
+    /// Pre-arm GPS gate, upstream `AP_GPS::isHealthy()` when GPS configured.
+    pub gps_pre_arm_ok: bool,
+    /// Combined mode + AHRS + GPS pre-arm result for arming.
     pub pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
@@ -509,6 +512,7 @@ impl Default for PlaneMainLoop {
             ahrs_healthy: false,
             ahrs_using_gps: false,
             ahrs_pre_arm_ok: false,
+            gps_pre_arm_ok: false,
             pre_arm_ok: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
@@ -712,8 +716,11 @@ impl PlaneMainLoop {
         self.pilot_throttle_source = thr_ctx.pilot_throttle_source;
 
         let mode_pre_arm = pre_arm_checks(true, "");
+        let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
+        let require_gps = self.sitl_gps.is_some();
+        self.gps_pre_arm_ok = gps_pre_arm_check(self.gps_health, require_gps);
         self.pre_arm_ok = matches!(
-            plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok),
+            plane_pre_arm_checks_gps(with_ahrs, self.gps_pre_arm_ok),
             PreArmResult::Allowed
         );
 
