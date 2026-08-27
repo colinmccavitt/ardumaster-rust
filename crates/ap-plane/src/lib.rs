@@ -49,6 +49,7 @@ pub mod srv_pwm_publish_hookup;
 pub mod stabilize_hookup;
 pub mod target_altitude;
 pub mod throttle_rules;
+pub mod throttle_context_hookup;
 
 /// The roll demand handed to the attitude controller, upstream's
 /// `Plane::nav_roll_cd`.

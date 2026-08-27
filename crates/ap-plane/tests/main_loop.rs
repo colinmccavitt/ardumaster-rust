@@ -755,3 +755,22 @@ fn set_servos_clears_mode_entry_throttle_on_altitude() {
     assert_eq!(vehicle.servos.throttle_scaled, 80.0);
 }
 
+
+
+#[test]
+fn update_control_mode_sets_throttle_rules_for_stabilize() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ap_plane::mode_table::ModeNumber::Stabilize.as_number();
+    vehicle.update_control_mode();
+    assert!(vehicle.throttle_use_limits);
+    assert!(!vehicle.throttle_use_battery_comp);
+}
+
+#[test]
+fn update_control_mode_sets_battery_comp_in_fbwb() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ap_plane::mode_table::ModeNumber::FlyByWireB.as_number();
+    vehicle.update_control_mode();
+    assert!(vehicle.throttle_use_limits);
+    assert!(vehicle.throttle_use_battery_comp);
+}

@@ -65,6 +65,9 @@ use crate::mode_entry_scheduler_hookup::{
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
 };
+use crate::throttle_context_hookup::{
+    throttle_context_tick, ThrottleContextInputs,
+};
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -280,6 +283,24 @@ pub struct PlaneMainLoop {
     pub mode_entry_throttle_applied: bool,
     /// Whether mode-transition logic cleared throttle suppression.
     pub mode_transition_throttle_cleared: bool,
+    /// Whether configured throttle limits apply this tick.
+    pub throttle_use_limits: bool,
+    /// Whether battery voltage compensation applies this tick.
+    pub throttle_use_battery_comp: bool,
+    /// How pilot throttle is mapped this tick.
+    pub pilot_throttle_source: crate::mode_run::PilotThrottleSource,
+    /// `THR_PASS_STAB` parameter.
+    pub throttle_passthru_stabilize: bool,
+    /// Guided mode passthrough throttle flag.
+    pub guided_throttle_passthru: bool,
+    /// Quadplane forward throttle allowed in VTOL.
+    pub allow_forward_throttle_in_vtol: bool,
+    /// Whether a quadplane is compiled in.
+    pub quadplane_available: bool,
+    /// `IDLE_GOV_MANUAL` when quadplane present.
+    pub idle_gov_manual: bool,
+    /// Nav scripting active this tick.
+    pub nav_scripting_active: bool,
     /// Altitude above home/reference, metres. Upstream `relative_altitude`.
     pub relative_altitude_m: f32,
     /// Servo outputs about to be published, upstream `set_servos` state.
@@ -495,6 +516,15 @@ impl Default for PlaneMainLoop {
             disarm_throttle_applied: false,
             mode_entry_throttle_applied: false,
             mode_transition_throttle_cleared: false,
+            throttle_use_limits: true,
+            throttle_use_battery_comp: true,
+            pilot_throttle_source: crate::mode_run::PilotThrottleSource::TrimAdjusted,
+            throttle_passthru_stabilize: false,
+            guided_throttle_passthru: false,
+            allow_forward_throttle_in_vtol: true,
+            quadplane_available: false,
+            idle_gov_manual: false,
+            nav_scripting_active: false,
             relative_altitude_m: 0.0,
             servos: ServoOutputState::default(),
         }
@@ -650,6 +680,20 @@ impl PlaneMainLoop {
             self.stick_mixing,
             &self.features,
         );
+
+        let thr_ctx = throttle_context_tick(&ThrottleContextInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            nav_scripting_active: self.nav_scripting_active,
+            throttle_passthru_stabilize: self.throttle_passthru_stabilize,
+            guided_throttle_passthru: self.guided_throttle_passthru,
+            allow_forward_throttle_in_vtol: self.allow_forward_throttle_in_vtol,
+            quadplane_available: self.quadplane_available,
+            idle_gov_manual: self.idle_gov_manual,
+        });
+        self.throttle_use_limits = thr_ctx.use_throttle_limits;
+        self.throttle_use_battery_comp = thr_ctx.use_battery_compensation;
+        self.pilot_throttle_source = thr_ctx.pilot_throttle_source;
 
         let mode_pre_arm = pre_arm_checks(true, "");
         self.pre_arm_ok = matches!(
