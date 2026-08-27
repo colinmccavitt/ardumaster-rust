@@ -52,6 +52,18 @@ pub struct SrvPwmPublishOutput {
     pub ran: bool,
 }
 
+/// Standard ArduPlane SRV functions published as PWM each `set_servos` tick.
+const PLANE_PWM_FUNCTIONS: [Function; 8] = [
+    Function::THROTTLE,
+    Function::AILERON,
+    Function::ELEVATOR,
+    Function::RUDDER,
+    Function::FLAP,
+    Function::FLAP_AUTO,
+    Function::ELEVON_LEFT,
+    Function::ELEVON_RIGHT,
+];
+
 /// Assign the first `channel_count` entries to functions from the registry mask.
 pub fn configure_channels(reg: &Registry, state: &mut SrvPwmPublishState, functions: &[Function]) {
     state.channel_count = u8::try_from(functions.len().min(NUM_SERVO_CHANNELS))
@@ -63,6 +75,19 @@ pub fn configure_channels(reg: &Registry, state: &mut SrvPwmPublishState, functi
             ch.config = default_servo_config();
         }
     }
+}
+
+/// Refresh the PWM channel table from registry assignments before publish.
+pub fn sync_pwm_channels_from_registry(reg: &Registry, state: &mut SrvPwmPublishState) {
+    let mut assigned = [Function::NONE; PLANE_PWM_FUNCTIONS.len()];
+    let mut count = 0usize;
+    for function in PLANE_PWM_FUNCTIONS {
+        if reg.function_assigned(function) {
+            assigned[count] = function;
+            count += 1;
+        }
+    }
+    configure_channels(reg, state, &assigned[..count]);
 }
 
 /// Publish scaled registry outputs as PWM, upstream `SRV_Channels::calc_pwm`.

@@ -33,7 +33,8 @@ use crate::suppress_throttle_scheduler_hookup::{
     suppress_throttle_scheduler_tick, SuppressThrottleSchedulerInputs,
 };
 use crate::srv_pwm_publish_hookup::{
-    srv_pwm_publish_tick, SrvPwmPublishInputs, SrvPwmPublishState,
+    srv_pwm_publish_tick, sync_pwm_channels_from_registry, SrvPwmPublishInputs,
+    SrvPwmPublishState,
 };
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
@@ -245,6 +246,8 @@ pub struct PlaneMainLoop {
     /// Output channels for registry PWM publish.
     pub srv_pwm: SrvPwmPublishState,
     pub srv_pwm_inputs: SrvPwmPublishInputs,
+    /// Whether the latest `set_servos` tick published registry PWM.
+    pub last_pwm_publish_ran: bool,
     /// Auto flap percent from the latest SRV output tick.
     pub last_auto_flap_percent: i8,
     /// `hal.util->get_soft_armed()`.
@@ -452,6 +455,7 @@ impl Default for PlaneMainLoop {
             },
             srv_pwm: SrvPwmPublishState::default(),
             srv_pwm_inputs: SrvPwmPublishInputs::default(),
+            last_pwm_publish_ran: false,
             last_auto_flap_percent: 0,
             soft_armed: false,
             disarm_throttle_applied: false,
@@ -704,11 +708,13 @@ impl PlaneMainLoop {
         );
         self.last_auto_flap_percent = srv_out.auto_flap_percent;
 
-        let _pwm_out = srv_pwm_publish_tick(
+        sync_pwm_channels_from_registry(&self.srv_output.registry, &mut self.srv_pwm);
+        let pwm_out = srv_pwm_publish_tick(
             &mut self.srv_output.registry,
             &mut self.srv_pwm,
             &self.srv_pwm_inputs,
         );
+        self.last_pwm_publish_ran = pwm_out.ran;
 
         let sup_out = suppress_throttle_scheduler_tick(
             self.servos,

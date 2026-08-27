@@ -613,3 +613,47 @@ fn set_servos_zeros_throttle_on_mode_entry_suppression() {
     assert_eq!(vehicle.servos.throttle_scaled, 0.0);
 }
 
+#[test]
+fn set_servos_publishes_throttle_pwm_from_registry() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::srv_pwm_publish_hookup::channel_pwm;
+    use ap_servo::function::Function;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 1000.0,
+        ..ServoOutputState::default()
+    };
+    vehicle.srv_output.registry.assign(Function::THROTTLE, 1 << 0);
+
+    vehicle.set_servos();
+
+    assert!(vehicle.last_pwm_publish_ran);
+    let pwm = channel_pwm(&vehicle.srv_pwm, Function::THROTTLE).expect("throttle pwm");
+    assert!(pwm > 1900, "full throttle pwm expected, got {pwm}");
+}
+
+#[test]
+fn scheduler_tick_publishes_throttle_pwm_after_set_servos() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::srv_pwm_publish_hookup::channel_pwm;
+    use ap_servo::function::Function;
+
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 1000.0,
+        ..ServoOutputState::default()
+    };
+    vehicle.srv_output.registry.assign(Function::THROTTLE, 1 << 0);
+
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert!(vehicle.last_pwm_publish_ran);
+    let pwm = channel_pwm(&vehicle.srv_pwm, Function::THROTTLE).expect("throttle pwm");
+    assert!(pwm > 1900, "full throttle pwm expected, got {pwm}");
+}
+

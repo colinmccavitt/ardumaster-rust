@@ -2,8 +2,8 @@
 
 use ap_plane::srv_output_hookup::{set_servos_flaps, FlapDeployInputs};
 use ap_plane::srv_pwm_publish_hookup::{
-    channel_pwm, configure_channels, srv_pwm_publish_tick, SrvPwmPublishInputs,
-    SrvPwmPublishState,
+    channel_pwm, configure_channels, srv_pwm_publish_tick,
+    sync_pwm_channels_from_registry, SrvPwmPublishInputs, SrvPwmPublishState,
 };
 use ap_servo::function::Function;
 use ap_servo::registry::Registry;
@@ -38,3 +38,16 @@ fn publish_tick_writes_flap_pwm_from_registry_scaled() {
     let flap_pwm = channel_pwm(&pwm_state, Function::FLAP).expect("flap pwm");
     assert!(flap_pwm > 1900, "full flap should be near max, got {flap_pwm}");
 }
+
+#[test]
+fn sync_pwm_channels_skips_unassigned_functions() {
+    let mut reg = Registry::new();
+    reg.assign(Function::THROTTLE, 1 << 0);
+
+    let mut pwm_state = SrvPwmPublishState::default();
+    sync_pwm_channels_from_registry(&reg, &mut pwm_state);
+
+    assert_eq!(pwm_state.channel_count, 1);
+    assert_eq!(pwm_state.channels[0].function, Function::THROTTLE);
+}
+
