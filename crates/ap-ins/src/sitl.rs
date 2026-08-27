@@ -1276,6 +1276,14 @@ impl SitlInsCluster {
         }
     }
 
+    /// Apply SIM_VIB noise/vibration config to every registered backend,
+    /// upstream shared noise inputs for all IMU instances.
+    pub fn set_noise_config(&mut self, config: Option<SitlInsNoiseConfig>) {
+        for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
+            slot.noise_config = config.clone();
+        }
+    }
+
     /// Apply shared fail masks to every registered backend.
     pub fn set_fail_masks(&mut self, accel_fail_mask: u32, gyro_fail_mask: u32) {
         for slot in self.backends.iter_mut().flatten().take(self.count as usize) {

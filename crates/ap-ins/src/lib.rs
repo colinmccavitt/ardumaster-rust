@@ -44,6 +44,8 @@
 //! SIM_IMUT{n}_* into backend temperature curve and temp-cal correction.
 //! [`SitlInsFilePlaybackParams`] binds SIM_ACC_FILE_RW / SIM_GYR_FILE_RW into
 //! backend file playback modes.
+//! [`SitlInsNoiseParams`] binds SIM_VIB_FREQ_* / SIM_VIB_MOT_* into
+//! [`SitlImuBackend::noise_config`] for SITL vibration injection.
 
 #![no_std]
 
@@ -54,6 +56,7 @@ pub mod sitl_brd_trim;
 pub mod sitl_fail_msk;
 pub mod sitl_temp_cal;
 pub mod sitl_file_playback;
+pub mod sitl_noise;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
 pub use hntch_params::InsHntchParams;
@@ -61,6 +64,7 @@ pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use sitl_fail_msk::SitlFailMskParams;
 pub use sitl_temp_cal::{SitlImuTempParams, SitlInsTempCalParams};
 pub use sitl_file_playback::SitlInsFilePlaybackParams;
+pub use sitl_noise::{SitlInsMotorRuntime, SitlInsNoiseParams};
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,
