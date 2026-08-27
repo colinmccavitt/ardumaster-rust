@@ -31,10 +31,12 @@
 //!
 //! # What this slice does not include
 //!
-//! Sculling compensation (upstream has none -- the delta velocity is a plain
+//! Dynamic harmonic per-motor tracking, BLHeli, and FFT notch sources,
+//! sculling compensation (upstream has none -- the delta velocity is a plain
 //! rectangular sum), vibration and clipping metrics, temperature calibration,
 //! board orientation, gyro/accel offset and scale calibration, and the FFT
 //! window. The SITL backend's deterministic sample path lives in [`sitl`].
+//! [`InsHntchParams`] binds INS_HNTCH_* and throttle/RPM centre tracking.
 //! [`SitlBrdTrimParams`] binds SIM_BRD_TRIM to [`SitlImuBackend::board_trim`].
 //! [`SitlFailMskParams`] binds SIM_ACCEL_FAIL_MSK / SIM_GYRO_FAIL_MSK into
 //! backend fail masks and [`SitlInsCluster::timer_update`] primary selection.
@@ -42,11 +44,13 @@
 #![no_std]
 
 pub mod frontend;
+pub mod hntch_params;
 pub mod sitl;
 pub mod sitl_brd_trim;
 pub mod sitl_fail_msk;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
+pub use hntch_params::InsHntchParams;
 pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use sitl_fail_msk::SitlFailMskParams;
 pub use frontend::{
@@ -454,6 +458,26 @@ the difference is a sample interval, not an absolute time"
             params.composite_notches,
         );
         self.gyro_notch.init(sample_rate_hz, params);
+    }
+
+    /// Retune the harmonic notch centre, upstream `HarmonicNotch::update_params`
+    /// frequency half for tracking modes.
+    pub fn update_gyro_notch_center(&mut self, center_freq_hz: f32) {
+        if self.gyro_notch.is_initialised() {
+            self.gyro_notch.update(center_freq_hz);
+        }
+    }
+
+    /// Whether the gyro harmonic notch bank has been configured.
+    #[must_use]
+    pub const fn gyro_notch_is_initialised(&self) -> bool {
+        self.gyro_notch.is_initialised()
+    }
+
+    /// Centre frequency of notch `idx` for tests and diagnostics.
+    #[must_use]
+    pub fn gyro_notch_center(&self, idx: usize) -> Option<f32> {
+        self.gyro_notch.notch_center(idx)
     }
 
     /// Set the gyro low-pass cutoff, upstream `update_gyro_filters`.

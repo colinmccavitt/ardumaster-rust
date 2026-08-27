@@ -5,7 +5,8 @@
 
 use ap_math::vector3::Vector3f;
 
-use crate::{ImuInstance, LoopTiming};
+use crate::hntch_params::InsHntchParams;
+use crate::{ImuInstance, LoopTiming, DEFAULT_GYRO_FILTER_HZ};
 
 /// Maximum IMU instances, upstream `INS_MAX_INSTANCES` for Plane.
 pub const INS_MAX_INSTANCES: usize = 3;
@@ -349,6 +350,51 @@ impl InertialSensorFrontend {
         self.accel_usable(self.primary)
     }
 
+
+    /// Retune gyro filters from INS_HNTCH_* and INS_GYRO_FILTER, upstream
+    /// `AP_InertialSensor::update_gyro_filters`.
+    pub fn update_gyro_filters(&mut self, hntch: &InsHntchParams, gyro_filter_hz: f32) {
+        let apply_all = hntch.enable_on_all_imus();
+        for i in 0..self.gyro_count as usize {
+            let instance = i as u8;
+            let apply_notch = hntch.enable && (apply_all || instance == self.primary);
+            let rate = f32::from(self.get_gyro_rate_hz(instance));
+            if let Some(imu) = self.imu_mut(instance) {
+                if apply_notch && hntch.num_notches() > 0 {
+                    imu.set_gyro_notch(
+                        rate,
+                        hntch.harmonic_notch_params(),
+                        hntch.num_notches(),
+                    );
+                }
+                imu.set_gyro_filter(rate, gyro_filter_hz);
+            }
+        }
+    }
+
+    /// Update harmonic notch centre frequencies from throttle/RPM, upstream
+    /// `AP_Vehicle::update_dynamic_notch` + `HarmonicNotch::update_params`.
+    pub fn update_dynamic_notch(
+        &mut self,
+        hntch: &InsHntchParams,
+        throttle: f32,
+        rpm: Option<f32>,
+    ) {
+        if !hntch.enable || hntch.tracking_mode() == ap_filter::harmonic::TrackingMode::Fixed {
+            return;
+        }
+        let apply_all = hntch.enable_on_all_imus();
+        for i in 0..self.gyro_count as usize {
+            let instance = i as u8;
+            if !apply_all && instance != self.primary {
+                continue;
+            }
+            if let Some(imu) = self.imu_mut(instance) {
+                hntch.update_notch_center(imu, throttle, rpm);
+            }
+        }
+    }
+
     /// Mark every instance unhealthy before backends publish, upstream
     /// `AP_InertialSensor::update`.
     pub fn begin_update(&mut self) {
@@ -506,6 +552,46 @@ mod tests {
         assert!(fe.get_accel().z < 0.0);
         assert!(fe.get_delta_angle(&timing).is_some());
         assert!(fe.get_delta_velocity(&timing).is_some());
+    }
+
+    #[test]
+    fn update_gyro_filters_applies_notch_on_primary() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.register_sitl_backend(8000, 1000).unwrap();
+        let hntch = InsHntchParams {
+            enable: true,
+            freq_hz: 80.0,
+            bandwidth_hz: 40.0,
+            attenuation_db: 40.0,
+            harmonics: 1,
+            ..InsHntchParams::default()
+        };
+        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ);
+        assert!(fe.imu(0).unwrap().gyro_notch_is_initialised());
+    }
+
+    #[test]
+    fn update_dynamic_notch_retunes_from_throttle() {
+        let mut fe = InertialSensorFrontend::new();
+        fe.register_sitl_backend(1000, 1000).unwrap();
+        let hntch = InsHntchParams {
+            enable: true,
+            freq_hz: 100.0,
+            bandwidth_hz: 40.0,
+            attenuation_db: 40.0,
+            harmonics: 1,
+            reference: 1.0,
+            mode: 1,
+            freq_min_ratio: 0.5,
+            ..InsHntchParams::default()
+        };
+        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ);
+        fe.update_dynamic_notch(&hntch, 1.0, None);
+        for _ in 0..32 {
+            fe.update_dynamic_notch(&hntch, 0.25, None);
+        }
+        let center = fe.imu(0).unwrap().gyro_notch_center(0).expect("notch");
+        assert!((center - 50.0).abs() < 1.0, "quarter throttle -> 50 Hz, got {center}");
     }
 
     #[test]

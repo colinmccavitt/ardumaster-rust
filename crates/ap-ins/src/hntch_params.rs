@@ -113,6 +113,50 @@ impl InsHntchParams {
         1
     }
 
+    /// Calculate the notch centre frequency from throttle and optional RPM,
+    /// upstream `AP_Vehicle::update_dynamic_notch`.
+    #[must_use]
+    pub fn calculate_center_freq_hz(&self, throttle: f32, rpm: Option<f32>) -> f32 {
+        if !self.enable {
+            return 0.0;
+        }
+
+        let ref_freq = self.freq_hz;
+        let reference = self.reference;
+
+        if reference <= 0.0 {
+            return ref_freq;
+        }
+
+        match self.tracking_mode() {
+            TrackingMode::Fixed => ref_freq,
+            TrackingMode::UpdateThrottle => {
+                ref_freq * libm::sqrtf(throttle.max(0.0) / reference)
+            }
+            TrackingMode::UpdateRpm | TrackingMode::UpdateRpm2 => match rpm {
+                Some(r) if r > 0.0 => r * reference * (1.0 / 60.0),
+                _ => 0.0,
+            },
+            // BLHeli, FFT, and per-motor dynamic harmonic are later slices.
+            TrackingMode::UpdateBlHeli | TrackingMode::UpdateGyroFft => ref_freq,
+        }
+    }
+
+    /// Retune a configured notch bank from live throttle/RPM inputs, upstream
+    /// `HarmonicNotch::update_params` frequency half.
+    pub fn update_notch_center(
+        &self,
+        imu: &mut ImuInstance,
+        throttle: f32,
+        rpm: Option<f32>,
+    ) {
+        if !self.enable || self.tracking_mode() == TrackingMode::Fixed {
+            return;
+        }
+        let center = self.calculate_center_freq_hz(throttle, rpm);
+        imu.update_gyro_notch_center(center);
+    }
+
     /// Apply gyro filters to one IMU, upstream `update_gyro_filters` for one
     /// instance.
     pub fn apply_gyro_filters_to_imu(
@@ -154,6 +198,50 @@ mod tests {
             CompositeNotches::Double,
             "upstream checks double before triple"
         );
+    }
+
+    #[test]
+    fn throttle_tracking_scales_with_sqrt_throttle() {
+        let params = InsHntchParams {
+            enable: true,
+            freq_hz: 100.0,
+            reference: 0.25,
+            mode: 1,
+            ..InsHntchParams::default()
+        };
+        let at_ref = params.calculate_center_freq_hz(0.25, None);
+        assert!((at_ref - 100.0).abs() < 0.01, "at reference throttle -> ref freq");
+
+        let at_quarter = params.calculate_center_freq_hz(0.0625, None);
+        assert!((at_quarter - 50.0).abs() < 0.01, "quarter throttle -> half freq");
+    }
+
+    #[test]
+    fn rpm_tracking_scales_with_rpm_and_reference() {
+        let params = InsHntchParams {
+            enable: true,
+            freq_hz: 80.0,
+            reference: 2.0,
+            mode: 2,
+            ..InsHntchParams::default()
+        };
+        // 3000 RPM * 2.0 ref * (1/60) = 100 Hz
+        let center = params.calculate_center_freq_hz(0.0, Some(3000.0));
+        assert!((center - 100.0).abs() < 0.01);
+
+        assert_eq!(params.calculate_center_freq_hz(0.0, None), 0.0);
+    }
+
+    #[test]
+    fn zero_reference_uses_configured_centre() {
+        let params = InsHntchParams {
+            enable: true,
+            freq_hz: 80.0,
+            reference: 0.0,
+            mode: 1,
+            ..InsHntchParams::default()
+        };
+        assert_eq!(params.calculate_center_freq_hz(0.5, None), 80.0);
     }
 
     #[test]
@@ -207,5 +295,34 @@ mod tests {
             notched < plain * 0.5,
             "80 Hz tone should be attenuated (notched={notched}, plain={plain})"
         );
+    }
+
+    #[test]
+    fn throttle_tracking_retunes_notch_centre() {
+        let params = InsHntchParams {
+            enable: true,
+            freq_hz: 100.0,
+            bandwidth_hz: 40.0,
+            attenuation_db: 40.0,
+            harmonics: 1,
+            reference: 1.0,
+            mode: 1,
+            freq_min_ratio: 0.5,
+            ..InsHntchParams::default()
+        };
+
+        let mut imu = ImuInstance::new();
+        params.apply_gyro_filters_to_imu(&mut imu, 1000.0, DEFAULT_GYRO_FILTER_HZ);
+        params.update_notch_center(&mut imu, 1.0, None);
+
+        assert!(imu.gyro_notch_is_initialised());
+        let center = imu.gyro_notch_center(0).expect("notch placed");
+        assert!((center - 100.0).abs() < 1.0, "full throttle -> 100 Hz, got {center}");
+
+        for _ in 0..32 {
+            params.update_notch_center(&mut imu, 0.25, None);
+        }
+        let center = imu.gyro_notch_center(0).expect("notch retuned");
+        assert!((center - 50.0).abs() < 1.0, "quarter throttle -> 50 Hz, got {center}");
     }
 }
