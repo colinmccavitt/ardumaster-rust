@@ -478,3 +478,21 @@ fn scheduler_tick_advances_mission_in_auto() {
     assert_eq!(vehicle.last_target_altitude, TargetAltitude::FromNextWaypoint);
 }
 
+#[test]
+fn set_servos_zeros_throttle_when_landing_suppressed() {
+    use ap_plane::landing_hookup::ServoOutputState;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.flight_stage_is_land = true;
+    vehicle.landing_throttle_suppressed = true;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 60.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.landing_throttle_applied);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}
+

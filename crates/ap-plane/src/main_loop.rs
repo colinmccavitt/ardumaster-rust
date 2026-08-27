@@ -19,6 +19,9 @@ use crate::deepstall_override_scheduler_hookup::{
 use crate::landing_hookup::ServoOutputState;
 use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
+use crate::landing_throttle_scheduler_hookup::{
+    landing_throttle_scheduler_tick, LandingThrottleSchedulerInputs,
+};
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
@@ -167,6 +170,8 @@ pub struct PlaneMainLoop {
     pub deepstall_override: DeepstallOverrideInputs,
     /// Whether landing overrode servos on the last `set_servos`.
     pub landing_servo_override_applied: bool,
+    /// Whether landing zeroed throttle on the last `set_servos`.
+    pub landing_throttle_applied: bool,
     /// Go-around requested because deepstall elevator is missing.
     pub landing_request_go_around: bool,
     /// Mission index and completion, upstream `AP_Mission`.
@@ -322,6 +327,7 @@ impl Default for PlaneMainLoop {
                 elevator_present: true,
             },
             landing_servo_override_applied: false,
+            landing_throttle_applied: false,
             landing_request_go_around: false,
             mission: MissionContext::default(),
             mission_inputs: MissionSchedulerInputs::default(),
@@ -521,6 +527,16 @@ impl PlaneMainLoop {
         self.landing_servo_override_applied = ds_out.applied_override;
         self.landing_request_go_around = ds_out.request_go_around;
         self.servos = ds_out.servos;
+
+        let thr_out = landing_throttle_scheduler_tick(
+            self.servos,
+            &LandingThrottleSchedulerInputs {
+                flight_stage_is_land: self.flight_stage_is_land,
+                throttle_suppressed: self.landing_throttle_suppressed,
+            },
+        );
+        self.landing_throttle_applied = thr_out.applied;
+        self.servos = thr_out.servos;
     }
 }
 

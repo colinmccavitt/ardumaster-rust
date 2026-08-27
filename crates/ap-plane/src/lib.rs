@@ -26,6 +26,7 @@ pub mod deepstall_override_scheduler_hookup;
 pub mod go_around_hookup;
 pub mod landing_loop;
 pub mod landing_loop_hookup;
+pub mod landing_throttle_scheduler_hookup;
 pub mod main_loop;
 pub mod rangefinder_bump_hookup;
 pub mod rangefinder_bump_scheduler_hookup;
