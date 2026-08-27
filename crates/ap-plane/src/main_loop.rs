@@ -96,6 +96,7 @@ use crate::manual_mode_hookup::{
     manual_mode_nav_tick, manual_mode_servos_tick, ManualModeNavInputs,
     ManualModeServosInputs,
 };
+use crate::stabilize_mode_hookup::{stabilize_mode_nav_tick, StabilizeModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -400,6 +401,8 @@ pub struct PlaneMainLoop {
     pub manual_mode_nav_applied: bool,
     /// Whether FBWA nav stick mapping ran this tick.
     pub fbwa_mode_nav_applied: bool,
+    /// Whether Stabilize nav zeroing ran this tick.
+    pub stabilize_mode_nav_applied: bool,
     /// Whether manual-mode RC passthrough ran in set_servos.
     pub manual_mode_servos_applied: bool,
     /// `THR_PASS_STAB` parameter.
@@ -682,6 +685,7 @@ impl Default for PlaneMainLoop {
             pilot_throttle_source: crate::mode_run::PilotThrottleSource::TrimAdjusted,
             manual_mode_nav_applied: false,
             fbwa_mode_nav_applied: false,
+            stabilize_mode_nav_applied: false,
             manual_mode_servos_applied: false,
             throttle_passthru_stabilize: false,
             guided_throttle_passthru: false,
@@ -1089,6 +1093,16 @@ impl PlaneMainLoop {
         if fbwa_nav.applied {
             self.nav_tecs.nav_roll_cd = fbwa_nav.nav_roll_cd;
             self.navigation_scheduler_inputs.commanded_pitch_cd = fbwa_nav.nav_pitch_cd;
+        }
+
+        let stabilize_nav = stabilize_mode_nav_tick(&StabilizeModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+        });
+        self.stabilize_mode_nav_applied = stabilize_nav.applied;
+        if stabilize_nav.applied {
+            self.nav_tecs.nav_roll_cd = stabilize_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = stabilize_nav.nav_pitch_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
