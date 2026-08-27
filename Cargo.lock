@@ -149,6 +149,7 @@ dependencies = [
  "ap-scheduler",
  "ap-servo",
  "ap-sim",
+ "ap-tecs",
 ]
 
 [[package]]

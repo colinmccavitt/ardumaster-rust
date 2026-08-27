@@ -49,6 +49,7 @@ use crate::target_altitude::TargetAltitude;
 use crate::altitude_glue_hookup::{altitude_glue_tick, AltitudeGlueInputs};
 use crate::altitude_tecs_feed_hookup::{altitude_tecs_feed_tick, AltitudeTecsFeedInputs};
 use crate::set_servos_glue_hookup::{set_servos_calc_throttle_tick, SetServosGlueInputs};
+use crate::tecs_baro_hookup::{tecs_baro_feed_tick, TecsBaroFeed, TecsBaroInputs};
 use crate::calc_throttle_glue_hookup::{calc_throttle_glue_tick, CalcThrottleGlueInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::nav_tecs_scheduler_hookup::nav_tecs_scheduler_publish_tick;
@@ -198,6 +199,7 @@ pub struct PlaneMainLoop {
     pub baro_health: BaroHealthFlags,
     /// Filtered baro climb rate, upstream `AP_Baro::get_climb_rate()`.
     pub baro_climb_rate_mps: f32,
+    pub tecs_baro_feed: TecsBaroFeed,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
     /// Optional INS harmonic notch hookup; configures gyro filters each tick.
@@ -444,6 +446,7 @@ impl Default for PlaneMainLoop {
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
             baro_climb_rate_mps: 0.0,
+            tecs_baro_feed: TecsBaroFeed::default(),
             sitl_ins_noise: None,
             ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
@@ -712,6 +715,12 @@ impl PlaneMainLoop {
                 baro_relative_m: published.relative_altitude_m,
                 home_altitude_m: self.home_altitude_m,
                 have_baro_sample: published.sample.have_sample,
+            });
+            self.tecs_baro_feed = tecs_baro_feed_tick(TecsBaroInputs {
+                relative_altitude_m: self.relative_altitude_m,
+                baro_climb_rate_mps: published.climb_rate_mps,
+                have_baro_sample: published.sample.have_sample,
+                baro_healthy: published.healthy,
             });
         }
         if let Some(vane) = self.wind_vane {
