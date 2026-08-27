@@ -4,6 +4,9 @@
 //! pressure, altitude, EAS2TAS, and per-instance health before
 //! [`PlaneMainLoop::ahrs_update`] builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
+use crate::baro_arm_calibration_hookup::{
+    baro_arm_calibration_tick, BaroArmCalibrationInputs, BaroArmCalibrationOutput,
+};
 use ap_baro::eas2tas_for_alt_amsl;
 use ap_baro::frontend::BaroFrontend;
 use ap_baro::BaroParams;
@@ -92,6 +95,18 @@ impl SitlBaroHookup {
     #[must_use]
     pub const fn frontend(&self) -> &BaroFrontend {
         &self.frontend
+    }
+
+    pub fn frontend_mut(&mut self) -> &mut BaroFrontend {
+        &mut self.frontend
+    }
+
+    /// Latch ground pressure when the vehicle arms.
+    pub fn arm_calibration_tick(
+        &mut self,
+        inp: BaroArmCalibrationInputs,
+    ) -> BaroArmCalibrationOutput {
+        baro_arm_calibration_tick(&mut self.frontend, &self.cluster, inp)
     }
 
     #[must_use]

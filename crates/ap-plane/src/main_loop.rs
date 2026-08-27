@@ -14,6 +14,7 @@ use ap_tecs::tecs::Tecs;
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
+use crate::baro_arm_calibration_hookup::BaroArmCalibrationInputs;
 use crate::baro_pre_arm_hookup::{baro_pre_arm_check, plane_pre_arm_checks_baro};
 use crate::gps_pre_arm_hookup::{gps_pre_arm_check, plane_pre_arm_checks_gps};
 use crate::mode_run::{pre_arm_checks, PreArmResult};
@@ -321,6 +322,10 @@ pub struct PlaneMainLoop {
     pub gps_pre_arm_ok: bool,
     /// Pre-arm baro gate when SITL baro configured.
     pub baro_pre_arm_ok: bool,
+    /// Ground pressure latched on the latest arm rising edge.
+    pub baro_arm_calibration_latched: bool,
+    /// Previous soft_armed for baro arm-calibration edge detect.
+    baro_was_soft_armed: bool,
     /// Combined mode + AHRS + GPS + baro pre-arm result for arming.
     pub pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
@@ -604,6 +609,8 @@ impl Default for PlaneMainLoop {
             ahrs_pre_arm_ok: false,
             gps_pre_arm_ok: false,
             baro_pre_arm_ok: false,
+            baro_arm_calibration_latched: false,
+            baro_was_soft_armed: false,
             pre_arm_ok: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
@@ -752,6 +759,12 @@ impl PlaneMainLoop {
                 have_baro_sample: published.sample.have_sample,
                 baro_healthy: published.healthy,
             });
+            let arm_cal = baro.arm_calibration_tick(BaroArmCalibrationInputs {
+                soft_armed: self.soft_armed,
+                was_soft_armed: self.baro_was_soft_armed,
+            });
+            self.baro_arm_calibration_latched = arm_cal.latched;
+            self.baro_was_soft_armed = arm_cal.was_soft_armed;
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);
