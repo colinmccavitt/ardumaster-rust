@@ -12,6 +12,7 @@ use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
+use crate::baro_pre_arm_hookup::{baro_pre_arm_check, plane_pre_arm_checks_baro};
 use crate::gps_pre_arm_hookup::{gps_pre_arm_check, plane_pre_arm_checks_gps};
 use crate::mode_run::{pre_arm_checks, PreArmResult};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
@@ -279,7 +280,9 @@ pub struct PlaneMainLoop {
     pub ahrs_pre_arm_ok: bool,
     /// Pre-arm GPS gate, upstream `AP_GPS::isHealthy()` when GPS configured.
     pub gps_pre_arm_ok: bool,
-    /// Combined mode + AHRS + GPS pre-arm result for arming.
+    /// Pre-arm baro gate, upstream `AP_Baro::healthy()` when baro configured.
+    pub baro_pre_arm_ok: bool,
+    /// Combined mode + AHRS + GPS + baro pre-arm result for arming.
     pub pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
@@ -539,6 +542,7 @@ impl Default for PlaneMainLoop {
             ahrs_using_gps: false,
             ahrs_pre_arm_ok: false,
             gps_pre_arm_ok: false,
+            baro_pre_arm_ok: false,
             pre_arm_ok: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
@@ -781,8 +785,11 @@ impl PlaneMainLoop {
         let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
         let require_gps = self.sitl_gps.is_some();
         self.gps_pre_arm_ok = gps_pre_arm_check(self.gps_health, require_gps);
+        let with_gps = plane_pre_arm_checks_gps(with_ahrs, self.gps_pre_arm_ok);
+        let require_baro = self.sitl_baro.is_some();
+        self.baro_pre_arm_ok = baro_pre_arm_check(self.baro_health, require_baro);
         self.pre_arm_ok = matches!(
-            plane_pre_arm_checks_gps(with_ahrs, self.gps_pre_arm_ok),
+            plane_pre_arm_checks_baro(with_gps, self.baro_pre_arm_ok),
             PreArmResult::Allowed
         );
 

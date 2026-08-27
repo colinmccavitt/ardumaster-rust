@@ -90,3 +90,36 @@ fn ahrs_update_wires_sitl_baro_eas2tas_and_health_flags() {
     );
     assert!((motion.eas2tas - vehicle.eas2tas).abs() < 1e-6);
 }
+
+#[test]
+fn main_loop_pre_arm_passes_with_healthy_sitl_baro() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_baro = Some(SitlBaroHookup::default());
+    vehicle.sitl_baro.as_mut().unwrap().truth = SitlBaroTruth {
+        sim_altitude_m: 10.0,
+        now_ms: 10,
+        ..SitlBaroTruth::default()
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert!(vehicle.baro_health.any_healthy());
+    assert!(vehicle.baro_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_refuses_when_baro_unhealthy() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.sitl_baro = Some(SitlBaroHookup::default());
+    vehicle.ahrs_pre_arm_ok = true;
+    vehicle.baro_health = BaroHealthFlags::default();
+
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.baro_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
