@@ -573,3 +573,23 @@ fn set_servos_keeps_throttle_when_armed() {
     assert_eq!(vehicle.servos.throttle_scaled, 55.0);
 }
 
+#[test]
+fn update_control_mode_resets_mode_entry_on_change() {
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::Manual.as_number();
+    vehicle.tracked_control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.auto.inverted_flight = true;
+    vehicle.mode_entry.new_airspeed_cm = 500;
+    vehicle.attitude.pitch_sensor_cd = 800;
+
+    vehicle.update_control_mode();
+
+    assert!(vehicle.mode_entry_reset);
+    assert!(!vehicle.mode_entry.auto.inverted_flight);
+    assert_eq!(vehicle.mode_entry.auto.initial_pitch_cd, 800);
+    assert_eq!(vehicle.mode_entry.new_airspeed_cm, -1);
+    assert_eq!(vehicle.tracked_control_mode, ModeNumber::Manual.as_number());
+}
+

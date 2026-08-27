@@ -48,7 +48,11 @@ use crate::sitl_ins_noise_hookup::{
 };
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
+use crate::entry_state::ModeEntryState;
 use crate::mode::ModeState;
+use crate::mode_entry_scheduler_hookup::{
+    mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
+};
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -95,6 +99,12 @@ pub struct StabilizeRun {
 #[derive(Debug, Clone)]
 pub struct PlaneMainLoop {
     pub mode: ModeState,
+    /// State cleared on each mode change, upstream `Mode::enter`.
+    pub mode_entry: ModeEntryState,
+    /// Last `control_mode` seen by the mode-entry hookup.
+    pub tracked_control_mode: u8,
+    /// Whether the latest scheduler tick reset mode-entry state.
+    pub mode_entry_reset: bool,
     pub stick_mixing: Option<StickMixing>,
     pub features: BuildFeatures,
     pub ticks: FastTaskTicks,
@@ -239,6 +249,35 @@ impl Default for PlaneMainLoop {
                 control_mode_reason: crate::mode::ModeReason::Initialised,
                 previous_mode_reason: crate::mode::ModeReason::Initialised,
             },
+            mode_entry: ModeEntryState {
+                auto: crate::entry_state::AutoState {
+                    inverted_flight: false,
+                    next_wp_crosstrack: false,
+                    checked_for_autoland: false,
+                    highest_airspeed: 0.0,
+                    initial_pitch_cd: 0,
+                    fbwa_tdrag_takeoff_mode: false,
+                    rotation_complete: false,
+                    vtol_mode: false,
+                    vtol_loiter: false,
+                    idle_mode: false,
+                },
+                steer: crate::entry_state::SteerState {
+                    locked_course: false,
+                    locked_course_err: 0.0,
+                },
+                crash: crate::entry_state::CrashState {
+                    is_crashed: false,
+                    impact_detected: false,
+                },
+                waiting_for_rudder_neutral: false,
+                loiter_start_time_ms: 0,
+                new_airspeed_cm: -1,
+                long_failsafe_pending: false,
+                throttle_suppressed: false,
+            },
+            tracked_control_mode: ModeNumber::Initialising.as_number(),
+            mode_entry_reset: false,
             stick_mixing: Some(StickMixing::Fbw),
             features: BuildFeatures::default(),
             ticks: FastTaskTicks::default(),
@@ -494,6 +533,17 @@ impl PlaneMainLoop {
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
         self.ticks.update_control_mode += 1;
+        let entry_out = mode_entry_scheduler_tick(
+            &mut self.mode_entry,
+            &ModeEntrySchedulerInputs {
+                control_mode: self.mode.control_mode,
+                previous_tracked_mode: self.tracked_control_mode,
+                current_pitch_cd: self.attitude.pitch_sensor_cd as i16,
+                features: self.features,
+            },
+        );
+        self.tracked_control_mode = entry_out.tracked_mode;
+        self.mode_entry_reset = entry_out.mode_changed;
         let rc_out = rc_failsafe_scheduler_tick(&self.rc_failsafe_inputs);
         self.in_rc_failsafe = rc_out.in_rc_failsafe;
         self.rc_sticks = rc_out.rc_sticks;
