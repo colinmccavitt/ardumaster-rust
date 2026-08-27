@@ -9,9 +9,11 @@
 //! [`sitl_apply_accel_noise`] and [`sitl_apply_gyro_noise`], or enabled on
 //! [`SitlImuBackend`] through [`SitlInsNoiseConfig`]. RPM-scaled motor
 //! harmonics are included.
+//! [`SitlImuBackend::board_trim`] applies SIM_BRD_TRIM to both sensors.
 //! Temperature *calibration* application and file playback are not here yet.
 //! The IMU warm-up temperature curve and per-instance fail masks are implemented.
 
+use ap_math::matrix3::Matrix3f;
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{is_zero, radians, wrap_pi, Real};
 use ap_math::vector3::Vector3f;
@@ -439,6 +441,18 @@ pub fn sitl_apply_gyro_noise(
     sample
 }
 
+
+/// Rigid board mounting offset (SIM_BRD_TRIM), upstream the block that applies
+/// `trim_rotation.from_euler(board_trim)` then transposed rotation to both
+/// accel and gyro so a tilted mount stays consistent.
+#[must_use]
+pub fn sitl_apply_board_trim(v: Vector3f, board_trim: Vector3f) -> Vector3f {
+    if board_trim.is_zero() {
+        return v;
+    }
+    Matrix3f::from_euler(board_trim.x, board_trim.y, board_trim.z).mul_transpose(v)
+}
+
 /// The slow triangular gyro drift SITL can inject, upstream `gyro_drift()`.
 ///
 /// Returns zero when either parameter is zero. `now_us` is monotonic time.
@@ -462,8 +476,11 @@ pub fn sitl_gyro_drift(now_us: u64, drift_speed_dps: f32, drift_time_min: f32) -
 pub fn sitl_accel_sample(
     state: &SitlBodyState,
     cal: &SitlImuCalibration,
+    board_trim: Vector3f,
 ) -> Vector3f {
     let mut accel = Vector3f::new(state.x_accel, state.y_accel, state.z_accel);
+
+    accel = sitl_apply_board_trim(accel, board_trim);
 
     if !cal.accel_trim.is_zero() {
         accel = apply_accel_trim(accel, cal.accel_trim);
@@ -513,12 +530,15 @@ pub fn sitl_gyro_sample(
     state: &SitlBodyState,
     cal: &SitlImuCalibration,
     gyro_drift: f32,
+    board_trim: Vector3f,
 ) -> Vector3f {
     let mut gyro = Vector3f::new(
         radians(state.roll_rate_dps) + gyro_drift,
         radians(state.pitch_rate_dps) + gyro_drift,
         radians(state.yaw_rate_dps) + gyro_drift,
     );
+
+    gyro = sitl_apply_board_trim(gyro, board_trim);
 
     gyro.x *= 1.0 + cal.gyro_scale.x * 0.01;
     gyro.y *= 1.0 + cal.gyro_scale.y * 0.01;
@@ -625,6 +645,8 @@ pub struct SitlImuBackend {
     pub imu: ImuInstance,
     /// Trim, scale, bias, and mounting.
     pub cal: SitlImuCalibration,
+    /// SIM_BRD_TRIM rigid board mounting offset, radians (roll, pitch, yaw).
+    pub board_trim: Vector3f,
     /// Gyro sample rate, Hz.
     pub gyro_rate_hz: u16,
     /// Accelerometer sample rate, Hz.
@@ -659,6 +681,7 @@ impl SitlImuBackend {
         Self {
             imu: ImuInstance::new(),
             cal: SitlImuCalibration::default(),
+            board_trim: Vector3f::zero(),
             gyro_rate_hz,
             accel_rate_hz,
             next_gyro_sample_us: 0,
@@ -694,7 +717,7 @@ impl SitlImuBackend {
         if now_us >= self.next_accel_sample_us
             && !sitl_instance_failed(self.accel_fail_mask, self.instance_index)
         {
-            let base = sitl_accel_sample(state, &self.cal);
+            let base = sitl_accel_sample(state, &self.cal, self.board_trim);
             let sample = if let Some(cfg) = &self.noise_config {
                 let dt = 1.0 / f32::from(self.accel_rate_hz);
                 let white = sitl_rand_vector3(now_us);
@@ -729,7 +752,7 @@ impl SitlImuBackend {
             && !sitl_instance_failed(self.gyro_fail_mask, self.instance_index)
         {
             let drift = sitl_gyro_drift(now_us, self.drift_speed_dps, self.drift_time_min);
-            let base = sitl_gyro_sample(state, &self.cal, drift);
+            let base = sitl_gyro_sample(state, &self.cal, drift, self.board_trim);
             let sample = if let Some(cfg) = &self.noise_config {
                 let dt = 1.0 / f32::from(self.gyro_rate_hz);
                 let white = sitl_rand_vector3(now_us.wrapping_add(100));
@@ -806,7 +829,7 @@ mod tests {
             z_accel: -9.80665,
             ..SitlBodyState::default()
         };
-        let sample = sitl_accel_sample(&state, &SitlImuCalibration::default());
+        let sample = sitl_accel_sample(&state, &SitlImuCalibration::default(), Vector3f::zero());
         assert!((sample.z + 9.80665).abs() < 1e-3, "got {}", sample.z);
     }
 
@@ -816,7 +839,7 @@ mod tests {
             roll_rate_dps: 57.295_78,
             ..SitlBodyState::default()
         };
-        let sample = sitl_gyro_sample(&state, &SitlImuCalibration::default(), 0.0);
+        let sample = sitl_gyro_sample(&state, &SitlImuCalibration::default(), 0.0, Vector3f::zero());
         assert!((sample.x - 1.0).abs() < 1e-4, "got {}", sample.x);
     }
 
@@ -916,7 +939,7 @@ mod tests {
             z_accel: -9.80665,
             ..SitlBodyState::default()
         };
-        let clean = sitl_accel_sample(&state, &backend.cal);
+        let clean = sitl_accel_sample(&state, &backend.cal, backend.board_trim);
         backend.timer_update(0, &state);
         // Noise path runs; we only assert the backend delivered a sample.
         let _ = clean;
@@ -929,7 +952,7 @@ mod tests {
             z_accel: -9.80665,
             ..SitlBodyState::default()
         };
-        let clean = sitl_accel_sample(&state, &backend.cal);
+        let clean = sitl_accel_sample(&state, &backend.cal, backend.board_trim);
         backend.timer_update(0, &state);
         // Default path has no noise_config; IMU got the kinematic sample only.
         let _ = clean;
@@ -1139,6 +1162,52 @@ mod tests {
             },
         );
         assert!((state.accel_time_s - 0.002).abs() < 1e-6);
+    }
+
+    #[test]
+    fn board_trim_zero_is_identity() {
+        let v = Vector3f::new(1.0, 2.0, 3.0);
+        assert_eq!(sitl_apply_board_trim(v, Vector3f::zero()), v);
+    }
+
+    #[test]
+    fn board_trim_pitch_tilts_gravity_into_x() {
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let trim = Vector3f::new(0.0, 0.1, 0.0);
+        let sample = sitl_accel_sample(&state, &SitlImuCalibration::default(), trim);
+        assert!(sample.x.abs() > 0.5, "pitch trim should leak gravity into x, got {}", sample.x);
+        assert!(sample.z.abs() < 9.80665, "z should shrink slightly, got {}", sample.z);
+    }
+
+    #[test]
+    fn board_trim_applies_to_gyro_and_accel() {
+        let state = SitlBodyState {
+            roll_rate_dps: 57.295_78,
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let trim = Vector3f::new(0.05, 0.0, 0.0);
+        let accel = sitl_accel_sample(&state, &SitlImuCalibration::default(), trim);
+        let gyro = sitl_gyro_sample(&state, &SitlImuCalibration::default(), 0.0, trim);
+        let expected = sitl_apply_board_trim(Vector3f::new(1.0, 0.0, 0.0), trim);
+        assert!((gyro.x - expected.x).abs() < 1e-4, "gyro x got {}", gyro.x);
+        assert!(accel.z.abs() > 9.0, "accel still has gravity after roll trim");
+    }
+
+    #[test]
+    fn backend_board_trim_flows_through_timer_update() {
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.board_trim = Vector3f::new(0.0, 0.08, 0.0);
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let clean = sitl_accel_sample(&state, &backend.cal, backend.board_trim);
+        backend.timer_update(0, &state);
+        assert!(clean.x.abs() > 0.3, "trimmed sample should differ from level hover");
     }
 
     #[test]
