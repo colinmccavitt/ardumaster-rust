@@ -80,6 +80,7 @@ impl SitlGpsHookup {
                 altitude_m: self.truth.altitude_m,
                 now_ms: self.truth.now_ms,
             };
+            dual.select_primary_healthy();
         }
     }
 
@@ -213,5 +214,18 @@ impl SitlGpsHookup {
     ) -> SitlYawSamples {
         let yaw = self.yaw_publish();
         publish_sitl_yaw_samples(&yaw, attitude, loop_dt)
+    }
+}
+
+/// Hookup with disabled primary GPS for UsePrimary failover tests.
+#[must_use]
+pub fn hookup_with_disabled_primary() -> SitlGpsHookup {
+    SitlGpsHookup {
+        backend: SitlGpsBackend::default(),
+        dual: Some(GpsDualStub::with_disabled_primary()),
+        truth: SitlGpsTruth::default(),
+        fly_forward: true,
+        compass_use_for_yaw: true,
+        wind_speed_xy: 0.0,
     }
 }

@@ -92,6 +92,30 @@ impl GpsDualStub {
         self.instance_status(1)
     }
 
+    /// Re-select primary to the first healthy instance, upstream `AP_GPS` UsePrimary failover.
+    pub fn select_primary_healthy(&mut self) {
+        if !self.dual_enabled || self.auto_switch != GpsAutoSwitch::UsePrimary {
+            return;
+        }
+        for i in 0..2u8 {
+            let status = self.instance_status(i);
+            if GpsHealthFlags::from_status(&status).is_healthy() {
+                self.primary_instance = i;
+                return;
+            }
+        }
+    }
+
+    /// Dual stub with disabled primary for UsePrimary failover tests.
+    #[must_use]
+    pub fn with_disabled_primary() -> Self {
+        let mut stub = Self::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::UsePrimary;
+        stub.primary.disabled = true;
+        stub
+    }
+
     fn blend_instances(&mut self) -> [GpsBlendInstance; 2] {
         [
             GpsBlendInstance::from_status(self.primary_status()),
@@ -239,6 +263,20 @@ mod tests {
         assert_eq!(stub.output_active_instance(), 1);
         let status = stub.output_status();
         assert!((status.velocity_ned.x - 9.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn use_primary_failover_selects_secondary_when_primary_disabled() {
+        let mut stub = GpsDualStub::with_disabled_primary();
+        stub.primary_truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+        stub.secondary_truth.velocity_ned = Vector3f::new(8.0, 0.0, 0.0);
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        stub.select_primary_healthy();
+        assert_eq!(stub.primary_instance, 1);
+        let status = stub.output_status();
+        assert!((status.velocity_ned.x - 8.0).abs() < 1e-3);
+        assert_eq!(stub.output_active_instance(), 1);
     }
 
 }

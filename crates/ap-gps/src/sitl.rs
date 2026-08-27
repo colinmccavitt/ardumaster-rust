@@ -39,6 +39,8 @@ pub fn velocity_to_speed_course(velocity: Vector3f) -> (f32, f32) {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SitlGpsBackend {
+    /// When set, backend produces no fix (failover tests).
+    pub disabled: bool,
     /// Reported satellite count, upstream GPA.SVCount stub.
     pub num_sats: u8,
     last_update_ms: u32,
@@ -49,6 +51,7 @@ pub struct SitlGpsBackend {
 impl Default for SitlGpsBackend {
     fn default() -> Self {
         Self {
+            disabled: false,
             num_sats: 15,
             last_update_ms: 0,
             state: GpsFixState::default(),
@@ -81,6 +84,9 @@ impl SitlGpsBackend {
         altitude_m: f32,
         now_ms: u32,
     ) -> bool {
+        if self.disabled {
+            return false;
+        }
         if now_ms.wrapping_sub(self.last_update_ms) < SITL_GPS_UPDATE_MS {
             return false;
         }
@@ -151,5 +157,15 @@ mod tests {
         assert!(gps.read(vel_b, 51.0, -0.1, 100.0, 400));
         let delayed = gps.delayed_state(450);
         assert!((delayed.velocity_ned.x - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn disabled_backend_produces_no_fix() {
+        let mut gps = SitlGpsBackend {
+            disabled: true,
+            ..SitlGpsBackend::default()
+        };
+        assert!(!gps.read(Vector3f::new(5.0, 0.0, 0.0), 51.0, -0.1, 100.0, 200));
+        assert!(!gps.state().have_fix);
     }
 }
