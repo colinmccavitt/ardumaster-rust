@@ -117,7 +117,7 @@ impl SitlBaroHookup {
             eas2tas,
             healthy,
             health,
-            climb_rate_mps: self.climb_rate.climb_rate_mps(),
+            climb_rate_mps: self.climb_rate.climb_rate_mps(healthy),
         }
     }
 }

@@ -399,47 +399,27 @@ impl SitlBaroBackend {
 
 
 /// Climb-rate estimate from primary altitude, upstream `AP_Baro::_climb_rate_filter`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BaroClimbRate {
     filter: DerivativeFilter<7>,
-    last_primary: u8,
-}
-
-impl Default for BaroClimbRate {
-    fn default() -> Self {
-        Self {
-            filter: DerivativeFilter::default(),
-            last_primary: 0,
-        }
-    }
 }
 
 impl BaroClimbRate {
-    /// Reset climb filter, upstream primary baro instance change.
-    pub fn reset(&mut self) {
-        self.filter.reset();
-    }
-
-    /// Feed primary altitude when healthy; reset on primary failover.
-    pub fn update_primary(
-        &mut self,
-        altitude_m: f32,
-        last_update_ms: u32,
-        healthy: bool,
-        primary: u8,
-    ) {
-        if self.last_primary != primary {
-            self.reset();
-            self.last_primary = primary;
-        }
+    /// Feed primary altitude when healthy, upstream `read()` climb filter update.
+    pub fn update_primary(&mut self, altitude_m: f32, last_update_ms: u32, healthy: bool) {
         if healthy {
             self.filter.update(altitude_m, last_update_ms);
         }
     }
 
     /// Current climb rate in m/s, upstream `AP_Baro::get_climb_rate()`.
+    ///
+    /// Returns zero when the primary baro is unhealthy, matching upstream.
     #[must_use]
-    pub fn climb_rate_mps(&mut self) -> f32 {
+    pub fn climb_rate_mps(&mut self, healthy: bool) -> f32 {
+        if !healthy {
+            return 0.0;
+        }
         self.filter.slope() * 1.0e3
     }
 }
@@ -796,9 +776,9 @@ mod tests {
         for _ in 0..20 {
             t += dt_ms;
             alt += step_m;
-            climb.update_primary(alt, t, true, 0);
+            climb.update_primary(alt, t, true);
         }
-        let got = climb.climb_rate_mps();
+        let got = climb.climb_rate_mps(true);
         assert!(
             (got - rate_mps).abs() < 0.15,
             "expected ~{rate_mps} m/s, got {got}"
@@ -807,7 +787,7 @@ mod tests {
 
 
     #[test]
-    fn climb_rate_resets_on_primary_failover() {
+    fn climb_rate_zero_when_primary_unhealthy() {
         let mut climb = BaroClimbRate::default();
         let rate_mps = 2.0_f32;
         let dt_ms = 10_u32;
@@ -817,19 +797,16 @@ mod tests {
         for _ in 0..20 {
             t += dt_ms;
             alt += step_m;
-            climb.update_primary(alt, t, true, 0);
+            climb.update_primary(alt, t, true);
         }
-        let before = climb.climb_rate_mps();
         assert!(
-            (before - rate_mps).abs() < 0.15,
-            "expected ~{rate_mps} m/s before failover, got {before}"
+            (climb.climb_rate_mps(true) - rate_mps).abs() < 0.15,
+            "expected ~{rate_mps} m/s while healthy"
         );
-
-        climb.update_primary(alt, t, true, 1);
-        let after = climb.climb_rate_mps();
-        assert!(
-            after.abs() < 0.15,
-            "expected fresh climb rate after failover, got {after}"
+        assert_eq!(
+            climb.climb_rate_mps(false),
+            0.0,
+            "unhealthy primary must publish zero climb rate"
         );
     }
 
