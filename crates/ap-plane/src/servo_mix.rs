@@ -59,7 +59,7 @@ pub fn flaperon_outputs(aileron: f32, flap_percent: f32) -> MixerOutputs {
 }
 
 /// Crow flap weighting for differential spoilers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CrowFlapWeights {
     pub weight_outer: i16,
     pub weight_inner: i16,

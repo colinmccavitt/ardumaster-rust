@@ -69,3 +69,52 @@ fn manual_flap_overrides_auto_when_larger() {
     assert_eq!(reg.output_scaled(Function::FLAP_AUTO), 80.0);
     assert_eq!(reg.slew_entries(), 2);
 }
+
+#[test]
+fn dspoiler_stub_writes_four_registry_functions_after_elevon_mix() {
+    use ap_plane::srv_output_hookup::{update_dspoilers, DspoilerHookupInputs};
+    use ap_plane::servo_mix::CrowFlapWeights;
+
+    let mut reg = Registry::new();
+    for (idx, func) in [
+        Function::ELEVON_LEFT,
+        Function::ELEVON_RIGHT,
+        Function::RUDDER,
+        Function::FLAP_AUTO,
+        Function::DSPOILERLEFT1,
+        Function::DSPOILERLEFT2,
+        Function::DSPOILERRIGHT1,
+        Function::DSPOILERRIGHT2,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        reg.assign(func, 1_u32 << idx);
+    }
+    reg.set_output_scaled(Function::ELEVON_LEFT, 0.0);
+    reg.set_output_scaled(Function::ELEVON_RIGHT, 0.0);
+    reg.set_output_scaled(Function::RUDDER, 1000.0);
+    reg.set_output_scaled(Function::FLAP_AUTO, 0.0);
+
+    update_dspoilers(
+        &mut reg,
+        DspoilerHookupInputs {
+            rudder_rate_pct: 100,
+            ..DspoilerHookupInputs::default()
+        },
+    );
+
+    assert_eq!(reg.output_scaled(Function::DSPOILERRIGHT1), 1000.0);
+    assert_eq!(reg.output_scaled(Function::DSPOILERRIGHT2), -1000.0);
+}
+
+#[test]
+fn dspoiler_stub_noops_when_channels_unassigned() {
+    use ap_plane::srv_output_hookup::{update_dspoilers, DspoilerHookupInputs};
+
+    let mut reg = Registry::new();
+    reg.set_output_scaled(Function::RUDDER, 1000.0);
+    update_dspoilers(&mut reg, DspoilerHookupInputs::default());
+    assert_eq!(reg.output_scaled(Function::DSPOILERLEFT1), 0.0);
+}
+

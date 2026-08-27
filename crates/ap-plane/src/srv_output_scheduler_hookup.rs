@@ -8,7 +8,8 @@ use ap_servo::registry::Registry;
 
 use crate::landing_hookup::ServoOutputState;
 use crate::srv_output_hookup::{
-    apply_elevon_mixing, apply_vtail_mixing, set_servos_flaps, FlapDeployInputs, MixingParams,
+    apply_elevon_mixing, apply_vtail_mixing, set_servos_flaps, update_dspoilers,
+    DspoilerHookupInputs, FlapDeployInputs, MixingParams,
 };
 
 /// Flap speed schedule parameters, upstream `FLAP_*` and takeoff/landing flaps.
@@ -36,6 +37,8 @@ pub struct SrvOutputSchedulerInputs {
     pub flight_stage_is_land: bool,
     pub apply_elevon_mixing: bool,
     pub apply_vtail_mixing: bool,
+    pub apply_dspoiler_mixing: bool,
+    pub dspoiler: DspoilerHookupInputs,
     pub dt: f32,
     /// Elevator scaled centidegrees for registry seed (`servos` only stores PWM).
     pub elevator_scaled: f32,
@@ -52,6 +55,8 @@ pub struct SrvOutputHookupState {
     pub apply_vtail_mixing: bool,
     pub has_auto_flap_schedule: bool,
     pub flight_stage_is_takeoff: bool,
+    pub apply_dspoiler_mixing: bool,
+    pub dspoiler: DspoilerHookupInputs,
     pub last_auto_flap_percent: i8,
 }
 
@@ -66,6 +71,8 @@ impl Default for SrvOutputHookupState {
             apply_vtail_mixing: false,
             has_auto_flap_schedule: false,
             flight_stage_is_takeoff: false,
+            apply_dspoiler_mixing: false,
+            dspoiler: DspoilerHookupInputs::default(),
             last_auto_flap_percent: 0,
         }
     }
@@ -143,6 +150,9 @@ pub fn srv_output_scheduler_tick(
     }
     if inp.apply_vtail_mixing {
         apply_vtail_mixing(reg, inp.mixing);
+    }
+    if inp.apply_dspoiler_mixing {
+        update_dspoilers(reg, inp.dspoiler);
     }
 
     state.last_auto_flap_percent = auto_flap;

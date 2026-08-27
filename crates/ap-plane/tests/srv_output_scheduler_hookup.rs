@@ -69,6 +69,8 @@ fn scheduler_tick_applies_elevon_mixing_in_set_servos_path() {
             flight_stage_is_land: false,
             apply_elevon_mixing: true,
             apply_vtail_mixing: false,
+            apply_dspoiler_mixing: false,
+            dspoiler: ap_plane::srv_output_hookup::DspoilerHookupInputs::default(),
             dt: 0.02,
             elevator_scaled: 500.0,
         },
@@ -77,3 +79,71 @@ fn scheduler_tick_applies_elevon_mixing_in_set_servos_path() {
     assert_eq!(state.registry.output_scaled(ap_servo::function::Function::ELEVON_LEFT), -500.0);
     assert_eq!(state.registry.output_scaled(ap_servo::function::Function::ELEVON_RIGHT), 1500.0);
 }
+
+#[test]
+fn scheduler_tick_applies_dspoiler_mixing_after_elevon() {
+    use ap_plane::srv_output_hookup::DspoilerHookupInputs;
+
+    let mixing = MixingParams {
+        mixing_gain: 1.0,
+        mixing_offset: 0,
+    };
+    let dspoiler = DspoilerHookupInputs {
+        rudder_rate_pct: 100,
+        ..DspoilerHookupInputs::default()
+    };
+    let mut state = SrvOutputHookupState {
+        apply_elevon_mixing: true,
+        apply_dspoiler_mixing: true,
+        dspoiler,
+        mixing,
+        ..SrvOutputHookupState::default()
+    };
+    for (idx, func) in [
+        ap_servo::function::Function::AILERON,
+        ap_servo::function::Function::ELEVATOR,
+        ap_servo::function::Function::RUDDER,
+        ap_servo::function::Function::ELEVON_LEFT,
+        ap_servo::function::Function::ELEVON_RIGHT,
+        ap_servo::function::Function::DSPOILERLEFT1,
+        ap_servo::function::Function::DSPOILERLEFT2,
+        ap_servo::function::Function::DSPOILERRIGHT1,
+        ap_servo::function::Function::DSPOILERRIGHT2,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state.registry.assign(func, 1_u32 << idx);
+    }
+
+    let servos = ServoOutputState {
+        aileron_scaled: 0.0,
+        rudder_scaled: 500.0,
+        ..ServoOutputState::default()
+    };
+    let _out = srv_output_scheduler_tick(
+        servos,
+        &mut state,
+        &SrvOutputSchedulerInputs {
+            mixing,
+            apply_elevon_mixing: true,
+            apply_dspoiler_mixing: true,
+            dspoiler,
+            dt: 0.02,
+            ..SrvOutputSchedulerInputs::default()
+        },
+    );
+    assert_eq!(
+        state
+            .registry
+            .output_scaled(ap_servo::function::Function::DSPOILERRIGHT1),
+        500.0
+    );
+    assert_eq!(
+        state
+            .registry
+            .output_scaled(ap_servo::function::Function::DSPOILERRIGHT2),
+        -500.0
+    );
+}
+
