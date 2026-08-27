@@ -1291,6 +1291,12 @@ impl SitlInsCluster {
                     gyro: file.gyro,
                 },
             );
+            if g == 0 {
+                backend.imu.clear_pending_gyro();
+            }
+            if a == 0 {
+                backend.imu.clear_pending_accel();
+            }
             gyro_total += g;
             accel_total += a;
             self.frontend
@@ -1899,6 +1905,28 @@ mod tests {
         assert_eq!(a, 1);
         assert_eq!(cluster.backend(0).unwrap().instance_index, 0);
         assert_eq!(cluster.backend(1).unwrap().instance_index, 1);
+    }
+
+    #[test]
+    fn cluster_fail_mask_failover_selects_next_primary() {
+        let mut cluster = SitlInsCluster::new();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        for t in (0..2_000_000).step_by(1000) {
+            cluster.timer_update(t, &state, &[]);
+        }
+        assert_eq!(cluster.frontend.primary(), 0);
+
+        cluster.set_fail_masks(1, 1);
+        cluster.timer_update(2_000_000, &state, &[]);
+
+        assert_eq!(cluster.frontend.primary(), 1);
+        assert!(!cluster.frontend.gyro_usable(0));
+        assert!(cluster.frontend.gyro_usable(1));
     }
 
     #[test]

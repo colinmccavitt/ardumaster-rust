@@ -31,21 +31,24 @@
 //!
 //! # What this slice does not include
 //!
-//! Multi-instance failover masks, sculling compensation (upstream has none --
-//! the delta velocity is a plain rectangular sum), vibration and clipping
-//! metrics, temperature calibration, board orientation, gyro/accel offset and
-//! scale calibration, and the FFT window. The SITL backend's deterministic
-//! sample path lives in [`sitl`]. [`SitlBrdTrimParams`] binds SIM_BRD_TRIM to
-//! [`SitlImuBackend::board_trim`].
+//! Sculling compensation (upstream has none -- the delta velocity is a plain
+//! rectangular sum), vibration and clipping metrics, temperature calibration,
+//! board orientation, gyro/accel offset and scale calibration, and the FFT
+//! window. The SITL backend's deterministic sample path lives in [`sitl`].
+//! [`SitlBrdTrimParams`] binds SIM_BRD_TRIM to [`SitlImuBackend::board_trim`].
+//! [`SitlFailMskParams`] binds SIM_ACCEL_FAIL_MSK / SIM_GYRO_FAIL_MSK into
+//! backend fail masks and [`SitlInsCluster::timer_update`] primary selection.
 
 #![no_std]
 
 pub mod frontend;
 pub mod sitl;
 pub mod sitl_brd_trim;
+pub mod sitl_fail_msk;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
 pub use sitl_brd_trim::SitlBrdTrimParams;
+pub use sitl_fail_msk::SitlFailMskParams;
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,
@@ -502,6 +505,16 @@ the difference is a sample interval, not an absolute time"
     pub fn clear_health(&mut self) {
         self.gyro_healthy = false;
         self.accel_healthy = false;
+    }
+
+    /// Drop pending gyro publish when a backend delivered no sample this cycle.
+    pub fn clear_pending_gyro(&mut self) {
+        self.new_gyro_data = false;
+    }
+
+    /// Drop pending accel publish when a backend delivered no sample this cycle.
+    pub fn clear_pending_accel(&mut self) {
+        self.new_accel_data = false;
     }
 
     /// The rotation accumulated but not yet published, and its interval.
