@@ -15,6 +15,10 @@
 //! supplies byte buffers. Temperature calibration on the kinematic path mirrors
 //! upstream `sitl_apply_accel` / `sitl_apply_gyro` (file playback skips it).
 //! The IMU warm-up temperature curve and per-instance fail masks are implemented.
+//! With [`SitlImuBackend::fast_sampling`], the kinematic path averages 4 accel /
+//! 8 gyro sub-samples per tick, matching upstream `generate_accel` /
+//! `generate_gyro`. [`SitlInsCluster`] coordinates up to
+//! [`SITL_INS_MAX_INSTANCES`] backends for multi-IMU SITL builds.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::rotations_gen::{rotate, Rotation};
@@ -887,7 +891,8 @@ pub struct SitlImuBackend {
     pub accel_file_mode: SitlInsFileMode,
     /// Gyro file playback mode (SIM_GYR_FILE_RW).
     pub gyro_file_mode: SitlInsFileMode,
-    /// Fast sampling averages 4 accel / 8 gyro file frames per tick.
+    /// Fast sampling averages 4 accel / 8 gyro sub-samples per tick (kinematic
+    /// and file playback).
     pub fast_sampling: bool,
     accel_file: SitlInsFileCursor,
     gyro_file: SitlInsFileCursor,
@@ -949,6 +954,109 @@ impl SitlImuBackend {
         if fast_sampling { 8 } else { 1 }
     }
 
+    /// Generate one averaged kinematic accelerometer sample, upstream
+    /// `generate_accel` without the file-read branch.
+    fn generate_kinematic_accel(&mut self, now_us: u64, state: &SitlBodyState) -> Vector3f {
+        let nsamples = Self::accel_file_nsamples(self.fast_sampling);
+        let base = sitl_accel_sample(state, &self.cal, self.board_trim);
+        let sample_dt_s =
+            1.0 / (f32::from(self.accel_rate_hz) * f32::from(nsamples.max(1)));
+        let mut accum = Vector3f::zero();
+
+        for j in 0..nsamples.max(1) {
+            let sub_us = now_us.wrapping_add(u64::from(j));
+            let mut sample = if let Some(cfg) = &self.noise_config {
+                let white = sitl_rand_vector3(sub_us);
+                let motor_vibe =
+                    (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
+                sitl_apply_accel_noise(
+                    &mut self.accel_noise_state,
+                    &SitlAccelNoiseInputs {
+                        base,
+                        white_rand: white,
+                        base_accel_noise: SITL_DEFAULT_ACCEL_NOISE,
+                        motor_accel_noise: cfg.motor_accel_noise,
+                        motors_on: cfg.motors_on,
+                        vibe: Some(&cfg.vibe),
+                        vibe_rand: sitl_rand_unit(sub_us.wrapping_add(10)),
+                        motor_vibe,
+                        motor_mask: cfg.motor_mask,
+                        motor_rpm: &cfg.motor_rpm,
+                        motor_rand: sitl_rand_unit(sub_us.wrapping_add(20)),
+                        sample_dt_s,
+                    },
+                )
+            } else {
+                base
+            };
+            if let Some(tcal) = &self.temp_cal {
+                sitl_tempcal_apply_accel(tcal, self.last_temperature_c, &mut sample);
+            }
+            let _ = sitl_ins_file_write_sample(
+                self.accel_file_mode,
+                &mut self.accel_write_buf,
+                &mut self.accel_write_len,
+                sample,
+            );
+            accum += sample;
+        }
+
+        accum * (1.0 / f32::from(nsamples.max(1)))
+    }
+
+    /// Generate one averaged kinematic gyro sample, upstream `generate_gyro`.
+    fn generate_kinematic_gyro(&mut self, now_us: u64, state: &SitlBodyState) -> Vector3f {
+        let nsamples = Self::gyro_file_nsamples(self.fast_sampling);
+        let drift = sitl_gyro_drift(now_us, self.drift_speed_dps, self.drift_time_min);
+        let base = sitl_gyro_sample(state, &self.cal, drift, self.board_trim);
+        let sample_dt_s =
+            1.0 / (f32::from(self.gyro_rate_hz) * f32::from(nsamples.max(1)));
+        let mut accum = Vector3f::zero();
+
+        for j in 0..nsamples.max(1) {
+            let sub_us = now_us.wrapping_add(u64::from(j).saturating_mul(100));
+            let mut sample = if let Some(cfg) = &self.noise_config {
+                let white = sitl_rand_vector3(sub_us.wrapping_add(100));
+                let motor_vibe =
+                    (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
+                sitl_apply_gyro_noise(
+                    &mut self.gyro_noise_state,
+                    &SitlGyroNoiseInputs {
+                        base,
+                        white_rand: white,
+                        background_rand: sitl_rand_vector3(sub_us.wrapping_add(110)),
+                        motor_gyro_noise_deg: cfg.motor_gyro_noise_deg,
+                        throttle: cfg.throttle,
+                        motors_on: cfg.motors_on,
+                        vibe_freq_zero: cfg.vibe.vibe_freq_hz.is_zero(),
+                        vibe_motor_zero: is_zero(cfg.motor_vibe.vibe_motor),
+                        vibe: Some(&cfg.vibe),
+                        vibe_rand: sitl_rand_unit(sub_us.wrapping_add(120)),
+                        motor_vibe,
+                        motor_mask: cfg.motor_mask,
+                        motor_rpm: &cfg.motor_rpm,
+                        motor_rand: sitl_rand_unit(sub_us.wrapping_add(130)),
+                        sample_dt_s,
+                    },
+                )
+            } else {
+                base
+            };
+            if let Some(tcal) = &self.temp_cal {
+                sitl_tempcal_apply_gyro(tcal, self.last_temperature_c, &mut sample);
+            }
+            let _ = sitl_ins_file_write_sample(
+                self.gyro_file_mode,
+                &mut self.gyro_write_buf,
+                &mut self.gyro_write_len,
+                sample,
+            );
+            accum += sample;
+        }
+
+        accum * (1.0 / f32::from(nsamples.max(1)))
+    }
+
     /// Advance the timer and feed any due samples, upstream `timer_update`.
     ///
     /// Returns how many gyro and accel samples were delivered.
@@ -988,40 +1096,7 @@ impl SitlImuBackend {
                 self.accel_file_mode,
                 SitlInsFileMode::None | SitlInsFileMode::Write
             ) {
-                let base = sitl_accel_sample(state, &self.cal, self.board_trim);
-                let mut sample = if let Some(cfg) = &self.noise_config {
-                    let dt = 1.0 / f32::from(self.accel_rate_hz);
-                    let white = sitl_rand_vector3(now_us);
-                    let motor_vibe = (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
-                    sitl_apply_accel_noise(
-                        &mut self.accel_noise_state,
-                        &SitlAccelNoiseInputs {
-                            base,
-                            white_rand: white,
-                            base_accel_noise: SITL_DEFAULT_ACCEL_NOISE,
-                            motor_accel_noise: cfg.motor_accel_noise,
-                            motors_on: cfg.motors_on,
-                            vibe: Some(&cfg.vibe),
-                            vibe_rand: sitl_rand_unit(now_us.wrapping_add(10)),
-                            motor_vibe,
-                            motor_mask: cfg.motor_mask,
-                            motor_rpm: &cfg.motor_rpm,
-                            motor_rand: sitl_rand_unit(now_us.wrapping_add(20)),
-                            sample_dt_s: dt,
-                        },
-                    )
-                } else {
-                    base
-                };
-                if let Some(tcal) = &self.temp_cal {
-                    sitl_tempcal_apply_accel(tcal, self.last_temperature_c, &mut sample);
-                }
-                let _ = sitl_ins_file_write_sample(
-                    self.accel_file_mode,
-                    &mut self.accel_write_buf,
-                    &mut self.accel_write_len,
-                    sample,
-                );
+                let sample = self.generate_kinematic_accel(now_us, state);
                 self.imu
                     .notify_accel_raw_sample(sample, now_us, self.accel_rate_hz, now_us);
                 self.advance_accel_schedule(now_us);
@@ -1048,44 +1123,7 @@ impl SitlImuBackend {
                 self.gyro_file_mode,
                 SitlInsFileMode::None | SitlInsFileMode::Write
             ) {
-                let drift = sitl_gyro_drift(now_us, self.drift_speed_dps, self.drift_time_min);
-                let base = sitl_gyro_sample(state, &self.cal, drift, self.board_trim);
-                let mut sample = if let Some(cfg) = &self.noise_config {
-                    let dt = 1.0 / f32::from(self.gyro_rate_hz);
-                    let white = sitl_rand_vector3(now_us.wrapping_add(100));
-                    let motor_vibe = (!is_zero(cfg.motor_vibe.vibe_motor)).then_some(&cfg.motor_vibe);
-                    sitl_apply_gyro_noise(
-                        &mut self.gyro_noise_state,
-                        &SitlGyroNoiseInputs {
-                            base,
-                            white_rand: white,
-                            background_rand: sitl_rand_vector3(now_us.wrapping_add(110)),
-                            motor_gyro_noise_deg: cfg.motor_gyro_noise_deg,
-                            throttle: cfg.throttle,
-                            motors_on: cfg.motors_on,
-                            vibe_freq_zero: cfg.vibe.vibe_freq_hz.is_zero(),
-                            vibe_motor_zero: is_zero(cfg.motor_vibe.vibe_motor),
-                            vibe: Some(&cfg.vibe),
-                            vibe_rand: sitl_rand_unit(now_us.wrapping_add(120)),
-                            motor_vibe,
-                            motor_mask: cfg.motor_mask,
-                            motor_rpm: &cfg.motor_rpm,
-                            motor_rand: sitl_rand_unit(now_us.wrapping_add(130)),
-                            sample_dt_s: dt,
-                        },
-                    )
-                } else {
-                    base
-                };
-                if let Some(tcal) = &self.temp_cal {
-                    sitl_tempcal_apply_gyro(tcal, self.last_temperature_c, &mut sample);
-                }
-                let _ = sitl_ins_file_write_sample(
-                    self.gyro_file_mode,
-                    &mut self.gyro_write_buf,
-                    &mut self.gyro_write_len,
-                    sample,
-                );
+                let sample = self.generate_kinematic_gyro(now_us, state);
                 self.imu
                     .notify_gyro_raw_sample(sample, now_us, self.gyro_rate_hz, now_us);
                 self.advance_gyro_schedule(now_us);
@@ -1116,6 +1154,106 @@ impl SitlImuBackend {
                 self.next_gyro_sample_us += period_us;
             }
         }
+    }
+}
+
+/// Maximum IMU instances in SITL, upstream `INS_MAX_INSTANCES` for Plane.
+pub const SITL_INS_MAX_INSTANCES: usize = 3;
+
+/// Per-instance file playback for [`SitlInsCluster::timer_update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SitlInsInstanceFiles<'a> {
+    pub accel: Option<&'a [u8]>,
+    pub gyro: Option<&'a [u8]>,
+}
+
+/// Multi-instance SITL INS coordinator: one [`SitlImuBackend`] per IMU slot.
+///
+/// Upstream registers each `AP_InertialSensor_SITL` with distinct instance
+/// indices; this mirrors that layout for host-side simulation.
+#[derive(Debug, Clone)]
+pub struct SitlInsCluster {
+    backends: [Option<SitlImuBackend>; SITL_INS_MAX_INSTANCES],
+    count: u8,
+}
+
+impl Default for SitlInsCluster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SitlInsCluster {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            backends: [None, None, None],
+            count: 0,
+        }
+    }
+
+    /// Register a backend, assign [`SitlImuBackend::instance_index`], return the slot.
+    pub fn register(&mut self, mut backend: SitlImuBackend) -> Option<u8> {
+        let idx = self.count as usize;
+        if idx >= SITL_INS_MAX_INSTANCES {
+            return None;
+        }
+        backend.instance_index = self.count;
+        self.backends[idx] = Some(backend);
+        self.count += 1;
+        Some(self.count - 1)
+    }
+
+    #[must_use]
+    pub fn instance_count(&self) -> u8 {
+        self.count
+    }
+
+    #[must_use]
+    pub fn backend(&self, index: u8) -> Option<&SitlImuBackend> {
+        self.backends.get(index as usize)?.as_ref()
+    }
+
+    pub fn backend_mut(&mut self, index: u8) -> Option<&mut SitlImuBackend> {
+        self.backends.get_mut(index as usize)?.as_mut()
+    }
+
+    /// Apply shared fail masks to every registered backend.
+    pub fn set_fail_masks(&mut self, accel_fail_mask: u32, gyro_fail_mask: u32) {
+        for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
+            slot.accel_fail_mask = accel_fail_mask;
+            slot.gyro_fail_mask = gyro_fail_mask;
+        }
+    }
+
+    /// Advance all registered backends, upstream each `timer_update`.
+    ///
+    /// `files` is indexed by instance; missing entries use no file playback.
+    pub fn timer_update(
+        &mut self,
+        now_us: u64,
+        state: &SitlBodyState,
+        files: &[SitlInsInstanceFiles<'_>],
+    ) -> (u32, u32) {
+        let mut gyro_total = 0_u32;
+        let mut accel_total = 0_u32;
+        for i in 0..self.count as usize {
+            let Some(backend) = self.backends[i].as_mut() else {
+                continue;
+            };
+            let file = files.get(i).copied().unwrap_or_default();
+            let (g, a) = backend.timer_update(
+                now_us,
+                state,
+                SitlTimerFileData {
+                    accel: file.accel,
+                    gyro: file.gyro,
+                },
+            );
+            gyro_total += g;
+            accel_total += a;
+        }
+        (gyro_total, accel_total)
     }
 }
 
@@ -1608,6 +1746,114 @@ mod tests {
             backend.accel_write_buf[11],
         ]);
         assert!((z + 9.80665).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fast_sampling_kinematic_matches_single_sample_without_noise() {
+        let state = SitlBodyState {
+            roll_rate_dps: 10.0,
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let mut normal = SitlImuBackend::new(1000, 1000);
+        let mut fast = SitlImuBackend::new(1000, 1000);
+        fast.fast_sampling = true;
+
+        normal.timer_update(0, &state, SitlTimerFileData::default());
+        fast.timer_update(0, &state, SitlTimerFileData::default());
+        normal.imu.update_gyro();
+        normal.imu.update_accel();
+        fast.imu.update_gyro();
+        fast.imu.update_accel();
+
+        assert_eq!(normal.imu.accel(), fast.imu.accel());
+        assert_eq!(normal.imu.gyro(), fast.imu.gyro());
+    }
+
+    #[test]
+    fn fast_sampling_write_mode_records_four_accel_and_eight_gyro_frames() {
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            roll_rate_dps: 1.0,
+            ..SitlBodyState::default()
+        };
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.fast_sampling = true;
+        backend.accel_file_mode = SitlInsFileMode::Write;
+        backend.gyro_file_mode = SitlInsFileMode::Write;
+
+        backend.timer_update(0, &state, SitlTimerFileData::default());
+        assert_eq!(
+            backend.accel_write_len,
+            4 * INS_FILE_SAMPLE_BYTES,
+            "fast sampling writes four accel sub-samples"
+        );
+        assert_eq!(
+            backend.gyro_write_len,
+            8 * INS_FILE_SAMPLE_BYTES,
+            "fast sampling writes eight gyro sub-samples"
+        );
+    }
+
+    #[test]
+    fn fast_sampling_nsamples_constants_match_upstream() {
+        assert_eq!(SitlImuBackend::accel_file_nsamples(true), 4);
+        assert_eq!(SitlImuBackend::accel_file_nsamples(false), 1);
+        assert_eq!(SitlImuBackend::gyro_file_nsamples(true), 8);
+        assert_eq!(SitlImuBackend::gyro_file_nsamples(false), 1);
+    }
+
+    #[test]
+    fn cluster_register_assigns_sequential_instance_indices() {
+        let mut cluster = SitlInsCluster::new();
+        assert_eq!(cluster.register(SitlImuBackend::new(1000, 1000)), Some(0));
+        assert_eq!(cluster.register(SitlImuBackend::new(8000, 1000)), Some(1));
+        assert_eq!(cluster.instance_count(), 2);
+        assert_eq!(cluster.backend(0).unwrap().instance_index, 0);
+        assert_eq!(cluster.backend(1).unwrap().instance_index, 1);
+        assert_eq!(cluster.backend(0).unwrap().gyro_rate_hz, 1000);
+        assert_eq!(cluster.backend(1).unwrap().gyro_rate_hz, 8000);
+    }
+
+    #[test]
+    fn cluster_register_rejects_when_full() {
+        let mut cluster = SitlInsCluster::new();
+        for _ in 0..SITL_INS_MAX_INSTANCES {
+            assert!(cluster.register(SitlImuBackend::new(1000, 1000)).is_some());
+        }
+        assert!(cluster.register(SitlImuBackend::new(1000, 1000)).is_none());
+        assert_eq!(cluster.instance_count(), SITL_INS_MAX_INSTANCES as u8);
+    }
+
+    #[test]
+    fn cluster_timer_update_delivers_from_all_instances() {
+        let mut cluster = SitlInsCluster::new();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let (g, a) = cluster.timer_update(0, &state, &[]);
+        assert_eq!(g, 2, "each instance delivers one gyro sample");
+        assert_eq!(a, 2, "each instance delivers one accel sample");
+    }
+
+    #[test]
+    fn cluster_fail_mask_suppresses_only_masked_instance() {
+        let mut cluster = SitlInsCluster::new();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        cluster.register(SitlImuBackend::new(1000, 1000)).unwrap();
+        cluster.set_fail_masks(1 << 1, 1 << 1);
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            ..SitlBodyState::default()
+        };
+        let (g, a) = cluster.timer_update(0, &state, &[]);
+        assert_eq!(g, 1);
+        assert_eq!(a, 1);
+        assert_eq!(cluster.backend(0).unwrap().instance_index, 0);
+        assert_eq!(cluster.backend(1).unwrap().instance_index, 1);
     }
 
     #[test]
