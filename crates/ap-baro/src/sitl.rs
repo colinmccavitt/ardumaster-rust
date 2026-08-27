@@ -7,7 +7,7 @@
 use ap_math::scalar::{is_positive, Real};
 use ap_math::vector3::Vector3f;
 
-use crate::{pressure_temperature_for_alt_amsl, SSL_AIR_DENSITY};
+use crate::{air_density_for_alt_amsl, pressure_temperature_for_alt_amsl, SSL_AIR_DENSITY};
 
 /// Board warm-up and temperature-dependent pressure offset, upstream
 /// `AP_Baro_SITL::temperature_adjustment`.
@@ -180,6 +180,215 @@ pub fn sitl_baro_sample(
     (p, t_c)
 }
 
+/// Minimum interval between baro timer ticks, upstream `_timer` at 100 Hz.
+pub const SITL_BARO_UPDATE_MS: u32 = 10;
+
+/// Delay ring capacity, upstream `_buffer_length`.
+pub const SITL_BARO_BUFFER_LEN: usize = 50;
+
+/// Per-instance SITL baro parameters, upstream `SITL::BaroParams`.
+#[derive(Debug, Clone, Copy)]
+pub struct SitlBaroConfig {
+    pub disabled: bool,
+    pub drift_rate_mps: f32,
+    pub noise_scale: f32,
+    pub glitch_m: f32,
+    pub delay_ms: u32,
+    pub freeze: bool,
+    pub wcof_xp: f32,
+    pub wcof_xn: f32,
+    pub wcof_yp: f32,
+    pub wcof_yn: f32,
+    pub wcof_zp: f32,
+    pub wcof_zn: f32,
+    pub temp_start_c: f32,
+    pub temp_board_offset_c: f32,
+    pub temp_tconst: f32,
+    pub temp_baro_factor: f32,
+}
+
+impl Default for SitlBaroConfig {
+    fn default() -> Self {
+        Self {
+            disabled: false,
+            drift_rate_mps: 0.0,
+            noise_scale: 0.0,
+            glitch_m: 0.0,
+            delay_ms: 0,
+            freeze: false,
+            wcof_xp: 0.0,
+            wcof_xn: 0.0,
+            wcof_yp: 0.0,
+            wcof_yn: 0.0,
+            wcof_zp: 0.0,
+            wcof_zn: 0.0,
+            temp_start_c: 20.0,
+            temp_board_offset_c: 0.0,
+            temp_tconst: 30.0,
+            temp_baro_factor: 0.0,
+        }
+    }
+}
+
+/// Pressure and temperature from one backend timer tick, upstream `_recent_*`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BaroSampleState {
+    pub pressure_pa: f32,
+    pub temp_c: f32,
+    pub altitude_m: f32,
+    pub have_sample: bool,
+    pub last_sample_time_ms: u32,
+}
+
+/// SITL barometer backend producer, upstream `AP_Baro_SITL::_timer` / `update`.
+#[derive(Debug, Clone)]
+pub struct SitlBaroBackend {
+    config: SitlBaroConfig,
+    last_sample_time_ms: u32,
+    last_drift_delta_ms: u32,
+    total_alt_drift_m: f32,
+    last_altitude_m: f32,
+    store_index: u8,
+    last_store_ms: u32,
+    buffer: [DelayedSample; SITL_BARO_BUFFER_LEN],
+    pending: BaroSampleState,
+    has_pending: bool,
+}
+
+impl Default for SitlBaroBackend {
+    fn default() -> Self {
+        Self {
+            config: SitlBaroConfig::default(),
+            last_sample_time_ms: 0,
+            last_drift_delta_ms: 0,
+            total_alt_drift_m: 0.0,
+            last_altitude_m: 0.0,
+            store_index: 0,
+            last_store_ms: 0,
+            buffer: [DelayedSample::default(); SITL_BARO_BUFFER_LEN],
+            pending: BaroSampleState::default(),
+            has_pending: false,
+        }
+    }
+}
+
+impl SitlBaroBackend {
+    #[must_use]
+    pub const fn config(&self) -> &SitlBaroConfig {
+        &self.config
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &BaroSampleState {
+        &self.pending
+    }
+
+    /// Upstream `healthy()`: seen at least one tick and baro not disabled.
+    #[must_use]
+    pub fn healthy(&self) -> bool {
+        self.last_sample_time_ms != 0 && !self.config.disabled
+    }
+
+    /// Run the 100 Hz timer path. `noise_sample` stands in for `rand_float()`.
+    pub fn timer_tick(
+        &mut self,
+        sim_altitude_m: f32,
+        airspeed_bf: Vector3f,
+        now_ms: u32,
+        noise_sample: f32,
+    ) -> bool {
+        if now_ms.wrapping_sub(self.last_sample_time_ms) < SITL_BARO_UPDATE_MS {
+            return false;
+        }
+        self.last_sample_time_ms = now_ms;
+
+        if self.config.disabled {
+            return false;
+        }
+
+        let drift_dt = now_ms.wrapping_sub(self.last_drift_delta_ms);
+        self.last_drift_delta_ms = now_ms;
+        self.total_alt_drift_m =
+            accumulate_altitude_drift(self.total_alt_drift_m, self.config.drift_rate_mps, drift_dt);
+
+        let mut alt = sim_altitude_m + self.total_alt_drift_m;
+        alt += self.config.noise_scale * noise_sample;
+        alt += self.config.glitch_m;
+
+        if now_ms.wrapping_sub(self.last_store_ms) >= 10 {
+            self.last_store_ms = now_ms;
+            if self.config.freeze {
+                alt = self.last_altitude_m;
+            } else {
+                self.last_altitude_m = alt;
+            }
+            let idx = (self.store_index as usize) % SITL_BARO_BUFFER_LEN;
+            self.buffer[idx] = DelayedSample {
+                altitude_m: alt,
+                time_ms: now_ms,
+            };
+            self.store_index = self.store_index.wrapping_add(1);
+        }
+
+        let delayed_time = now_ms.wrapping_sub(self.config.delay_ms);
+        let mut best_index = 0_u8;
+        let mut best_delta = 200_u32;
+        for (i, entry) in self.buffer.iter().enumerate() {
+            let delta = delayed_time.abs_diff(entry.time_ms);
+            if delta < best_delta {
+                best_index = i as u8;
+                best_delta = delta;
+            }
+        }
+        if best_delta < 200 {
+            alt = self.buffer[best_index as usize].altitude_m;
+        }
+
+        let air_density_ratio = air_density_for_alt_amsl(sim_altitude_m) / SSL_AIR_DENSITY;
+        #[allow(clippy::cast_precision_loss, reason = "milliseconds fit in f32 for SITL dt")]
+        let tsec = now_ms as f32 * 0.001;
+
+        let (p, t_c) = sitl_baro_sample(
+            alt,
+            tsec,
+            self.config.temp_start_c,
+            self.config.temp_board_offset_c,
+            self.config.temp_tconst,
+            self.config.temp_baro_factor,
+            airspeed_bf,
+            self.config.wcof_xp,
+            self.config.wcof_xn,
+            self.config.wcof_yp,
+            self.config.wcof_yn,
+            self.config.wcof_zp,
+            self.config.wcof_zn,
+            air_density_ratio,
+            0.0,
+        );
+
+        self.pending = BaroSampleState {
+            pressure_pa: p,
+            temp_c: t_c,
+            altitude_m: alt,
+            have_sample: true,
+            last_sample_time_ms: now_ms,
+        };
+        self.has_pending = true;
+        true
+    }
+
+    /// Copy the pending sample to the frontend, upstream `update()`.
+    #[must_use]
+    pub fn update(&mut self) -> Option<BaroSampleState> {
+        if !self.has_pending {
+            return None;
+        }
+        self.has_pending = false;
+        Some(self.pending)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,4 +463,53 @@ mod tests {
         assert!((p - 101_325.0).abs() < 500.0, "pressure {p}");
         assert!(t > 10.0 && t < 30.0, "temperature {t}");
     }
+    #[test]
+    fn producer_rate_limit_gates_until_10ms() {
+        let mut baro = SitlBaroBackend::default();
+        assert!(!baro.timer_tick(100.0, Vector3f::zero(), 0, 0.0));
+        assert!(!baro.state().have_sample);
+        assert!(baro.timer_tick(100.0, Vector3f::zero(), 10, 0.0));
+        assert!(baro.state().have_sample);
+    }
+
+    #[test]
+    fn producer_emits_sea_level_pressure() {
+        let mut baro = SitlBaroBackend::default();
+        assert!(baro.timer_tick(0.0, Vector3f::zero(), 10, 0.0));
+        let sample = baro.update().expect("pending sample");
+        assert!((sample.pressure_pa - 101_325.0).abs() < 500.0);
+        assert!(sample.temp_c > 10.0 && sample.temp_c < 30.0);
+    }
+
+    #[test]
+    fn producer_drift_shifts_reported_altitude() {
+        let mut baro = SitlBaroBackend::default();
+        baro.config = SitlBaroConfig {
+            drift_rate_mps: 0.1,
+            ..SitlBaroConfig::default()
+        };
+        assert!(baro.timer_tick(100.0, Vector3f::zero(), 10, 0.0));
+        assert!(baro.timer_tick(100.0, Vector3f::zero(), 1010, 0.0));
+        assert!((baro.state().altitude_m - 100.1).abs() < 0.05);
+    }
+
+    #[test]
+    fn producer_unhealthy_when_disabled() {
+        let mut baro = SitlBaroBackend::default();
+        baro.config = SitlBaroConfig {
+            disabled: true,
+            ..SitlBaroConfig::default()
+        };
+        assert!(!baro.timer_tick(0.0, Vector3f::zero(), 10, 0.0));
+        assert!(!baro.healthy());
+    }
+
+    #[test]
+    fn update_consumes_pending_sample_once() {
+        let mut baro = SitlBaroBackend::default();
+        assert!(baro.timer_tick(0.0, Vector3f::zero(), 10, 0.0));
+        assert!(baro.update().is_some());
+        assert!(baro.update().is_none());
+    }
+
 }
