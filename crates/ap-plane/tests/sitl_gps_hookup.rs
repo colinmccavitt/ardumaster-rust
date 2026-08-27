@@ -183,6 +183,7 @@ fn main_loop_pre_arm_refuses_when_gps_unhealthy() {
         has_3d_fix: false,
         num_sats_ok: false,
         velocity_valid: false,
+        fix_fresh: false,
     });
 
     vehicle.update_control_mode();
@@ -382,5 +383,90 @@ fn main_loop_dual_gps_use_primary_failover() {
     assert_eq!(vehicle.gps_active_instance, 1);
     let vel = vehicle.gps_velocity.expect("velocity");
     assert!((vel.velocity_ned.x - 8.0).abs() < 1e-3);
+}
+
+#[test]
+fn gps_health_publish_marks_stale_fix_unhealthy() {
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    let fresh = hookup.gps_health_publish();
+    assert!(fresh.fix_fresh);
+    assert!(fresh.is_healthy());
+
+    hookup.truth.now_ms = 5000;
+    let stale = hookup.gps_health_publish();
+    assert!(!stale.fix_fresh);
+    assert!(!stale.is_healthy());
+}
+
+#[test]
+fn main_loop_pre_arm_refuses_when_gps_fix_stale() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+    assert!(vehicle.gps_pre_arm_ok);
+
+    if let Some(gps) = vehicle.sitl_gps.as_mut() {
+        gps.truth.now_ms = 5000;
+    }
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.gps_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
+
+#[test]
+fn dual_gps_use_best_pre_arm_follows_fresh_output() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::UseBest);
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 10;
+        dual.secondary.num_sats = 18;
+        dual.secondary_truth.velocity_ned = Vector3f::new(9.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    assert_eq!(hookup.gps_active_instance(), 1);
+    assert!(hookup.gps_dual_pre_arm_ok());
+}
+
+#[test]
+fn main_loop_pre_arm_passes_after_gps_use_best() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::UseBest);
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 10;
+        dual.secondary.num_sats = 18;
+        dual.secondary_truth.velocity_ned = Vector3f::new(9.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.gps_active_instance, 1);
+    assert!(vehicle.gps_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
 }
 

@@ -167,8 +167,13 @@ impl GpsDualStub {
 
     #[must_use]
     pub fn output_health(&mut self) -> GpsHealthFlags {
+        self.output_health_at(self.primary_truth.now_ms)
+    }
+
+    #[must_use]
+    pub fn output_health_at(&mut self, now_ms: u32) -> GpsHealthFlags {
         let status = self.output_status();
-        GpsHealthFlags::from_status(&status)
+        GpsHealthFlags::from_status_at(&status, now_ms)
     }
 
 

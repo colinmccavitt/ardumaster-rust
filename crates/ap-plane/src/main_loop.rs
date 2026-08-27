@@ -790,11 +790,7 @@ impl PlaneMainLoop {
         let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
         let require_gps = self.sitl_gps.is_some();
         self.gps_pre_arm_ok = if let Some(gps) = self.sitl_gps.as_mut() {
-            if gps.dual.is_some() {
-                gps.gps_dual_pre_arm_ok()
-            } else {
-                gps_pre_arm_check(self.gps_health, require_gps)
-            }
+            gps.gps_dual_pre_arm_ok()
         } else {
             gps_pre_arm_check(self.gps_health, require_gps)
         };

@@ -8,6 +8,9 @@ use crate::status::GpsStatus;
 /// Minimum satellites for a healthy fix, upstream `GPS_MIN_NSATS`.
 pub const GPS_MIN_NSATS: u8 = 6;
 
+/// Maximum fix age before health fails, upstream `AP_GPS` timeout.
+pub const GPS_FIX_TIMEOUT_MS: u32 = 4000;
+
 /// Health indicators for one GPS instance, upstream `AP_GPS::isHealthy()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GpsHealthFlags {
@@ -15,24 +18,33 @@ pub struct GpsHealthFlags {
     pub has_3d_fix: bool,
     pub num_sats_ok: bool,
     pub velocity_valid: bool,
+    pub fix_fresh: bool,
 }
 
 impl GpsHealthFlags {
     #[must_use]
     pub fn from_status(status: &GpsStatus) -> Self {
+        Self::from_status_at(status, status.last_fix_time_ms)
+    }
+
+    #[must_use]
+    pub fn from_status_at(status: &GpsStatus, now_ms: u32) -> Self {
         let has_3d_fix = status.has_3d_fix();
+        let fix_fresh = status.have_fix
+            && now_ms.wrapping_sub(status.last_fix_time_ms) <= GPS_FIX_TIMEOUT_MS;
         Self {
             have_fix: status.have_fix,
             has_3d_fix,
             num_sats_ok: status.num_sats >= GPS_MIN_NSATS,
             velocity_valid: status.have_fix && has_3d_fix,
+            fix_fresh,
         }
     }
 
     /// Whether the receiver is healthy, upstream `AP_GPS::isHealthy(instance)`.
     #[must_use]
     pub fn is_healthy(self) -> bool {
-        self.have_fix && self.has_3d_fix && self.num_sats_ok
+        self.have_fix && self.has_3d_fix && self.num_sats_ok && self.fix_fresh
     }
 
     /// Whether velocity may be fused for drift correction.
@@ -108,5 +120,29 @@ mod tests {
         let health = GpsHealthFlags::from_status(&status);
         assert!(!health.has_3d_fix);
         assert!(!health.is_healthy());
+    }
+
+    #[test]
+    fn unhealthy_when_fix_is_stale() {
+        let fix = GpsFixState {
+            fix_type: FixType::Fix3D,
+            num_sats: 12,
+            velocity_ned: Vector3f::new(1.0, 0.0, 0.0),
+            ground_speed: 1.0,
+            ground_course_deg: 0.0,
+            last_fix_time_ms: 200,
+            latitude_deg: 51.0,
+            longitude_deg: -0.1,
+            altitude_m: 100.0,
+            have_fix: true,
+        };
+        let status = GpsStatus::from_fix(&fix, 0.1);
+        let fresh = GpsHealthFlags::from_status_at(&status, 200);
+        assert!(fresh.fix_fresh);
+        assert!(fresh.is_healthy());
+        let stale = GpsHealthFlags::from_status_at(&status, 5000);
+        assert!(!stale.fix_fresh);
+        assert!(!stale.is_healthy());
+        assert!(!stale.usable_for_drift());
     }
 }

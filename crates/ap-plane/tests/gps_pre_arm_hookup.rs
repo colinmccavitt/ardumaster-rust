@@ -13,6 +13,7 @@ fn gps_pre_arm_skips_when_gps_not_required() {
             has_3d_fix: false,
             num_sats_ok: false,
             velocity_valid: false,
+            fix_fresh: false,
         }),
         false,
     ));
@@ -25,6 +26,7 @@ fn gps_pre_arm_requires_healthy_fix_when_configured() {
         has_3d_fix: true,
         num_sats_ok: true,
         velocity_valid: true,
+        fix_fresh: true,
     };
     assert!(gps_pre_arm_check(Some(healthy), true));
     assert!(!gps_pre_arm_check(None, true));
@@ -34,6 +36,7 @@ fn gps_pre_arm_requires_healthy_fix_when_configured() {
             has_3d_fix: false,
             num_sats_ok: true,
             velocity_valid: false,
+            fix_fresh: false,
         }),
         true,
     ));

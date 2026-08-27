@@ -126,11 +126,23 @@ impl SitlGpsHookup {
     #[must_use]
     pub fn gps_health_publish(&mut self) -> GpsHealthFlags {
         self.sync_dual_truth();
+        let now_ms = self.truth.now_ms;
         if let Some(dual) = self.dual.as_mut() {
-            return dual.output_health();
+            return dual.output_health_at(now_ms);
         }
-        let status = self.gps_status_publish();
-        GpsHealthFlags::from_status(&status)
+        let fix = self.backend.delayed_state(now_ms);
+        if !fix.have_fix {
+            let _ = self.backend.read(
+                self.truth.velocity_ned,
+                self.truth.latitude_deg,
+                self.truth.longitude_deg,
+                self.truth.altitude_m,
+                now_ms,
+            );
+        }
+        let fix = self.backend.delayed_state(now_ms);
+        let status = GpsStatus::from_fix(&fix, self.gps_lag_sec());
+        GpsHealthFlags::from_status_at(&status, now_ms)
     }
 
     /// Whether the active GPS output is the blended virtual instance.
@@ -156,19 +168,20 @@ impl SitlGpsHookup {
     #[must_use]
     pub fn gps_dual_pre_arm_ok(&mut self) -> bool {
         self.sync_dual_truth();
+        let now_ms = self.truth.now_ms;
         if let Some(dual) = self.dual.as_mut() {
             if !dual.dual_enabled {
-                return dual.output_health().is_healthy();
+                return dual.output_health_at(now_ms).is_healthy();
             }
             match dual.auto_switch {
                 GpsAutoSwitch::Blend => {
                     let primary = dual.instance_status(0);
                     let secondary = dual.instance_status(1);
-                    GpsHealthFlags::from_status(&primary).is_healthy()
-                        && GpsHealthFlags::from_status(&secondary).is_healthy()
+                    GpsHealthFlags::from_status_at(&primary, now_ms).is_healthy()
+                        && GpsHealthFlags::from_status_at(&secondary, now_ms).is_healthy()
                 }
                 GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
-                    dual.output_health().is_healthy()
+                    dual.output_health_at(now_ms).is_healthy()
                 }
             }
         } else {
