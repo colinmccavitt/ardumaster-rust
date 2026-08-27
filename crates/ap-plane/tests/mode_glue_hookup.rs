@@ -200,3 +200,54 @@ fn mode_glue_set_servos_tick_zeros_when_still_suppressed() {
     assert_eq!(out.stabilize_throttle, None);
 }
 
+#[test]
+fn mode_glue_update_control_tick_zeros_auto_entry_throttle() {
+    use ap_plane::mode_glue_hookup::{
+        mode_glue_update_control_tick, ModeGlueUpdateControlInputs,
+    };
+    use ap_plane::mode_run::StickMixing;
+    use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+    use ap_plane::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
+
+    let out = mode_glue_update_control_tick(&ModeGlueUpdateControlInputs {
+        pilot_throttle: PilotThrottleGlueInputs {
+            throttle_pwm: Some(2000),
+            throttle_cfg: RcChannelConfig::default(),
+            ..PilotThrottleGlueInputs::default()
+        },
+        control_mode: ModeNumber::Auto.as_number(),
+        features: BuildFeatures::default(),
+        stick_mixing: Some(StickMixing::Fbw),
+        throttle_suppressed: true,
+    });
+    assert!(out.throttle_zeroed_by_mode_entry);
+    assert_eq!(out.pilot_throttle, 0.0);
+    assert_eq!(out.effective_stick_mixing, Some(StickMixing::Fbw));
+}
+
+#[test]
+fn mode_glue_update_control_tick_passes_pilot_throttle_when_not_suppressed() {
+    use ap_plane::mode_glue_hookup::{
+        mode_glue_update_control_tick, ModeGlueUpdateControlInputs,
+    };
+    use ap_plane::mode_run::StickMixing;
+    use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+    use ap_plane::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
+
+    let out = mode_glue_update_control_tick(&ModeGlueUpdateControlInputs {
+        pilot_throttle: PilotThrottleGlueInputs {
+            throttle_pwm: Some(2000),
+            throttle_cfg: RcChannelConfig::default(),
+            ..PilotThrottleGlueInputs::default()
+        },
+        control_mode: ModeNumber::FlyByWireB.as_number(),
+        features: BuildFeatures::default(),
+        stick_mixing: Some(StickMixing::Fbw),
+        throttle_suppressed: false,
+    });
+    assert!(!out.throttle_zeroed_by_mode_entry);
+    assert!((out.pilot_throttle - 100.0).abs() < 0.1);
+}
+

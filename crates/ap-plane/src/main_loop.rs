@@ -65,7 +65,8 @@ use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
 use crate::mode_glue_hookup::{
-    mode_glue_set_servos_tick, mode_glue_tick, ModeGlueInputs, ModeGlueSetServosInputs,
+    mode_glue_set_servos_tick, mode_glue_update_control_tick, ModeGlueSetServosInputs,
+    ModeGlueUpdateControlInputs,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -756,23 +757,22 @@ impl PlaneMainLoop {
         self.throttle_use_battery_comp = thr_ctx.use_battery_compensation;
         self.pilot_throttle_source = thr_ctx.pilot_throttle_source;
 
-        let pilot_throttle = pilot_throttle_glue_tick(&PilotThrottleGlueInputs {
-            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
-            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
-            pilot_throttle_source: self.pilot_throttle_source,
-            trim_throttle: self.trim_throttle,
-            throttle_min: self.throttle_min,
-            throttle_max: self.throttle_max,
-            use_throttle_limits: self.throttle_use_limits,
-            use_battery_compensation: self.throttle_use_battery_comp,
-            battery_voltage_ratio: self.battery_voltage_ratio,
-        });
-        let glue_out = mode_glue_tick(&ModeGlueInputs {
+        let glue_out = mode_glue_update_control_tick(&ModeGlueUpdateControlInputs {
+            pilot_throttle: PilotThrottleGlueInputs {
+                throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+                throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+                pilot_throttle_source: self.pilot_throttle_source,
+                trim_throttle: self.trim_throttle,
+                throttle_min: self.throttle_min,
+                throttle_max: self.throttle_max,
+                use_throttle_limits: self.throttle_use_limits,
+                use_battery_compensation: self.throttle_use_battery_comp,
+                battery_voltage_ratio: self.battery_voltage_ratio,
+            },
             control_mode: self.mode.control_mode,
             features: self.features,
             stick_mixing: self.stick_mixing,
             throttle_suppressed: self.mode_entry.throttle_suppressed,
-            pilot_throttle,
         });
         self.effective_stick_mixing = glue_out.effective_stick_mixing;
         self.mode_glue_throttle_zeroed = glue_out.throttle_zeroed_by_mode_entry;

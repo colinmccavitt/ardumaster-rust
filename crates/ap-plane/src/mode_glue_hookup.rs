@@ -234,3 +234,43 @@ pub fn mode_glue_set_servos_tick(
     }
 }
 
+use crate::yaw_throttle_glue_hookup::{pilot_throttle_glue_tick, PilotThrottleGlueInputs};
+
+/// Inputs for the update_control mode-glue path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueUpdateControlInputs {
+    pub pilot_throttle: PilotThrottleGlueInputs,
+    pub control_mode: u8,
+    pub features: BuildFeatures,
+    pub stick_mixing: Option<StickMixing>,
+    pub throttle_suppressed: bool,
+}
+
+/// Result of the update_control mode-glue path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueUpdateControlOutput {
+    pub effective_stick_mixing: Option<StickMixing>,
+    pub pilot_throttle: f32,
+    pub throttle_zeroed_by_mode_entry: bool,
+}
+
+/// Map RC throttle through pilot glue, then apply mode-entry suppression.
+#[must_use]
+pub fn mode_glue_update_control_tick(
+    inp: &ModeGlueUpdateControlInputs,
+) -> ModeGlueUpdateControlOutput {
+    let pilot_throttle = pilot_throttle_glue_tick(&inp.pilot_throttle);
+    let glue_out = mode_glue_tick(&ModeGlueInputs {
+        control_mode: inp.control_mode,
+        features: inp.features,
+        stick_mixing: inp.stick_mixing,
+        throttle_suppressed: inp.throttle_suppressed,
+        pilot_throttle,
+    });
+    ModeGlueUpdateControlOutput {
+        effective_stick_mixing: glue_out.effective_stick_mixing,
+        pilot_throttle: glue_out.pilot_throttle,
+        throttle_zeroed_by_mode_entry: glue_out.throttle_zeroed_by_mode_entry,
+    }
+}
+

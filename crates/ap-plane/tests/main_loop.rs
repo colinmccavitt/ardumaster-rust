@@ -889,7 +889,7 @@ fn mode_glue_restores_pilot_throttle_after_transition() {
 
 
 #[test]
-fn update_control_mode_uses_mode_glue_tick() {
+fn update_control_mode_uses_mode_glue_update_control_tick() {
     use ap_plane::mode_run::StickMixing;
     use ap_plane::mode_table::ModeNumber;
 
