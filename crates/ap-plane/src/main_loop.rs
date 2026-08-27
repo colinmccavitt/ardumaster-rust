@@ -73,6 +73,9 @@ use crate::sitl_ins_noise_hookup::{
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_baro_hookup::SitlBaroHookup;
 use crate::sitl_compass_hookup::SitlCompassHookup;
+use crate::compass_health_scheduler_hookup::{
+    compass_health_scheduler_tick, CompassHealthSchedulerInputs,
+};
 use crate::airspeed_health_scheduler_hookup::{
     airspeed_health_scheduler_tick, AirspeedHealthSchedulerInputs,
 };
@@ -729,15 +732,18 @@ impl PlaneMainLoop {
             }
         });
         if let Some(compass) = self.sitl_compass.as_mut() {
-            let published = compass.publish(
-                self.ahrs.dcm.matrix,
-                self.loop_timing.delta_time,
-                gps_declination_fix,
+            let out = compass_health_scheduler_tick(
+                compass,
+                &CompassHealthSchedulerInputs {
+                    attitude: self.ahrs.dcm.matrix,
+                    loop_dt: self.loop_timing.delta_time,
+                    gps: gps_declination_fix,
+                },
             );
-            self.mag_sample = Some(published.sample);
-            self.compass_healthy = published.healthy;
-            self.compass_health = published.health;
-            self.compass = published.yaw_compass;
+            self.mag_sample = Some(out.sample);
+            self.compass_healthy = out.healthy;
+            self.compass_health = out.health;
+            self.compass = out.yaw_compass;
         }
         if let Some(gps) = self.sitl_gps.as_mut() {
             let samples = gps.publish_yaw_samples(
