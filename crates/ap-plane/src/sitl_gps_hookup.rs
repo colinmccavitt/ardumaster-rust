@@ -4,8 +4,8 @@
 //! [`SitlYawPublish`] GPS fields before compass/GPS samples reach the DCM.
 
 use ap_gps::{
-    GpsAutoSwitch, GpsDualStub, GpsHealthFlags, GpsInstanceTruth, GpsParams, GpsStatus,
-    GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend, GPS_MIN_NSATS,
+    GpsAutoSwitch, GpsDualHealthFlags, GpsDualStub, GpsHealthFlags, GpsInstanceTruth,
+    GpsParams, GpsStatus, GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend, GPS_MIN_NSATS,
 };
 use ap_math::vector3::Vector3f;
 
@@ -149,6 +149,22 @@ impl SitlGpsHookup {
         GpsVelocityProducer::publish_status(&status)
     }
 
+    #[must_use]
+    pub fn gps_dual_health_publish(&mut self) -> GpsDualHealthFlags {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            return dual.dual_health_flags();
+        }
+        let health = self.gps_health_publish();
+        GpsDualHealthFlags {
+            per_instance: [health, GpsHealthFlags::default()],
+            instance_count: 1,
+            primary: 0,
+            have_gps_yaw: [false, false],
+            rtk_yaw_fresh: true,
+        }
+    }
+
     /// GPS health flags for arming and drift gating, upstream `isHealthy()`.
     #[must_use]
     pub fn gps_health_publish(&mut self) -> GpsHealthFlags {
@@ -211,11 +227,26 @@ impl SitlGpsHookup {
         }
     }
 
+    fn gps_yaw_from_dual(dual: &mut GpsDualStub) -> (Option<f32>, Option<f32>, Option<u32>) {
+        let mb = dual.moving_baseline();
+        let inst = dual.output_active_instance();
+        let now_ms = if inst == 0 {
+            dual.primary_truth.now_ms
+        } else {
+            dual.secondary_truth.now_ms
+        };
+        mb.gps_yaw_deg(inst, now_ms)
+            .map(|(yaw, acc, t)| (Some(yaw), Some(acc), Some(t)))
+            .unwrap_or((None, None, None))
+    }
+
     #[must_use]
     pub fn yaw_publish(&mut self) -> SitlYawPublish {
         self.sync_dual_truth();
         if let Some(dual) = self.dual.as_mut() {
             let status = dual.output_status();
+            let (gps_yaw_deg, gps_yaw_accuracy_deg, gps_yaw_time_ms) =
+                Self::gps_yaw_from_dual(dual);
             return SitlYawPublish {
                 latitude_deg: status.latitude_deg,
                 longitude_deg: status.longitude_deg,
@@ -227,6 +258,9 @@ impl SitlGpsHookup {
                 compass_use_for_yaw: self.compass_use_for_yaw,
                 wind_speed_xy: self.wind_speed_xy,
                 have_gps: status.have_fix,
+                gps_yaw_deg,
+                gps_yaw_accuracy_deg,
+                gps_yaw_time_ms,
             };
         }
         self.backend.read(
@@ -248,6 +282,9 @@ impl SitlGpsHookup {
             compass_use_for_yaw: self.compass_use_for_yaw,
             wind_speed_xy: self.wind_speed_xy,
             have_gps: fix.have_fix,
+            gps_yaw_deg: None,
+            gps_yaw_accuracy_deg: None,
+            gps_yaw_time_ms: None,
         }
     }
 

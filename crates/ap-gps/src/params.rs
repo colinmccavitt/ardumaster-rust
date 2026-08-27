@@ -1,6 +1,7 @@
 //! GPS parameter table stub, upstream `AP_GPS` var_info / param table. FW-012.
 
 use crate::blend::GpsAutoSwitch;
+use crate::moving_baseline::GpsMovingBaseline;
 use crate::dual::GpsDualStub;
 use crate::health::GPS_MIN_NSATS;
 use crate::sitl::{SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC, SITL_GPS_UPDATE_MS};
@@ -92,6 +93,11 @@ impl GpsParams {
 
     pub fn apply_to_dual(self, dual: &mut GpsDualStub) {
         dual.apply_params(self);
+    }
+
+    #[must_use]
+    pub const fn moving_baseline(self) -> GpsMovingBaseline {
+        GpsMovingBaseline::from_types(self.gps1.gps_type, self.gps2.gps_type)
     }
 }
 

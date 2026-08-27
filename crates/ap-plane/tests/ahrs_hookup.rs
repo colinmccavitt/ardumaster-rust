@@ -63,6 +63,8 @@ fn yaw_update_inputs_includes_gps_when_context_set() {
         ground_course_deg: 90.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 1000,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         fly_forward: true,
@@ -87,6 +89,8 @@ fn drift_motion_inputs_builds_gps_velocity() {
         ground_course_deg: 90.0,
         ground_speed: GPS_SPEED_MIN + 2.0,
         last_fix_time_ms: 500,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         have_gps: true,
@@ -154,6 +158,8 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         have_gps: true,
@@ -168,6 +174,8 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 600,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx2 = YawDriftContext {
         have_gps: true,
@@ -193,6 +201,8 @@ fn multi_accel_dead_reckoning_wired_through_drift_motion() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         have_gps: true,
@@ -284,6 +294,8 @@ fn ekf_health_and_dead_reckoning_published_on_main_loop() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     });
 
     vehicle.ahrs_update();
@@ -342,6 +354,8 @@ fn main_loop_publishes_dead_reckoning_offset_from_ahrs() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     });
     vehicle.ahrs_update();
     assert!(vehicle.have_dead_reckoning_position);
@@ -401,6 +415,8 @@ fn main_loop_publishes_ahrs_healthy_from_update() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     });
 
     vehicle.ahrs_update();
@@ -433,6 +449,8 @@ fn main_loop_publishes_ekf3_status_from_update() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     });
 
     vehicle.ahrs_update();
@@ -526,6 +544,8 @@ fn main_loop_publishes_using_gps_and_pre_arm_from_ahrs() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN + 1.0,
         last_fix_time_ms: 100,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     });
 
     vehicle.ahrs_update();
@@ -604,6 +624,8 @@ fn drift_motion_prefers_producer_velocity_over_course_reconstruction() {
         ground_course_deg: 90.0,
         ground_speed: GPS_SPEED_MIN + 2.0,
         last_fix_time_ms: 500,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         have_gps: true,

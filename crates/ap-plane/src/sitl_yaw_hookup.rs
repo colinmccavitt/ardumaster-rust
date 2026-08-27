@@ -33,6 +33,9 @@ pub struct SitlYawPublish {
     pub wind_speed_xy: f32,
     /// Whether a GPS fix is available.
     pub have_gps: bool,
+    pub gps_yaw_deg: Option<f32>,
+    pub gps_yaw_accuracy_deg: Option<f32>,
+    pub gps_yaw_time_ms: Option<u32>,
 }
 
 impl Default for SitlYawPublish {
@@ -48,6 +51,9 @@ impl Default for SitlYawPublish {
             compass_use_for_yaw: true,
             wind_speed_xy: 0.0,
             have_gps: false,
+            gps_yaw_deg: None,
+            gps_yaw_accuracy_deg: None,
+            gps_yaw_time_ms: None,
         }
     }
 }
@@ -97,6 +103,8 @@ pub fn publish_sitl_yaw_samples(
         ground_course_deg: source.ground_course_deg,
         ground_speed: source.ground_speed_mps,
         last_fix_time_ms: source.last_fix_time_ms,
+        gps_yaw_deg: source.gps_yaw_deg,
+        gps_yaw_accuracy_deg: source.gps_yaw_accuracy_deg,
     });
 
     let yaw_ctx = YawDriftContext {

@@ -23,8 +23,9 @@
 //!
 //! The receiver drivers (u-blox, NMEA, SBF, DroneCAN — the bulk of AP_GPS by
 //! line count), multi-instance blending and failover, the
-//! moving-baseline and RTK paths, automatic baud-rate and protocol detection,
-//! and the parameter table.
+//! automatic baud-rate and protocol detection, and the parameter table.
+//!
+//! Moving-baseline RTK yaw lives in [`moving_baseline`].
 //!
 //! The SITL backend lives in [`sitl`].
 
@@ -36,19 +37,24 @@ pub mod velocity;
 pub mod health;
 pub mod blend;
 pub mod dual;
+pub mod moving_baseline;
 pub mod params;
 pub mod sitl;
 
 pub use lag_buffer::GpsLagBuffer;
 pub use status::GpsStatus;
 pub use velocity::{GpsVelocityProducer, GpsVelocitySample};
-pub use health::{GpsHealthFlags, GPS_MIN_NSATS};
+pub use health::{GpsDualHealthFlags, GpsHealthFlags, GPS_MIN_NSATS};
 pub use blend::{
     GpsAutoSwitch, GpsBlendAccuracy, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT,
     BLEND_MASK_USE_HPOS_ACC, BLEND_MASK_USE_SPD_ACC, BLEND_MASK_USE_VPOS_ACC,
     GPS_BLENDED_INSTANCE, GPS_MAX_RECEIVERS,
 };
 pub use dual::{GpsDualStub, GpsInstanceTruth};
+pub use moving_baseline::{
+    GpsMovingBaseline, GpsYawState, GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER,
+    GPS_YAW_TIMEOUT_MS,
+};
 pub use params::{
     GpsInstanceParams, GpsParams, GPS_BLEND_MASK_PARAM_DEFAULT, GPS_TYPE_NONE,
     GPS_TYPE_SITL,

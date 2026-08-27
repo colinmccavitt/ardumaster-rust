@@ -7,6 +7,8 @@ use crate::blend::{
     GpsAutoSwitch, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT,
     GPS_BLENDED_INSTANCE,
 };
+use crate::health::GpsDualHealthFlags;
+use crate::moving_baseline::GpsMovingBaseline;
 use crate::params::GpsParams;
 use crate::health::{GpsHealthFlags, GPS_MIN_NSATS};
 use crate::sitl::{GpsFixState, SitlGpsBackend, SITL_GPS_UPDATE_MS};
@@ -36,6 +38,7 @@ pub struct GpsDualStub {
     blender: GpsBlender,
     pub dual_enabled: bool,
     min_nsats: u8,
+    moving_baseline: GpsMovingBaseline,
 }
 
 impl Default for GpsDualStub {
@@ -58,17 +61,24 @@ impl Default for GpsDualStub {
             blender: GpsBlender::new(GPS_BLEND_MASK_DEFAULT),
             dual_enabled: false,
             min_nsats: GPS_MIN_NSATS,
+            moving_baseline: GpsMovingBaseline::default(),
         }
     }
 }
 
 impl GpsDualStub {
+    #[must_use]
+    pub const fn moving_baseline(&self) -> GpsMovingBaseline {
+        self.moving_baseline
+    }
+
     pub fn apply_params(&mut self, params: GpsParams) {
         self.dual_enabled = params.dual_enabled();
         self.auto_switch = params.auto_switch;
         self.primary_instance = params.primary.min(1);
         self.blender = GpsBlender::new(params.blend_mask);
         self.min_nsats = params.min_nsats;
+        self.moving_baseline = params.moving_baseline();
         params.apply_instance(0, &mut self.primary);
         params.apply_instance(1, &mut self.secondary);
     }
@@ -307,11 +317,58 @@ impl GpsDualStub {
         ]
     }
 
+    fn sync_moving_baseline_yaw(&mut self) {
+        if !self.moving_baseline.using_moving_base() {
+            return;
+        }
+        let (base, _rover) = match (
+            self.moving_baseline.base_instance(),
+            self.moving_baseline.rover_instance(),
+        ) {
+            (Some(b), Some(r)) => (b, r),
+            _ => return,
+        };
+        let (base_truth, rover_truth) = if base == 0 {
+            (&self.primary_truth, &self.secondary_truth)
+        } else {
+            (&self.secondary_truth, &self.primary_truth)
+        };
+        self.moving_baseline.update_rover_yaw_from_positions(
+            base_truth.latitude_deg,
+            base_truth.longitude_deg,
+            rover_truth.latitude_deg,
+            rover_truth.longitude_deg,
+            rover_truth.now_ms,
+        );
+    }
+
+    #[must_use]
+    pub fn dual_health_flags(&mut self) -> GpsDualHealthFlags {
+        self.sync_moving_baseline_yaw();
+        let p = self.instance_health_at(0, self.primary_truth.now_ms);
+        let s = self.instance_health_at(1, self.secondary_truth.now_ms);
+        let now_ms = self.instance_now_ms(self.primary_instance.min(1));
+        GpsDualHealthFlags {
+            per_instance: [p, s],
+            instance_count: if self.dual_enabled { 2 } else { 1 },
+            primary: self.output_active_instance(),
+            have_gps_yaw: [
+                self.moving_baseline.have_gps_yaw(0),
+                self.moving_baseline.have_gps_yaw(1),
+            ],
+            rtk_yaw_fresh: self.moving_baseline.rover_yaw_pre_arm_ok(now_ms),
+        }
+    }
+
     /// Active output status, upstream primary/blended instance selection.
     #[must_use]
     pub fn output_status(&mut self) -> GpsStatus {
+        self.sync_moving_baseline_yaw();
         if !self.dual_enabled {
             return self.primary_status();
+        }
+        if let Some(base) = self.moving_baseline.base_instance() {
+            return self.instance_status(base);
         }
         match self.auto_switch {
             GpsAutoSwitch::UsePrimary => {
@@ -328,7 +385,17 @@ impl GpsDualStub {
                     self.primary_status()
                 }
             }
-            GpsAutoSwitch::Blend => self.blend_output_status(),
+            GpsAutoSwitch::Blend => {
+                if self.moving_baseline.using_moving_base() {
+                    if let Some(base) = self.moving_baseline.base_instance() {
+                        self.instance_status(base)
+                    } else {
+                        self.primary_status()
+                    }
+                } else {
+                    self.blend_output_status()
+                }
+            }
         }
     }
 
@@ -370,8 +437,12 @@ impl GpsDualStub {
     /// Active output instance index, upstream `AP_GPS::primary_instance()` / blended.
     #[must_use]
     pub fn output_active_instance(&mut self) -> u8 {
+        self.sync_moving_baseline_yaw();
         if !self.dual_enabled {
             return 0;
+        }
+        if let Some(base) = self.moving_baseline.base_instance() {
+            return base;
         }
         match self.auto_switch {
             GpsAutoSwitch::UsePrimary => self.primary_instance,
@@ -382,7 +453,10 @@ impl GpsDualStub {
 
     #[must_use]
     pub fn output_is_blended(&self) -> bool {
-        self.dual_enabled && self.auto_switch == GpsAutoSwitch::Blend && self.blender.output_is_blended()
+        self.dual_enabled
+            && !self.moving_baseline.using_moving_base()
+            && self.auto_switch == GpsAutoSwitch::Blend
+            && self.blender.output_is_blended()
     }
 
     #[must_use]
@@ -578,5 +652,25 @@ mod tests {
         assert_eq!(stub.primary_instance, 1);
         let status = stub.output_status();
         assert!((status.velocity_ned.x - 5.0).abs() < 1e-3);
+    }
+    #[test]
+    fn moving_baseline_selects_base_and_disables_blend() {
+        use crate::moving_baseline::{GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER};
+
+        let mut stub = GpsDualStub::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::Blend;
+        stub.moving_baseline = GpsMovingBaseline::from_types(
+            GPS_TYPE_UBLOX_RTK_BASE,
+            GPS_TYPE_UBLOX_RTK_ROVER,
+        );
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        stub.secondary_truth.latitude_deg = stub.primary_truth.latitude_deg + 0.0001;
+        assert_eq!(stub.output_active_instance(), 0);
+        assert!(!stub.output_is_blended());
+        let health = stub.dual_health_flags();
+        assert!(health.have_gps_yaw[1]);
+        assert!(health.rtk_yaw_fresh);
     }
 

@@ -11,6 +11,39 @@ pub const GPS_MIN_NSATS: u8 = 6;
 /// Maximum fix age before health fails, upstream `AP_GPS` timeout.
 pub const GPS_FIX_TIMEOUT_MS: u32 = 4000;
 
+/// Per-instance dual-GPS health, upstream multi-receiver `isHealthy()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GpsDualHealthFlags {
+    pub per_instance: [GpsHealthFlags; 2],
+    pub instance_count: u8,
+    pub primary: u8,
+    pub have_gps_yaw: [bool; 2],
+    pub rtk_yaw_fresh: bool,
+}
+
+impl GpsDualHealthFlags {
+    #[must_use]
+    pub fn any_healthy(self) -> bool {
+        self.per_instance[..self.instance_count as usize]
+            .iter()
+            .any(|h| h.is_healthy())
+    }
+
+    #[must_use]
+    pub fn primary_healthy(self) -> bool {
+        let i = self.primary as usize;
+        i < self.instance_count as usize && self.per_instance[i].is_healthy()
+    }
+
+    #[must_use]
+    pub fn output_healthy(self, active: u8) -> bool {
+        if active >= self.instance_count {
+            return self.any_healthy();
+        }
+        self.per_instance[active as usize].is_healthy()
+    }
+}
+
 /// Health indicators for one GPS instance, upstream `AP_GPS::isHealthy()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GpsHealthFlags {

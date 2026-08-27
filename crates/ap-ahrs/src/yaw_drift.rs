@@ -59,7 +59,7 @@ pub struct YawCompassSample {
 
 /// One GPS sample for yaw correction when the compass is unavailable or
 /// untrusted.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct YawGpsSample {
     /// Ground course in degrees, upstream `AP_GPS::ground_course()`.
     pub ground_course_deg: f32,
@@ -67,6 +67,10 @@ pub struct YawGpsSample {
     pub ground_speed: f32,
     /// Fix timestamp in milliseconds, upstream `AP_GPS::last_fix_time_ms()`.
     pub last_fix_time_ms: u32,
+    /// Direct GPS yaw from moving baseline, upstream `gps_yaw_deg()`.
+    pub gps_yaw_deg: Option<f32>,
+    /// GPS yaw accuracy in degrees when reported.
+    pub gps_yaw_accuracy_deg: Option<f32>,
 }
 
 /// Vehicle configuration and motion facts for compass vs GPS selection.
@@ -273,23 +277,25 @@ impl YawDriftCorrector {
             }
         } else if inputs.ctx.fly_forward && inputs.ctx.have_gps {
             if let Some(gps) = inputs.gps {
-                if gps.last_fix_time_ms != self.gps_last_update_ms
-                    && gps.ground_speed >= GPS_SPEED_MIN
-                {
+                let heading_deg = gps.gps_yaw_deg.unwrap_or(gps.ground_course_deg);
+                let have_direct_yaw = gps.gps_yaw_deg.is_some();
+                let speed_ok = have_direct_yaw || gps.ground_speed >= GPS_SPEED_MIN;
+                if gps.last_fix_time_ms != self.gps_last_update_ms && speed_ok {
                     yaw_deltat =
                         (gps.last_fix_time_ms.saturating_sub(self.gps_last_update_ms)) as f32
                             * 1.0e-3;
                     self.gps_last_update_ms = gps.last_fix_time_ms;
                     new_value = true;
-                    let gps_course_rad = radians(gps.ground_course_deg);
+                    let gps_course_rad = radians(heading_deg);
                     let (error, yaw_error_rad) =
-                        Self::yaw_error_gps(gps.ground_course_deg, inputs.ctx.estimated_yaw_rad);
+                        Self::yaw_error_gps(heading_deg, inputs.ctx.estimated_yaw_rad);
 
-                    if !self.have_initial_yaw
+                    let hard_reset = !self.have_initial_yaw
                         || yaw_deltat > 20.0
+                        || (have_direct_yaw && Real::abs(yaw_error_rad) >= 0.35)
                         || (gps.ground_speed >= 3.0 * GPS_SPEED_MIN
-                            && Real::abs(yaw_error_rad) >= 1.047)
-                    {
+                            && Real::abs(yaw_error_rad) >= 1.047);
+                    if hard_reset {
                         matrix_action = YawMatrixAction::ResetAttitude {
                             roll: inputs.roll_rad,
                             pitch: inputs.pitch_rad,

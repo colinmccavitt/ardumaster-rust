@@ -84,3 +84,28 @@ fn gps_pre_arm_respects_param_min_nsats_in_health_flags() {
     let relaxed = GpsHealthFlags::from_status_at_min(&status, 200, 5);
     assert!(gps_pre_arm_check(Some(relaxed), true));
 }
+#[test]
+fn rtk_rover_yaw_stale_blocks_dual_pre_arm() {
+    use ap_gps::{GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER, GpsParams, GPS_YAW_TIMEOUT_MS};
+    use ap_plane::sitl_gps_hookup::SitlGpsHookup;
+
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = GpsParams::default();
+    params.gps1.gps_type = GPS_TYPE_UBLOX_RTK_BASE;
+    params.gps2.gps_type = GPS_TYPE_UBLOX_RTK_ROVER;
+    hookup.apply_gps_params(params);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.latitude_deg = dual.primary_truth.latitude_deg + 0.001;
+        dual.secondary_truth.now_ms = 200;
+    }
+    let _ = hookup.gps_status_publish();
+    assert!(hookup.gps_dual_pre_arm_ok());
+    hookup.truth.now_ms = 200 + GPS_YAW_TIMEOUT_MS + 1;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.now_ms = hookup.truth.now_ms;
+    }
+    let _ = hookup.gps_status_publish();
+    assert!(!hookup.gps_dual_pre_arm_ok());
+}
+

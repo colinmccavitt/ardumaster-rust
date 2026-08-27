@@ -707,3 +707,27 @@ fn dual_gps_min_nsats_from_params_applies_to_both_instances() {
     let _ = hookup.gps_status_publish();
     assert!(hookup.gps_dual_pre_arm_ok());
 }
+#[test]
+fn moving_baseline_yaw_feeds_ahrs_gps_yaw_sample() {
+    use ap_gps::{GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER, GpsParams};
+
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = GpsParams::default();
+    params.gps1.gps_type = GPS_TYPE_UBLOX_RTK_BASE;
+    params.gps2.gps_type = GPS_TYPE_UBLOX_RTK_ROVER;
+    hookup.apply_gps_params(params);
+    hookup.truth.now_ms = 500;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.latitude_deg = dual.primary_truth.latitude_deg + 0.001;
+        dual.secondary_truth.now_ms = 500;
+    }
+    let samples = hookup.publish_yaw_samples(ap_math::matrix3::Matrix3f::identity(), 0.0025);
+    let gps = samples.gps_yaw.expect("gps yaw sample");
+    assert!(gps.gps_yaw_deg.is_some());
+    let dual_health = hookup.gps_dual_health_publish();
+    assert_eq!(dual_health.instance_count, 2);
+    assert!(dual_health.have_gps_yaw[1]);
+    assert!(dual_health.rtk_yaw_fresh);
+    assert!(hookup.gps_dual_pre_arm_ok());
+}
+

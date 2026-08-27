@@ -130,6 +130,8 @@ fn compass_gps_disagreement_switches_to_gps() {
         ground_course_deg: 0.0,
         ground_speed: 10.0,
         last_fix_time_ms: 1000,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let ctx = YawDriftContext {
         fly_forward: true,
@@ -155,6 +157,8 @@ fn gps_first_fix_resets_attitude_yaw() {
         ground_course_deg: 0.0,
         ground_speed: GPS_SPEED_MIN,
         last_fix_time_ms: 200,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let inputs = YawDriftInputs {
         dcm_matrix: dcm,
@@ -197,6 +201,8 @@ fn gps_course_correction_opposes_yaw_error() {
         ground_course_deg: degrees(0.0),
         ground_speed: 5.0,
         last_fix_time_ms: 200,
+        gps_yaw_deg: None,
+        gps_yaw_accuracy_deg: None,
     };
     let inputs = YawDriftInputs {
         dcm_matrix: dcm,
