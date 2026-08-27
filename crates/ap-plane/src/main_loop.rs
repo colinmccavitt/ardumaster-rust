@@ -13,8 +13,10 @@ use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, A
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::landing_state_machine::VerifyLandEffects;
 use ap_landing::deepstall_stage::DeepstallStage;
-use crate::go_around_hookup::apply_landing_go_around_latch;
-use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
+use crate::deepstall_override_scheduler_hookup::{
+    deepstall_override_scheduler_tick, DeepstallOverrideSchedulerInputs,
+};
+use crate::landing_hookup::ServoOutputState;
 use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
@@ -416,18 +418,17 @@ impl PlaneMainLoop {
         self.ticks.set_servos += 1;
         apply_stabilize_to_servos(&self.stabilize_servos, &mut self.servos);
 
-        let hookup_inp = LandingServoHookupInputs {
-            flight_stage_is_land: self.flight_stage_is_land,
-            landing_flags: self.landing.flags,
-            landing_type: self.landing.landing_type,
-            deepstall_stage: self.landing.machine.deepstall.stage,
-            deepstall: self.deepstall_override,
-        };
-        let result = landing_servo_hookup(self.servos, &hookup_inp);
-        self.landing_servo_override_applied = result.applied_override;
-        self.landing_request_go_around = result.request_go_around;
-        apply_landing_go_around_latch(&mut self.landing.flags, result.request_go_around);
-        self.servos = result.outputs;
+        let ds_out = deepstall_override_scheduler_tick(
+            &mut self.landing,
+            self.servos,
+            &DeepstallOverrideSchedulerInputs {
+                flight_stage_is_land: self.flight_stage_is_land,
+                deepstall: self.deepstall_override,
+            },
+        );
+        self.landing_servo_override_applied = ds_out.applied_override;
+        self.landing_request_go_around = ds_out.request_go_around;
+        self.servos = ds_out.servos;
     }
 }
 

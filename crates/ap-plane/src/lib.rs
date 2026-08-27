@@ -20,6 +20,7 @@ pub mod sitl_yaw_hookup;
 pub mod nav_tecs_hookup;
 pub mod entry_state;
 pub mod landing_hookup;
+pub mod deepstall_override_scheduler_hookup;
 pub mod go_around_hookup;
 pub mod landing_loop;
 pub mod landing_loop_hookup;

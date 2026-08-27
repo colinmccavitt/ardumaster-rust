@@ -363,3 +363,49 @@ fn scheduler_tick_recalculates_slope_on_rangefinder_bump() {
     assert_eq!(vehicle.rangefinder_bump.rf.last_stable_correction, 6.0);
 }
 
+#[test]
+fn scheduler_tick_applies_deepstall_servo_override() {
+    use ap_landing::deepstall_override::DeepstallOverrideInputs;
+    use ap_landing::deepstall_stage::DeepstallStage;
+    use ap_landing::go_around::{LandingFlags, LandingType};
+    use ap_plane::landing_hookup::ServoOutputState;
+
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.flight_stage_is_land = true;
+    vehicle.landing.flags = LandingFlags {
+        in_progress: true,
+        ..LandingFlags::default()
+    };
+    vehicle.landing.landing_type = LandingType::Deepstall;
+    vehicle.landing.machine.deepstall.stage = DeepstallStage::Land;
+    vehicle.deepstall_override = DeepstallOverrideInputs {
+        stage: DeepstallStage::Land,
+        stall_entry_ms: 0,
+        now_ms: 5000,
+        slew_speed: 1.0,
+        initial_elevator_pwm: 1500,
+        target_elevator_pwm: 1900,
+        airspeed_ms: Some(10.0),
+        handoff_airspeed_ms: 12.0,
+        handoff_lower_limit_ms: 8.0,
+        steering_pid: 0.5,
+        aileron_scalar: 1.0,
+        elevator_present: true,
+    };
+    vehicle.servos = ServoOutputState {
+        elevator_pwm: 1500,
+        throttle_scaled: 50.0,
+        ..ServoOutputState::default()
+    };
+
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert!(vehicle.landing_servo_override_applied);
+    assert_eq!(vehicle.servos.elevator_pwm, 1900);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}
+
