@@ -289,3 +289,77 @@ fn scheduler_tick_advances_landing_in_land_stage() {
     assert!(!vehicle.landing_throttle_suppressed);
 }
 
+#[test]
+fn scheduler_tick_recalculates_slope_on_rangefinder_bump() {
+    use ap_landing::go_around::{LandingFlags, LandingType};
+    use ap_landing::rangefinder_bump::{RangefinderBumpConfig, RangefinderBumpInputs};
+    use ap_landing::slope_stage::RangefinderState;
+    use ap_landing::{SlopeConfig, SlopeInputs};
+    use ap_math::location::{AltContext, AltFrame, Location};
+    use ap_plane::rangefinder_bump_hookup::RangefinderBumpHookupInputs;
+
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.flight_stage_is_land = true;
+    vehicle.landing.flags = LandingFlags {
+        in_progress: true,
+        ..LandingFlags::default()
+    };
+    vehicle.landing.landing_type = LandingType::StandardGlideSlope;
+    vehicle.rangefinder_bump.flags.in_progress = true;
+    vehicle.rangefinder_bump.slope = 0.05;
+
+    let prev = Location::new_with_alt(-35_000_000, 149_000_000, 10_000, AltFrame::Absolute);
+    let mut next = prev;
+    next.offset(1000.0, 0.0);
+    next.set_alt_cm(0, AltFrame::Absolute);
+    let alt_ctx = AltContext {
+        home_alt_cm: Some(0),
+        origin_alt_cm: Some(0),
+        terrain_alt_cm: Some(0),
+    };
+
+    vehicle.rangefinder_bump_inputs = RangefinderBumpHookupInputs {
+        flight_stage_is_land: true,
+        landing_type: LandingType::StandardGlideSlope,
+        bump_cfg: RangefinderBumpConfig {
+            shallow_threshold: 1.0,
+            steep_threshold_deg: 1.0,
+        },
+        slope_cfg: SlopeConfig {
+            flare_sec: 2.0,
+            flare_alt: 3.0,
+            flare_effectivness_pct: 50,
+        },
+        slope_inp: SlopeInputs {
+            prev_wp: prev,
+            next_wp: next,
+            current: prev,
+            groundspeed: 20.0,
+            land_sinkrate: 1.0,
+            alt_ctx,
+        },
+        bump: RangefinderBumpInputs {
+            rf: RangefinderState {
+                in_use: true,
+                correction: 6.0,
+                last_stable_correction: 0.0,
+            },
+            prev_wp: prev,
+            next_wp: next,
+            current: prev,
+            wp_distance_m: 300.0,
+            adjusted_altitude_cm: 10_000,
+            alt_ctx,
+        },
+    };
+
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert!(vehicle.last_rangefinder_bump_recalculated);
+    assert_eq!(vehicle.rangefinder_bump.rf.last_stable_correction, 6.0);
+}
+

@@ -17,6 +17,8 @@ use crate::go_around_hookup::apply_landing_go_around_latch;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
 use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
+use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
+use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::sitl_ins_noise_hookup::{
     sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
@@ -128,6 +130,12 @@ pub struct PlaneMainLoop {
     pub last_verify_land_effects: VerifyLandEffects,
     /// Whether landing suppressed throttle on the last tick.
     pub landing_throttle_suppressed: bool,
+    /// Persistent slope/rangefinder state for bump recalculation.
+    pub rangefinder_bump: RangefinderBumpContext,
+    /// HAL inputs for rangefinder bump during LAND.
+    pub rangefinder_bump_inputs: RangefinderBumpHookupInputs,
+    /// Whether the latest scheduler tick recalculated the glide slope.
+    pub last_rangefinder_bump_recalculated: bool,
     /// Upstream `flight_stage == LAND`.
     pub flight_stage_is_land: bool,
     /// Deepstall servo override HAL inputs for the landing hookup.
@@ -218,6 +226,42 @@ impl Default for PlaneMainLoop {
             level_roll_limit_cd: 4500,
             last_verify_land_effects: VerifyLandEffects::default(),
             landing_throttle_suppressed: false,
+            rangefinder_bump: RangefinderBumpContext::default(),
+            rangefinder_bump_inputs: RangefinderBumpHookupInputs {
+                flight_stage_is_land: false,
+                landing_type: ap_landing::go_around::LandingType::StandardGlideSlope,
+                bump_cfg: ap_landing::rangefinder_bump::RangefinderBumpConfig {
+                    shallow_threshold: 1.0,
+                    steep_threshold_deg: 1.0,
+                },
+                slope_cfg: ap_landing::SlopeConfig {
+                    flare_sec: 2.0,
+                    flare_alt: 3.0,
+                    flare_effectivness_pct: 50,
+                },
+                slope_inp: ap_landing::SlopeInputs {
+                    prev_wp: ap_math::location::Location::new(0, 0),
+                    next_wp: ap_math::location::Location::new(0, 0),
+                    current: ap_math::location::Location::new(0, 0),
+                    groundspeed: 0.0,
+                    land_sinkrate: 1.0,
+                    alt_ctx: ap_math::location::AltContext::default(),
+                },
+                bump: ap_landing::rangefinder_bump::RangefinderBumpInputs {
+                    rf: ap_landing::slope_stage::RangefinderState {
+                        in_use: false,
+                        correction: 0.0,
+                        last_stable_correction: 0.0,
+                    },
+                    prev_wp: ap_math::location::Location::new(0, 0),
+                    next_wp: ap_math::location::Location::new(0, 0),
+                    current: ap_math::location::Location::new(0, 0),
+                    wp_distance_m: 0.0,
+                    adjusted_altitude_cm: 0,
+                    alt_ctx: ap_math::location::AltContext::default(),
+                },
+            },
+            last_rangefinder_bump_recalculated: false,
             flight_stage_is_land: false,
             deepstall_override: DeepstallOverrideInputs {
                 stage: DeepstallStage::FlyToLanding,
@@ -302,6 +346,22 @@ impl PlaneMainLoop {
             self.last_verify_land_effects = out.effects;
             self.landing_throttle_suppressed = out.throttle_suppressed;
             self.nav_tecs.nav_roll_cd = out.nav_roll_cd;
+
+            let bump_out = rangefinder_bump_scheduler_tick(
+                &mut self.rangefinder_bump,
+                &mut self.landing,
+                self.flight_stage_is_land,
+                &RangefinderBumpSchedulerInputs {
+                    hookup: self.rangefinder_bump_inputs,
+                },
+            );
+            self.last_rangefinder_bump_recalculated = bump_out
+                .result
+                .map(|r| r.recalculated)
+                .unwrap_or(false);
+            if self.rangefinder_bump.flags.commanded_go_around {
+                self.landing_request_go_around = true;
+            }
         }
     }
 
