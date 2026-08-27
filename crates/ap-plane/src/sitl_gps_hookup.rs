@@ -3,7 +3,7 @@
 //! [`SitlGpsHookup`] runs the [`SitlGpsBackend`] read path and fills
 //! [`SitlYawPublish`] GPS fields before compass/GPS samples reach the DCM.
 
-use ap_gps::{GpsStatus, GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend};
+use ap_gps::{GpsHealthFlags, GpsStatus, GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend};
 use ap_math::vector3::Vector3f;
 
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish, SitlYawSamples};
@@ -85,6 +85,13 @@ impl SitlGpsHookup {
     pub fn gps_velocity_publish(&mut self) -> GpsVelocitySample {
         let status = self.gps_status_publish();
         GpsVelocityProducer::publish_status(&status)
+    }
+
+    /// GPS health flags for arming and drift gating, upstream `isHealthy()`.
+    #[must_use]
+    pub fn gps_health_publish(&mut self) -> GpsHealthFlags {
+        let status = self.gps_status_publish();
+        GpsHealthFlags::from_status(&status)
     }
 
     #[must_use]

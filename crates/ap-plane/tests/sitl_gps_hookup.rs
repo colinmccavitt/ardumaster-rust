@@ -126,3 +126,31 @@ fn main_loop_publishes_gps_velocity_from_producer() {
     assert!((sample.velocity_ned.z - (-1.0)).abs() < 1e-2);
 }
 
+#[test]
+fn gps_health_publish_reflects_satellite_threshold() {
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    let health = hookup.gps_health_publish();
+    assert!(health.is_healthy());
+    assert!(health.usable_for_drift());
+}
+
+#[test]
+fn main_loop_gates_yaw_ctx_on_gps_health() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(8.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+
+    vehicle.ahrs_update();
+
+    let health = vehicle.gps_health.expect("gps health published");
+    assert!(health.is_healthy());
+    assert!(vehicle.yaw_ctx.have_gps);
+    assert!(vehicle.ahrs_using_gps || health.usable_for_drift());
+}
+
