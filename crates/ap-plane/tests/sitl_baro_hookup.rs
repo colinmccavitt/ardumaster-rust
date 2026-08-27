@@ -265,3 +265,16 @@ fn sitl_baro_failover_publishes_fresh_climb_rate() {
     assert!((last.climb_rate_mps - rate_mps).abs() < 0.5);
 }
 
+#[test]
+fn ground_pressure_relative_altitude_hookup() {
+    let mut hookup = SitlBaroHookup::default();
+    hookup.truth.sim_altitude_m = 100.0;
+    hookup.truth.now_ms = 1000;
+    let _ = hookup.publish();
+    hookup.latch_ground_pressure();
+    hookup.truth.sim_altitude_m = 150.0;
+    hookup.truth.now_ms = 2000;
+    let out = hookup.publish();
+    let rel = out.relative_altitude_m.expect("relative alt");
+    assert!((rel - 50.0).abs() < 2.0, "rel={rel}");
+}

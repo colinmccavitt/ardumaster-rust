@@ -609,6 +609,41 @@ impl SitlBaroCluster {
     }
 }
 
+/// Ground pressure calibration, upstream `AP_Baro` ground-pressure latch.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BaroGroundPressure {
+    ground_pressure_pa: f32,
+    ground_temp_c: f32,
+    have_ground: bool,
+}
+
+impl BaroGroundPressure {
+    /// Latch ground pressure at arm/home set, upstream `AP_Baro::update_calibration`.
+    pub fn latch(&mut self, pressure_pa: f32, temp_c: f32) {
+        self.ground_pressure_pa = pressure_pa;
+        self.ground_temp_c = temp_c;
+        self.have_ground = true;
+    }
+
+    #[must_use]
+    pub const fn have_ground(&self) -> bool {
+        self.have_ground
+    }
+
+    /// Relative altitude above latched ground pressure, upstream `get_altitude()`.
+    #[must_use]
+    pub fn relative_altitude_m(&self, pressure_pa: f32) -> Option<f32> {
+        if !self.have_ground {
+            return None;
+        }
+        Some(crate::altitude_difference_simple(
+            self.ground_pressure_pa,
+            pressure_pa,
+            self.ground_temp_c,
+        ))
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -837,6 +872,19 @@ mod tests {
 
 
     #[test]
+    #[test]
+    fn ground_pressure_relative_altitude() {
+        let mut ground = BaroGroundPressure::default();
+        ground.latch(101_325.0, 15.0);
+        let rel = ground
+            .relative_altitude_m(100_000.0)
+            .expect("relative alt");
+        assert!(rel > 80.0 && rel < 150.0);
+        assert!(!BaroGroundPressure::default()
+            .relative_altitude_m(100_000.0)
+            .is_some());
+    }
+
     fn climb_rate_resets_on_primary_failover() {
         let mut climb = BaroClimbRate::default();
         let rate_mps = 2.0_f32;
