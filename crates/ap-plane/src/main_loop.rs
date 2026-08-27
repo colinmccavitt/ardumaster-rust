@@ -190,6 +190,18 @@ pub struct PlaneMainLoop {
     /// Whether the latest scheduler tick saw an RC failsafe.
     pub in_rc_failsafe: bool,
     /// SRV registry hookup state for elevon/flap mixing.
+    /// Last EKF healthy flag from AHRS update.
+    pub ekf_healthy: bool,
+    /// Active AHRS backend kind after fallback resolution.
+    pub active_ahrs_backend: ap_ahrs::AhrsBackendKind,
+    /// DCM matrix health from last AHRS update.
+    pub ahrs_matrix_health: ap_ahrs::MatrixHealth,
+    /// Dead-reckoning north offset (m) when GPS absent.
+    pub dead_reckoning_north_m: f32,
+    /// Dead-reckoning east offset (m) when GPS absent.
+    pub dead_reckoning_east_m: f32,
+    /// Whether dead-reckoning position is valid.
+    pub have_dead_reckoning_position: bool,
     pub srv_output: SrvOutputHookupState,
     /// HAL inputs for SRV output mapping during `set_servos`.
     pub srv_output_inputs: SrvOutputSchedulerInputs,
@@ -344,6 +356,12 @@ impl Default for PlaneMainLoop {
             mission_advanced: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
+            ekf_healthy: false,
+            active_ahrs_backend: ap_ahrs::AhrsBackendKind::Dcm,
+            ahrs_matrix_health: ap_ahrs::MatrixHealth::Ok,
+            dead_reckoning_north_m: 0.0,
+            dead_reckoning_east_m: 0.0,
+            have_dead_reckoning_position: false,
             srv_output: SrvOutputHookupState::default(),
             srv_output_inputs: SrvOutputSchedulerInputs {
                 dt: 0.02,
@@ -433,6 +451,14 @@ impl PlaneMainLoop {
         );
         self.attitude = attitude;
         self.estimated_wind = self.ahrs.wind_estimate();
+        self.ekf_healthy = self.ahrs.ekf_healthy;
+        self.active_ahrs_backend = self.ahrs.active_backend;
+        self.ahrs_matrix_health = self.ahrs.matrix_health;
+        let (n, e, have) = self.ahrs.dead_reckoning_offset();
+        self.dead_reckoning_north_m = n;
+        self.dead_reckoning_east_m = e;
+        self.have_dead_reckoning_position = have;
+
         self.head_wind_ms = self.ahrs.head_wind();
     }
 
