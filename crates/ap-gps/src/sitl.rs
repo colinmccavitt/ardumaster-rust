@@ -46,6 +46,7 @@ pub struct SitlGpsBackend {
     last_update_ms: u32,
     state: GpsFixState,
     lag_buffer: GpsLagBuffer,
+    lag_sec: f32,
 }
 
 impl Default for SitlGpsBackend {
@@ -56,6 +57,7 @@ impl Default for SitlGpsBackend {
             last_update_ms: 0,
             state: GpsFixState::default(),
             lag_buffer: GpsLagBuffer::new(SITL_GPS_DEFAULT_LAG_SEC),
+            lag_sec: SITL_GPS_DEFAULT_LAG_SEC,
         }
     }
 }
@@ -68,7 +70,12 @@ impl SitlGpsBackend {
 
     #[must_use]
     pub const fn lag_sec(&self) -> f32 {
-        SITL_GPS_DEFAULT_LAG_SEC
+        self.lag_sec
+    }
+
+    pub fn set_lag_sec(&mut self, lag_sec: f32) {
+        self.lag_sec = lag_sec;
+        self.lag_buffer = GpsLagBuffer::new(lag_sec);
     }
 
     #[must_use]

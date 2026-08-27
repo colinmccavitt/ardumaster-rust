@@ -7,6 +7,7 @@ use crate::blend::{
     GpsAutoSwitch, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT,
     GPS_BLENDED_INSTANCE,
 };
+use crate::params::GpsParams;
 use crate::health::GpsHealthFlags;
 use crate::sitl::{GpsFixState, SitlGpsBackend, SITL_GPS_UPDATE_MS};
 use crate::status::GpsStatus;
@@ -60,6 +61,15 @@ impl Default for GpsDualStub {
 }
 
 impl GpsDualStub {
+    pub fn apply_params(&mut self, params: GpsParams) {
+        self.dual_enabled = params.dual_enabled();
+        self.auto_switch = params.auto_switch;
+        self.primary_instance = params.primary.min(1);
+        self.blender = GpsBlender::new(params.blend_mask);
+        params.apply_instance(0, &mut self.primary);
+        params.apply_instance(1, &mut self.secondary);
+    }
+
     fn read_instance(backend: &mut SitlGpsBackend, truth: &GpsInstanceTruth) -> GpsFixState {
         backend.read(
             truth.velocity_ned,

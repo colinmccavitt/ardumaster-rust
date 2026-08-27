@@ -663,3 +663,22 @@ fn main_loop_blend_pre_arm_passes_when_primary_stale() {
     assert!(vehicle.pre_arm_ok);
 }
 
+#[test]
+fn apply_gps_params_sets_lag_from_delay_ms() {
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = ap_gps::GpsParams::default();
+    params.gps1.delay_ms = 300;
+    hookup.apply_gps_params(params);
+    assert!((hookup.gps_lag_sec() - 0.3).abs() < 1e-6);
+}
+
+#[test]
+fn apply_gps_params_enables_dual_from_table() {
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = ap_gps::GpsParams::default();
+    params.gps2.gps_type = ap_gps::GPS_TYPE_SITL;
+    params.auto_switch = ap_gps::GpsAutoSwitch::Blend;
+    hookup.apply_gps_params(params);
+    assert!(hookup.dual.is_some());
+    assert_eq!(hookup.dual.unwrap().auto_switch, ap_gps::GpsAutoSwitch::Blend);
+}

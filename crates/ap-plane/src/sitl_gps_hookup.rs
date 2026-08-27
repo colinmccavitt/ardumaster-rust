@@ -4,7 +4,7 @@
 //! [`SitlYawPublish`] GPS fields before compass/GPS samples reach the DCM.
 
 use ap_gps::{
-    GpsAutoSwitch, GpsDualStub, GpsHealthFlags, GpsInstanceTruth, GpsStatus,
+    GpsAutoSwitch, GpsDualStub, GpsHealthFlags, GpsInstanceTruth, GpsParams, GpsStatus,
     GpsVelocityProducer, GpsVelocitySample, SitlGpsBackend,
 };
 use ap_math::vector3::Vector3f;
@@ -81,6 +81,25 @@ impl SitlGpsHookup {
                 now_ms: self.truth.now_ms,
             };
             dual.select_primary_healthy();
+        }
+    }
+
+    pub fn apply_gps_params(&mut self, params: GpsParams) {
+        params.apply_instance(0, &mut self.backend);
+        if params.dual_enabled() {
+            let mut dual = params
+                .configure_dual_stub()
+                .unwrap_or_else(GpsDualStub::default);
+            dual.primary_truth = GpsInstanceTruth {
+                velocity_ned: self.truth.velocity_ned,
+                latitude_deg: self.truth.latitude_deg,
+                longitude_deg: self.truth.longitude_deg,
+                altitude_m: self.truth.altitude_m,
+                now_ms: self.truth.now_ms,
+            };
+            self.dual = Some(dual);
+        } else {
+            self.dual = None;
         }
     }
 

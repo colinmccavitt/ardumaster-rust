@@ -36,6 +36,7 @@ pub mod velocity;
 pub mod health;
 pub mod blend;
 pub mod dual;
+pub mod params;
 pub mod sitl;
 
 pub use lag_buffer::GpsLagBuffer;
@@ -48,6 +49,10 @@ pub use blend::{
     GPS_BLENDED_INSTANCE, GPS_MAX_RECEIVERS,
 };
 pub use dual::{GpsDualStub, GpsInstanceTruth};
+pub use params::{
+    GpsInstanceParams, GpsParams, GPS_BLEND_MASK_PARAM_DEFAULT, GPS_TYPE_NONE,
+    GPS_TYPE_SITL,
+};
 pub use sitl::{
     velocity_to_speed_course, GpsFixState, SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC,
     SITL_GPS_UPDATE_MS,
