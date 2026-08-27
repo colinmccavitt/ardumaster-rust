@@ -874,6 +874,71 @@ mod tests {
     }
 
     #[test]
+    fn migrate_named_parameters_resolves_plane_gcs_table() {
+        use crate::info::{find_by_name, EnumFilter, ParamInfo, FRAME_PLANE};
+        use crate::plane::PLANE_GCS_CONVERSIONS;
+
+        static MAV: [ParamInfo<'static>; 4] = [
+            ParamInfo {
+                name: "MAV_SYSID",
+                key: 200,
+                ptype: VarType::Int16.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "MAV_GCS_SYSID",
+                key: 201,
+                ptype: VarType::Int16.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "MAV_OPTIONS",
+                key: 202,
+                ptype: VarType::Int8.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "MAV_TELEM_DELAY",
+                key: 203,
+                ptype: VarType::Int8.as_u8(),
+                flags: 0,
+                group: None,
+            },
+        ];
+
+        let filter = EnumFilter::for_frame(FRAME_PLANE);
+        let dest = find_by_name(&MAV, filter, "MAV_SYSID").expect("descriptor");
+        let resolved = resolve_named_migration(&MAV, filter, PLANE_GCS_CONVERSIONS[0])
+            .expect("resolved");
+        assert_eq!(
+            resolved.new_header,
+            ParamHeader::new(dest.key, dest.ptype, dest.group_element),
+        );
+
+        let mut s = Ram::formatted();
+        let old_h = ParamHeader::new(112, VarType::Int16.as_u8(), 0);
+        save(&mut s, old_h, ParamValue::Int16(42), None, false).expect("old");
+        let stats = migrate_named_parameters(&mut s, &MAV, filter, PLANE_GCS_CONVERSIONS)
+            .expect("migrate");
+        assert_eq!(stats.saved, 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.not_found, 3);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: dest.key,
+                old_group_element: dest.group_element,
+                old_type: VarType::Int16,
+            },
+        )
+        .expect("migrated");
+        assert_eq!(v, ParamValue::Int16(42));
+    }
+
+    #[test]
     fn migrate_named_parameters_resolves_plane_fence_table() {
         use crate::info::{find_by_name, EnumFilter, GroupInfo, ParamInfo, ParamRef, FRAME_PLANE};
         use crate::plane::PLANE_FENCE_CONVERSIONS;

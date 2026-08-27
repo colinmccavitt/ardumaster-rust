@@ -47,3 +47,40 @@ pub const PLANE_FENCE_CONVERSIONS: &[NamedParameterMigration] = &[
         flags: ConvertFlags::NONE,
     },
 ];
+
+/// Old telemetry/sysid parameters renamed into the `MAV_` namespace, upstream
+/// `gcs_conversion_info` in `Parameters.cpp` (Mar-2025, ArduPilot-4.7).
+pub const PLANE_GCS_CONVERSIONS: &[NamedParameterMigration] = &[
+    NamedParameterMigration {
+        old_key: 112, // k_param_sysid_this_mav_old
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "MAV_SYSID",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 113, // k_param_sysid_my_gcs_old
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "MAV_GCS_SYSID",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 4, // k_param_g2
+        old_group_element: 4,
+        old_type: VarType::Int8,
+        new_name: "MAV_OPTIONS",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 115, // k_param_telem_delay_old
+        old_group_element: 0,
+        old_type: VarType::Int8,
+        new_name: "MAV_TELEM_DELAY",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+];
