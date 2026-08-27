@@ -29,6 +29,7 @@ pub mod sitl_yaw_hookup;
 pub mod sitl_gps_hookup;
 pub mod sitl_ahrs_hookup;
 pub mod sitl_baro_hookup;
+pub mod sitl_compass_hookup;
 pub mod nav_tecs_hookup;
 pub mod nav_tecs_scheduler_hookup;
 pub mod navigation_scheduler_hookup;

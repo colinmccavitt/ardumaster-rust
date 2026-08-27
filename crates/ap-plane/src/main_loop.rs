@@ -69,7 +69,9 @@ use crate::sitl_ins_noise_hookup::{
 };
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_baro_hookup::SitlBaroHookup;
+use crate::sitl_compass_hookup::SitlCompassHookup;
 use ap_baro::sitl::BaroHealthFlags;
+use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::entry_state::ModeEntryState;
@@ -193,6 +195,14 @@ pub struct PlaneMainLoop {
     pub sitl_gps: Option<SitlGpsHookup>,
     /// Optional SITL baro producer; publishes EAS2TAS each `ahrs_update`.
     pub sitl_baro: Option<SitlBaroHookup>,
+    /// Optional SITL compass producer; publishes mag samples each `ahrs_update`.
+    pub sitl_compass: Option<SitlCompassHookup>,
+    /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
+    pub mag_sample: Option<MagSampleState>,
+    /// Whether the SITL compass backend is healthy, upstream `AP_Compass::healthy()`.
+    pub compass_healthy: bool,
+    /// Per-instance compass health flags, upstream `AP_Compass` frontend.
+    pub compass_health: CompassHealthFlags,
     /// Latest baro sample from the SITL backend, upstream `AP_Baro` frontend.
     pub baro_sample: Option<ap_baro::sitl::BaroSampleState>,
     /// Whether the SITL baro backend is healthy, upstream `AP_Baro::healthy()`.
@@ -444,7 +454,11 @@ impl Default for PlaneMainLoop {
             sitl_ahrs: None,
             sitl_gps: None,
             sitl_baro: None,
+            sitl_compass: None,
             baro_sample: None,
+            mag_sample: None,
+            compass_healthy: false,
+            compass_health: CompassHealthFlags::default(),
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
             baro_climb_rate_mps: 0.0,
@@ -634,12 +648,24 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
+        if let Some(compass) = self.sitl_compass.as_mut() {
+            let published = compass.publish(
+                self.ahrs.dcm.matrix,
+                self.loop_timing.delta_time,
+            );
+            self.mag_sample = Some(published.sample);
+            self.compass_healthy = published.healthy;
+            self.compass_health = published.health;
+            self.compass = published.yaw_compass;
+        }
         if let Some(gps) = self.sitl_gps.as_mut() {
             let samples = gps.publish_yaw_samples(
                 self.ahrs.dcm.matrix,
                 self.loop_timing.delta_time,
             );
-            self.compass = samples.compass;
+            if self.sitl_compass.is_none() {
+                self.compass = samples.compass;
+            }
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
             self.gps_status = Some(gps.gps_status_publish());
@@ -667,7 +693,9 @@ impl PlaneMainLoop {
                 self.ahrs.dcm.matrix,
                 self.loop_timing.delta_time,
             );
-            self.compass = samples.compass;
+            if self.sitl_compass.is_none() {
+                self.compass = samples.compass;
+            }
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
         }

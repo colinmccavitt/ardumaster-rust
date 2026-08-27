@@ -27,6 +27,7 @@ ap-plane = { path = "crates/ap-plane" }
 ap-servo = { path = "crates/ap-servo" }
 ap-ahrs = { path = "crates/ap-ahrs" }
 ap-baro = { path = "crates/ap-baro" }
+ap-compass = { path = "crates/ap-compass" }
 ap-common = { path = "crates/ap-common" }
 ap-declination = { path = "crates/ap-declination" }
 ap-gps = { path = "crates/ap-gps" }
