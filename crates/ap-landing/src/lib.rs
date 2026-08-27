@@ -39,6 +39,7 @@ pub mod deepstall_stage;
 pub mod go_around;
 pub mod landing_controller;
 pub mod landing_state_machine;
+pub mod rangefinder_bump;
 pub mod slope_stage;
 
 use ap_math::location::{AltContext, AltFrame, Location};
