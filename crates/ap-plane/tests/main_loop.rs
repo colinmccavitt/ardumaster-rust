@@ -929,6 +929,40 @@ fn update_control_and_set_servos_share_pilot_throttle_glue() {
 }
 
 #[test]
+fn update_control_publishes_nav_tecs_from_scheduler() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.navigation_scheduler_inputs.commanded_roll_cd = 6000;
+    vehicle.navigation_scheduler_inputs.commanded_pitch_cd = 1500;
+    vehicle.stabilize_demands.roll_limit_cd = 4500;
+    vehicle.stabilize_demands.pitch_limit_min_cd = -2000;
+    vehicle.stabilize_demands.pitch_limit_max_cd = 2500;
+
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.nav_tecs.nav_roll_cd, 4500);
+    assert_eq!(
+        ap_math::scalar::rad_to_cd(vehicle.nav_tecs.tecs_pitch_demand_rad) as i32,
+        1500
+    );
+}
+
+#[test]
+fn update_control_calc_throttle_uses_tecs_in_auto() {
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.tracked_control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = false;
+    vehicle.tecs_throttle_demand = 55.0;
+    vehicle.throttle_nudge = 3;
+
+    vehicle.update_control_mode();
+
+    assert!((vehicle.servos.throttle_scaled - 58.0).abs() < 1e-6);
+}
+
+#[test]
 fn set_servos_applies_auto_flap_from_airspeed_via_glue() {
     use ap_plane::landing_hookup::ServoOutputState;
     use ap_plane::srv_output_scheduler_hookup::FlapSpeedParams;

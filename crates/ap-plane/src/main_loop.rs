@@ -45,7 +45,12 @@ use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafe
 use crate::mission_scheduler_hookup::{mission_scheduler_tick, MissionContext, MissionSchedulerInputs};
 use crate::target_altitude::TargetAltitude;
 use crate::altitude_glue_hookup::{altitude_glue_tick, AltitudeGlueInputs};
+use crate::calc_throttle_glue_hookup::{calc_throttle_glue_tick, CalcThrottleGlueInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
+use crate::nav_tecs_scheduler_hookup::nav_tecs_scheduler_publish_tick;
+use crate::navigation_scheduler_hookup::{
+    navigation_scheduler_tick, NavigationSchedulerInputs, NavigationSchedulerOutput,
+};
 use crate::ins_hntch_scheduler_hookup::{
     ins_hntch_scheduler_tick, ins_hntch_scheduler_tick_cluster, InsHntchHookup,
     InsHntchSchedulerInputs,
@@ -202,6 +207,12 @@ pub struct PlaneMainLoop {
     pub sitl_ins_host_files: [SitlInsHostFiles; SITL_INS_MAX_INSTANCES],
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
+    /// HAL inputs for navigation scheduler tick glue.
+    pub navigation_scheduler_inputs: NavigationSchedulerInputs,
+    /// TECS throttle demand 0..100 for calc_throttle glue.
+    pub tecs_throttle_demand: f32,
+    /// Throttle nudge from mission/GCS.
+    pub throttle_nudge: i16,
     /// L1/TECS navigation publish source refreshed before stabilize.
     pub nav_tecs: NavTecsPublish,
     /// Raw navigation commands before limiting, upstream nav_controller/TECS.
@@ -427,6 +438,9 @@ impl Default for PlaneMainLoop {
             sitl_now_us: 0,
             sitl_ins_host_files: [SitlInsHostFiles::default(); SITL_INS_MAX_INSTANCES],
             controllers: StabilizeControllers::default(),
+            navigation_scheduler_inputs: NavigationSchedulerInputs::default(),
+            tecs_throttle_demand: 0.0,
+            throttle_nudge: 0,
             nav_tecs: NavTecsPublish::default(),
             nav_commands: NavCommandInputs::default(),
             rc_sticks: RcStickInputs::default(),
@@ -753,6 +767,25 @@ impl PlaneMainLoop {
         }
     }
 
+    /// Build SRV output glue inputs for the set_servos flap/auto-flap path.
+    fn srv_output_glue_inputs(&self) -> SrvOutputSchedulerInputs {
+        SrvOutputSchedulerInputs {
+            mixing: self.srv_output.mixing,
+            flap_params: self.srv_output.flap_params,
+            manual_flap_percent: self.srv_output_inputs.manual_flap_percent,
+            flap_speed_source_ms: self.airspeed_tas,
+            has_auto_flap_schedule: self.srv_output.has_auto_flap_schedule,
+            flight_stage_is_takeoff: self.srv_output.flight_stage_is_takeoff,
+            flight_stage_is_land: self.flight_stage_is_land,
+            apply_elevon_mixing: self.srv_output.apply_elevon_mixing,
+            apply_vtail_mixing: self.srv_output.apply_vtail_mixing,
+            apply_dspoiler_mixing: self.srv_output.apply_dspoiler_mixing,
+            dspoiler: self.srv_output.dspoiler,
+            dt: self.loop_timing.delta_time,
+            elevator_scaled: self.stabilize_servos.elevator_scaled,
+        }
+    }
+
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
         self.ticks.update_control_mode += 1;
@@ -782,6 +815,24 @@ impl PlaneMainLoop {
         );
         self.last_target_altitude = mission_out.target;
         self.mission_advanced = mission_out.advanced;
+
+        let nav_out = if self.navigation_scheduler_inputs.commanded_roll_cd != 0
+            || self.navigation_scheduler_inputs.commanded_pitch_cd != 0
+        {
+            navigation_scheduler_tick(&NavigationSchedulerInputs {
+                commanded_roll_cd: self.navigation_scheduler_inputs.commanded_roll_cd,
+                commanded_pitch_cd: self.navigation_scheduler_inputs.commanded_pitch_cd,
+                roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+                pitch_limit_min_cd: self.stabilize_demands.pitch_limit_min_cd,
+                pitch_limit_max_cd: self.stabilize_demands.pitch_limit_max_cd,
+            })
+        } else {
+            NavigationSchedulerOutput {
+                nav_roll_cd: self.nav_tecs.nav_roll_cd,
+                tecs_pitch_demand_rad: self.nav_tecs.tecs_pitch_demand_rad,
+            }
+        };
+        self.nav_tecs = nav_tecs_scheduler_publish_tick(nav_out);
 
         let thr_ctx = throttle_context_tick(&ThrottleContextInputs {
             control_mode: self.mode.control_mode,
@@ -813,8 +864,19 @@ impl PlaneMainLoop {
             &self.features,
         );
 
-        self.stabilize_demands.throttle_scaled = glue_out.pilot_throttle;
-        self.servos.throttle_scaled = glue_out.pilot_throttle;
+        let throttle = if glue_out.throttle_zeroed_by_mode_entry {
+            0.0
+        } else {
+            calc_throttle_glue_tick(&CalcThrottleGlueInputs {
+                control_mode: self.mode.control_mode,
+                features: self.features,
+                tecs_throttle_demand: self.tecs_throttle_demand,
+                throttle_nudge: self.throttle_nudge,
+                pilot_throttle: self.pilot_throttle_glue_inputs(),
+            })
+        };
+        self.stabilize_demands.throttle_scaled = throttle;
+        self.servos.throttle_scaled = throttle;
 
         let mode_pre_arm = pre_arm_checks(true, "");
         let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
