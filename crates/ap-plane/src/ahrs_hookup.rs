@@ -6,8 +6,8 @@
 
 use ap_ahrs::{
     active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, ekf3_full_update_from_ins,
-    AhrsBackendKind, Dcm, DcmDriftLoop, DriftMotionInputs, Ekf3Loop, MatrixHealth, YawCompassSample,
-    YawDriftContext, YawGpsSample, YawUpdateInputs,
+    head_wind_from_yaw, wind_alignment, AhrsBackendKind, Dcm, DcmDriftLoop, DriftMotionInputs, Ekf3Loop,
+    MatrixHealth, WindVaneSample, YawCompassSample, YawDriftContext, YawGpsSample, YawUpdateInputs,
 };
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::{rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
@@ -136,6 +136,32 @@ impl AhrsFeed {
             motion,
         );
         (outcome.health, attitude_from_dcm(&self.dcm))
+    }
+
+    /// Estimated wind velocity in NED, upstream `AP_AHRS::wind_estimate`.
+    #[must_use]
+    pub fn wind_estimate(&self) -> Vector3f {
+        self.drift.wind.wind
+    }
+
+    /// Head-wind along fuselage, upstream `AP_AHRS::head_wind`.
+    #[must_use]
+    pub fn head_wind(&self) -> f32 {
+        let (_, _, yaw) = self.dcm.matrix.to_euler();
+        head_wind_from_yaw(yaw, self.wind_estimate())
+    }
+
+    /// Wind alignment for a heading in degrees, upstream `AP_AHRS::wind_alignment`.
+    #[must_use]
+    pub fn wind_alignment(&self, heading_deg: f32) -> f32 {
+        wind_alignment(heading_deg, self.wind_estimate())
+    }
+
+    /// Seed wind from a wind vane when sensor data is available.
+    pub fn apply_wind_vane(&mut self, vane: WindVaneSample) {
+        if vane.speed_true_mps > 0.0 {
+            self.drift.wind.wind = vane.to_wind_ned();
+        }
     }
 }
 

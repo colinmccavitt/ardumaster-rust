@@ -106,6 +106,12 @@ pub struct PlaneMainLoop {
     pub airspeed_tas: f32,
     /// EAS to TAS scale for wind estimation, upstream `AP_Baro::get_EAS2TAS()`.
     pub eas2tas: f32,
+    /// Optional wind vane sample; seeds AHRS wind before drift correction.
+    pub wind_vane: Option<ap_ahrs::WindVaneSample>,
+    /// Latest estimated wind in NED, upstream `AP_AHRS::wind_estimate`.
+    pub estimated_wind: ap_math::vector3::Vector3f,
+    /// Head-wind component along fuselage, upstream `AP_AHRS::head_wind`.
+    pub head_wind_ms: f32,
     /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Optional SITL AHRS publish (yaw + airspeed TAS); takes precedence over `sitl_yaw`.
@@ -202,6 +208,9 @@ impl Default for PlaneMainLoop {
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             eas2tas: 1.0,
+            wind_vane: None,
+            estimated_wind: ap_math::vector3::Vector3f::zero(),
+            head_wind_ms: 0.0,
             sitl_yaw: None,
             sitl_ahrs: None,
             sitl_ins_noise: None,
@@ -384,6 +393,9 @@ impl PlaneMainLoop {
             );
             self.ins = hookup.cluster.frontend.clone();
         }
+        if let Some(vane) = self.wind_vane {
+            self.ahrs.apply_wind_vane(vane);
+        }
         let yaw = yaw_update_inputs(self.compass, self.gps_yaw, self.yaw_ctx);
         let motion = drift_motion_inputs(
             self.yaw_ctx,
@@ -399,6 +411,8 @@ impl PlaneMainLoop {
             motion,
         );
         self.attitude = attitude;
+        self.estimated_wind = self.ahrs.wind_estimate();
+        self.head_wind_ms = self.ahrs.head_wind();
     }
 
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.

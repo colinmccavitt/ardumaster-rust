@@ -44,7 +44,10 @@ pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
 pub use gps_lag::GpsLagBuffer;
 pub use multi_accel::{MultiAccelAccumulator, MultiAccelSelection, INS_MAX_INSTANCES as AHRS_INS_MAX_INSTANCES};
 pub use dead_reckoning::DeadReckoningPosition;
-pub use wind_estimation::{WindEstimateInputs, WindEstimator};
+pub use wind_estimation::{
+    head_wind_from_yaw, wind_alignment, WindEstimateInputs, WindEstimator,
+    WindVaneSample,
+};
 pub use yaw_drift::{
     YawCompassSample, YawDriftContext, YawDriftCorrector, YawDriftGains, YawDriftInputs,
     YawDriftOutcome, YawDriftResult, YawGpsSample, YawMatrixAction, GPS_SPEED_MIN,

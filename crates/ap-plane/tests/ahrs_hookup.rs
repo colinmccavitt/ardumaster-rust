@@ -229,3 +229,39 @@ fn ekf3_full_update_tracks_update_count() {
     feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
     assert_eq!(feed.ekf3.update_count, 2);
 }
+
+#[test]
+fn estimated_wind_feedback_head_wind_into_wind() {
+    use ap_ahrs::WindVaneSample;
+    use ap_math::matrix3::Matrix3f;
+    use ap_math::vector3::Vector3f;
+
+    let mut feed = AhrsFeed::default();
+    feed.apply_wind_vane(WindVaneSample {
+        direction_true_rad: 0.0,
+        speed_true_mps: 5.0,
+    });
+    feed.dcm.matrix = Matrix3f::from_euler(0.0, 0.0, 0.0);
+    assert!((feed.wind_estimate().length() - 5.0).abs() < 0.01);
+    assert!(
+        feed.head_wind() > 4.0,
+        "heading north into north wind should read positive headwind, got {}",
+        feed.head_wind()
+    );
+}
+
+#[test]
+fn wind_vane_seeds_estimated_wind() {
+    use ap_ahrs::WindVaneSample;
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.wind_vane = Some(WindVaneSample {
+        direction_true_rad: core::f32::consts::FRAC_PI_2,
+        speed_true_mps: 3.0,
+    });
+    vehicle.ahrs_update();
+    assert!((vehicle.estimated_wind.length() - 3.0).abs() < 0.01);
+    assert!(vehicle.head_wind_ms.abs() < 0.01, "crosswind should give ~zero headwind");
+}
+

@@ -4,7 +4,7 @@
 //! velocity as fuselage-direction airspeed plus wind, and yaw consistency
 //! checks that read horizontal wind speed.
 
-use ap_math::scalar::{safe_sqrt, Real};
+use ap_math::scalar::{degrees, radians, safe_sqrt, Real};
 use ap_math::vector3::Vector3f;
 
 /// Minimum interval between wind updates, upstream 100 ms rate limit.
@@ -130,6 +130,44 @@ impl WindEstimator {
     }
 }
 
+/// Wind alignment with a heading in degrees, upstream `AP_AHRS::wind_alignment`.
+#[must_use]
+pub fn wind_alignment(heading_deg: f32, wind: Vector3f) -> f32 {
+    if wind.x == 0.0 && wind.y == 0.0 {
+        return 0.0;
+    }
+    let wind_heading_rad = (-wind.y).atan2(-wind.x);
+    Real::cos(wind_heading_rad - radians(heading_deg))
+}
+
+/// Head-wind component along vehicle yaw, upstream `AP_AHRS::head_wind`.
+#[must_use]
+pub fn head_wind_from_yaw(yaw_rad: f32, wind: Vector3f) -> f32 {
+    wind_alignment(degrees(yaw_rad), wind) * safe_sqrt(wind.x * wind.x + wind.y * wind.y)
+}
+
+/// True-wind sample from a wind vane, upstream `AP_WindVane` direction/speed.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WindVaneSample {
+    /// Wind direction, radians, 0 = north. Upstream `_direction_true`.
+    pub direction_true_rad: f32,
+    /// True wind speed, m/s. Upstream `_speed_true`.
+    pub speed_true_mps: f32,
+}
+
+impl WindVaneSample {
+    /// Convert to NED wind velocity for AHRS drift, upstream wind triangle.
+    #[must_use]
+    pub fn to_wind_ned(self) -> Vector3f {
+        Vector3f::new(
+            -self.speed_true_mps * Real::cos(self.direction_true_rad),
+            -self.speed_true_mps * Real::sin(self.direction_true_rad),
+            0.0,
+        )
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +225,12 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn head_wind_from_north_wind() {
+        let wind = Vector3f::new(-5.0, 0.0, 0.0);
+        assert!((head_wind_from_yaw(0.0, wind) - 5.0).abs() < 0.01);
+    }
+
     fn body_x_column_is_fuselage_direction() {
         let m = Matrix3f::from_euler(0.0, 0.0, core::f32::consts::FRAC_PI_2);
         let fuse = m.colx();
