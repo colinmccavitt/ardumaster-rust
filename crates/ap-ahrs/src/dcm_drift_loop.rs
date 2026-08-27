@@ -133,7 +133,7 @@ pub fn dcm_step_with_drift_from_ins(
     if let Some(sample) = compass {
         let accel_ef_xy_mag = {
             let ef = dcm.matrix * ins.get_accel();
-            (ef.x * ef.x + ef.y * ef.y).sqrt()
+            ap_math::scalar::safe_sqrt(ef.x * ef.x + ef.y * ef.y)
         };
         drift.correct_yaw(dcm, sample, accel_ef_xy_mag);
     }
