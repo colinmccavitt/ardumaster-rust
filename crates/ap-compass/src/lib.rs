@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod params;
 pub mod sitl;
 
 pub use sitl::{
@@ -13,3 +14,5 @@ pub use sitl::{
     SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
     SITL_COMPASS_UPDATE_MS,
 };
+
+pub use params::{CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT};

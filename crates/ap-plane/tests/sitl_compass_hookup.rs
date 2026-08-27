@@ -3,6 +3,7 @@
 use ap_ins::LoopTiming;
 use ap_math::matrix3::Matrix3f;
 use ap_plane::main_loop::PlaneMainLoop;
+use ap_compass::CompassParams;
 use ap_plane::sitl_compass_hookup::{
     hookup_with_disabled_primary, SitlCompassHookup, SitlCompassTruth,
 };
@@ -113,4 +114,36 @@ fn main_loop_pre_arm_passes_after_compass_failover() {
     assert!(vehicle.compass_health.primary_healthy());
     assert!(vehicle.compass_pre_arm_ok);
     assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn apply_compass_params_disables_yaw_when_primary_use_for_yaw_false() {
+    let mut hookup = SitlCompassHookup::with_dual_backends();
+    let mut params = CompassParams::default();
+    params.compass1.use_for_yaw = false;
+    hookup.apply_compass_params(params);
+    hookup.truth = SitlCompassTruth {
+        latitude_deg: 51.875,
+        longitude_deg: -0.154,
+        now_ms: 10,
+    };
+    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    assert!(published.healthy);
+    assert!(published.yaw_compass.is_none());
+}
+
+#[test]
+fn apply_compass_params_failover_when_primary_disabled() {
+    let mut hookup = SitlCompassHookup::with_dual_backends();
+    let mut params = CompassParams::default();
+    params.compass1.disabled = true;
+    hookup.apply_compass_params(params);
+    hookup.truth = SitlCompassTruth {
+        latitude_deg: 51.875,
+        longitude_deg: -0.154,
+        now_ms: 10,
+    };
+    let published = hookup.publish(Matrix3f::identity(), 0.0025);
+    assert_eq!(published.health.primary, 1);
+    assert!(published.health.primary_healthy());
 }

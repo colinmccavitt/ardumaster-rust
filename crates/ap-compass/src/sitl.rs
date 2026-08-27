@@ -239,6 +239,10 @@ impl SitlCompassCluster {
         (index < self.instance_count).then(|| &self.backends[index as usize])
     }
 
+    pub fn backend_mut(&mut self, index: u8) -> Option<&mut SitlCompassBackend> {
+        (index < self.instance_count).then(|| &mut self.backends[index as usize])
+    }
+
     pub fn timer_tick_all(
         &mut self,
         latitude_deg: f32,

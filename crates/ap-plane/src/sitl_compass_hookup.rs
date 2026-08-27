@@ -5,6 +5,7 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`YawUpdateInputs`](ap_ahrs::YawUpdateInputs).
 
 use ap_ahrs::YawCompassSample;
+use ap_compass::CompassParams;
 use ap_compass::sitl::{
     CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
 };
@@ -32,6 +33,7 @@ impl Default for SitlCompassTruth {
 #[derive(Debug, Clone)]
 pub struct SitlCompassHookup {
     cluster: SitlCompassCluster,
+    params: CompassParams,
     pub truth: SitlCompassTruth,
     pub compass_use_for_yaw: bool,
 }
@@ -40,6 +42,7 @@ impl Default for SitlCompassHookup {
     fn default() -> Self {
         Self {
             cluster: SitlCompassCluster::default(),
+            params: CompassParams::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
         }
@@ -63,9 +66,21 @@ impl SitlCompassHookup {
         let _ = cluster.register(SitlCompassBackend::default());
         Self {
             cluster,
+            params: CompassParams::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
         }
+    }
+
+    #[must_use]
+    pub const fn compass_params(&self) -> &CompassParams {
+        &self.params
+    }
+
+    pub fn apply_compass_params(&mut self, params: CompassParams) {
+        self.params = params;
+        params.apply_to_cluster(&mut self.cluster);
+        self.compass_use_for_yaw = params.primary_use_for_yaw();
     }
 
     #[must_use]
@@ -114,6 +129,7 @@ impl SitlCompassHookup {
 pub fn hookup_with_disabled_primary() -> SitlCompassHookup {
     SitlCompassHookup {
         cluster: SitlCompassCluster::cluster_with_disabled_primary(),
+        params: CompassParams::default(),
         truth: SitlCompassTruth::default(),
         compass_use_for_yaw: true,
     }
