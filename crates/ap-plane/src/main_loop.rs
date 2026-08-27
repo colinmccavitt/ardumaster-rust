@@ -13,6 +13,7 @@ use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::deepstall_stage::DeepstallStage;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
 use crate::landing_loop::LandingContext;
+use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
 use crate::stabilize_hookup::{
@@ -83,6 +84,8 @@ pub struct PlaneMainLoop {
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
+    /// L1/TECS navigation publish source refreshed before stabilize.
+    pub nav_tecs: NavTecsPublish,
     /// Raw navigation commands before limiting, upstream nav_controller/TECS.
     pub nav_commands: NavCommandInputs,
     /// RC stick inputs for FBW mixing.
@@ -134,6 +137,7 @@ impl Default for PlaneMainLoop {
             yaw_ctx: YawDriftContext::default(),
             sitl_yaw: None,
             controllers: StabilizeControllers::default(),
+            nav_tecs: NavTecsPublish::default(),
             nav_commands: NavCommandInputs::default(),
             rc_sticks: RcStickInputs::default(),
             speed_scaler_inputs: SpeedScalerInputs::default(),
@@ -201,6 +205,7 @@ impl PlaneMainLoop {
     /// active mode selected them on the previous `update_control_mode`.
     pub fn stabilize(&mut self) {
         self.ticks.stabilize += 1;
+        feed_nav_commands(&mut self.nav_commands, &self.nav_tecs);
         prepare_stabilize_path(
             &mut self.stabilize_demands,
             &mut self.stabilize_ctx,

@@ -249,7 +249,7 @@ fn main_loop_stabilize_and_set_servos_wire_controllers() {
     let mut vehicle = PlaneMainLoop::default();
     vehicle.mode.control_mode = ap_plane::mode_table::ModeNumber::Stabilize.as_number();
     vehicle.update_control_mode();
-    vehicle.nav_commands.commanded_roll_cd = 2000;
+    vehicle.nav_tecs.nav_roll_cd = 2000;
     vehicle.stabilize_demands.roll_limit_cd = 4500;
     vehicle.speed_scaler_inputs.airspeed_eas = Some(15.0);
     vehicle.speed_scaler_inputs.scaling_speed = 15.0;
