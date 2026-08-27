@@ -1024,3 +1024,32 @@ fn set_servos_calc_throttle_uses_tecs_in_auto() {
     assert!((vehicle.servos.throttle_scaled - 64.0).abs() < 1e-6);
 }
 
+#[test]
+fn update_control_wires_rangefinder_correction_to_tecs() {
+    use ap_landing::slope_stage::RangefinderState;
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.baro_healthy = true;
+    vehicle.relative_altitude_m = 80.0;
+    vehicle.tecs_baro_feed.height_m = 80.0;
+    vehicle.tecs_baro_feed.hgt_afe_m = 80.0;
+    vehicle.tecs_baro_feed.climb_rate_mps = 0.5;
+    vehicle.home_altitude_m = 100.0;
+    vehicle.next_wp_alt_m = 150.0;
+    vehicle.flight_stage_is_land = true;
+    vehicle.rangefinder_bump.rf = RangefinderState {
+        in_use: true,
+        correction: 4.0,
+        last_stable_correction: 0.0,
+    };
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.tracked_control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = false;
+
+    vehicle.update_control_mode();
+
+    assert!((vehicle.rangefinder_correction_m - 4.0).abs() < 1e-6);
+    assert!(vehicle.last_altitude_tecs_ran);
+}
+

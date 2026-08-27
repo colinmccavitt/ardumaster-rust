@@ -46,6 +46,7 @@ use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, 
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
 use crate::mission_scheduler_hookup::{mission_scheduler_tick, MissionContext, MissionSchedulerInputs};
 use crate::mission_alt_offset_glue_hookup::{mission_alt_offset_glue_tick, MissionAltOffsetGlueInputs};
+use crate::rangefinder_correction_glue_hookup::{rangefinder_correction_glue_tick, rangefinder_correction_glue_inputs};
 use crate::target_altitude::TargetAltitude;
 use crate::altitude_glue_hookup::{altitude_glue_tick, AltitudeGlueInputs};
 use crate::altitude_tecs_feed_hookup::{altitude_tecs_feed_tick, AltitudeTecsFeedInputs};
@@ -830,6 +831,12 @@ impl PlaneMainLoop {
             offset_cm: self.mission_inputs.offset_cm,
             target: mission_out.target,
         });
+        self.rangefinder_correction_m = rangefinder_correction_glue_tick(
+            rangefinder_correction_glue_inputs(
+                self.flight_stage_is_land,
+                self.rangefinder_bump.rf,
+            ),
+        );
         self.mission_advanced = mission_out.advanced;
         if mission_out.ran {
             self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
