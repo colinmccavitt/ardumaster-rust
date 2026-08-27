@@ -44,6 +44,7 @@ use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, 
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
 use crate::mission_scheduler_hookup::{mission_scheduler_tick, MissionContext, MissionSchedulerInputs};
 use crate::target_altitude::TargetAltitude;
+use crate::altitude_glue_hookup::{altitude_glue_tick, AltitudeGlueInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::ins_hntch_scheduler_hookup::{
     ins_hntch_scheduler_tick, ins_hntch_scheduler_tick_cluster, InsHntchHookup,
@@ -342,6 +343,8 @@ pub struct PlaneMainLoop {
     pub battery_voltage_ratio: f32,
     /// Altitude above home/reference, metres. Upstream `relative_altitude`.
     pub relative_altitude_m: f32,
+    /// Home/reference AMSL altitude for baro fallback, upstream `home.alt`.
+    pub home_altitude_m: f32,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -581,6 +584,7 @@ impl Default for PlaneMainLoop {
             throttle_max: 100.0,
             battery_voltage_ratio: 1.0,
             relative_altitude_m: 0.0,
+            home_altitude_m: 0.0,
             servos: ServoOutputState::default(),
         }
     }
@@ -668,6 +672,12 @@ impl PlaneMainLoop {
             self.baro_health = published.health;
             self.baro_climb_rate_mps = published.climb_rate_mps;
             self.eas2tas = published.eas2tas;
+            self.relative_altitude_m = altitude_glue_tick(AltitudeGlueInputs {
+                baro_altitude_m: published.sample.altitude_m,
+                baro_relative_m: None,
+                home_altitude_m: self.home_altitude_m,
+                have_baro_sample: published.sample.have_sample,
+            });
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);
