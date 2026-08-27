@@ -11,6 +11,7 @@ use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::deepstall_stage::DeepstallStage;
+use crate::go_around_hookup::apply_landing_go_around_latch;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
 use crate::landing_loop::LandingContext;
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
@@ -261,6 +262,7 @@ impl PlaneMainLoop {
         let result = landing_servo_hookup(self.servos, &hookup_inp);
         self.landing_servo_override_applied = result.applied_override;
         self.landing_request_go_around = result.request_go_around;
+        apply_landing_go_around_latch(&mut self.landing.flags, result.request_go_around);
         self.servos = result.outputs;
     }
 }

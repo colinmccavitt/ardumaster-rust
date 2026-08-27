@@ -189,3 +189,39 @@ fn set_servos_skips_landing_override_outside_land_stage() {
     assert_eq!(vehicle.servos.aileron_scaled, 500.0);
     assert_eq!(vehicle.servos.elevator_pwm, scaled_to_pwm_trim(-250.0));
 }
+
+#[test]
+fn set_servos_latches_go_around_from_missing_elevator() {
+    use ap_landing::deepstall_override::DeepstallOverrideInputs;
+    use ap_landing::deepstall_stage::DeepstallStage;
+    use ap_landing::go_around::{LandingFlags, LandingType};
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.flight_stage_is_land = true;
+    vehicle.landing.flags = LandingFlags {
+        in_progress: true,
+        commanded_go_around: false,
+    };
+    vehicle.landing.landing_type = LandingType::Deepstall;
+    vehicle.landing.machine.deepstall.stage = DeepstallStage::Land;
+    vehicle.deepstall_override = DeepstallOverrideInputs {
+        stage: DeepstallStage::Land,
+        stall_entry_ms: 0,
+        now_ms: 5000,
+        slew_speed: 1.0,
+        initial_elevator_pwm: 1500,
+        target_elevator_pwm: 1900,
+        airspeed_ms: Some(10.0),
+        handoff_airspeed_ms: 12.0,
+        handoff_lower_limit_ms: 8.0,
+        steering_pid: 0.5,
+        aileron_scalar: 1.0,
+        elevator_present: false,
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.landing_request_go_around);
+    assert!(vehicle.landing.flags.commanded_go_around);
+}
+
