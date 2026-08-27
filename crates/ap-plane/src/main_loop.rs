@@ -88,6 +88,7 @@ use crate::mode::ModeState;
 use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
+use crate::fbwa_mode_hookup::{fbwa_mode_nav_tick, FbwaModeNavInputs};
 use crate::manual_mode_hookup::{
     manual_mode_nav_tick, manual_mode_servos_tick, ManualModeNavInputs,
     ManualModeServosInputs,
@@ -390,6 +391,8 @@ pub struct PlaneMainLoop {
     pub pilot_throttle_source: crate::mode_run::PilotThrottleSource,
     /// Whether manual-mode nav mirror ran this tick.
     pub manual_mode_nav_applied: bool,
+    /// Whether FBWA nav stick mapping ran this tick.
+    pub fbwa_mode_nav_applied: bool,
     /// Whether manual-mode RC passthrough ran in set_servos.
     pub manual_mode_servos_applied: bool,
     /// `THR_PASS_STAB` parameter.
@@ -669,6 +672,7 @@ impl Default for PlaneMainLoop {
             throttle_use_battery_comp: true,
             pilot_throttle_source: crate::mode_run::PilotThrottleSource::TrimAdjusted,
             manual_mode_nav_applied: false,
+            fbwa_mode_nav_applied: false,
             manual_mode_servos_applied: false,
             throttle_passthru_stabilize: false,
             guided_throttle_passthru: false,
@@ -1050,6 +1054,22 @@ impl PlaneMainLoop {
         if manual_nav.applied {
             self.nav_tecs.nav_roll_cd = manual_nav.nav_roll_cd;
             self.navigation_scheduler_inputs.commanded_pitch_cd = manual_nav.nav_pitch_cd;
+        }
+
+        let fbwa_nav = fbwa_mode_nav_tick(&FbwaModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_norm: self.rc_sticks.roll_norm_dz,
+            pitch_norm: self.rc_sticks.pitch_norm_dz,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+            pitch_limit_min_cd: self.stabilize_demands.pitch_limit_min_cd,
+            pitch_limit_max_cd: self.stabilize_demands.pitch_limit_max_cd,
+            roll_sensor_cd: self.attitude.roll_sensor_cd,
+        });
+        self.fbwa_mode_nav_applied = fbwa_nav.applied;
+        if fbwa_nav.applied {
+            self.nav_tecs.nav_roll_cd = fbwa_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = fbwa_nav.nav_pitch_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
