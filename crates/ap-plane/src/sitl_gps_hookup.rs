@@ -138,8 +138,41 @@ impl SitlGpsHookup {
         self.dual.is_some_and(|dual| dual.output_is_blended())
     }
 
+    /// Dual-GPS pre-arm gate: both instances healthy when dual enabled.
+    #[must_use]
+    pub fn gps_dual_pre_arm_ok(&mut self) -> bool {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            if !dual.dual_enabled {
+                return dual.output_health().is_healthy();
+            }
+            let primary = dual.instance_status(0);
+            let secondary = dual.instance_status(1);
+            GpsHealthFlags::from_status(&primary).is_healthy()
+                && GpsHealthFlags::from_status(&secondary).is_healthy()
+        } else {
+            self.gps_health_publish().is_healthy()
+        }
+    }
+
     #[must_use]
     pub fn yaw_publish(&mut self) -> SitlYawPublish {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            let status = dual.output_status();
+            return SitlYawPublish {
+                latitude_deg: status.latitude_deg,
+                longitude_deg: status.longitude_deg,
+                ground_speed_mps: status.ground_speed,
+                ground_course_deg: status.ground_course_deg,
+                last_fix_time_ms: status.last_fix_time_ms,
+                now_ms: self.truth.now_ms,
+                fly_forward: self.fly_forward,
+                compass_use_for_yaw: self.compass_use_for_yaw,
+                wind_speed_xy: self.wind_speed_xy,
+                have_gps: status.have_fix,
+            };
+        }
         self.backend.read(
             self.truth.velocity_ned,
             self.truth.latitude_deg,

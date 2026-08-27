@@ -233,3 +233,39 @@ fn main_loop_dual_gps_blend_sets_blended_flag() {
     assert!((vel.velocity_ned.x - 8.0).abs() < 0.5);
 }
 
+#[test]
+fn dual_gps_yaw_publish_uses_blended_output() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.velocity_ned = Vector3f::new(6.0, 0.0, 0.0);
+        dual.secondary_truth.now_ms = 200;
+    }
+    let yaw = hookup.yaw_publish();
+    assert!(yaw.have_gps);
+    assert!((yaw.ground_speed_mps - 8.0).abs() < 0.5);
+}
+
+#[test]
+fn dual_gps_pre_arm_requires_both_instances() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.now_ms = 200;
+    }
+    assert!(hookup.gps_dual_pre_arm_ok());
+
+    let mut hookup2 = SitlGpsHookup::default();
+    hookup2.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup2.truth.now_ms = 200;
+    // secondary never ticked — instance 1 has no fix.
+    assert!(!hookup2.gps_dual_pre_arm_ok());
+}
+
