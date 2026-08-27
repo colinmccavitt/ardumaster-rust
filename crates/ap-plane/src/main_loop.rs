@@ -22,6 +22,9 @@ use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedul
 use crate::landing_throttle_scheduler_hookup::{
     landing_throttle_scheduler_tick, LandingThrottleSchedulerInputs,
 };
+use crate::srv_output_scheduler_hookup::{
+    srv_output_scheduler_tick, SrvOutputHookupState, SrvOutputSchedulerInputs,
+};
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
@@ -198,6 +201,8 @@ pub struct PlaneMainLoop {
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
     pub in_rc_failsafe: bool,
+    /// SRV output mapping hookup state, upstream elevon/flap mixing.
+    pub srv_output: SrvOutputHookupState,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -353,6 +358,7 @@ impl Default for PlaneMainLoop {
             mission_advanced: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
+            srv_output: SrvOutputHookupState::default(),
             servos: ServoOutputState::default(),
         }
     }
@@ -562,6 +568,36 @@ impl PlaneMainLoop {
         );
         self.landing_throttle_applied = thr_out.applied;
         self.servos = thr_out.servos;
+
+        let flap_speed_source_ms = self
+            .speed_scaler_inputs
+            .airspeed_eas
+            .unwrap_or(self.airspeed_tas);
+        let mixing = self.srv_output.mixing;
+        let flap_params = self.srv_output.flap_params;
+        let manual_flap_percent = self.srv_output.manual_flap_percent;
+        let has_auto_flap_schedule = self.srv_output.has_auto_flap_schedule;
+        let flight_stage_is_takeoff = self.srv_output.flight_stage_is_takeoff;
+        let apply_elevon_mixing = self.srv_output.apply_elevon_mixing;
+        let apply_vtail_mixing = self.srv_output.apply_vtail_mixing;
+        let srv_out = srv_output_scheduler_tick(
+            self.servos,
+            &mut self.srv_output,
+            &SrvOutputSchedulerInputs {
+                mixing,
+                flap_params,
+                manual_flap_percent,
+                flap_speed_source_ms,
+                has_auto_flap_schedule,
+                flight_stage_is_takeoff,
+                flight_stage_is_land: self.flight_stage_is_land,
+                apply_elevon_mixing,
+                apply_vtail_mixing,
+                dt: self.loop_timing.delta_time,
+                elevator_scaled: self.stabilize_servos.elevator_scaled,
+            },
+        );
+        self.servos = srv_out.servos;
     }
 }
 
