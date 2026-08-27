@@ -67,6 +67,7 @@ use crate::mode_entry_scheduler_hookup::{
 };
 use crate::mode_glue_hookup::{
     apply_mode_entry_throttle_suppression, resolve_effective_stick_mixing,
+    restore_pilot_throttle_on_transition_clear,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -307,6 +308,8 @@ pub struct PlaneMainLoop {
     pub mode_transition_throttle_cleared: bool,
     /// Whether mode glue zeroed pilot throttle on mode entry.
     pub mode_glue_throttle_zeroed: bool,
+    /// Whether set_servos restored pilot throttle after transition clear.
+    pub mode_glue_throttle_restored: bool,
     /// Effective stick mixing after mode glue resolution.
     pub effective_stick_mixing: Option<StickMixing>,
     /// Whether configured throttle limits apply this tick.
@@ -557,6 +560,7 @@ impl Default for PlaneMainLoop {
             mode_entry_throttle_applied: false,
             mode_transition_throttle_cleared: false,
             mode_glue_throttle_zeroed: false,
+            mode_glue_throttle_restored: false,
             effective_stick_mixing: Some(StickMixing::Fbw),
             throttle_use_limits: true,
             throttle_use_battery_comp: true,
@@ -929,6 +933,29 @@ impl PlaneMainLoop {
             },
         );
         self.mode_transition_throttle_cleared = trans_out.cleared;
+
+        let pilot_throttle = pilot_throttle_glue_tick(&PilotThrottleGlueInputs {
+            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+            pilot_throttle_source: self.pilot_throttle_source,
+            trim_throttle: self.trim_throttle,
+            throttle_min: self.throttle_min,
+            throttle_max: self.throttle_max,
+            use_throttle_limits: self.throttle_use_limits,
+            use_battery_compensation: self.throttle_use_battery_comp,
+            battery_voltage_ratio: self.battery_voltage_ratio,
+        });
+        let (restored_throttle, restored) = restore_pilot_throttle_on_transition_clear(
+            trans_out.cleared,
+            self.mode_entry.throttle_suppressed,
+            self.servos.throttle_scaled,
+            pilot_throttle,
+        );
+        self.mode_glue_throttle_restored = restored;
+        if restored {
+            self.mode_glue_throttle_zeroed = false;
+            self.servos.throttle_scaled = restored_throttle;
+        }
 
         let sup_out = suppress_throttle_scheduler_tick(
             self.servos,

@@ -852,3 +852,37 @@ fn mode_glue_resolves_vtol_yaw_only_in_vtol_mode() {
     vehicle.update_control_mode();
     assert_eq!(vehicle.effective_stick_mixing, Some(StickMixing::VtolYaw));
 }
+
+
+#[test]
+fn mode_glue_restores_pilot_throttle_after_transition() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_run::PilotThrottleSource;
+    use ap_plane::mode_table::ModeNumber;
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = true;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = true;
+    vehicle.relative_altitude_m = 15.0;
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(2000);
+    vehicle.rc_failsafe_inputs.throttle_cfg = RcChannelConfig {
+        radio_min: 1000,
+        radio_max: 2000,
+        ..Default::default()
+    };
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+    vehicle.pilot_throttle_source = PilotThrottleSource::Direct;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 0.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.mode_transition_throttle_cleared);
+    assert!(vehicle.mode_glue_throttle_restored);
+    assert!(!vehicle.mode_glue_throttle_zeroed);
+    assert!((vehicle.servos.throttle_scaled - 100.0).abs() < 0.1);
+}

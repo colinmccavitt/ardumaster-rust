@@ -76,3 +76,45 @@ fn mode_glue_passes_through_when_not_suppressed() {
     assert_eq!(out.pilot_throttle, 60.0);
     assert_eq!(out.effective_stick_mixing, Some(StickMixing::Fbw));
 }
+
+#[test]
+fn restore_pilot_throttle_when_transition_clears_suppression() {
+    use ap_plane::mode_glue_hookup::restore_pilot_throttle_on_transition_clear;
+
+    let (throttle, restored) = restore_pilot_throttle_on_transition_clear(
+        true,
+        false,
+        0.0,
+        75.0,
+    );
+    assert!(restored);
+    assert_eq!(throttle, 75.0);
+}
+
+#[test]
+fn restore_skips_when_still_suppressed() {
+    use ap_plane::mode_glue_hookup::restore_pilot_throttle_on_transition_clear;
+
+    let (throttle, restored) = restore_pilot_throttle_on_transition_clear(
+        true,
+        true,
+        0.0,
+        75.0,
+    );
+    assert!(!restored);
+    assert_eq!(throttle, 0.0);
+}
+
+#[test]
+fn restore_skips_when_throttle_already_nonzero() {
+    use ap_plane::mode_glue_hookup::restore_pilot_throttle_on_transition_clear;
+
+    let (throttle, restored) = restore_pilot_throttle_on_transition_clear(
+        true,
+        false,
+        50.0,
+        75.0,
+    );
+    assert!(!restored);
+    assert_eq!(throttle, 50.0);
+}

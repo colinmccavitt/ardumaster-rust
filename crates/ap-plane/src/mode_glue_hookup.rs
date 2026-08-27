@@ -118,3 +118,23 @@ pub fn mode_glue_tick(inp: &ModeGlueInputs) -> ModeGlueOutput {
         throttle_zeroed_by_mode_entry: zeroed,
     }
 }
+/// Restore pilot throttle after mode transition clears entry suppression.
+///
+/// Upstream `Plane::suppress_throttle()` clears `throttle_suppressed` once
+/// altitude or GPS movement conditions are met; the scaled throttle should
+/// then reflect the pilot stick again.
+#[must_use]
+pub fn restore_pilot_throttle_on_transition_clear(
+    transition_cleared: bool,
+    throttle_suppressed: bool,
+    current_throttle: f32,
+    pilot_throttle: f32,
+) -> (f32, bool) {
+    if transition_cleared && !throttle_suppressed && current_throttle == 0.0 && pilot_throttle > 0.0
+    {
+        (pilot_throttle, true)
+    } else {
+        (current_throttle, false)
+    }
+}
+
