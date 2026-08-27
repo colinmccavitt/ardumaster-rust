@@ -175,10 +175,8 @@ impl SitlGpsHookup {
             }
             match dual.auto_switch {
                 GpsAutoSwitch::Blend => {
-                    let primary = dual.instance_status(0);
-                    let secondary = dual.instance_status(1);
-                    GpsHealthFlags::from_status_at(&primary, now_ms).is_healthy()
-                        && GpsHealthFlags::from_status_at(&secondary, now_ms).is_healthy()
+                    dual.instance_health_at(0, dual.primary_truth.now_ms).is_healthy()
+                        && dual.instance_health_at(1, dual.secondary_truth.now_ms).is_healthy()
                 }
                 GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
                     dual.output_health_at(now_ms).is_healthy()
