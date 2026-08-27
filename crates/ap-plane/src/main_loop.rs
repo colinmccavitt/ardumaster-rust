@@ -21,6 +21,7 @@ use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
+use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::ins_hntch_scheduler_hookup::{
     ins_hntch_scheduler_tick, ins_hntch_scheduler_tick_cluster, InsHntchHookup,
@@ -158,6 +159,10 @@ pub struct PlaneMainLoop {
     pub landing_servo_override_applied: bool,
     /// Go-around requested because deepstall elevator is missing.
     pub landing_request_go_around: bool,
+    /// HAL inputs for RC channel read and failsafe during the scheduler tick.
+    pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
+    /// Whether the latest scheduler tick saw an RC failsafe.
+    pub in_rc_failsafe: bool,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -296,6 +301,8 @@ impl Default for PlaneMainLoop {
             },
             landing_servo_override_applied: false,
             landing_request_go_around: false,
+            rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
+            in_rc_failsafe: false,
             servos: ServoOutputState::default(),
         }
     }
@@ -377,6 +384,10 @@ impl PlaneMainLoop {
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
         self.ticks.update_control_mode += 1;
+        let rc_out = rc_failsafe_scheduler_tick(&self.rc_failsafe_inputs);
+        self.in_rc_failsafe = rc_out.in_rc_failsafe;
+        self.rc_sticks = rc_out.rc_sticks;
+
         self.last_stabilize = dispatch_stabilize_from_mode(
             self.mode.control_mode,
             self.stick_mixing,

@@ -409,3 +409,33 @@ fn scheduler_tick_applies_deepstall_servo_override() {
     assert_eq!(vehicle.servos.throttle_scaled, 0.0);
 }
 
+#[test]
+fn scheduler_tick_reads_rc_channels() {
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    use ap_plane::rc_failsafe_scheduler_hookup::{
+        RcChannelConfig, RcFailsafeConfig, RcFailsafeSchedulerInputs,
+    };
+    vehicle.rc_failsafe_inputs = RcFailsafeSchedulerInputs {
+        has_valid_input: true,
+        roll_pwm: Some(1700),
+        pitch_pwm: Some(1300),
+        throttle_pwm: Some(1100),
+        roll_cfg: RcChannelConfig::default(),
+        pitch_cfg: RcChannelConfig::default(),
+        failsafe_cfg: RcFailsafeConfig {
+            throttle_failsafe_enabled: true,
+            throttle_failsafe_pwm: 975,
+        },
+    };
+
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert!(!vehicle.in_rc_failsafe);
+    assert!(vehicle.rc_sticks.roll_norm_dz > 0.4);
+    assert!(vehicle.rc_sticks.pitch_norm_dz < -0.4);
+}
+

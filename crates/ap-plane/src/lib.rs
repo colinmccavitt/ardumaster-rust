@@ -29,6 +29,7 @@ pub mod landing_loop_hookup;
 pub mod main_loop;
 pub mod rangefinder_bump_hookup;
 pub mod rangefinder_bump_scheduler_hookup;
+pub mod rc_failsafe_scheduler_hookup;
 pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
