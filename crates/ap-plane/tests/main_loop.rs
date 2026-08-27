@@ -486,10 +486,13 @@ fn scheduler_tick_advances_mission_in_auto() {
 #[test]
 fn set_servos_zeros_throttle_when_landing_suppressed() {
     use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_table::ModeNumber;
 
     let mut vehicle = PlaneMainLoop::default();
     vehicle.flight_stage_is_land = true;
     vehicle.landing_throttle_suppressed = true;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.tecs_throttle_demand = 80.0;
     vehicle.servos = ServoOutputState {
         throttle_scaled: 60.0,
         ..ServoOutputState::default()
@@ -498,6 +501,7 @@ fn set_servos_zeros_throttle_when_landing_suppressed() {
     vehicle.set_servos();
 
     assert!(vehicle.landing_throttle_applied);
+    assert!(!vehicle.last_set_servos_calc_throttle);
     assert_eq!(vehicle.servos.throttle_scaled, 0.0);
 }
 
