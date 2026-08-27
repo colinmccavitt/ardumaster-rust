@@ -219,3 +219,48 @@ fn dcm_update_skips_rotation_without_publish() {
         "without publish the delta-angle path should not rotate"
     );
 }
+
+/// One degree per second of roll bias through SITL INS should stay bounded once
+/// drift correction is wired into the loop, not walk off like dead reckoning.
+#[test]
+fn sitl_ins_drift_correction_limits_gyro_bias() {
+    let mut sim = AttitudeSim::new();
+    sim.errors.gyro_bias = V3::new(1.0_f64.to_radians(), 0.0, 0.0);
+
+    let mut backend = setup_backend();
+    let mut dcm = init_dcm_from_truth(&sim);
+    let mut drift = ap_ahrs::DcmDriftLoop::default();
+    let mut timing = LoopTiming::new(LOOP_DT);
+
+    let gyro_per_loop = u64::from(GYRO_HZ) / u64::from(LOOP_HZ as u16);
+    let mut now_us = 0_u64;
+    let mut worst = 0.0_f64;
+
+    for _ in 0..4000 {
+        let rates = V3::zero();
+        let gravity = gravity_in_body(&sim);
+        let state = body_state_from_rates(rates, gravity);
+        for _ in 0..gyro_per_loop {
+            let _ = backend.timer_update(now_us, &state, SitlTimerFileData::default());
+            now_us += GYRO_DT_US;
+        }
+        backend.imu.update_gyro();
+        backend.imu.update_accel();
+        timing.delta_time = LOOP_DT;
+        assert_eq!(
+            ap_ahrs::dcm_step_with_drift_from_ins(&mut dcm, &mut drift, &backend.imu, &timing),
+            MatrixHealth::Ok
+        );
+        sim.step(rates, LOOP_DT as f64);
+        worst = worst.max(attitude_error_deg(&sim, &dcm));
+    }
+
+    let err = attitude_error_deg(&sim, &dcm);
+    println!(
+        "1 deg/s bias via SITL INS+drift: final {err:.3} deg, worst {worst:.3} deg"
+    );
+    assert!(
+        err.abs() < 6.0 && worst < 6.0,
+        "drift correction should bound bias error, got final {err} worst {worst}"
+    );
+}

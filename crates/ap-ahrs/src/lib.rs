@@ -22,9 +22,13 @@
 
 #![no_std]
 
+pub mod dcm_drift_loop;
 pub mod dcm_loop;
 pub mod drift;
 
+pub use dcm_drift_loop::{
+    dcm_step_with_drift_from_ins, DcmDriftLoop, DRIFT_CORRECTION_INTERVAL_S,
+};
 pub use dcm_loop::{dcm_matrix_step_from_ins, dcm_matrix_update_from_ins, DcmDriftOmega};
 pub use drift::{DriftCorrector, DriftGains, DriftInputs, DriftOutcome};
 
