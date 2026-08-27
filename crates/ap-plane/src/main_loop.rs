@@ -73,6 +73,9 @@ use crate::sitl_ins_noise_hookup::{
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_baro_hookup::SitlBaroHookup;
 use crate::sitl_compass_hookup::SitlCompassHookup;
+use crate::airspeed_health_scheduler_hookup::{
+    airspeed_health_scheduler_tick, AirspeedHealthSchedulerInputs,
+};
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
@@ -823,12 +826,15 @@ impl PlaneMainLoop {
             self.baro_was_soft_armed = arm_cal.was_soft_armed;
         }
         if let Some(airspeed) = self.sitl_airspeed.as_mut() {
-            let published = airspeed.publish(self.eas2tas);
-            self.airspeed_sample = Some(published.sample);
-            self.airspeed_healthy = published.healthy;
-            self.airspeed_health = published.health;
-            if published.healthy {
-                self.airspeed_tas = published.sample.tas_mps;
+            let out = airspeed_health_scheduler_tick(
+                airspeed,
+                &AirspeedHealthSchedulerInputs { eas2tas: self.eas2tas },
+            );
+            self.airspeed_sample = Some(out.sample);
+            self.airspeed_healthy = out.healthy;
+            self.airspeed_health = out.health;
+            if out.healthy {
+                self.airspeed_tas = out.sample.tas_mps;
             }
         }
         if let Some(vane) = self.wind_vane {
