@@ -120,4 +120,5 @@ fn stabilize_records_active_attitude_paths() {
             yaw: true,
         }
     );
+    assert_eq!(vehicle.stabilize_servos.elevator_scaled, 0.0);
 }

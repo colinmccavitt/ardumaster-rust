@@ -9,7 +9,12 @@ use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{AhrsAttitude, AhrsFeed};
+use crate::landing_hookup::ServoOutputState;
 use crate::mode::ModeState;
+use crate::stabilize_hookup::{
+    apply_stabilize_to_servos, stabilize_controllers, StabilizeContext, StabilizeControllers,
+    StabilizeDemands, StabilizeServoDemands,
+};
 use crate::mode_run::{applies_fbw_stick_mixing, StickMixing};
 use crate::mode_table::{BuildFeatures, ModeNumber};
 
@@ -66,6 +71,16 @@ pub struct PlaneMainLoop {
     pub attitude: AhrsAttitude,
     /// Optional compass sample for yaw drift correction.
     pub compass: Option<YawCompassSample>,
+    /// Roll/pitch/yaw controllers, upstream `rollController` et al.
+    pub controllers: StabilizeControllers,
+    /// Navigation demands fed into stabilize.
+    pub stabilize_demands: StabilizeDemands,
+    /// Per-loop context for the attitude controllers.
+    pub stabilize_ctx: StabilizeContext,
+    /// Scaled demands from the latest `stabilize`.
+    pub stabilize_servos: StabilizeServoDemands,
+    /// Servo outputs about to be published, upstream `set_servos` state.
+    pub servos: ServoOutputState,
 }
 
 impl Default for PlaneMainLoop {
@@ -87,6 +102,11 @@ impl Default for PlaneMainLoop {
             loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
             attitude: AhrsAttitude::default(),
             compass: None,
+            controllers: StabilizeControllers::default(),
+            stabilize_demands: StabilizeDemands::default(),
+            stabilize_ctx: StabilizeContext::default(),
+            stabilize_servos: StabilizeServoDemands::default(),
+            servos: ServoOutputState::default(),
         }
     }
 }
@@ -113,21 +133,27 @@ impl PlaneMainLoop {
         );
     }
 
-    /// Upstream `Plane::stabilize`. Records which attitude paths the active
-    /// mode selected; controller calls land in a later slice.
+    /// Upstream `Plane::stabilize`. Calls roll/pitch/yaw controllers when the
+    /// active mode selected them on the previous `update_control_mode`.
     pub fn stabilize(&mut self) {
         self.ticks.stabilize += 1;
-        let d = self.last_stabilize;
-        self.last_stabilize_run = StabilizeRun {
-            roll: d.roll,
-            pitch: d.pitch,
-            yaw: d.yaw,
-        };
+        let out = stabilize_controllers(
+            &mut self.controllers,
+            &self.attitude,
+            &self.imu,
+            self.last_stabilize,
+            &self.stabilize_demands,
+            &self.stabilize_ctx,
+            self.loop_timing.delta_time,
+        );
+        self.last_stabilize_run = out.run;
+        self.stabilize_servos = out.servos;
     }
 
-    /// Upstream `Plane::set_servos`. Skeleton: later slices publish PWM.
+    /// Upstream `Plane::set_servos`. Publishes scaled/PWM demands from stabilize.
     pub fn set_servos(&mut self) {
         self.ticks.set_servos += 1;
+        apply_stabilize_to_servos(&self.stabilize_servos, &mut self.servos);
     }
 }
 

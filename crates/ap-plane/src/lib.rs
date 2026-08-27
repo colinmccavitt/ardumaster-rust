@@ -23,6 +23,7 @@ pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
 pub mod servo_mix;
+pub mod stabilize_hookup;
 pub mod target_altitude;
 pub mod throttle_rules;
 

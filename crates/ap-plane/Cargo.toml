@@ -8,10 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 ap-ahrs = { workspace = true }
+ap-control = { workspace = true }
 ap-hal = { workspace = true }
 ap-ins = { workspace = true }
 ap-landing = { workspace = true }
 ap-math = { workspace = true }
+ap-pid = { workspace = true }
 ap-scheduler = { workspace = true }
 
 [dev-dependencies]
