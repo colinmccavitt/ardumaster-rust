@@ -4,6 +4,7 @@
 //! module owns the DCM state and publishes roll/pitch/yaw sensors the stabilize
 //! path reads on the next tasks.
 
+use ap_gps::GpsVelocitySample;
 use ap_ahrs::{
     active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, ekf3_full_update_from_ins,
     head_wind_from_yaw, wind_alignment, AhrsBackendKind, Dcm, DcmDriftLoop, DriftMotionInputs, Ekf3Loop,
@@ -263,30 +264,39 @@ pub fn yaw_update_inputs(
 pub fn drift_motion_inputs(
     ctx: YawDriftContext,
     gps: Option<YawGpsSample>,
+    gps_velocity_sample: Option<GpsVelocitySample>,
     airspeed_tas: f32,
     eas2tas: f32,
     last_gps_fix_ms: &mut u32,
 ) -> DriftMotionInputs {
-    let new_gps_fix = gps
-        .map(|sample| sample.last_fix_time_ms != *last_gps_fix_ms)
+    let fix_time_ms = gps_velocity_sample
+        .map(|sample| sample.last_fix_time_ms)
+        .or_else(|| gps.map(|sample| sample.last_fix_time_ms));
+    let new_gps_fix = fix_time_ms
+        .map(|time_ms| time_ms != *last_gps_fix_ms)
         .unwrap_or(false);
-    if let Some(sample) = gps {
+    if let Some(time_ms) = fix_time_ms {
         if new_gps_fix {
-            *last_gps_fix_ms = sample.last_fix_time_ms;
+            *last_gps_fix_ms = time_ms;
         }
     }
 
-    let gps_velocity = gps.and_then(|sample| {
-        if !ctx.have_gps {
-            return None;
-        }
-        let course = radians(sample.ground_course_deg);
-        Some(Vector3f::new(
-            sample.ground_speed * Real::cos(course),
-            sample.ground_speed * Real::sin(course),
-            0.0,
-        ))
-    });
+    let gps_velocity = gps_velocity_sample
+        .filter(|sample| sample.have_velocity && ctx.have_gps)
+        .map(|sample| sample.velocity_ned)
+        .or_else(|| {
+            gps.and_then(|sample| {
+                if !ctx.have_gps {
+                    return None;
+                }
+                let course = radians(sample.ground_course_deg);
+                Some(Vector3f::new(
+                    sample.ground_speed * Real::cos(course),
+                    sample.ground_speed * Real::sin(course),
+                    0.0,
+                ))
+            })
+        });
 
     DriftMotionInputs {
         now_ms: ctx.now_ms,

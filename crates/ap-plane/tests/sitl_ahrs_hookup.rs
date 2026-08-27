@@ -60,6 +60,7 @@ fn ahrs_update_wires_sitl_ahrs_airspeed_and_eas2tas_into_drift_motion() {
     let motion = drift_motion_inputs(
         vehicle.yaw_ctx,
         vehicle.gps_yaw,
+        vehicle.gps_velocity,
         vehicle.airspeed_tas,
         vehicle.eas2tas,
         &mut last_fix,

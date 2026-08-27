@@ -139,6 +139,8 @@ pub struct PlaneMainLoop {
     pub gps_yaw: Option<YawGpsSample>,
     /// Lag-buffered GPS status from the fix producer, upstream `AP_GPS::status()`.
     pub gps_status: Option<ap_gps::GpsStatus>,
+    /// Lag-buffered NED velocity for drift, upstream `AP_GPS::state().velocity`.
+    pub gps_velocity: Option<ap_gps::GpsVelocitySample>,
     /// Vehicle context for compass vs GPS yaw selection.
     pub yaw_ctx: YawDriftContext,
     /// True airspeed for no-GPS drift and wind estimation, m/s.
@@ -328,6 +330,7 @@ impl Default for PlaneMainLoop {
             compass: None,
             gps_yaw: None,
             gps_status: None,
+            gps_velocity: None,
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             eas2tas: 1.0,
@@ -499,6 +502,7 @@ impl PlaneMainLoop {
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
             self.gps_status = Some(gps.gps_status_publish());
+            self.gps_velocity = Some(gps.gps_velocity_publish());
         } else if let Some(source) = self.sitl_ahrs {
             let samples = publish_sitl_ahrs_samples(
                 &source,
@@ -561,6 +565,7 @@ impl PlaneMainLoop {
         let motion = drift_motion_inputs(
             self.yaw_ctx,
             self.gps_yaw,
+            self.gps_velocity,
             self.airspeed_tas,
             self.eas2tas,
             &mut self.ahrs.last_gps_fix_ms,

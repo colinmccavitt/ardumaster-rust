@@ -32,10 +32,12 @@
 
 pub mod lag_buffer;
 pub mod status;
+pub mod velocity;
 pub mod sitl;
 
 pub use lag_buffer::GpsLagBuffer;
 pub use status::GpsStatus;
+pub use velocity::{GpsVelocityProducer, GpsVelocitySample};
 pub use sitl::{
     velocity_to_speed_course, GpsFixState, SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC,
     SITL_GPS_UPDATE_MS,

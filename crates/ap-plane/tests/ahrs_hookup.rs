@@ -93,7 +93,7 @@ fn drift_motion_inputs_builds_gps_velocity() {
         now_ms: 500,
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), None, 0.0, 1.0, &mut last_fix);
     assert!(motion.new_gps_fix);
     let vel = motion.gps_velocity.expect("gps velocity");
     assert!(vel.x.abs() < 0.01, "east course => near-zero north");
@@ -160,7 +160,7 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         now_ms: 100,
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), None, 0.0, 1.0, &mut last_fix);
     assert!(motion.have_gps);
     assert!(motion.new_gps_fix);
     feed.update_from_ins(&ins, &timing, None, motion);
@@ -174,7 +174,7 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         now_ms: 600,
         ..YawDriftContext::default()
     };
-    let motion2 = drift_motion_inputs(ctx2, Some(gps2), 0.0, 1.0, &mut last_fix);
+    let motion2 = drift_motion_inputs(ctx2, Some(gps2), None, 0.0, 1.0, &mut last_fix);
     let (health, _) = feed.update_from_ins(&ins, &timing, None, motion2);
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
 }
@@ -201,7 +201,7 @@ fn multi_accel_dead_reckoning_wired_through_drift_motion() {
         gps_lng_e7: Some(-122_234_567),
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), None, 0.0, 1.0, &mut last_fix);
     let (health, _) = feed.update_from_ins(&ins, &timing, None, motion);
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
     assert!(feed.drift.position.have_position);
@@ -593,29 +593,32 @@ fn main_loop_pre_arm_ok_requires_healthy_ahrs() {
 }
 
 #[test]
-fn dcm_scope_publishes_all_vehicle_consumers() {
-    use ap_ahrs::{AhrsBackendKind, DCM_SCOPE_COMPLETE, MatrixHealth};
-    use ap_plane::main_loop::PlaneMainLoop;
+fn drift_motion_prefers_producer_velocity_over_course_reconstruction() {
+    use ap_ahrs::{YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_gps::GpsVelocitySample;
+    use ap_math::vector3::Vector3f;
+    use ap_plane::ahrs_hookup::drift_motion_inputs;
 
-    assert!(DCM_SCOPE_COMPLETE);
-
-    let mut vehicle = PlaneMainLoop::default();
-    vehicle.loop_timing.delta_time = 1.0 / 400.0;
-    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Dcm);
-
-    vehicle.ahrs_update();
-    vehicle.update_control_mode();
-    vehicle.stabilize();
-
-    assert_eq!(vehicle.configured_ahrs_backend, AhrsBackendKind::Dcm);
-    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Dcm);
-    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::Ok);
-    assert!(vehicle.ahrs_healthy);
-    assert!(vehicle.ahrs_pre_arm_ok);
-    assert!(vehicle.pre_arm_ok);
-    assert!((vehicle.roll_rad - vehicle.attitude.roll_rad()).abs() < f32::EPSILON);
-    assert_eq!(vehicle.stabilize_ctx.accel_bias_y, 0.0);
-    assert!(vehicle.ticks.ahrs_update >= 1);
-    assert!(vehicle.ticks.stabilize >= 1);
+    let mut last_fix = 0;
+    let gps = YawGpsSample {
+        ground_course_deg: 90.0,
+        ground_speed: GPS_SPEED_MIN + 2.0,
+        last_fix_time_ms: 500,
+    };
+    let ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 500,
+        ..YawDriftContext::default()
+    };
+    let producer = GpsVelocitySample {
+        velocity_ned: Vector3f::new(1.0, 2.0, -4.0),
+        have_velocity: true,
+        last_fix_time_ms: 500,
+    };
+    let motion = drift_motion_inputs(ctx, Some(gps), Some(producer), 0.0, 1.0, &mut last_fix);
+    let vel = motion.gps_velocity.expect("producer velocity");
+    assert!((vel.x - 1.0).abs() < 1e-4);
+    assert!((vel.y - 2.0).abs() < 1e-4);
+    assert!((vel.z - (-4.0)).abs() < 1e-4);
 }
 

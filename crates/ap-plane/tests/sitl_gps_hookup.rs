@@ -97,3 +97,32 @@ fn main_loop_publishes_gps_status_from_producer() {
     assert_eq!(vehicle.ticks.ahrs_update, 1);
 }
 
+#[test]
+fn gps_velocity_publish_exposes_vertical_component() {
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, -2.5);
+    hookup.truth.now_ms = 200;
+    let sample = hookup.gps_velocity_publish();
+    assert!(sample.have_velocity);
+    assert!((sample.velocity_ned.x - 10.0).abs() < 1e-3);
+    assert!((sample.velocity_ned.z - (-2.5)).abs() < 1e-3);
+}
+
+#[test]
+fn main_loop_publishes_gps_velocity_from_producer() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(6.0, 8.0, -1.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+
+    vehicle.ahrs_update();
+
+    let sample = vehicle.gps_velocity.expect("gps velocity published");
+    assert!(sample.have_velocity);
+    assert!((sample.velocity_ned.x - 6.0).abs() < 1e-2);
+    assert!((sample.velocity_ned.z - (-1.0)).abs() < 1e-2);
+}
+
