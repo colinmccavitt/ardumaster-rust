@@ -33,6 +33,8 @@ impl ConvertFlags {
     pub const REVERSE: Self = Self(1);
     /// Write even when the destination is already configured.
     pub const FORCE: Self = Self(2);
+    /// No conversion flags set.
+    pub const NONE: Self = Self(0);
 
     /// Whether `flag` is set.
     #[must_use]
@@ -373,6 +375,73 @@ pub struct ConvertClassStats {
 #[must_use]
 pub fn configured_in_storage<S: Storage + ?Sized>(storage: &S, header: ParamHeader) -> bool {
     matches!(scan(storage, header), ScanResult::Found(_))
+}
+
+
+/// One rename row keyed by destination name, upstream `ConversionInfo`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NamedParameterMigration {
+    pub old_key: u16,
+    pub old_group_element: u32,
+    pub old_type: VarType,
+    pub new_name: &'static str,
+    pub scaler: f32,
+    pub flags: ConvertFlags,
+}
+
+/// Resolve a named migration row against a descriptor table.
+#[must_use]
+pub fn resolve_named_migration(
+    table: &[crate::ParamInfo<'_>],
+    filter: crate::EnumFilter,
+    entry: NamedParameterMigration,
+) -> Option<ParameterMigration> {
+    let dest = crate::find_by_name(table, filter, entry.new_name)?;
+    if dest.token_idx != 0 {
+        return None;
+    }
+    let new_type = VarType::from_u8(dest.ptype)?;
+    Some(ParameterMigration {
+        old: ConversionInfo {
+            old_key: entry.old_key,
+            old_group_element: entry.old_group_element,
+            old_type: entry.old_type,
+        },
+        new_header: ParamHeader::new(dest.key, dest.ptype, dest.group_element),
+        new_type,
+        scaler: entry.scaler,
+        flags: entry.flags,
+    })
+}
+
+/// Run a named migration table, upstream `convert_old_parameters`.
+pub fn migrate_named_parameters<S: Storage + ?Sized>(
+    storage: &mut S,
+    table: &[crate::ParamInfo<'_>],
+    filter: crate::EnumFilter,
+    migrations: &[NamedParameterMigration],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for entry in migrations {
+        let Some(m) = resolve_named_migration(table, filter, *entry) else {
+            continue;
+        };
+        let dest = configured_in_storage(storage, m.new_header);
+        match migrate_scalar(
+            storage,
+            m.old,
+            m.new_header,
+            m.new_type,
+            dest,
+            m.scaler,
+            m.flags,
+        )? {
+            ConvertOutcome::Saved => stats.saved += 1,
+            ConvertOutcome::SkippedConfigured | ConvertOutcome::Unchanged => stats.skipped += 1,
+            ConvertOutcome::NotFound => stats.not_found += 1,
+        }
+    }
+    Ok(stats)
 }
 
 /// Group-element shift for one nesting level, upstream `group_shift` in
@@ -722,6 +791,7 @@ mod tests {
         .expect("new");
         assert_eq!(v, ParamValue::Float(10.0));
     }
+    #[test]
     fn convert_class_entry_copies_old_value_and_saves() {
         let mut s = Ram::formatted();
         let old_key = 50u16;
@@ -802,5 +872,59 @@ mod tests {
         .expect("still dest");
         assert_eq!(v, ParamValue::Int16(999));
     }
+
+    #[test]
+    fn migrate_named_parameters_resolves_plane_fence_table() {
+        use crate::info::{find_by_name, EnumFilter, GroupInfo, ParamInfo, ParamRef, FRAME_PLANE};
+        use crate::plane::PLANE_FENCE_CONVERSIONS;
+
+        static FENCE_ALT_MIN: [GroupInfo<'static>; 1] = [GroupInfo {
+            name: "ALT_MIN",
+            idx: 7,
+            ptype: VarType::Float.as_u8(),
+            flags: 0,
+            group: None,
+        }];
+        static FENCE: [ParamInfo<'static>; 1] = [ParamInfo {
+            name: "FENCE_",
+            key: 132,
+            ptype: VarType::Group.as_u8(),
+            flags: 0,
+            group: Some(&FENCE_ALT_MIN),
+        }];
+
+        let filter = EnumFilter::for_frame(FRAME_PLANE);
+        let dest = find_by_name(&FENCE, filter, "FENCE_ALT_MIN").expect("descriptor");
+        let resolved = resolve_named_migration(
+            &FENCE,
+            filter,
+            PLANE_FENCE_CONVERSIONS[0],
+        )
+        .expect("resolved");
+        assert_eq!(
+            resolved.new_header,
+            ParamHeader::new(dest.key, dest.ptype, dest.group_element),
+        );
+
+        let mut s = Ram::formatted();
+        let old_h = ParamHeader::new(228, VarType::Int16.as_u8(), 0);
+        save(&mut s, old_h, ParamValue::Int16(-10), None, false).expect("old");
+        let stats = migrate_named_parameters(&mut s, &FENCE, filter, PLANE_FENCE_CONVERSIONS)
+            .expect("migrate");
+        assert_eq!(stats.saved, 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.not_found, 0);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: dest.key,
+                old_group_element: dest.group_element,
+                old_type: VarType::Float,
+            },
+        )
+        .expect("migrated");
+        assert_eq!(v, ParamValue::Float(-10.0));
+    }
+
 
 }

@@ -443,3 +443,55 @@ pub fn enumerate(table: &[ParamInfo<'_>], filter: EnumFilter, visit: &mut dyn Fn
         }
     }
 }
+
+
+/// Locate a parameter by name, upstream `AP_Param::find`.
+///
+/// Returns the scalar or vector container (`token_idx == 0`). Vector
+/// components (`_X`, `_Y`, `_Z`) are not matched.
+#[must_use]
+pub fn find_by_name(table: &[ParamInfo<'_>], filter: EnumFilter, name: &str) -> Option<ParamRef> {
+    let mut found = None;
+    enumerate(table, filter, &mut |r| {
+        if r.token_idx == 0 && r.name.as_str() == name {
+            found = Some(*r);
+        }
+    });
+    found
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+    use crate::VarType;
+
+    static CHILD: [GroupInfo<'static>; 1] = [GroupInfo {
+        name: "ALT_MIN",
+        idx: 7,
+        ptype: VarType::Float.as_u8(),
+        flags: 0,
+        group: None,
+    }];
+
+    static TABLE: [ParamInfo<'static>; 1] = [ParamInfo {
+        name: "FENCE_",
+        key: 132,
+        ptype: VarType::Group.as_u8(),
+        flags: 0,
+        group: Some(&CHILD),
+    }];
+
+    #[test]
+    fn find_by_name_resolves_nested_parameter() {
+        let f = EnumFilter::for_frame(FRAME_PLANE);
+        let r = find_by_name(&TABLE, f, "FENCE_ALT_MIN").expect("found");
+        assert_eq!(r.key, 132);
+        assert_eq!(r.ptype, VarType::Float.as_u8());
+    }
+
+    #[test]
+    fn find_by_name_returns_none_for_missing() {
+        let f = EnumFilter::for_frame(FRAME_PLANE);
+        assert!(find_by_name(&TABLE, f, "NO_SUCH").is_none());
+    }
+}

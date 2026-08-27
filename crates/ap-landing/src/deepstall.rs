@@ -5,6 +5,7 @@
 use ap_math::location::Location;
 use ap_math::scalar::{constrain_value, degrees, is_positive, is_zero, radians, wrap_pi, Real};
 use ap_math::vector2::Vector2f;
+use libm::roundf;
 
 /// Loiter altitude tolerance for breakout, upstream
 /// `DEEPSTALL_LOITER_ALT_TOLERANCE`.

@@ -43,6 +43,7 @@
 #![no_std]
 
 pub mod conversion;
+pub mod plane;
 pub mod info;
 pub mod save;
 pub mod storage;
@@ -51,13 +52,15 @@ pub use conversion::{
     configured_in_storage, convert_class, convert_class_entry, convert_parameter_width,
     convert_scalar, eeprom_header_valid, find_old_parameter, format_storage, migrate_centi_parameter, migrate_parameter_width, migrate_parameters, migrate_scalar,
     old_group_element_for_member, scalar_from_f32, ConversionInfo, ConvertClassStats,
-    ConvertFlags, ConvertOutcome, GroupMemberDescriptor, ParameterMigration,
+    ConvertFlags, ConvertOutcome, GroupMemberDescriptor, NamedParameterMigration, ParameterMigration,
+    migrate_named_parameters, resolve_named_migration,
 };
 pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 
+pub use plane::PLANE_FENCE_CONVERSIONS;
 pub use info::{
-    check_frame_type, enumerate, group_id, EnumFilter, GroupInfo, ParamInfo, ParamName, ParamRef,
+    check_frame_type, enumerate, find_by_name, group_id, EnumFilter, GroupInfo, ParamInfo, ParamName, ParamRef,
     FLAG_DEFAULT_POINTER, FLAG_ENABLE, FLAG_HIDDEN, FLAG_INFO_POINTER, FLAG_INTERNAL_USE_ONLY,
     FLAG_NESTED_OFFSET, FLAG_NO_SHIFT, FLAG_POINTER, MAX_NAME_SIZE,
 };
