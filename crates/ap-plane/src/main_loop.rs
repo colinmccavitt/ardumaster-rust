@@ -4,7 +4,7 @@
 //! `ap-scheduler` owns tick ordering; this module is where the vehicle wires
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
-use ap_ahrs::{AhrsBackendKind, MatrixHealth, YawCompassSample, YawDriftContext, YawGpsSample};
+use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
 use ap_ins::sitl::{SitlBodyState, SitlInsInstanceFiles, SITL_INS_MAX_INSTANCES};
 use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
@@ -102,18 +102,6 @@ pub struct PlaneMainLoop {
     pub loop_timing: LoopTiming,
     /// Attitude sensors published by the latest `ahrs_update`.
     pub attitude: AhrsAttitude,
-    /// DCM matrix health from the latest AHRS cycle.
-    pub ahrs_matrix_health: MatrixHealth,
-    /// Whether NavEKF3 reported healthy this cycle.
-    pub ekf_healthy: bool,
-    /// Active AHRS backend after health fallback.
-    pub active_ahrs_backend: AhrsBackendKind,
-    /// Dead-reckoning north offset from last GPS fix, metres.
-    pub dead_reckoning_north_m: f32,
-    /// Dead-reckoning east offset from last GPS fix, metres.
-    pub dead_reckoning_east_m: f32,
-    /// Whether a GPS fix anchor exists for dead reckoning.
-    pub have_dead_reckoning_position: bool,
     /// Optional compass sample for yaw drift correction.
     pub compass: Option<YawCompassSample>,
     /// Optional GPS sample for yaw drift fallback.
@@ -201,8 +189,12 @@ pub struct PlaneMainLoop {
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
     pub in_rc_failsafe: bool,
-    /// SRV output mapping hookup state, upstream elevon/flap mixing.
+    /// SRV registry hookup state for elevon/flap mixing.
     pub srv_output: SrvOutputHookupState,
+    /// HAL inputs for SRV output mapping during `set_servos`.
+    pub srv_output_inputs: SrvOutputSchedulerInputs,
+    /// Auto flap percent from the latest SRV output tick.
+    pub last_auto_flap_percent: i8,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -225,12 +217,6 @@ impl Default for PlaneMainLoop {
             ins: InertialSensorFrontend::default(),
             loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
             attitude: AhrsAttitude::default(),
-            ahrs_matrix_health: MatrixHealth::Ok,
-            ekf_healthy: false,
-            active_ahrs_backend: AhrsBackendKind::default(),
-            dead_reckoning_north_m: 0.0,
-            dead_reckoning_east_m: 0.0,
-            have_dead_reckoning_position: false,
             compass: None,
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
@@ -359,6 +345,11 @@ impl Default for PlaneMainLoop {
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             srv_output: SrvOutputHookupState::default(),
+            srv_output_inputs: SrvOutputSchedulerInputs {
+                dt: 0.02,
+                ..SrvOutputSchedulerInputs::default()
+            },
+            last_auto_flap_percent: 0,
             servos: ServoOutputState::default(),
         }
     }
@@ -434,20 +425,13 @@ impl PlaneMainLoop {
             self.eas2tas,
             &mut self.ahrs.last_gps_fix_ms,
         );
-        let (health, attitude) = self.ahrs.update_from_ins(
+        let (_health, attitude) = self.ahrs.update_from_ins(
             &self.ins,
             &self.loop_timing,
             yaw,
             motion,
         );
         self.attitude = attitude;
-        self.ahrs_matrix_health = health;
-        self.ekf_healthy = self.ahrs.ekf_healthy;
-        self.active_ahrs_backend = self.ahrs.active_backend;
-        let (n, e, have) = self.ahrs.dead_reckoning_offset();
-        self.dead_reckoning_north_m = n;
-        self.dead_reckoning_east_m = e;
-        self.have_dead_reckoning_position = have;
         self.estimated_wind = self.ahrs.wind_estimate();
         self.head_wind_ms = self.ahrs.head_wind();
     }
@@ -569,35 +553,12 @@ impl PlaneMainLoop {
         self.landing_throttle_applied = thr_out.applied;
         self.servos = thr_out.servos;
 
-        let flap_speed_source_ms = self
-            .speed_scaler_inputs
-            .airspeed_eas
-            .unwrap_or(self.airspeed_tas);
-        let mixing = self.srv_output.mixing;
-        let flap_params = self.srv_output.flap_params;
-        let manual_flap_percent = self.srv_output.manual_flap_percent;
-        let has_auto_flap_schedule = self.srv_output.has_auto_flap_schedule;
-        let flight_stage_is_takeoff = self.srv_output.flight_stage_is_takeoff;
-        let apply_elevon_mixing = self.srv_output.apply_elevon_mixing;
-        let apply_vtail_mixing = self.srv_output.apply_vtail_mixing;
         let srv_out = srv_output_scheduler_tick(
             self.servos,
             &mut self.srv_output,
-            &SrvOutputSchedulerInputs {
-                mixing,
-                flap_params,
-                manual_flap_percent,
-                flap_speed_source_ms,
-                has_auto_flap_schedule,
-                flight_stage_is_takeoff,
-                flight_stage_is_land: self.flight_stage_is_land,
-                apply_elevon_mixing,
-                apply_vtail_mixing,
-                dt: self.loop_timing.delta_time,
-                elevator_scaled: self.stabilize_servos.elevator_scaled,
-            },
+            &self.srv_output_inputs,
         );
-        self.servos = srv_out.servos;
+        self.last_auto_flap_percent = srv_out.auto_flap_percent;
     }
 }
 

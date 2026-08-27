@@ -24,7 +24,7 @@ pub struct FlapSpeedParams {
 }
 
 /// HAL inputs for one SRV output scheduler tick.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SrvOutputSchedulerInputs {
     pub mixing: MixingParams,
     pub flap_params: FlapSpeedParams,

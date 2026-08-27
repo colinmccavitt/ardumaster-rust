@@ -496,3 +496,44 @@ fn set_servos_zeros_throttle_when_landing_suppressed() {
     assert_eq!(vehicle.servos.throttle_scaled, 0.0);
 }
 
+#[test]
+fn set_servos_applies_elevon_mixing_via_srv_output() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::srv_output_hookup::MixingParams;
+    use ap_plane::srv_output_scheduler_hookup::SrvOutputSchedulerInputs;
+    use ap_servo::function::Function;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.stabilize_servos.aileron_scaled = 1000.0;
+    vehicle.servos = ServoOutputState {
+        aileron_scaled: 1000.0,
+        ..ServoOutputState::default()
+    };
+    vehicle.srv_output.apply_elevon_mixing = true;
+    vehicle.srv_output_inputs = SrvOutputSchedulerInputs {
+        mixing: MixingParams {
+            mixing_gain: 1.0,
+            mixing_offset: 0,
+        },
+        apply_elevon_mixing: true,
+        elevator_scaled: 500.0,
+        dt: 0.02,
+        ..SrvOutputSchedulerInputs::default()
+    };
+    vehicle.srv_output.registry.assign(Function::AILERON, 1 << 0);
+    vehicle.srv_output.registry.assign(Function::ELEVATOR, 1 << 1);
+    vehicle.srv_output.registry.assign(Function::ELEVON_LEFT, 1 << 2);
+    vehicle.srv_output.registry.assign(Function::ELEVON_RIGHT, 1 << 3);
+
+    vehicle.set_servos();
+
+    assert_eq!(
+        vehicle.srv_output.registry.output_scaled(Function::ELEVON_LEFT),
+        -500.0
+    );
+    assert_eq!(
+        vehicle.srv_output.registry.output_scaled(Function::ELEVON_RIGHT),
+        1500.0
+    );
+}
+
