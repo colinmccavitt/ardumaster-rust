@@ -445,3 +445,45 @@ fn main_loop_publishes_ekf3_status_from_update() {
     assert_eq!(vehicle.ekf3_update_count, 2);
 }
 
+#[test]
+fn main_loop_publishes_configured_and_wind_alignment() {
+    use ap_ahrs::{AhrsBackendKind, WindVaneSample};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.wind_vane = Some(WindVaneSample {
+        direction_true_rad: 0.0,
+        speed_true_mps: 5.0,
+    });
+
+    vehicle.ahrs_update();
+
+    assert_eq!(vehicle.configured_ahrs_backend, AhrsBackendKind::Ekf3);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Ekf3);
+    assert!(
+        vehicle.wind_alignment > 0.9,
+        "north wind with north heading should align, got {}",
+        vehicle.wind_alignment
+    );
+    assert!(vehicle.head_wind_ms > 4.0);
+}
+
+#[test]
+fn configured_backend_stays_ekf3_when_active_falls_back_to_dcm() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.ahrs.dcm.matrix.a.x = f32::NAN;
+
+    vehicle.ahrs_update();
+
+    assert_eq!(vehicle.configured_ahrs_backend, AhrsBackendKind::Ekf3);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Dcm);
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::NeedsReset);
+}
+

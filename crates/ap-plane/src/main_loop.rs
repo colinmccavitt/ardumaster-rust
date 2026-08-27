@@ -5,6 +5,7 @@
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
 use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
+use ap_math::scalar::degrees;
 use ap_ins::sitl::{SitlBodyState, SitlInsInstanceFiles, SITL_INS_MAX_INSTANCES};
 use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
@@ -212,8 +213,12 @@ pub struct PlaneMainLoop {
     pub ekf3_initialized: bool,
     /// NavEKF3 update count since boot, upstream `_framesSincePredict`.
     pub ekf3_update_count: u32,
+    /// Parameter-selected AHRS backend, upstream `AHRS_EKF_TYPE`.
+    pub configured_ahrs_backend: ap_ahrs::AhrsBackendKind,
     /// Active AHRS backend kind after fallback resolution.
     pub active_ahrs_backend: ap_ahrs::AhrsBackendKind,
+    /// Wind alignment with current yaw heading, upstream `AP_AHRS::wind_alignment`.
+    pub wind_alignment: f32,
     /// DCM matrix health from last AHRS update.
     pub ahrs_matrix_health: ap_ahrs::MatrixHealth,
     /// Whether AHRS is healthy for arming, upstream `AP_AHRS::healthy()`.
@@ -417,7 +422,9 @@ impl Default for PlaneMainLoop {
             ekf_healthy: false,
             ekf3_initialized: false,
             ekf3_update_count: 0,
+            configured_ahrs_backend: ap_ahrs::AhrsBackendKind::Dcm,
             active_ahrs_backend: ap_ahrs::AhrsBackendKind::Dcm,
+            wind_alignment: 0.0,
             ahrs_matrix_health: ap_ahrs::MatrixHealth::Ok,
             ahrs_healthy: false,
             dead_reckoning_north_m: 0.0,
@@ -519,6 +526,7 @@ impl PlaneMainLoop {
         self.ekf_healthy = self.ahrs.ekf_healthy;
         self.ekf3_initialized = self.ahrs.ekf3.initialized;
         self.ekf3_update_count = self.ahrs.ekf3.update_count;
+        self.configured_ahrs_backend = self.ahrs.configured_backend;
         self.active_ahrs_backend = self.ahrs.active_backend;
         self.ahrs_matrix_health = health;
         self.ahrs_healthy = self.ahrs.healthy();
@@ -528,6 +536,7 @@ impl PlaneMainLoop {
         self.have_dead_reckoning_position = have;
 
         self.head_wind_ms = self.ahrs.head_wind();
+        self.wind_alignment = self.ahrs.wind_alignment(degrees(self.attitude.yaw_rad()));
     }
 
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
