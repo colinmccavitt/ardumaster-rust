@@ -108,3 +108,56 @@ fn ahrs_update_tecs_use_airspeed_when_pitot_healthy() {
     assert!(vehicle.eas2tas > 0.99);
     let _ = eas2tas;
 }
+
+#[test]
+fn main_loop_pre_arm_passes_with_healthy_sitl_airspeed() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_airspeed = Some(SitlAirspeedHookup::with_dual_backends());
+    vehicle.sitl_airspeed.as_mut().unwrap().truth = SitlAirspeedTruth {
+        airspeed_bf: Vector3f::new(20.0, 0.0, 0.0),
+        now_ms: 10,
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert!(vehicle.airspeed_health.primary_healthy());
+    assert!(vehicle.airspeed_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_refuses_when_airspeed_unhealthy() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.sitl_airspeed = Some(SitlAirspeedHookup::default());
+    vehicle.ahrs_pre_arm_ok = true;
+    vehicle.airspeed_health = ap_airspeed::sitl::AirspeedHealthFlags::default();
+
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.airspeed_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_passes_after_airspeed_failover() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_airspeed = Some(hookup_with_disabled_primary());
+    vehicle.sitl_airspeed.as_mut().unwrap().truth = SitlAirspeedTruth {
+        airspeed_bf: Vector3f::new(18.0, 0.0, 0.0),
+        now_ms: 10,
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.airspeed_health.primary, 1);
+    assert!(vehicle.airspeed_health.primary_healthy());
+    assert!(vehicle.airspeed_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}
+

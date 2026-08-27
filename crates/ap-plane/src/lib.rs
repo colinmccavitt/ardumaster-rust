@@ -22,6 +22,7 @@ pub mod ahrs_pre_arm_hookup;
 pub mod gps_pre_arm_hookup;
 pub mod baro_pre_arm_hookup;
 pub mod compass_pre_arm_hookup;
+pub mod airspeed_pre_arm_hookup;
 pub mod baro_arm_calibration_hookup;
 pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;

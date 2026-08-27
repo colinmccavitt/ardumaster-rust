@@ -17,6 +17,7 @@ use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
 use crate::baro_arm_calibration_hookup::BaroArmCalibrationInputs;
 use crate::baro_pre_arm_hookup::{baro_pre_arm_check, plane_pre_arm_checks_baro};
 use crate::compass_pre_arm_hookup::{compass_pre_arm_check, plane_pre_arm_checks_compass};
+use crate::airspeed_pre_arm_hookup::{airspeed_pre_arm_check, plane_pre_arm_checks_airspeed};
 use crate::gps_pre_arm_hookup::{gps_pre_arm_check, plane_pre_arm_checks_gps};
 use crate::mode_run::{pre_arm_checks, PreArmResult};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
@@ -336,6 +337,8 @@ pub struct PlaneMainLoop {
     pub baro_pre_arm_ok: bool,
     /// Pre-arm compass gate when SITL compass configured.
     pub compass_pre_arm_ok: bool,
+    /// Pre-arm airspeed gate, upstream AP_Airspeed::healthy().
+    pub airspeed_pre_arm_ok: bool,
     /// Ground pressure latched on the latest arm rising edge.
     pub baro_arm_calibration_latched: bool,
     /// Previous soft_armed for baro arm-calibration edge detect.
@@ -628,6 +631,7 @@ impl Default for PlaneMainLoop {
             gps_pre_arm_ok: false,
             baro_pre_arm_ok: false,
             compass_pre_arm_ok: false,
+            airspeed_pre_arm_ok: false,
             baro_arm_calibration_latched: false,
             baro_was_soft_armed: false,
             pre_arm_ok: false,
@@ -1037,8 +1041,13 @@ impl PlaneMainLoop {
         let require_compass = self.sitl_compass.is_some();
         self.compass_pre_arm_ok =
             compass_pre_arm_check(self.compass_health, require_compass);
+        let with_compass =
+            plane_pre_arm_checks_compass(with_baro, self.compass_pre_arm_ok);
+        let require_airspeed = self.sitl_airspeed.is_some();
+        self.airspeed_pre_arm_ok =
+            airspeed_pre_arm_check(self.airspeed_health, require_airspeed);
         self.pre_arm_ok = matches!(
-            plane_pre_arm_checks_compass(with_baro, self.compass_pre_arm_ok),
+            plane_pre_arm_checks_airspeed(with_compass, self.airspeed_pre_arm_ok),
             PreArmResult::Allowed
         );
 
