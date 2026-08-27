@@ -33,6 +33,7 @@
 #![no_std]
 
 pub mod sitl;
+pub mod frontend;
 
 use ap_math::scalar::{constrain_value, is_positive, is_zero, Real};
 

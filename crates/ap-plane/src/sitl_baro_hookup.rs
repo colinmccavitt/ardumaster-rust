@@ -5,9 +5,10 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
 use ap_baro::eas2tas_for_alt_amsl;
+use ap_baro::frontend::BaroFrontend;
 use ap_baro::sitl::{
-    BaroClimbRate, BaroGroundPressure, BaroHealthFlags, BaroSampleState, SitlBaroBackend,
-    SitlBaroCluster, SitlBaroConfig,
+    BaroClimbRate, BaroHealthFlags, BaroSampleState, SitlBaroBackend, SitlBaroCluster,
+    SitlBaroConfig,
 };
 use ap_math::vector3::Vector3f;
 
@@ -36,7 +37,7 @@ impl Default for SitlBaroTruth {
 pub struct SitlBaroHookup {
     cluster: SitlBaroCluster,
     climb_rate: BaroClimbRate,
-    ground: BaroGroundPressure,
+    frontend: BaroFrontend,
     pub truth: SitlBaroTruth,
 }
 
@@ -45,7 +46,7 @@ impl Default for SitlBaroHookup {
         Self {
             cluster: SitlBaroCluster::default(),
             climb_rate: BaroClimbRate::default(),
-            ground: BaroGroundPressure::default(),
+            frontend: BaroFrontend::default(),
             truth: SitlBaroTruth::default(),
         }
     }
@@ -61,7 +62,7 @@ pub struct SitlBaroPublish {
     pub health: BaroHealthFlags,
     /// Filtered climb rate from primary altitude, upstream `get_climb_rate()`.
     pub climb_rate_mps: f32,
-    /// Altitude above latched ground pressure when calibrated.
+    /// Calibration-relative altitude for vehicle glue.
     pub relative_altitude_m: Option<f32>,
 }
 
@@ -74,7 +75,7 @@ impl SitlBaroHookup {
         Self {
             cluster,
             climb_rate: BaroClimbRate::default(),
-            ground: BaroGroundPressure::default(),
+            frontend: BaroFrontend::default(),
             truth: SitlBaroTruth::default(),
         }
     }
@@ -85,26 +86,17 @@ impl SitlBaroHookup {
     }
 
     #[must_use]
+    pub const fn frontend(&self) -> &BaroFrontend {
+        &self.frontend
+    }
+
+    #[must_use]
     pub fn backend(&self) -> Option<&SitlBaroBackend> {
         self.cluster.backend(self.cluster.primary())
     }
 
     /// Run timer tick and frontend update, upstream `AP_Baro_SITL::_timer` + `update`.
     #[must_use]
-    /// Latch current primary pressure as ground reference.
-    pub fn latch_ground_pressure(&mut self) {
-        if let Some(sample) = self.cluster.primary_sample() {
-            if sample.have_sample {
-                self.ground.latch(sample.pressure_pa, sample.temp_c);
-            }
-        }
-    }
-
-    #[must_use]
-    pub const fn ground(&self) -> &BaroGroundPressure {
-        &self.ground
-    }
-
     pub fn publish(&mut self) -> SitlBaroPublish {
         self.cluster.timer_tick_all(
             self.truth.sim_altitude_m,
@@ -114,23 +106,35 @@ impl SitlBaroHookup {
         );
         self.cluster.select_primary_healthy();
         let health = self.cluster.health_flags();
-        let sample = self
+        let mut sample = self
             .cluster
             .primary_sample()
             .unwrap_or(*self.cluster.backend(self.cluster.primary()).unwrap().state());
+        let healthy = health.primary_healthy();
+
+        if healthy && sample.have_sample && !self.frontend.is_calibrated(health.primary) {
+            self.frontend
+                .calibrate_instance(health.primary, sample.pressure_pa);
+        }
+        if healthy && sample.have_sample {
+            self.frontend
+                .update_instance_altitude(health.primary, sample.pressure_pa);
+            sample.altitude_m = self.frontend.get_altitude(health.primary);
+        }
+
         let eas2tas = if sample.have_sample {
-            eas2tas_for_alt_amsl(sample.altitude_m)
+            eas2tas_for_alt_amsl(self.truth.sim_altitude_m)
         } else {
             1.0
         };
-        let healthy = health.primary_healthy();
         self.climb_rate.update_primary(
             sample.altitude_m,
             sample.last_sample_time_ms,
             healthy,
             health.primary,
         );
-        let relative_altitude_m = self.ground.relative_altitude_m(sample.pressure_pa);
+        let relative_altitude_m = (healthy && sample.have_sample
+            && self.frontend.is_calibrated(health.primary)).then(|| sample.altitude_m);
         SitlBaroPublish {
             sample,
             eas2tas,
@@ -160,7 +164,7 @@ pub fn hookup_with_disabled_secondary() -> SitlBaroHookup {
     SitlBaroHookup {
         cluster: secondary_disabled_cluster(),
         climb_rate: BaroClimbRate::default(),
-        ground: BaroGroundPressure::default(),
+        frontend: BaroFrontend::default(),
         truth: SitlBaroTruth::default(),
     }
 }
@@ -171,7 +175,7 @@ pub fn hookup_with_disabled_primary() -> SitlBaroHookup {
     SitlBaroHookup {
         cluster: SitlBaroCluster::cluster_with_disabled_primary(),
         climb_rate: BaroClimbRate::default(),
-        ground: BaroGroundPressure::default(),
+        frontend: BaroFrontend::default(),
         truth: SitlBaroTruth::default(),
     }
 }

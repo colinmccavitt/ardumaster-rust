@@ -56,7 +56,33 @@ fn dual_baro_failover_publishes_secondary_when_primary_disabled() {
     assert_eq!(published.health.primary, 1);
     assert!(published.health.primary_healthy());
     assert!(published.healthy);
-    assert!((published.sample.altitude_m - 200.0).abs() < 1.0);
+    assert!(
+        published.sample.altitude_m.abs() < 1.0,
+        "calibrated altitude zeros at reference, got {}",
+        published.sample.altitude_m
+    );
+}
+
+#[test]
+fn sitl_baro_calibrated_altitude_tracks_climb_after_reference() {
+    let mut hookup = SitlBaroHookup::default();
+    hookup.truth = SitlBaroTruth {
+        sim_altitude_m: 0.0,
+        now_ms: 10,
+        ..SitlBaroTruth::default()
+    };
+    let _ = hookup.publish();
+    hookup.truth = SitlBaroTruth {
+        sim_altitude_m: 300.0,
+        now_ms: 20,
+        ..SitlBaroTruth::default()
+    };
+    let published = hookup.publish();
+    assert!(
+        (published.sample.altitude_m - 300.0).abs() < 2.0,
+        "expected ~300 m after climb, got {}",
+        published.sample.altitude_m
+    );
 }
 
 #[test]
