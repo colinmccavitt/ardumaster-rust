@@ -182,7 +182,7 @@ pub struct ModeGlueSetServosInputs {
     pub transition_cleared: bool,
     pub throttle_suppressed: bool,
     pub current_throttle: f32,
-    pub pilot_throttle: f32,
+    pub pilot_throttle: PilotThrottleGlueInputs,
 }
 
 /// Result of the set_servos mode-glue throttle path.
@@ -202,11 +202,12 @@ pub fn mode_glue_set_servos_tick(
     servos: ServoOutputState,
     inp: &ModeGlueSetServosInputs,
 ) -> ModeGlueSetServosOutput {
+    let pilot_throttle = pilot_throttle_glue_tick(&inp.pilot_throttle);
     let restore_out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
         transition_cleared: inp.transition_cleared,
         throttle_suppressed: inp.throttle_suppressed,
         current_throttle: inp.current_throttle,
-        pilot_throttle: inp.pilot_throttle,
+        pilot_throttle,
     });
 
     let mut servos = servos;

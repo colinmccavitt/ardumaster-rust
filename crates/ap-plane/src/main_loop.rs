@@ -75,8 +75,7 @@ use crate::throttle_context_hookup::{
     throttle_context_tick, ThrottleContextInputs,
 };
 use crate::yaw_throttle_glue_hookup::{
-    pilot_throttle_glue_tick, vtol_yaw_stick_glue_tick, PilotThrottleGlueInputs,
-    VtolYawStickGlueInputs,
+    vtol_yaw_stick_glue_tick, PilotThrottleGlueInputs, VtolYawStickGlueInputs,
 };
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
@@ -938,17 +937,6 @@ impl PlaneMainLoop {
         );
         self.mode_transition_throttle_cleared = trans_out.cleared;
 
-        let pilot_throttle = pilot_throttle_glue_tick(&PilotThrottleGlueInputs {
-            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
-            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
-            pilot_throttle_source: self.pilot_throttle_source,
-            trim_throttle: self.trim_throttle,
-            throttle_min: self.throttle_min,
-            throttle_max: self.throttle_max,
-            use_throttle_limits: self.throttle_use_limits,
-            use_battery_compensation: self.throttle_use_battery_comp,
-            battery_voltage_ratio: self.battery_voltage_ratio,
-        });
         let glue_servos_out = mode_glue_set_servos_tick(
             self.servos,
             &ModeGlueSetServosInputs {
@@ -957,7 +945,17 @@ impl PlaneMainLoop {
                 transition_cleared: trans_out.cleared,
                 throttle_suppressed: self.mode_entry.throttle_suppressed,
                 current_throttle: self.servos.throttle_scaled,
-                pilot_throttle,
+                pilot_throttle: PilotThrottleGlueInputs {
+                    throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+                    throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+                    pilot_throttle_source: self.pilot_throttle_source,
+                    trim_throttle: self.trim_throttle,
+                    throttle_min: self.throttle_min,
+                    throttle_max: self.throttle_max,
+                    use_throttle_limits: self.throttle_use_limits,
+                    use_battery_compensation: self.throttle_use_battery_comp,
+                    battery_voltage_ratio: self.battery_voltage_ratio,
+                },
             },
         );
         self.mode_glue_throttle_restored = glue_servos_out.throttle_restored;
