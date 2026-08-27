@@ -22,6 +22,8 @@ use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedul
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
+use crate::mission_scheduler_hookup::{mission_scheduler_tick, MissionContext, MissionSchedulerInputs};
+use crate::target_altitude::TargetAltitude;
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::ins_hntch_scheduler_hookup::{
     ins_hntch_scheduler_tick, ins_hntch_scheduler_tick_cluster, InsHntchHookup,
@@ -161,6 +163,14 @@ pub struct PlaneMainLoop {
     pub landing_servo_override_applied: bool,
     /// Go-around requested because deepstall elevator is missing.
     pub landing_request_go_around: bool,
+    /// Mission index and completion, upstream `AP_Mission`.
+    pub mission: MissionContext,
+    /// HAL inputs for mission advancement and target altitude each tick.
+    pub mission_inputs: MissionSchedulerInputs,
+    /// Target altitude source from the latest mission scheduler tick.
+    pub last_target_altitude: TargetAltitude,
+    /// Whether the latest scheduler tick advanced the mission index.
+    pub mission_advanced: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -304,6 +314,10 @@ impl Default for PlaneMainLoop {
             },
             landing_servo_override_applied: false,
             landing_request_go_around: false,
+            mission: MissionContext::default(),
+            mission_inputs: MissionSchedulerInputs::default(),
+            last_target_altitude: TargetAltitude::FromNextWaypoint,
+            mission_advanced: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             servos: ServoOutputState::default(),
@@ -393,6 +407,17 @@ impl PlaneMainLoop {
         let rc_out = rc_failsafe_scheduler_tick(&self.rc_failsafe_inputs);
         self.in_rc_failsafe = rc_out.in_rc_failsafe;
         self.rc_sticks = rc_out.rc_sticks;
+
+        let mission_out = mission_scheduler_tick(
+            &mut self.mission,
+            &self.landing,
+            &MissionSchedulerInputs {
+                control_mode: self.mode.control_mode,
+                ..self.mission_inputs
+            },
+        );
+        self.last_target_altitude = mission_out.target;
+        self.mission_advanced = mission_out.advanced;
 
         self.last_stabilize = dispatch_stabilize_from_mode(
             self.mode.control_mode,

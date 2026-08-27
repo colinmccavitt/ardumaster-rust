@@ -439,3 +439,42 @@ fn scheduler_tick_reads_rc_channels() {
     assert!(vehicle.rc_sticks.pitch_norm_dz < -0.4);
 }
 
+#[test]
+fn scheduler_tick_advances_mission_in_auto() {
+    use ap_math::location::{AltFrame, Location};
+    use ap_plane::mode_table::ModeNumber;
+    use ap_plane::target_altitude::TargetAltitude;
+
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    let target = Location::new_with_alt(-35_000_000, 149_000_000, 10_000, AltFrame::Absolute);
+    let mut near = target;
+    near.offset(50.0, 0.0);
+    vehicle.mission_inputs = ap_plane::mission_scheduler_hookup::MissionSchedulerInputs {
+        control_mode: ModeNumber::Auto.as_number(),
+        current_loc: near,
+        waypoint_count: 2,
+        waypoints: [
+            target,
+            near,
+            Location::new(0, 0),
+            Location::new(0, 0),
+            Location::new(0, 0),
+            Location::new(0, 0),
+            Location::new(0, 0),
+            Location::new(0, 0),
+        ],
+        wp_radius_m: 100.0,
+        ..Default::default()
+    };
+
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert!(vehicle.mission_advanced);
+    assert_eq!(vehicle.last_target_altitude, TargetAltitude::FromNextWaypoint);
+}
+
