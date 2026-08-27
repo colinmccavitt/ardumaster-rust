@@ -22,6 +22,10 @@ use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedul
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
+use crate::ins_hntch_scheduler_hookup::{
+    ins_hntch_scheduler_tick, ins_hntch_scheduler_tick_cluster, InsHntchHookup,
+    InsHntchSchedulerInputs,
+};
 use crate::sitl_ins_host_files::sitl_ins_host_files_fill;
 use crate::sitl_ins_host_files::SitlInsHostFiles;
 use crate::sitl_ins_noise_hookup::{
@@ -100,6 +104,8 @@ pub struct PlaneMainLoop {
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
+    /// Optional INS harmonic notch hookup; configures gyro filters each tick.
+    pub ins_hntch: Option<InsHntchHookup>,
     /// Per-tick motor runtime for SIM_VIB noise injection.
     pub sitl_ins_motor: SitlInsMotorRuntime,
     /// Kinematic body state for the SITL INS cluster this tick.
@@ -177,6 +183,7 @@ impl Default for PlaneMainLoop {
             airspeed_tas: 0.0,
             sitl_yaw: None,
             sitl_ins_noise: None,
+            ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
             sitl_body: SitlBodyState::default(),
             sitl_now_us: 0,
@@ -304,7 +311,22 @@ impl PlaneMainLoop {
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
         }
-        if let Some(hookup) = self.sitl_ins_noise.as_mut() {
+        if let Some(hntch) = self.ins_hntch.as_mut() {
+            let hntch_inp = InsHntchSchedulerInputs {
+                throttle: self.sitl_ins_motor.throttle,
+                motor_rpm: self.sitl_ins_motor.motor_rpm.first().copied(),
+            };
+            if let Some(noise) = self.sitl_ins_noise.as_mut() {
+                let _ = ins_hntch_scheduler_tick_cluster(
+                    &mut noise.cluster,
+                    hntch,
+                    &hntch_inp,
+                );
+            } else {
+                let _ = ins_hntch_scheduler_tick(&mut self.ins, hntch, &hntch_inp);
+            }
+        }
+                if let Some(hookup) = self.sitl_ins_noise.as_mut() {
             let mut file_views = [SitlInsInstanceFiles::default(); SITL_INS_MAX_INSTANCES];
             let files = sitl_ins_host_files_fill(
                 &self.sitl_ins_host_files,
