@@ -674,7 +674,7 @@ impl PlaneMainLoop {
             self.eas2tas = published.eas2tas;
             self.relative_altitude_m = altitude_glue_tick(AltitudeGlueInputs {
                 baro_altitude_m: published.sample.altitude_m,
-                baro_relative_m: None,
+                baro_relative_m: published.relative_altitude_m,
                 home_altitude_m: self.home_altitude_m,
                 have_baro_sample: published.sample.have_sample,
             });
