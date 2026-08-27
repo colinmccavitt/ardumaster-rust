@@ -991,7 +991,9 @@ fn altitude_tecs_feed_runs_in_update_control() {
     let mut vehicle = PlaneMainLoop::default();
     vehicle.baro_healthy = true;
     vehicle.relative_altitude_m = 120.0;
-    vehicle.baro_climb_rate_mps = 1.0;
+    vehicle.tecs_baro_feed.height_m = 120.0;
+    vehicle.tecs_baro_feed.hgt_afe_m = 120.0;
+    vehicle.tecs_baro_feed.climb_rate_mps = 1.0;
     vehicle.home_altitude_m = 100.0;
     vehicle.next_wp_alt_m = 150.0;
     vehicle.mode.control_mode = ModeNumber::Auto.as_number();

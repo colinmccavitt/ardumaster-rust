@@ -837,14 +837,14 @@ impl PlaneMainLoop {
         let tecs_out = altitude_tecs_feed_tick(
             &mut self.tecs,
             &AltitudeTecsFeedInputs {
-                relative_altitude_m: self.relative_altitude_m,
-                baro_climb_rate_mps: self.baro_climb_rate_mps,
+                baro_feed: self.tecs_baro_feed,
                 have_baro_sample: have_baro,
-                baro_healthy: self.baro_healthy,
+                relative_altitude_m: self.relative_altitude_m,
                 home_altitude_m: self.home_altitude_m,
                 next_wp_alt_m: self.next_wp_alt_m,
                 mission_alt_offset_cm: self.mission_alt_offset_cm,
                 rangefinder_correction_m: self.rangefinder_correction_m,
+                terrain_offset_m: self.rangefinder_correction_m,
                 target: self.last_target_altitude,
                 throttle_suppressed: self.mode_entry.throttle_suppressed,
                 throttle_nudge: self.throttle_nudge,

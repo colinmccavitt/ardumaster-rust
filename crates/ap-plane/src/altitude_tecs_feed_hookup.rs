@@ -1,21 +1,24 @@
 //! Altitude target and baro feed into TECS update_pitch_throttle.
+//!
+//! Consumes the vehicle-published [`TecsBaroFeed`] from `ahrs_update` rather
+//! than re-running the baro cluster path inside the control tick.
 
 use ap_tecs::params::FlightStage;
 use ap_tecs::tecs::{Tecs, TecsInputs};
 
 use crate::target_altitude::TargetAltitude;
-use crate::tecs_baro_hookup::{tecs_baro_feed_tick, TecsBaroInputs};
+use crate::tecs_baro_hookup::TecsBaroFeed;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AltitudeTecsFeedInputs {
-    pub relative_altitude_m: f32,
-    pub baro_climb_rate_mps: f32,
+    pub baro_feed: TecsBaroFeed,
     pub have_baro_sample: bool,
-    pub baro_healthy: bool,
+    pub relative_altitude_m: f32,
     pub home_altitude_m: f32,
     pub next_wp_alt_m: f32,
     pub mission_alt_offset_cm: i32,
     pub rangefinder_correction_m: f32,
+    pub terrain_offset_m: f32,
     pub target: TargetAltitude,
     pub throttle_suppressed: bool,
     pub throttle_nudge: i16,
@@ -32,14 +35,14 @@ pub struct AltitudeTecsFeedInputs {
 impl Default for AltitudeTecsFeedInputs {
     fn default() -> Self {
         Self {
-            relative_altitude_m: 0.0,
-            baro_climb_rate_mps: 0.0,
+            baro_feed: TecsBaroFeed::default(),
             have_baro_sample: false,
-            baro_healthy: false,
+            relative_altitude_m: 0.0,
             home_altitude_m: 0.0,
             next_wp_alt_m: 0.0,
             mission_alt_offset_cm: 0,
             rangefinder_correction_m: 0.0,
+            terrain_offset_m: 0.0,
             target: TargetAltitude::FromNextWaypoint,
             throttle_suppressed: false,
             throttle_nudge: 0,
@@ -63,6 +66,17 @@ pub struct AltitudeTecsFeedOutput {
     pub ran: bool,
 }
 
+/// Apply rangefinder/terrain offset to the published baro feed, upstream
+/// `Plane::tecs_hgt_afe()` terrain correction stub.
+#[must_use]
+pub fn apply_baro_terrain_offset(feed: TecsBaroFeed, terrain_offset_m: f32) -> TecsBaroFeed {
+    TecsBaroFeed {
+        height_m: feed.height_m,
+        climb_rate_mps: feed.climb_rate_mps,
+        hgt_afe_m: feed.hgt_afe_m + terrain_offset_m,
+    }
+}
+
 #[must_use]
 pub fn relative_target_altitude_cm(inp: &AltitudeTecsFeedInputs) -> f32 {
     if matches!(inp.target, TargetAltitude::HoldCurrentAndResetOffset) {
@@ -81,12 +95,7 @@ pub fn altitude_tecs_feed_tick(
     if inp.throttle_suppressed {
         return AltitudeTecsFeedOutput::default();
     }
-    let baro = tecs_baro_feed_tick(TecsBaroInputs {
-        relative_altitude_m: inp.relative_altitude_m,
-        baro_climb_rate_mps: inp.baro_climb_rate_mps,
-        have_baro_sample: inp.have_baro_sample,
-        baro_healthy: inp.baro_healthy,
-    });
+    let baro = apply_baro_terrain_offset(inp.baro_feed, inp.terrain_offset_m);
     if baro.height_m == 0.0 && !inp.have_baro_sample {
         return AltitudeTecsFeedOutput::default();
     }
@@ -149,5 +158,41 @@ mod tests {
             ..Default::default()
         });
         assert!((cm - 4200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn terrain_offset_shifts_hgt_afe_not_height() {
+        let feed = TecsBaroFeed {
+            height_m: 100.0,
+            climb_rate_mps: 1.0,
+            hgt_afe_m: 100.0,
+        };
+        let adjusted = apply_baro_terrain_offset(feed, 5.0);
+        assert!((adjusted.height_m - 100.0).abs() < 1e-6);
+        assert!((adjusted.hgt_afe_m - 105.0).abs() < 1e-6);
+        assert!((adjusted.climb_rate_mps - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn altitude_tecs_feed_uses_published_baro_feed() {
+        let mut tecs = Tecs::default();
+        let out = altitude_tecs_feed_tick(
+            &mut tecs,
+            &AltitudeTecsFeedInputs {
+                baro_feed: TecsBaroFeed {
+                    height_m: 80.0,
+                    climb_rate_mps: 0.5,
+                    hgt_afe_m: 80.0,
+                },
+                have_baro_sample: true,
+                relative_altitude_m: 80.0,
+                home_altitude_m: 50.0,
+                next_wp_alt_m: 130.0,
+                target_airspeed_cm: 1500.0,
+                ..Default::default()
+            },
+        );
+        assert!(out.ran);
+        assert!(out.tecs_throttle_demand > 0.0);
     }
 }
