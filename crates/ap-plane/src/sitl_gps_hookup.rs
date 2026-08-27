@@ -174,10 +174,7 @@ impl SitlGpsHookup {
                 return dual.output_health_at(now_ms).is_healthy();
             }
             match dual.auto_switch {
-                GpsAutoSwitch::Blend => {
-                    dual.instance_health_at(0, dual.primary_truth.now_ms).is_healthy()
-                        && dual.instance_health_at(1, dual.secondary_truth.now_ms).is_healthy()
-                }
+                GpsAutoSwitch::Blend => dual.output_health_at(now_ms).is_healthy(),
                 GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
                     dual.output_health_at(now_ms).is_healthy()
                 }

@@ -266,8 +266,8 @@ fn dual_gps_pre_arm_requires_both_instances_for_blend() {
     let mut hookup2 = SitlGpsHookup::default();
     hookup2.enable_dual_gps(GpsAutoSwitch::Blend);
     hookup2.truth.now_ms = 200;
-    // secondary never ticked — instance 1 has no fix.
-    assert!(!hookup2.gps_dual_pre_arm_ok());
+    // secondary never ticked — blend falls back to healthy primary.
+    assert!(hookup2.gps_dual_pre_arm_ok());
 }
 
 #[test]
@@ -593,5 +593,73 @@ fn main_loop_blend_follows_fresh_secondary_when_primary_stale() {
 
     let vel = vehicle.gps_velocity.expect("velocity");
     assert!((vel.velocity_ned.x - 7.0).abs() < 1e-3);
+}
+
+#[test]
+fn dual_gps_blend_pre_arm_refuses_when_both_stale() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.now_ms = 200;
+    }
+    let _ = hookup.gps_status_publish();
+    hookup.truth.now_ms = 5000;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary_truth.now_ms = 5000;
+        dual.secondary_truth.now_ms = 5000;
+    }
+    assert!(!hookup.gps_dual_pre_arm_ok());
+}
+
+#[test]
+fn dual_gps_blend_pre_arm_follows_fresh_secondary_when_primary_stale() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 18;
+        dual.secondary.num_sats = 12;
+        dual.secondary_truth.now_ms = 200;
+    }
+    let _ = hookup.gps_status_publish();
+    hookup.truth.now_ms = 5000;
+    assert_eq!(hookup.gps_active_instance(), 1);
+    assert!(hookup.gps_dual_pre_arm_ok());
+}
+
+#[test]
+fn main_loop_blend_pre_arm_passes_when_primary_stale() {
+    use ap_gps::GpsAutoSwitch;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.enable_dual_gps(GpsAutoSwitch::Blend);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.primary.num_sats = 18;
+        dual.secondary.num_sats = 12;
+        dual.secondary_truth.now_ms = 200;
+    }
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+    if let Some(gps) = vehicle.sitl_gps.as_mut() {
+        gps.truth.now_ms = 5000;
+    }
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.gps_active_instance, 1);
+    assert!(vehicle.gps_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
 }
 
