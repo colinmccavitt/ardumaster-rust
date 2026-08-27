@@ -5,7 +5,7 @@
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
 use ap_ahrs::YawCompassSample;
-use ap_ins::{ImuInstance, LoopTiming};
+use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{AhrsAttitude, AhrsFeed};
@@ -58,8 +58,8 @@ pub struct PlaneMainLoop {
     pub last_stabilize_run: StabilizeRun,
     /// DCM estimator and drift correction, upstream `AP::ahrs()`.
     pub ahrs: AhrsFeed,
-    /// Primary IMU instance, upstream `AP::ins().get_primary_imu()`.
-    pub imu: ImuInstance,
+    /// INS frontend publishing primary IMU samples, upstream `AP::ins()`.
+    pub ins: InertialSensorFrontend,
     /// Loop timing passed into INS and AHRS, upstream scheduler deltas.
     pub loop_timing: LoopTiming,
     /// Attitude sensors published by the latest `ahrs_update`.
@@ -96,7 +96,7 @@ impl PlaneMainLoop {
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
         let (_health, attitude) = self.ahrs.update_from_ins(
-            &self.imu,
+            &self.ins,
             &self.loop_timing,
             self.compass,
         );

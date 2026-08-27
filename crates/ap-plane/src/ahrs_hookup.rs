@@ -5,7 +5,7 @@
 //! path reads on the next tasks.
 
 use ap_ahrs::{dcm_step_with_drift_from_ins, Dcm, DcmDriftLoop, MatrixHealth, YawCompassSample};
-use ap_ins::{ImuInstance, LoopTiming};
+use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::{rad_to_cd, wrap_180_cd, wrap_360_cd};
 
 /// Attitude sensors published each loop, upstream `AP_AHRS` roll/pitch/yaw_sensor.
@@ -56,14 +56,14 @@ impl AhrsFeed {
     /// One AHRS update from INS samples, upstream `AP_AHRS_DCM::update`.
     pub fn update_from_ins(
         &mut self,
-        imu: &ImuInstance,
+        ins: &InertialSensorFrontend,
         timing: &LoopTiming,
         compass: Option<YawCompassSample>,
     ) -> (MatrixHealth, AhrsAttitude) {
         let health = dcm_step_with_drift_from_ins(
             &mut self.dcm,
             &mut self.drift,
-            imu,
+            ins,
             timing,
             compass,
         );
