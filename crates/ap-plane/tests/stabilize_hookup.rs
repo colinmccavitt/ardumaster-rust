@@ -7,9 +7,12 @@ use ap_math::vector3::Vector3f;
 use ap_pid::PidGains;
 use ap_plane::ahrs_hookup::AhrsAttitude;
 use ap_plane::main_loop::{PlaneMainLoop, StabilizeDispatch};
+use ap_plane::mode_run::StickMixing;
 use ap_plane::stabilize_hookup::{
-    apply_stabilize_to_servos, scaled_to_pwm_trim, stabilize_controllers, StabilizeContext,
-    StabilizeControllers, StabilizeDemands, StabilizeServoDemands,
+    apply_stabilize_to_servos, calc_nav_demands, calc_speed_scaler, nonlinear_stick_input,
+    prepare_stabilize_path, scaled_to_pwm_trim, stabilize_controllers, stabilize_stick_mixing_fbw,
+    NavCommandInputs, RcStickInputs, SpeedScalerInputs, StabilizeContext, StabilizeControllers,
+    StabilizeDemands, StabilizeServoDemands,
 };
 
 #[test]
@@ -106,6 +109,120 @@ fn roll_servo_out_uses_attitude_sensor_and_nav_demand() {
 }
 
 #[test]
+fn calc_nav_demands_limits_roll_and_pitch() {
+    let mut demands = StabilizeDemands {
+        roll_limit_cd: 4500,
+        pitch_limit_min_cd: -2000,
+        pitch_limit_max_cd: 2500,
+        ..StabilizeDemands::default()
+    };
+    calc_nav_demands(
+        &mut demands,
+        &NavCommandInputs {
+            commanded_roll_cd: 9000,
+            commanded_pitch_cd: 5000,
+        },
+    );
+    assert_eq!(demands.nav_roll_cd, 4500);
+    assert_eq!(demands.nav_pitch_cd, 2500);
+}
+
+#[test]
+fn calc_speed_scaler_matches_cruise_airspeed() {
+    let scaler = calc_speed_scaler(&SpeedScalerInputs {
+        airspeed_eas: Some(15.0),
+        scaling_speed: 15.0,
+        airspeed_min: 10.0,
+        airspeed_max: 30.0,
+        armed: true,
+        throttle_scaled: 50.0,
+    });
+    assert!((scaler - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn calc_speed_scaler_without_airspeed_uses_throttle_when_armed() {
+    let scaler = calc_speed_scaler(&SpeedScalerInputs {
+        airspeed_eas: None,
+        scaling_speed: 15.0,
+        airspeed_min: 10.0,
+        airspeed_max: 30.0,
+        armed: true,
+        throttle_scaled: 45.0,
+    });
+    assert!((scaler - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn nonlinear_stick_input_doubles_at_full_deflection() {
+    assert!((nonlinear_stick_input(1.0) - 2.0).abs() < 0.001);
+    assert!((nonlinear_stick_input(-1.0) - (-2.0)).abs() < 0.001);
+    assert!((nonlinear_stick_input(0.25) - 0.25).abs() < 0.001);
+}
+
+#[test]
+fn stick_mixing_shifts_nav_roll() {
+    let mut demands = StabilizeDemands {
+        nav_roll_cd: 0,
+        roll_limit_cd: 4500,
+        pitch_limit_min_cd: -2000,
+        pitch_limit_max_cd: 2500,
+        ..StabilizeDemands::default()
+    };
+    stabilize_stick_mixing_fbw(
+        &mut demands,
+        &RcStickInputs {
+            roll_norm_dz: 1.0,
+            pitch_norm_dz: 0.0,
+        },
+        true,
+        false,
+    );
+    assert_eq!(demands.nav_roll_cd, 4500);
+}
+
+#[test]
+fn prepare_stabilize_path_applies_stick_mixing_when_enabled() {
+    let mut demands = StabilizeDemands {
+        roll_limit_cd: 4500,
+        pitch_limit_min_cd: -2000,
+        pitch_limit_max_cd: 2500,
+        ..StabilizeDemands::default()
+    };
+    let mut ctx = StabilizeContext::default();
+    prepare_stabilize_path(
+        &mut demands,
+        &mut ctx,
+        &NavCommandInputs {
+            commanded_roll_cd: 0,
+            commanded_pitch_cd: 0,
+        },
+        &SpeedScalerInputs {
+            airspeed_eas: Some(15.0),
+            scaling_speed: 15.0,
+            airspeed_min: 10.0,
+            airspeed_max: 30.0,
+            armed: true,
+            throttle_scaled: 50.0,
+        },
+        StabilizeDispatch {
+            roll: true,
+            pitch: true,
+            yaw: true,
+            fbw_stick_mixing: true,
+        },
+        &RcStickInputs {
+            roll_norm_dz: 0.5,
+            pitch_norm_dz: 0.0,
+        },
+        Some(StickMixing::Fbw),
+        0,
+    );
+    assert_eq!(demands.nav_roll_cd, 2250);
+    assert!((ctx.scaler - 1.0).abs() < 0.01);
+}
+
+#[test]
 fn set_servos_publishes_stabilize_demands() {
     let mut vehicle = PlaneMainLoop::default();
     vehicle.last_stabilize = StabilizeDispatch {
@@ -132,8 +249,12 @@ fn main_loop_stabilize_and_set_servos_wire_controllers() {
     let mut vehicle = PlaneMainLoop::default();
     vehicle.mode.control_mode = ap_plane::mode_table::ModeNumber::Stabilize.as_number();
     vehicle.update_control_mode();
-    vehicle.stabilize_demands.nav_roll_cd = 2000;
+    vehicle.nav_commands.commanded_roll_cd = 2000;
     vehicle.stabilize_demands.roll_limit_cd = 4500;
+    vehicle.speed_scaler_inputs.airspeed_eas = Some(15.0);
+    vehicle.speed_scaler_inputs.scaling_speed = 15.0;
+    vehicle.speed_scaler_inputs.airspeed_min = 10.0;
+    vehicle.speed_scaler_inputs.airspeed_max = 30.0;
     vehicle.attitude.roll_sensor_cd = 0;
 
     vehicle.stabilize();
@@ -142,6 +263,7 @@ fn main_loop_stabilize_and_set_servos_wire_controllers() {
     assert!(vehicle.last_stabilize_run.roll);
     assert!(vehicle.last_stabilize_run.pitch);
     assert!(vehicle.last_stabilize_run.yaw);
+    assert_eq!(vehicle.stabilize_demands.nav_roll_cd, 2000);
 }
 
 #[test]

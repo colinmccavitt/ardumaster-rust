@@ -12,8 +12,9 @@ use crate::ahrs_hookup::{yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::landing_hookup::ServoOutputState;
 use crate::mode::ModeState;
 use crate::stabilize_hookup::{
-    apply_stabilize_to_servos, stabilize_controllers, StabilizeContext, StabilizeControllers,
-    StabilizeDemands, StabilizeServoDemands,
+    apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
+    RcStickInputs, SpeedScalerInputs, StabilizeContext, StabilizeControllers, StabilizeDemands,
+    StabilizeServoDemands,
 };
 use crate::mode_run::{applies_fbw_stick_mixing, StickMixing};
 use crate::mode_table::{BuildFeatures, ModeNumber};
@@ -34,8 +35,7 @@ pub struct FastTaskTicks {
 /// Which stabilization paths the active mode's `run()` selected.
 ///
 /// Upstream `Mode::run` decides whether to call the three `stabilize_*`
-/// helpers and whether fly-by-wire stick mixing runs first. Later slices
-/// replace these flags with the real controller calls.
+/// helpers and whether fly-by-wire stick mixing runs first.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StabilizeDispatch {
     pub roll: bool,
@@ -77,6 +77,14 @@ pub struct PlaneMainLoop {
     pub yaw_ctx: YawDriftContext,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
+    /// Raw navigation commands before limiting, upstream nav_controller/TECS.
+    pub nav_commands: NavCommandInputs,
+    /// RC stick inputs for FBW mixing.
+    pub rc_sticks: RcStickInputs,
+    /// Inputs to the speed scaler, upstream `calc_speed_scaler`.
+    pub speed_scaler_inputs: SpeedScalerInputs,
+    /// Cached surface speed scaler, upstream `surface_speed_scaler`.
+    pub surface_speed_scaler: f32,
     /// Navigation demands fed into stabilize.
     pub stabilize_demands: StabilizeDemands,
     /// Per-loop context for the attitude controllers.
@@ -109,6 +117,10 @@ impl Default for PlaneMainLoop {
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
             controllers: StabilizeControllers::default(),
+            nav_commands: NavCommandInputs::default(),
+            rc_sticks: RcStickInputs::default(),
+            speed_scaler_inputs: SpeedScalerInputs::default(),
+            surface_speed_scaler: 1.0,
             stabilize_demands: StabilizeDemands::default(),
             stabilize_ctx: StabilizeContext::default(),
             stabilize_servos: StabilizeServoDemands::default(),
@@ -144,10 +156,26 @@ impl PlaneMainLoop {
     /// active mode selected them on the previous `update_control_mode`.
     pub fn stabilize(&mut self) {
         self.ticks.stabilize += 1;
+        prepare_stabilize_path(
+            &mut self.stabilize_demands,
+            &mut self.stabilize_ctx,
+            &self.nav_commands,
+            &self.speed_scaler_inputs,
+            self.last_stabilize,
+            &self.rc_sticks,
+            self.stick_mixing,
+            self.attitude.roll_sensor_cd,
+        );
+        self.surface_speed_scaler = self.stabilize_ctx.scaler;
+
+        let imu = self
+            .ins
+            .primary_imu()
+            .unwrap_or(&self.ins.instances[0]);
         let out = stabilize_controllers(
             &mut self.controllers,
             &self.attitude,
-            self.ins.primary_imu().expect("primary IMU"),
+            imu,
             self.last_stabilize,
             &self.stabilize_demands,
             &self.stabilize_ctx,

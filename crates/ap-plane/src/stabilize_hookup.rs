@@ -9,12 +9,18 @@ use ap_control::{
     YawController, YawGains,
 };
 use ap_ins::ImuInstance;
-use ap_math::scalar::cd_to_rad;
+use ap_math::scalar::{cd_to_rad, constrain_int32, constrain_value, Real};
 use ap_pid::PidGains;
 
 use crate::ahrs_hookup::AhrsAttitude;
 use crate::main_loop::{StabilizeDispatch, StabilizeRun};
+use crate::mode_run::StickMixing;
 use crate::{PitchDemand, RollDemand};
+
+/// Upstream `MIN_AIRSPEED_MIN`.
+pub const MIN_AIRSPEED_MIN: f32 = 5.0;
+/// Upstream `AP_PLANE_TRIM_THROTTLE_DEFAULT`.
+pub const AP_PLANE_TRIM_THROTTLE_DEFAULT: f32 = 45.0;
 
 /// Attitude controllers the vehicle loop owns, upstream `rollController` etc.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +66,31 @@ pub struct StabilizeDemands {
     pub pitch_limit_max_cd: i32,
 }
 
+/// Raw navigation outputs before limiting, upstream nav_controller/TECS.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NavCommandInputs {
+    pub commanded_roll_cd: i32,
+    pub commanded_pitch_cd: i32,
+}
+
+/// RC stick inputs for FBW mixing, upstream `norm_input_dz()`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RcStickInputs {
+    pub roll_norm_dz: f32,
+    pub pitch_norm_dz: f32,
+}
+
+/// Parameters for speed scaler computation, upstream `calc_speed_scaler`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SpeedScalerInputs {
+    pub airspeed_eas: Option<f32>,
+    pub scaling_speed: f32,
+    pub airspeed_min: f32,
+    pub airspeed_max: f32,
+    pub armed: bool,
+    pub throttle_scaled: f32,
+}
+
 /// Vehicle context passed into the controllers each loop.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StabilizeContext {
@@ -103,6 +134,121 @@ pub struct StabilizeOutputs {
     pub run: StabilizeRun,
     /// Surface demands written for `set_servos`.
     pub servos: StabilizeServoDemands,
+}
+
+/// Populate nav demands from navigation/TECS commands, upstream
+/// `calc_nav_roll` / `calc_nav_pitch`.
+pub fn calc_nav_demands(demands: &mut StabilizeDemands, nav: &NavCommandInputs) {
+    demands.nav_roll_cd = RollDemand::from_navigation(
+        nav.commanded_roll_cd,
+        demands.roll_limit_cd,
+    )
+    .nav_roll_cd;
+    demands.nav_pitch_cd = PitchDemand::from_tecs(
+        nav.commanded_pitch_cd,
+        demands.pitch_limit_min_cd,
+        demands.pitch_limit_max_cd,
+    )
+    .nav_pitch_cd;
+}
+
+/// Airspeed-based PID gain scaling, upstream `Plane::calc_speed_scaler`.
+#[must_use]
+pub fn calc_speed_scaler(inp: &SpeedScalerInputs) -> f32 {
+    if let Some(aspeed) = inp.airspeed_eas {
+        let airspeed_min = inp.airspeed_min.max(MIN_AIRSPEED_MIN);
+        let scale_min = (inp.scaling_speed / (2.0 * inp.airspeed_max)).min(0.5);
+        let scale_max = (inp.scaling_speed / (0.7 * airspeed_min)).max(2.0);
+        let speed_scaler = if aspeed > 0.000_1 {
+            inp.scaling_speed / aspeed
+        } else {
+            scale_max
+        };
+        constrain_value(speed_scaler, scale_min, scale_max)
+    } else if inp.armed {
+        let throttle_out = inp.throttle_scaled.max(1.0);
+        let speed_scaler = (AP_PLANE_TRIM_THROTTLE_DEFAULT / throttle_out).sqrt();
+        constrain_value(speed_scaler, 0.6, 1.67)
+    } else {
+        1.0
+    }
+}
+
+/// Non-linear stick shaping, upstream the roll/pitch prologue in
+/// `stabilize_stick_mixing_fbw`.
+#[must_use]
+pub fn nonlinear_stick_input(norm_dz: f32) -> f32 {
+    if norm_dz > 0.5 {
+        3.0 * norm_dz - 1.0
+    } else if norm_dz < -0.5 {
+        3.0 * norm_dz + 1.0
+    } else {
+        norm_dz
+    }
+}
+
+/// Whether the aircraft is flying inverted, upstream `fly_inverted()`.
+#[must_use]
+pub const fn fly_inverted(roll_sensor_cd: i32) -> bool {
+    roll_sensor_cd < -9000 || roll_sensor_cd > 9000
+}
+
+/// FBW stick mixing into nav demands, upstream `stabilize_stick_mixing_fbw`.
+pub fn stabilize_stick_mixing_fbw(
+    demands: &mut StabilizeDemands,
+    sticks: &RcStickInputs,
+    mix_pitch: bool,
+    inverted: bool,
+) {
+    let roll_input = nonlinear_stick_input(sticks.roll_norm_dz);
+    demands.nav_roll_cd += (roll_input * demands.roll_limit_cd as f32) as i32;
+    demands.nav_roll_cd = constrain_int32(
+        demands.nav_roll_cd,
+        -demands.roll_limit_cd,
+        demands.roll_limit_cd,
+    );
+
+    if !mix_pitch {
+        return;
+    }
+
+    let mut pitch_input = nonlinear_stick_input(sticks.pitch_norm_dz);
+    if inverted {
+        pitch_input = -pitch_input;
+    }
+    let pitch_range_cd = demands.pitch_limit_max_cd - demands.pitch_limit_min_cd;
+    demands.nav_pitch_cd += (pitch_input * pitch_range_cd as f32 / 2.0) as i32;
+    demands.nav_pitch_cd = constrain_int32(
+        demands.nav_pitch_cd,
+        demands.pitch_limit_min_cd,
+        demands.pitch_limit_max_cd,
+    );
+}
+
+/// Update demands and context before controller `servo_out`, upstream the
+/// prologue to `Plane::stabilize`.
+pub fn prepare_stabilize_path(
+    demands: &mut StabilizeDemands,
+    ctx: &mut StabilizeContext,
+    nav: &NavCommandInputs,
+    scaler_inp: &SpeedScalerInputs,
+    dispatch: StabilizeDispatch,
+    sticks: &RcStickInputs,
+    stick_mixing: Option<StickMixing>,
+    roll_sensor_cd: i32,
+) {
+    calc_nav_demands(demands, nav);
+    if dispatch.fbw_stick_mixing {
+        let mix_pitch = !matches!(stick_mixing, Some(StickMixing::FbwNoPitch));
+        stabilize_stick_mixing_fbw(
+            demands,
+            sticks,
+            mix_pitch,
+            fly_inverted(roll_sensor_cd),
+        );
+    }
+    ctx.scaler = calc_speed_scaler(scaler_inp);
+    ctx.airspeed_eas = scaler_inp.airspeed_eas;
 }
 
 /// One stabilize tick: honour dispatch flags and call `servo_out`.
