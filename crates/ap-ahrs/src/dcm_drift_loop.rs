@@ -3,6 +3,7 @@
 //! compass yaw correction and GPS-heading fallback.
 
 use ap_ins::{InertialSensorFrontend, LoopTiming};
+use ap_math::matrix3::Matrix3f;
 use ap_math::scalar::Real;
 use ap_math::vector3::Vector3f;
 
@@ -79,7 +80,7 @@ impl DcmDriftLoop {
         timing: &LoopTiming,
         loop_dt: f32,
     ) {
-        let Some((delta_velocity, delta_velocity_dt)) = ins.get_delta_velocity(timing) else {
+        let Some((delta_velocity, delta_velocity_dt)) = imu.get_delta_velocity(timing) else {
             return;
         };
         if delta_velocity_dt <= 0.0 {
@@ -150,10 +151,30 @@ pub fn dcm_step_with_drift_from_ins(
     timing: &LoopTiming,
     compass: Option<YawCompassSample>,
 ) -> MatrixHealth {
+    let yaw = compass.map(|sample| YawUpdateInputs {
+        compass: Some(sample),
+        gps: None,
+        ctx: YawDriftContext {
+            compass_use_for_yaw: true,
+            ..YawDriftContext::default()
+        },
+    });
+    dcm_step_with_drift_from_ins_yaw(dcm, drift, ins, timing, yaw)
+}
+
+/// Same as [`dcm_step_with_drift_from_ins`] but accepts full yaw inputs
+/// including GPS fallback context.
+pub fn dcm_step_with_drift_from_ins_yaw(
+    dcm: &mut Dcm,
+    drift: &mut DcmDriftLoop,
+    ins: &InertialSensorFrontend,
+    timing: &LoopTiming,
+    yaw: Option<YawUpdateInputs>,
+) -> MatrixHealth {
     let health = dcm_matrix_step_from_ins(dcm, ins, timing, drift.drift_omega());
     drift.accumulate_from_ins(dcm, ins, timing, timing.delta_time());
     let _ = drift.try_correct(dcm, ins);
-    if let Some(sample) = compass {
+    if let Some(yaw_inputs) = yaw {
         let accel_ef_xy_mag = {
             let ef = dcm.matrix * ins.get_accel();
             ap_math::scalar::safe_sqrt(ef.x * ef.x + ef.y * ef.y)
