@@ -14,6 +14,7 @@
 use ap_math::scalar::constrain_int32;
 
 pub mod ahrs_hookup;
+pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;
 pub mod sitl_ins_host_files;
 pub mod sitl_ins_noise_hookup;

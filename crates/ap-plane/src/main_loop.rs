@@ -22,6 +22,9 @@ use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedul
 use crate::landing_throttle_scheduler_hookup::{
     landing_throttle_scheduler_tick, LandingThrottleSchedulerInputs,
 };
+use crate::arming_scheduler_hookup::{
+    arming_scheduler_tick, ArmingSchedulerInputs,
+};
 use crate::srv_output_scheduler_hookup::{
     srv_output_scheduler_tick, SrvOutputHookupState, SrvOutputSchedulerInputs,
 };
@@ -209,6 +212,10 @@ pub struct PlaneMainLoop {
     pub srv_output_inputs: SrvOutputSchedulerInputs,
     /// Auto flap percent from the latest SRV output tick.
     pub last_auto_flap_percent: i8,
+    /// `hal.util->get_soft_armed()`.
+    pub soft_armed: bool,
+    /// Whether disarm zeroed throttle on the last `set_servos`.
+    pub disarm_throttle_applied: bool,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -371,6 +378,8 @@ impl Default for PlaneMainLoop {
                 ..SrvOutputSchedulerInputs::default()
             },
             last_auto_flap_percent: 0,
+            soft_armed: false,
+            disarm_throttle_applied: false,
             servos: ServoOutputState::default(),
         }
     }
@@ -589,6 +598,15 @@ impl PlaneMainLoop {
             &self.srv_output_inputs,
         );
         self.last_auto_flap_percent = srv_out.auto_flap_percent;
+
+        let arm_out = arming_scheduler_tick(
+            self.servos,
+            &ArmingSchedulerInputs {
+                soft_armed: self.soft_armed,
+            },
+        );
+        self.disarm_throttle_applied = arm_out.applied;
+        self.servos = arm_out.servos;
     }
 }
 

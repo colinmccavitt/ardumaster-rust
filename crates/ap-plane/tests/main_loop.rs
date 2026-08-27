@@ -537,3 +537,37 @@ fn set_servos_applies_elevon_mixing_via_srv_output() {
     );
 }
 
+#[test]
+fn set_servos_zeros_throttle_when_disarmed() {
+    use ap_plane::landing_hookup::ServoOutputState;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = false;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 55.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.disarm_throttle_applied);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}
+
+#[test]
+fn set_servos_keeps_throttle_when_armed() {
+    use ap_plane::landing_hookup::ServoOutputState;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = true;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 55.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(!vehicle.disarm_throttle_applied);
+    assert_eq!(vehicle.servos.throttle_scaled, 55.0);
+}
+
