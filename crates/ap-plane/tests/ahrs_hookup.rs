@@ -265,3 +265,87 @@ fn wind_vane_seeds_estimated_wind() {
     assert!(vehicle.head_wind_ms.abs() < 0.01, "crosswind should give ~zero headwind");
 }
 
+#[test]
+fn ekf_health_and_dead_reckoning_published_on_main_loop() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth, YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.yaw_ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        gps_lat_e7: Some(473_582_100),
+        gps_lng_e7: Some(-122_234_567),
+        ..YawDriftContext::default()
+    };
+    vehicle.gps_yaw = Some(YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    });
+
+    vehicle.ahrs_update();
+
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::Ok);
+    assert!(vehicle.ekf_healthy);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Ekf3);
+    assert!(vehicle.have_dead_reckoning_position);
+}
+
+#[test]
+fn ekf_unhealthy_publishes_dcm_fallback_on_main_loop() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.ahrs.dcm.matrix.a.x = f32::NAN;
+
+    vehicle.ahrs_update();
+
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::NeedsReset);
+    assert!(!vehicle.ekf_healthy);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Dcm);
+}
+
+#[test]
+fn dead_reckoning_offset_accessor_reflects_drift_position() {
+    use ap_math::vector3::Vector3f;
+
+    let mut feed = AhrsFeed::default();
+    feed.drift.position.on_gps_fix(100, 200, 1000);
+    feed.drift.position.integrate(Vector3f::new(5.0, 2.0, 0.0), 0.2, false);
+    let (n, e, have) = feed.dead_reckoning_offset();
+    assert!(have);
+    assert!((n - 1.0).abs() < 1e-5);
+    assert!((e - 0.4).abs() < 1e-5);
+}
+
+#[test]
+fn main_loop_publishes_dead_reckoning_offset_from_ahrs() {
+    use ap_ahrs::{YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 0.1;
+    vehicle.yaw_ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        gps_lat_e7: Some(473_582_100),
+        gps_lng_e7: Some(-122_234_567),
+        ..YawDriftContext::default()
+    };
+    vehicle.gps_yaw = Some(YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    });
+    vehicle.ahrs_update();
+    assert!(vehicle.have_dead_reckoning_position);
+    assert_eq!(vehicle.dead_reckoning_north_m, 0.0);
+    assert_eq!(vehicle.dead_reckoning_east_m, 0.0);
+}
+

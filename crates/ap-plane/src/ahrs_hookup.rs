@@ -40,6 +40,8 @@ pub struct AhrsFeed {
     /// Roll/pitch drift and compass yaw correction.
     pub drift: DcmDriftLoop,
     pub(crate) last_gps_fix_ms: u32,
+    /// Latest matrix health from the last update.
+    pub matrix_health: MatrixHealth,
 }
 
 impl Default for AhrsFeed {
@@ -52,6 +54,7 @@ impl Default for AhrsFeed {
             dcm: Dcm::new(),
             drift: DcmDriftLoop::default(),
             last_gps_fix_ms: 0,
+            matrix_health: MatrixHealth::Ok,
         }
     }
 }
@@ -98,6 +101,7 @@ impl AhrsFeed {
         };
         self.ekf_healthy = self.ekf3.healthy;
         self.active_backend = active_backend_kind(self.configured_backend, self.ekf_healthy);
+        self.matrix_health = result.0;
         result
     }
 
@@ -155,6 +159,13 @@ impl AhrsFeed {
     #[must_use]
     pub fn wind_alignment(&self, heading_deg: f32) -> f32 {
         wind_alignment(heading_deg, self.wind_estimate())
+    }
+
+    /// NE offset from last GPS fix while dead-reckoning, upstream position offsets.
+    #[must_use]
+    pub fn dead_reckoning_offset(&self) -> (f32, f32, bool) {
+        let p = &self.drift.position;
+        (p.offset_north_m, p.offset_east_m, p.have_position)
     }
 
     /// Seed wind from a wind vane when sensor data is available.
