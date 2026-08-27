@@ -76,6 +76,9 @@ use crate::sitl_compass_hookup::SitlCompassHookup;
 use crate::compass_health_scheduler_hookup::{
     compass_health_scheduler_tick, CompassHealthSchedulerInputs,
 };
+use crate::compass_offset_calibration_hookup::{
+    compass_offset_calibration_tick, CompassOffsetCalibrationInputs,
+};
 use crate::airspeed_health_scheduler_hookup::{
     airspeed_health_scheduler_tick, AirspeedHealthSchedulerInputs,
 };
@@ -240,6 +243,10 @@ pub struct PlaneMainLoop {
     pub compass_healthy: bool,
     /// Per-instance compass health flags, upstream `AP_Compass` frontend.
     pub compass_health: CompassHealthFlags,
+    /// Request a `COMPASS_OFS` learn this `ahrs_update`, upstream `COMPASS_LEARN`.
+    pub compass_learn_requested: bool,
+    /// True after the last requested mag offset learn succeeded.
+    pub compass_offsets_learned: bool,
     /// Latest baro sample from the SITL backend, upstream `AP_Baro` frontend.
     pub baro_sample: Option<ap_baro::sitl::BaroSampleState>,
     /// Whether the SITL baro backend is healthy, upstream `AP_Baro::healthy()`.
@@ -529,6 +536,8 @@ impl Default for PlaneMainLoop {
             mag_sample: None,
             compass_healthy: false,
             compass_health: CompassHealthFlags::default(),
+            compass_learn_requested: false,
+            compass_offsets_learned: false,
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
             baro_climb_rate_mps: 0.0,
@@ -764,6 +773,16 @@ impl PlaneMainLoop {
             self.compass_healthy = out.healthy;
             self.compass_health = out.health;
             self.compass = out.yaw_compass;
+            if self.compass_learn_requested {
+                let cal = compass_offset_calibration_tick(
+                    compass,
+                    CompassOffsetCalibrationInputs {
+                        request_learn: true,
+                    },
+                );
+                self.compass_offsets_learned = cal.learned;
+                self.compass_learn_requested = false;
+            }
         }
         if let Some(gps) = self.sitl_gps.as_mut() {
             let samples = gps.publish_yaw_samples(

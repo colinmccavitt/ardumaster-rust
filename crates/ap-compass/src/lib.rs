@@ -7,6 +7,7 @@
 #![no_std]
 
 pub mod declination;
+pub mod offset;
 pub mod params;
 pub mod sitl;
 
@@ -18,4 +19,9 @@ pub use sitl::{
     SITL_COMPASS_UPDATE_MS,
 };
 
+pub use offset::{
+    apply_offsets, learn_offsets, learn_offsets_enabled, offsets_within_max,
+    COMPASS_LEARN_DEFAULT, COMPASS_LEARN_EKF, COMPASS_LEARN_INFLIGHT, COMPASS_LEARN_NONE,
+    COMPASS_OFFSETS_MAX_DEFAULT,
+};
 pub use params::{CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT};

@@ -1,5 +1,8 @@
 //! Compass parameter table stub, upstream AP_Compass var_info. FW-014.
 
+use ap_math::vector3::Vector3f;
+
+use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::sitl::{
     SitlCompassBackend, SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
 };
@@ -14,6 +17,8 @@ pub const COMPASS_USE_DEFAULT: bool = true;
 pub struct CompassInstanceParams {
     pub disabled: bool,
     pub use_for_yaw: bool,
+    /// Hard-iron offset, upstream `COMPASS_OFS` / `OFS2` (field units).
+    pub offset: Vector3f,
 }
 
 impl Default for CompassInstanceParams {
@@ -21,6 +26,7 @@ impl Default for CompassInstanceParams {
         Self {
             disabled: false,
             use_for_yaw: COMPASS_USE_DEFAULT,
+            offset: Vector3f::zero(),
         }
     }
 }
@@ -29,6 +35,8 @@ impl CompassInstanceParams {
     pub fn apply_to_config(self) -> SitlCompassConfig {
         SitlCompassConfig {
             disabled: self.disabled,
+            offset: self.offset,
+            ..SitlCompassConfig::default()
         }
     }
 }
@@ -42,6 +50,10 @@ pub struct CompassParams {
     pub declination_rad: f32,
     /// Auto declination from GPS location, upstream COMPASS_AUTODEC.
     pub auto_declination: bool,
+    /// Offset learn mode, upstream `COMPASS_LEARN`.
+    pub learn: u8,
+    /// Max allowed offset length, upstream `COMPASS_OFFS_MAX`.
+    pub offsets_max: f32,
 }
 
 impl Default for CompassParams {
@@ -52,6 +64,8 @@ impl Default for CompassParams {
             primary: 0,
             declination_rad: 0.0,
             auto_declination: COMPASS_AUTODEC_DEFAULT,
+            learn: COMPASS_LEARN_DEFAULT,
+            offsets_max: COMPASS_OFFSETS_MAX_DEFAULT,
         }
     }
 }
@@ -59,7 +73,10 @@ impl Default for CompassParams {
 impl CompassParams {
     pub fn apply_instance(&self, instance: u8, backend: &mut SitlCompassBackend) {
         let inst = if instance == 0 { self.compass1 } else { self.compass2 };
-        backend.set_config(inst.apply_to_config());
+        let mut cfg = *backend.config();
+        cfg.disabled = inst.disabled;
+        cfg.offset = inst.offset;
+        backend.set_config(cfg);
     }
 
     pub fn apply_to_cluster(&self, cluster: &mut SitlCompassCluster) {

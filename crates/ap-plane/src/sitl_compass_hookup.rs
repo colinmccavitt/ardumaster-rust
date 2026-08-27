@@ -5,7 +5,9 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`YawUpdateInputs`](ap_ahrs::YawUpdateInputs).
 
 use ap_ahrs::YawCompassSample;
+use ap_compass::offset::learn_offsets_enabled;
 use ap_compass::{CompassDeclinationState, CompassParams, GpsDeclinationFix};
+use ap_math::vector3::Vector3f;
 use ap_compass::sitl::{
     CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
 };
@@ -84,6 +86,26 @@ impl SitlCompassHookup {
         self.params = params;
         params.apply_to_cluster(&mut self.cluster);
         self.compass_use_for_yaw = params.primary_use_for_yaw();
+    }
+
+    /// Inject the same SITL hard-iron bias on every registered instance.
+    pub fn set_hardiron_bias(&mut self, bias: Vector3f) {
+        for i in 0..self.cluster.instance_count() {
+            if let Some(backend) = self.cluster.backend_mut(i) {
+                let mut cfg = *backend.config();
+                cfg.hardiron_bias = bias;
+                backend.set_config(cfg);
+            }
+        }
+    }
+
+    /// Latch `COMPASS_OFS` on every enabled instance when learn is enabled.
+    #[must_use]
+    pub fn learn_offsets(&mut self) -> bool {
+        if !learn_offsets_enabled(self.params.learn) {
+            return false;
+        }
+        self.cluster.learn_offsets(self.params.offsets_max)
     }
 
     #[must_use]

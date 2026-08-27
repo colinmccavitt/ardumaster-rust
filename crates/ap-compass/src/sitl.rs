@@ -1,12 +1,16 @@
 //! SITL compass backend, upstream `AP_Compass_SITL::_timer`. FW-014.
 //!
 //! Rotates the WMM earth-frame field into body frame using true attitude.
-//! No noise, delay ring, calibration error, or motor interference in this slice.
+//! Applies `COMPASS_OFS` (`mag += offsets`). Optional SITL hard-iron bias is
+//! added before offsets so learn-offsets can cancel metal in the frame.
+//! No noise, delay ring, or motor interference in this slice.
 
 use ap_declination::get_mag_field_ef;
 use ap_math::matrix3::Matrix3f;
 use ap_math::scalar::{radians, Real};
 use ap_math::vector3::Vector3f;
+
+use crate::offset::{apply_offsets, learn_offsets, offsets_within_max};
 
 /// Minimum interval between compass updates, upstream `_timer` at 100 Hz.
 pub const SITL_COMPASS_UPDATE_MS: u32 = 10;
@@ -27,11 +31,19 @@ pub struct MagSampleState {
 #[derive(Debug, Clone, Copy)]
 pub struct SitlCompassConfig {
     pub disabled: bool,
+    /// Hard-iron offset added to the sample, upstream `COMPASS_OFS`.
+    pub offset: Vector3f,
+    /// SITL-injected metal bias added before offsets, for learn tests.
+    pub hardiron_bias: Vector3f,
 }
 
 impl Default for SitlCompassConfig {
     fn default() -> Self {
-        Self { disabled: false }
+        Self {
+            disabled: false,
+            offset: Vector3f::zero(),
+            hardiron_bias: Vector3f::zero(),
+        }
     }
 }
 
@@ -72,6 +84,10 @@ pub struct SitlCompassBackend {
     last_sample_time_ms: u32,
     pending: MagSampleState,
     has_pending: bool,
+    raw_mag_body: Vector3f,
+    last_latitude_deg: f32,
+    last_longitude_deg: f32,
+    last_attitude: Matrix3f,
 }
 
 impl Default for SitlCompassBackend {
@@ -81,6 +97,10 @@ impl Default for SitlCompassBackend {
             last_sample_time_ms: 0,
             pending: MagSampleState::default(),
             has_pending: false,
+            raw_mag_body: Vector3f::zero(),
+            last_latitude_deg: 0.0,
+            last_longitude_deg: 0.0,
+            last_attitude: Matrix3f::identity(),
         }
     }
 }
@@ -110,8 +130,33 @@ impl SitlCompassBackend {
         self.last_sample_time_ms != 0 && !self.config.disabled
     }
 
+    /// Raw body-frame field before `COMPASS_OFS`, including SITL hard-iron.
+    #[must_use]
+    pub const fn raw_mag_body(&self) -> Vector3f {
+        self.raw_mag_body
+    }
+
     pub fn set_config(&mut self, config: SitlCompassConfig) {
         self.config = config;
+    }
+
+    /// Latch `COMPASS_OFS` so the corrected field matches WMM, upstream learn.
+    #[must_use]
+    pub fn learn_offset(&mut self, offsets_max: f32) -> bool {
+        if self.config.disabled || self.last_sample_time_ms == 0 {
+            return false;
+        }
+        let (expected, _) = mag_field_body_ned(
+            self.last_latitude_deg,
+            self.last_longitude_deg,
+            self.last_attitude,
+        );
+        let ofs = learn_offsets(self.raw_mag_body, expected);
+        if !offsets_within_max(ofs, offsets_max) {
+            return false;
+        }
+        self.config.offset = ofs;
+        true
     }
 
     /// Run the 100 Hz timer path from sim truth and true attitude.
@@ -131,8 +176,12 @@ impl SitlCompassBackend {
             return false;
         }
 
-        let (mag_body, declination_rad) =
-            mag_field_body_ned(latitude_deg, longitude_deg, attitude);
+        self.last_latitude_deg = latitude_deg;
+        self.last_longitude_deg = longitude_deg;
+        self.last_attitude = attitude;
+        let (wmm, declination_rad) = mag_field_body_ned(latitude_deg, longitude_deg, attitude);
+        self.raw_mag_body = wmm + self.config.hardiron_bias;
+        let mag_body = apply_offsets(self.raw_mag_body, self.config.offset);
         self.pending = MagSampleState {
             mag_body,
             declination_rad,
@@ -266,6 +315,18 @@ impl SitlCompassCluster {
             })
     }
 
+    /// Learn offsets on every enabled instance, upstream `Compass::learn_offsets`.
+    #[must_use]
+    pub fn learn_offsets(&mut self, offsets_max: f32) -> bool {
+        let mut any = false;
+        for i in 0..self.instance_count as usize {
+            if self.backends[i].learn_offset(offsets_max) {
+                any = true;
+            }
+        }
+        any
+    }
+
     #[must_use]
     pub fn health_flags(&self) -> CompassHealthFlags {
         let mut flags = CompassHealthFlags {
@@ -284,7 +345,10 @@ impl SitlCompassCluster {
     pub fn cluster_with_disabled_primary() -> Self {
         Self {
             backends: [
-                SitlCompassBackend::with_config(SitlCompassConfig { disabled: true }),
+                SitlCompassBackend::with_config(SitlCompassConfig {
+                    disabled: true,
+                    ..SitlCompassConfig::default()
+                }),
                 SitlCompassBackend::default(),
             ],
             instance_count: 2,
@@ -323,7 +387,10 @@ mod tests {
 
     #[test]
     fn producer_unhealthy_when_disabled() {
-        let mut compass = SitlCompassBackend::with_config(SitlCompassConfig { disabled: true });
+        let mut compass = SitlCompassBackend::with_config(SitlCompassConfig {
+            disabled: true,
+            ..SitlCompassConfig::default()
+        });
         assert!(!compass.timer_tick(51.875, -0.154, level_attitude(), 10));
         assert!(!compass.healthy());
     }
