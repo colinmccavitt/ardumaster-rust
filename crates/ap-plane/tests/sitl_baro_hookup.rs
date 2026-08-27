@@ -297,7 +297,6 @@ fn ground_pressure_relative_altitude_hookup() {
     hookup.truth.sim_altitude_m = 100.0;
     hookup.truth.now_ms = 1000;
     let _ = hookup.publish();
-    hookup.latch_ground_pressure();
     hookup.truth.sim_altitude_m = 150.0;
     hookup.truth.now_ms = 2000;
     let out = hookup.publish();
