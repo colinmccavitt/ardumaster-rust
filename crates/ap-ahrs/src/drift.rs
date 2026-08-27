@@ -30,12 +30,13 @@
 //!
 //! # What this slice does not include
 //!
-//! Yaw correction (`drift_correction_yaw`), the multi-accelerometer selection
-//! that picks whichever sensor gives the smallest error, wind estimation
-//! and dead-reckoning position. GPS lag buffering lives in [`crate::GpsLagBuffer`].
+//! Yaw correction (`drift_correction_yaw`) lives in [`crate::yaw_drift`].
+//! Multi-accelerometer selection lives in [`crate::MultiAccelSelection`],
+//! GPS lag in [`crate::GpsLagBuffer`], and dead-reckoning position in
+//! [`crate::DeadReckoningPosition`].
 
 use ap_math::matrix3::Matrix3f;
-use crate::GpsLagBuffer;
+use crate::{GpsLagBuffer, MultiAccelSelection};
 use ap_math::scalar::{constrain_value, radians};
 use ap_math::vector3::Vector3f;
 
@@ -112,6 +113,7 @@ pub struct DriftInputs {
     /// Apply GPS lag delay to the measured gravity vector, upstream
     /// `using_gps_corrections`.
     pub using_gps_corrections: bool,
+    pub preselected_error: Option<MultiAccelSelection>,
 }
 
 /// Why a correction cycle produced nothing.
@@ -226,10 +228,11 @@ impl DriftCorrector {
         let error_dirn = ga_b.dot(ga_e);
         let mut best_error = error.length();
         if error_dirn < 0.0 {
-            // Opposite and parallel: the cross product is near zero even
-            // though the attitude is 180 degrees out, so the magnitude has to
-            // be forced high or the estimator would think it was perfect.
             best_error = 1.0;
+        }
+        if let Some(preselected) = inp.preselected_error {
+            error = preselected.error_ef;
+            best_error = preselected.best_error;
         }
 
         if inp.ins_healthy {

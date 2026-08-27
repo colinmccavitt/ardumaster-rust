@@ -84,6 +84,7 @@ impl Estimator {
                 omega: self.dcm.omega,
                 ins_healthy: true,
                 using_gps_corrections: false,
+                preselected_error: None,
             };
             let outcome = self.drift.correct(&inputs, &self.gains, &mut GpsLagBuffer::default());
             assert_eq!(outcome, DriftOutcome::Corrected, "correction should run");
@@ -323,6 +324,7 @@ fn fast_gains_scale_the_proportional_term_and_not_the_integral() {
         omega: Vector3f::zero(),
         ins_healthy: true,
         using_gps_corrections: false,
+        preselected_error: None,
     };
 
     let mut normal = DriftCorrector::new();

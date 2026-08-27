@@ -13,6 +13,8 @@ use crate::yaw_drift::{
     YawCompassSample, YawDriftContext, YawDriftCorrector, YawDriftGains, YawDriftInputs,
     YawGpsSample, YawMatrixAction,
 };
+use crate::dead_reckoning::DeadReckoningPosition;
+use crate::multi_accel::{MultiAccelAccumulator, MultiAccelSelection, INS_MAX_INSTANCES};
 use crate::{Dcm, DriftCorrector, DriftGains, DriftInputs, DriftOutcome, GpsLagBuffer, MatrixHealth};
 
 /// Minimum interval before running drift correction without GPS, upstream
@@ -41,6 +43,10 @@ pub struct DriftMotionInputs {
     pub eas2tas: f32,
     pub wind_estimation_enabled: bool,
     pub correct_centrifugal: bool,
+    /// GPS latitude in deg*1e7 when a fix is available.
+    pub gps_lat_e7: Option<i32>,
+    /// GPS longitude in deg*1e7 when a fix is available.
+    pub gps_lng_e7: Option<i32>,
 }
 
 impl Default for DriftMotionInputs {
@@ -55,6 +61,8 @@ impl Default for DriftMotionInputs {
             eas2tas: 1.0,
             wind_estimation_enabled: true,
             correct_centrifugal: true,
+            gps_lat_e7: None,
+            gps_lng_e7: None,
         }
     }
 }
@@ -72,8 +80,10 @@ pub struct DcmDriftLoop {
     pub gains: DriftGains,
     /// Yaw proportional gain, upstream `AHRS_YAW_P`.
     pub yaw_gains: YawDriftGains,
-    ra_sum: Vector3f,
+    ra_sums: MultiAccelAccumulator,
     ra_deltat: f32,
+    active_accel_instance: i8,
+    pub position: DeadReckoningPosition,
     last_velocity: Vector3f,
     have_gps_lock: bool,
     drift_velocity_initialized: bool,
@@ -97,8 +107,10 @@ impl DcmDriftLoop {
             wind: WindEstimator::new(),
             gains,
             yaw_gains: YawDriftGains::default(),
-            ra_sum: Vector3f::zero(),
+            ra_sums: MultiAccelAccumulator::default(),
             ra_deltat: 0.0,
+            active_accel_instance: -1,
+            position: DeadReckoningPosition::default(),
             last_velocity: Vector3f::zero(),
             have_gps_lock: false,
             drift_velocity_initialized: false,
@@ -125,14 +137,28 @@ impl DcmDriftLoop {
         timing: &LoopTiming,
         loop_dt: f32,
     ) {
-        let Some((delta_velocity, delta_velocity_dt)) = ins.get_delta_velocity(timing) else {
-            return;
-        };
-        if delta_velocity_dt <= 0.0 {
-            return;
+        let accel_count = ins.accel_count().min(INS_MAX_INSTANCES as u8);
+        for i in 0..accel_count {
+            if !ins.accel_usable(i) {
+                continue;
+            }
+            let Some(imu) = ins.imu(i) else {
+                continue;
+            };
+            let Some((delta_velocity, delta_velocity_dt)) = imu.get_delta_velocity(timing) else {
+                continue;
+            };
+            if delta_velocity_dt <= 0.0 {
+                continue;
+            }
+            let accel_ef = dcm.matrix * (delta_velocity / delta_velocity_dt);
+            DriftCorrector::accumulate(
+                &mut self.ra_sums.ra_sum[i as usize],
+                &mut self.ra_deltat,
+                accel_ef,
+                loop_dt,
+            );
         }
-        let accel_ef = dcm.matrix * (delta_velocity / delta_velocity_dt);
-        DriftCorrector::accumulate(&mut self.ra_sum, &mut self.ra_deltat, accel_ef, loop_dt);
     }
 
     fn update_wind(&mut self, dcm: &Dcm, motion: DriftMotionInputs) {
@@ -177,6 +203,19 @@ impl DcmDriftLoop {
         }
     }
 
+
+    fn update_position(&mut self, motion: DriftMotionInputs, velocity: Option<Vector3f>) {
+        if motion.have_gps && motion.new_gps_fix {
+            if let (Some(lat), Some(lng)) = (motion.gps_lat_e7, motion.gps_lng_e7) {
+                self.position.on_gps_fix(lat, lng, motion.now_ms);
+            } else if motion.gps_velocity.is_some() {
+                self.position.on_gps_fix(0, 0, motion.now_ms);
+            }
+        } else if let Some(v) = velocity {
+            self.position.integrate(v, self.ra_deltat, motion.have_gps);
+        }
+    }
+
     /// Run roll/pitch correction once enough has accumulated. Resets the
     /// accumulator on success, upstream's post-correction memset of `_ra_sum`.
     pub fn try_correct(
@@ -197,7 +236,7 @@ impl DcmDriftLoop {
                 self.last_velocity = v;
                 self.drift_velocity_initialized = true;
             }
-            self.ra_sum = Vector3f::zero();
+            self.ra_sums.reset();
             self.ra_deltat = 0.0;
             return DriftOutcome::NotEnoughData;
         }
@@ -210,14 +249,43 @@ impl DcmDriftLoop {
             None
         };
 
+let ra_scale = if self.ra_deltat > 0.0 {
+            1.0 / (self.ra_deltat * 9.806_65)
+        } else {
+            0.0
+        };
+        let mut ga_e = Vector3f::new(0.0, 0.0, -1.0);
+        if let Some(velocity_delta) = velocity_delta {
+            ga_e += velocity_delta * (self.gains.gps_gain * ra_scale);
+            let _ = ga_e.normalize();
+        }
+
+        let preselected = MultiAccelSelection::select(
+            &self.ra_sums.ra_sum,
+            ins.accel_count().min(INS_MAX_INSTANCES as u8),
+            |i| ins.accel_usable(i),
+            ga_e,
+            ra_scale,
+            self.have_gps_lock && motion.have_gps,
+            &mut self.gps_lag,
+        );
+
+        let primary_ra_sum = preselected
+            .map(|sel| {
+                self.active_accel_instance = sel.active_instance;
+                self.ra_sums.ra_sum[sel.active_instance as usize]
+            })
+            .unwrap_or(Vector3f::zero());
+
         let inputs = DriftInputs {
-            ra_sum: self.ra_sum,
+            ra_sum: primary_ra_sum,
             ra_deltat: self.ra_deltat,
             velocity_delta,
             dcm_matrix: dcm.matrix,
             omega: dcm.omega,
             ins_healthy: ins.get_gyro_health() && ins.get_accel_health(),
             using_gps_corrections: self.have_gps_lock && motion.have_gps,
+            preselected_error: preselected,
         };
 
         let outcome = self.corrector.correct(&inputs, &self.gains, &mut self.gps_lag);
@@ -225,7 +293,7 @@ impl DcmDriftLoop {
             if let Some(v) = velocity {
                 self.last_velocity = v;
             }
-            self.ra_sum = Vector3f::zero();
+            self.ra_sums.reset();
             self.ra_deltat = 0.0;
         }
         outcome
@@ -292,6 +360,9 @@ pub fn dcm_step_with_drift_from_ins_yaw(
 ) -> MatrixHealth {
     let health = dcm_matrix_step_from_ins(dcm, ins, timing, drift.drift_omega());
     drift.accumulate_from_ins(dcm, ins, timing, timing.delta_time());
+    drift.update_wind(dcm, motion);
+    let velocity = drift.resolve_velocity(dcm, motion);
+    drift.update_position(motion, velocity);
     let _ = drift.try_correct(dcm, ins, motion);
     if let Some(yaw_inputs) = yaw {
         let accel_ef_xy_mag = {

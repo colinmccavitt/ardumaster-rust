@@ -38,6 +38,7 @@ fn compass_only_inputs(dcm: Matrix3f, sample: YawCompassSample) -> YawDriftInput
             estimated_yaw_rad: yaw,
             wind_speed_xy: 0.0,
             now_ms: 0,
+        ..Default::default()
         },
     }
 }
@@ -137,6 +138,7 @@ fn compass_gps_disagreement_switches_to_gps() {
         estimated_yaw_rad: radians(90.0),
         wind_speed_xy: 1.0,
         now_ms: 5000,
+        ..Default::default()
     };
     assert!(
         !yaw_corr.use_compass(&ctx, Some(&gps)),
@@ -169,6 +171,7 @@ fn gps_first_fix_resets_attitude_yaw() {
             estimated_yaw_rad: est_yaw,
             wind_speed_xy: 0.0,
             now_ms: 200,
+        ..Default::default()
         },
     };
     let result = yaw_corr.drift_correction_yaw(&inputs, &YawDriftGains::default());
@@ -210,6 +213,7 @@ fn gps_course_correction_opposes_yaw_error() {
             estimated_yaw_rad: est_yaw,
             wind_speed_xy: 0.0,
             now_ms: 200,
+        ..Default::default()
         },
     };
     let result = yaw_corr.drift_correction_yaw(&inputs, &YawDriftGains::default());

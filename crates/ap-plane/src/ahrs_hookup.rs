@@ -193,6 +193,8 @@ pub fn drift_motion_inputs(
         have_gps: ctx.have_gps,
         fly_forward: ctx.fly_forward,
         airspeed_tas,
+        gps_lat_e7: ctx.gps_lat_e7,
+        gps_lng_e7: ctx.gps_lng_e7,
         ..DriftMotionInputs::default()
     }
 }

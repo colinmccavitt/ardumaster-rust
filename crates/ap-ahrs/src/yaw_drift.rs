@@ -84,6 +84,8 @@ pub struct YawDriftContext {
     pub wind_speed_xy: f32,
     /// Monotonic time in milliseconds, upstream `AP_HAL::millis()`.
     pub now_ms: u32,
+    pub gps_lat_e7: Option<i32>,
+    pub gps_lng_e7: Option<i32>,
 }
 
 /// Vehicle motion facts yaw correction reads each cycle.
