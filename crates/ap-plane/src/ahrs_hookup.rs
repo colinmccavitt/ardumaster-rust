@@ -163,6 +163,7 @@ pub fn drift_motion_inputs(
     ctx: YawDriftContext,
     gps: Option<YawGpsSample>,
     airspeed_tas: f32,
+    eas2tas: f32,
     last_gps_fix_ms: &mut u32,
 ) -> DriftMotionInputs {
     let new_gps_fix = gps
@@ -193,6 +194,7 @@ pub fn drift_motion_inputs(
         have_gps: ctx.have_gps,
         fly_forward: ctx.fly_forward,
         airspeed_tas,
+        eas2tas,
         gps_lat_e7: ctx.gps_lat_e7,
         gps_lng_e7: ctx.gps_lng_e7,
         ..DriftMotionInputs::default()

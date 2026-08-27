@@ -93,7 +93,7 @@ fn drift_motion_inputs_builds_gps_velocity() {
         now_ms: 500,
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
     assert!(motion.new_gps_fix);
     let vel = motion.gps_velocity.expect("gps velocity");
     assert!(vel.x.abs() < 0.01, "east course => near-zero north");
@@ -160,7 +160,7 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         now_ms: 100,
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
     assert!(motion.have_gps);
     assert!(motion.new_gps_fix);
     feed.update_from_ins(&ins, &timing, None, motion);
@@ -174,7 +174,7 @@ fn gps_lag_buffer_wired_through_drift_motion_with_gps() {
         now_ms: 600,
         ..YawDriftContext::default()
     };
-    let motion2 = drift_motion_inputs(ctx2, Some(gps2), 0.0, &mut last_fix);
+    let motion2 = drift_motion_inputs(ctx2, Some(gps2), 0.0, 1.0, &mut last_fix);
     let (health, _) = feed.update_from_ins(&ins, &timing, None, motion2);
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
 }
@@ -201,7 +201,7 @@ fn multi_accel_dead_reckoning_wired_through_drift_motion() {
         gps_lng_e7: Some(-122_234_567),
         ..YawDriftContext::default()
     };
-    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, &mut last_fix);
+    let motion = drift_motion_inputs(ctx, Some(gps), 0.0, 1.0, &mut last_fix);
     let (health, _) = feed.update_from_ins(&ins, &timing, None, motion);
     assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
     assert!(feed.drift.position.have_position);

@@ -1,8 +1,8 @@
-//! SITL AHRS publish extension: airspeed TAS into drift motion inputs.
+//! SITL AHRS publish extension: airspeed TAS and EAS2TAS into drift motion inputs.
 //!
 //! Builds on [`sitl_yaw_hookup`] so one SITL source feeds compass/GPS yaw
-//! samples and true airspeed before [`PlaneMainLoop::ahrs_update`] builds
-//! [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
+//! samples, true airspeed, and baro EAS2TAS before [`PlaneMainLoop::ahrs_update`]
+//! builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
 use ap_math::matrix3::Matrix3f;
 
@@ -15,6 +15,8 @@ pub struct SitlAhrsPublish {
     pub yaw: SitlYawPublish,
     /// True airspeed, m/s. Upstream `AP_AHRS::airspeed` / pitot in SITL.
     pub airspeed_tas_mps: f32,
+    /// EAS to TAS scale, upstream `AP_Baro::get_EAS2TAS()`.
+    pub eas2tas: f32,
 }
 
 impl Default for SitlAhrsPublish {
@@ -22,6 +24,7 @@ impl Default for SitlAhrsPublish {
         Self {
             yaw: SitlYawPublish::default(),
             airspeed_tas_mps: 0.0,
+            eas2tas: 1.0,
         }
     }
 }
@@ -31,18 +34,20 @@ impl From<SitlYawPublish> for SitlAhrsPublish {
         Self {
             yaw,
             airspeed_tas_mps: 0.0,
+            eas2tas: 1.0,
         }
     }
 }
 
-/// Yaw samples plus airspeed published into the main loop before `ahrs_update`.
+/// Yaw samples plus airspeed and EAS2TAS published before `ahrs_update`.
 #[derive(Debug, Clone, Copy)]
 pub struct SitlAhrsSamples {
     pub yaw: SitlYawSamples,
     pub airspeed_tas: f32,
+    pub eas2tas: f32,
 }
 
-/// Publish SITL yaw and airspeed samples for one AHRS cycle.
+/// Publish SITL yaw, airspeed, and EAS2TAS samples for one AHRS cycle.
 #[must_use]
 pub fn publish_sitl_ahrs_samples(
     source: &SitlAhrsPublish,
@@ -52,5 +57,6 @@ pub fn publish_sitl_ahrs_samples(
     SitlAhrsSamples {
         yaw: publish_sitl_yaw_samples(&source.yaw, attitude, loop_dt),
         airspeed_tas: source.airspeed_tas_mps,
+        eas2tas: source.eas2tas,
     }
 }

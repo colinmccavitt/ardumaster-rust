@@ -102,6 +102,8 @@ pub struct PlaneMainLoop {
     pub yaw_ctx: YawDriftContext,
     /// True airspeed for no-GPS drift and wind estimation, m/s.
     pub airspeed_tas: f32,
+    /// EAS to TAS scale for wind estimation, upstream `AP_Baro::get_EAS2TAS()`.
+    pub eas2tas: f32,
     /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Optional SITL AHRS publish (yaw + airspeed TAS); takes precedence over `sitl_yaw`.
@@ -189,6 +191,7 @@ impl Default for PlaneMainLoop {
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
+            eas2tas: 1.0,
             sitl_yaw: None,
             sitl_ahrs: None,
             sitl_ins_noise: None,
@@ -322,6 +325,7 @@ impl PlaneMainLoop {
             self.gps_yaw = samples.yaw.gps_yaw;
             self.yaw_ctx = samples.yaw.yaw_ctx;
             self.airspeed_tas = samples.airspeed_tas;
+            self.eas2tas = samples.eas2tas;
         } else if let Some(source) = self.sitl_yaw {
             let samples = publish_sitl_yaw_samples(
                 &source,
@@ -371,6 +375,7 @@ impl PlaneMainLoop {
             self.yaw_ctx,
             self.gps_yaw,
             self.airspeed_tas,
+            self.eas2tas,
             &mut self.ahrs.last_gps_fix_ms,
         );
         let (_health, attitude) = self.ahrs.update_from_ins(
