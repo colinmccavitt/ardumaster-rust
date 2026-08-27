@@ -71,6 +71,9 @@ use crate::sitl_ins_noise_hookup::{
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_baro_hookup::SitlBaroHookup;
 use crate::sitl_compass_hookup::SitlCompassHookup;
+use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
+use ap_airspeed::sitl::AirspeedSampleState;
+use ap_airspeed::sitl::AirspeedHealthFlags;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
@@ -198,6 +201,14 @@ pub struct PlaneMainLoop {
     pub sitl_baro: Option<SitlBaroHookup>,
     /// Optional SITL compass producer; publishes mag samples each `ahrs_update`.
     pub sitl_compass: Option<SitlCompassHookup>,
+    /// Optional SITL airspeed producer; publishes pitot TAS each `ahrs_update`.
+    pub sitl_airspeed: Option<SitlAirspeedHookup>,
+    /// Latest pitot sample from the SITL backend, upstream `AP_Airspeed::get_airspeed()`.
+    pub airspeed_sample: Option<AirspeedSampleState>,
+    /// Whether the SITL airspeed backend is healthy, upstream `AP_Airspeed::healthy()`.
+    pub airspeed_healthy: bool,
+    /// Per-instance airspeed health flags, upstream `AP_Airspeed` frontend.
+    pub airspeed_health: AirspeedHealthFlags,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
     pub mag_sample: Option<MagSampleState>,
     /// Whether the SITL compass backend is healthy, upstream `AP_Compass::healthy()`.
@@ -460,6 +471,10 @@ impl Default for PlaneMainLoop {
             sitl_gps: None,
             sitl_baro: None,
             sitl_compass: None,
+            sitl_airspeed: None,
+            airspeed_sample: None,
+            airspeed_healthy: false,
+            airspeed_health: AirspeedHealthFlags::default(),
             baro_sample: None,
             mag_sample: None,
             compass_healthy: false,
@@ -652,6 +667,15 @@ impl Default for PlaneMainLoop {
 }
 
 impl PlaneMainLoop {
+    /// Whether TECS should use the airspeed throttle path, upstream `use_airspeed()`.
+    fn tecs_use_airspeed(&self) -> bool {
+        if self.sitl_airspeed.is_some() {
+            self.airspeed_healthy && self.airspeed_tas > 1.0
+        } else {
+            self.airspeed_tas > 1.0
+        }
+    }
+
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
@@ -692,7 +716,9 @@ impl PlaneMainLoop {
             self.compass = samples.yaw.compass;
             self.gps_yaw = samples.yaw.gps_yaw;
             self.yaw_ctx = samples.yaw.yaw_ctx;
-            self.airspeed_tas = samples.airspeed_tas;
+            if self.sitl_airspeed.is_none() {
+                self.airspeed_tas = samples.airspeed_tas;
+            }
             self.eas2tas = samples.eas2tas;
         } else if let Some(source) = self.sitl_yaw {
             let samples = publish_sitl_yaw_samples(
@@ -765,6 +791,15 @@ impl PlaneMainLoop {
             });
             self.baro_arm_calibration_latched = arm_cal.latched;
             self.baro_was_soft_armed = arm_cal.was_soft_armed;
+        }
+        if let Some(airspeed) = self.sitl_airspeed.as_mut() {
+            let published = airspeed.publish(self.eas2tas);
+            self.airspeed_sample = Some(published.sample);
+            self.airspeed_healthy = published.healthy;
+            self.airspeed_health = published.health;
+            if published.healthy {
+                self.airspeed_tas = published.sample.tas_mps;
+            }
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);
@@ -887,6 +922,7 @@ impl PlaneMainLoop {
             .baro_sample
             .map(|s| s.have_sample)
             .unwrap_or(self.baro_healthy);
+        let use_airspeed = self.tecs_use_airspeed();
         let tecs_out = altitude_tecs_feed_tick(
             &mut self.tecs,
             &AltitudeTecsFeedInputs {
@@ -905,7 +941,7 @@ impl PlaneMainLoop {
                 flight_stage: self.tecs_flight_stage,
                 pitch_rad: self.pitch_rad,
                 cos_roll: ap_math::scalar::Real::cos(self.attitude.roll_rad()),
-                use_airspeed: self.airspeed_tas > 1.0,
+                use_airspeed,
                 pitch_trim_deg: 0.0,
                 now_ms: ap_hal::time::Millis(self.yaw_ctx.now_ms),
                 dt: self.loop_timing.delta_time,

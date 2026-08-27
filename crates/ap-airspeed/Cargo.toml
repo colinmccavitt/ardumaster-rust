@@ -1,0 +1,13 @@
+[package]
+name = "ap-airspeed"
+description = "Port of ArduPilot libraries/AP_Airspeed: SITL backend first (Plane-4.7.0). Tracked as FW-010."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[lints]
+workspace = true

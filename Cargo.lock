@@ -13,6 +13,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-airspeed"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-baro"
 version = "0.1.0"
 dependencies = [
@@ -23,6 +30,14 @@ dependencies = [
 [[package]]
 name = "ap-common"
 version = "0.1.0"
+
+[[package]]
+name = "ap-compass"
+version = "0.1.0"
+dependencies = [
+ "ap-declination",
+ "ap-math",
+]
 
 [[package]]
 name = "ap-control"
@@ -135,7 +150,9 @@ name = "ap-plane"
 version = "0.1.0"
 dependencies = [
  "ap-ahrs",
+ "ap-airspeed",
  "ap-baro",
+ "ap-compass",
  "ap-control",
  "ap-declination",
  "ap-gps",
