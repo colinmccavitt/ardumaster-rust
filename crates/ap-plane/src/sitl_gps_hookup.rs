@@ -8,18 +8,12 @@ use ap_math::vector3::Vector3f;
 
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish, SitlYawSamples};
 
-/// SITL ground truth for one GPS update cycle.
 #[derive(Debug, Clone, Copy)]
 pub struct SitlGpsTruth {
-    /// NED velocity, upstream `sitl->state.speedN/E/D`.
     pub velocity_ned: Vector3f,
-    /// Latitude, degrees.
     pub latitude_deg: f32,
-    /// Longitude, degrees.
     pub longitude_deg: f32,
-    /// Altitude AMSL, metres.
     pub altitude_m: f32,
-    /// Monotonic time, ms. Upstream `AP_HAL::millis()`.
     pub now_ms: u32,
 }
 
@@ -35,7 +29,6 @@ impl Default for SitlGpsTruth {
     }
 }
 
-/// GPS backend plus yaw/compass context for one SITL vehicle.
 #[derive(Debug, Clone, Copy)]
 pub struct SitlGpsHookup {
     backend: SitlGpsBackend,
@@ -58,13 +51,21 @@ impl Default for SitlGpsHookup {
 }
 
 impl SitlGpsHookup {
-    /// GPS lag in seconds for drift consumers, upstream `AP_GPS::get_lag()`.
     #[must_use]
     pub const fn gps_lag_sec(&self) -> f32 {
         self.backend.lag_sec()
     }
 
-    /// Run the GPS backend read and build yaw publish fields.
+    #[must_use]
+    pub fn current_fix(&self) -> ap_gps::GpsFixState {
+        *self.backend.state()
+    }
+
+    #[must_use]
+    pub fn delayed_fix(&self) -> ap_gps::GpsFixState {
+        self.backend.delayed_state(self.truth.now_ms)
+    }
+
     #[must_use]
     pub fn yaw_publish(&mut self) -> SitlYawPublish {
         self.backend.read(
@@ -74,7 +75,7 @@ impl SitlGpsHookup {
             self.truth.altitude_m,
             self.truth.now_ms,
         );
-        let fix = self.backend.state();
+        let fix = self.backend.delayed_state(self.truth.now_ms);
         SitlYawPublish {
             latitude_deg: fix.latitude_deg,
             longitude_deg: fix.longitude_deg,
@@ -89,7 +90,6 @@ impl SitlGpsHookup {
         }
     }
 
-    /// Publish compass/GPS yaw samples after running the fix producer.
     #[must_use]
     pub fn publish_yaw_samples(
         &mut self,

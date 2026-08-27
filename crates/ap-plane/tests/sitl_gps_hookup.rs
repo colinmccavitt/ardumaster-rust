@@ -48,3 +48,20 @@ fn gps_lag_sec_exposed_for_drift_consumers() {
     let hookup = SitlGpsHookup::default();
     assert!((hookup.gps_lag_sec() - SitlGpsBackend::default().lag_sec()).abs() < 1e-6);
 }
+
+#[test]
+fn lag_buffer_feeds_yaw_publish_with_delayed_velocity() {
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, 0.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    let _ = hookup.publish_yaw_samples(Matrix3f::identity(), 0.0025);
+
+    hookup.truth.velocity_ned = Vector3f::new(25.0, 0.0, 0.0);
+    hookup.truth.now_ms = 450;
+    let samples = hookup.publish_yaw_samples(Matrix3f::identity(), 0.0025);
+    let gps = samples.gps_yaw.expect("delayed gps fix");
+    assert!((gps.ground_speed - 10.0).abs() < 1e-3, "yaw uses lag-buffered speed");
+    assert!((hookup.current_fix().ground_speed - 25.0).abs() < 1e-3);
+    assert!((hookup.delayed_fix().ground_speed - 10.0).abs() < 1e-3);
+}

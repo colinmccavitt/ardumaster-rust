@@ -30,7 +30,14 @@
 
 #![no_std]
 
+pub mod lag_buffer;
 pub mod sitl;
+
+pub use lag_buffer::GpsLagBuffer;
+pub use sitl::{
+    velocity_to_speed_course, GpsFixState, SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC,
+    SITL_GPS_UPDATE_MS,
+};
 
 use ap_common::{ap_mktime, Tm};
 use ap_math::scalar::{radians, Real};
@@ -188,11 +195,6 @@ pub fn bcd_to_gps_time(bcd_date: u32, bcd_time_ms: u32) -> Option<(u16, u32)> {
 ///
 /// `ground_course` is degrees; the returned vector is North-East-Down in m/s.
 #[must_use]
-pub use sitl::{
-    velocity_to_speed_course, GpsFixState, SitlGpsBackend, SITL_GPS_DEFAULT_LAG_SEC,
-    SITL_GPS_UPDATE_MS,
-};
-
 pub fn fill_3d_velocity(ground_speed: f32, ground_course_deg: f32) -> Vector3f {
     let heading = radians(ground_course_deg);
     Vector3f::new(

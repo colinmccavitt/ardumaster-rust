@@ -6,6 +6,7 @@
 use ap_math::scalar::{degrees, wrap_360, Real};
 use ap_math::vector3::Vector3f;
 
+use crate::lag_buffer::GpsLagBuffer;
 use crate::FixType;
 
 /// Minimum interval between GPS updates, upstream `AP_GPS_SITL::read()`.
@@ -17,30 +18,18 @@ pub const SITL_GPS_DEFAULT_LAG_SEC: f32 = 0.1;
 /// GPS fix state from one successful backend read.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GpsFixState {
-    /// Fix quality, upstream `state.status`.
     pub fix_type: FixType,
-    /// Satellite count, upstream `state.num_sats` (always 15 in SITL).
     pub num_sats: u8,
-    /// NED velocity, upstream `state.velocity`.
     pub velocity_ned: Vector3f,
-    /// Ground speed, upstream `state.ground_speed`.
     pub ground_speed: f32,
-    /// Ground course, degrees, upstream `state.ground_course`.
     pub ground_course_deg: f32,
-    /// Fix timestamp, upstream `state.last_gps_time_ms`.
     pub last_fix_time_ms: u32,
-    /// Latitude, degrees.
     pub latitude_deg: f32,
-    /// Longitude, degrees.
     pub longitude_deg: f32,
-    /// Altitude, metres AMSL.
     pub altitude_m: f32,
-    /// Whether a fix has ever been produced.
     pub have_fix: bool,
 }
 
-/// Derive ground speed and course from NED velocity, upstream
-/// `AP_GPS_Backend::velocity_to_speed_course`.
 #[must_use]
 pub fn velocity_to_speed_course(velocity: Vector3f) -> (f32, f32) {
     let ground_course_deg = wrap_360(degrees(Real::atan2(velocity.y, velocity.x)));
@@ -48,30 +37,39 @@ pub fn velocity_to_speed_course(velocity: Vector3f) -> (f32, f32) {
     (ground_speed, ground_course_deg)
 }
 
-/// SITL GPS backend, upstream `AP_GPS_SITL`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct SitlGpsBackend {
     last_update_ms: u32,
     state: GpsFixState,
+    lag_buffer: GpsLagBuffer,
+}
+
+impl Default for SitlGpsBackend {
+    fn default() -> Self {
+        Self {
+            last_update_ms: 0,
+            state: GpsFixState::default(),
+            lag_buffer: GpsLagBuffer::new(SITL_GPS_DEFAULT_LAG_SEC),
+        }
+    }
 }
 
 impl SitlGpsBackend {
-    /// Current fix state.
     #[must_use]
     pub const fn state(&self) -> &GpsFixState {
         &self.state
     }
 
-    /// GPS lag in seconds for EKF timing, upstream `get_lag()`.
     #[must_use]
     pub const fn lag_sec(&self) -> f32 {
         SITL_GPS_DEFAULT_LAG_SEC
     }
 
-    /// Attempt one GPS update, upstream `AP_GPS_SITL::read()`.
-    ///
-    /// Returns `true` when a new fix is published; `false` inside the 200 ms
-    /// window leaves `state` unchanged.
+    #[must_use]
+    pub fn delayed_state(&self, now_ms: u32) -> GpsFixState {
+        self.lag_buffer.delayed_fix(now_ms)
+    }
+
     pub fn read(
         &mut self,
         velocity_ned: Vector3f,
@@ -87,7 +85,7 @@ impl SitlGpsBackend {
 
         let (ground_speed, ground_course_deg) = velocity_to_speed_course(velocity_ned);
 
-        self.state = GpsFixState {
+        let fix = GpsFixState {
             fix_type: FixType::Fix3D,
             num_sats: 15,
             velocity_ned,
@@ -99,6 +97,8 @@ impl SitlGpsBackend {
             altitude_m,
             have_fix: true,
         };
+        self.lag_buffer.push(fix);
+        self.state = fix;
         true
     }
 }
@@ -137,5 +137,16 @@ mod tests {
     #[test]
     fn default_lag_is_one_tenth_second() {
         assert!((SitlGpsBackend::default().lag_sec() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn backend_delayed_state_returns_previous_fix() {
+        let mut gps = SitlGpsBackend::default();
+        let vel_a = Vector3f::new(10.0, 0.0, 0.0);
+        let vel_b = Vector3f::new(20.0, 0.0, 0.0);
+        assert!(gps.read(vel_a, 51.0, -0.1, 100.0, 200));
+        assert!(gps.read(vel_b, 51.0, -0.1, 100.0, 400));
+        let delayed = gps.delayed_state(450);
+        assert!((delayed.velocity_ned.x - 10.0).abs() < 1e-4);
     }
 }
