@@ -48,6 +48,7 @@ use crate::sitl_ins_noise_hookup::{
     sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
 };
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
+use crate::sitl_gps_hookup::SitlGpsHookup;
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::entry_state::ModeEntryState;
 use crate::mode::ModeState;
@@ -139,6 +140,8 @@ pub struct PlaneMainLoop {
     pub sitl_yaw: Option<SitlYawPublish>,
     /// Optional SITL AHRS publish (yaw + airspeed TAS); takes precedence over `sitl_yaw`.
     pub sitl_ahrs: Option<SitlAhrsPublish>,
+    /// Optional SITL GPS fix producer; takes precedence over manual GPS in `sitl_yaw`.
+    pub sitl_gps: Option<SitlGpsHookup>,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
     /// Optional INS harmonic notch hookup; configures gyro filters each tick.
@@ -302,6 +305,7 @@ impl Default for PlaneMainLoop {
             head_wind_ms: 0.0,
             sitl_yaw: None,
             sitl_ahrs: None,
+            sitl_gps: None,
             sitl_ins_noise: None,
             ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
@@ -449,7 +453,15 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
-        if let Some(source) = self.sitl_ahrs {
+        if let Some(gps) = self.sitl_gps.as_mut() {
+            let samples = gps.publish_yaw_samples(
+                self.ahrs.dcm.matrix,
+                self.loop_timing.delta_time,
+            );
+            self.compass = samples.compass;
+            self.gps_yaw = samples.gps_yaw;
+            self.yaw_ctx = samples.yaw_ctx;
+        } else if let Some(source) = self.sitl_ahrs {
             let samples = publish_sitl_ahrs_samples(
                 &source,
                 self.ahrs.dcm.matrix,

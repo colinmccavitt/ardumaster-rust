@@ -10,6 +10,7 @@ rust-version.workspace = true
 ap-ahrs = { workspace = true }
 ap-control = { workspace = true }
 ap-declination = { workspace = true }
+ap-gps = { workspace = true }
 ap-hal = { workspace = true }
 ap-ins = { workspace = true }
 ap-landing = { workspace = true }
@@ -24,6 +25,7 @@ ap-hal = { workspace = true }
 # The first test that composes ported modules rather than checking one alone.
 ap-control = { workspace = true }
 ap-declination = { workspace = true }
+ap-gps = { workspace = true }
 ap-landing = { workspace = true }
 ap-math = { workspace = true, features = ["ekf-double"] }
 ap-nav = { workspace = true, features = ["replay"] }

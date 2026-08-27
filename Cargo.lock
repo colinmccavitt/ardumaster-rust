@@ -135,6 +135,8 @@ version = "0.1.0"
 dependencies = [
  "ap-ahrs",
  "ap-control",
+ "ap-declination",
+ "ap-gps",
  "ap-hal",
  "ap-ins",
  "ap-landing",
@@ -144,6 +146,7 @@ dependencies = [
  "ap-replay",
  "ap-scheduler",
  "ap-servo",
+ "ap-sim",
 ]
 
 [[package]]
