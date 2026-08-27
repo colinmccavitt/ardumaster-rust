@@ -85,6 +85,10 @@ use crate::mode::ModeState;
 use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
+use crate::manual_mode_hookup::{
+    manual_mode_nav_tick, manual_mode_servos_tick, ManualModeNavInputs,
+    ManualModeServosInputs,
+};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -381,6 +385,10 @@ pub struct PlaneMainLoop {
     pub throttle_use_battery_comp: bool,
     /// How pilot throttle is mapped this tick.
     pub pilot_throttle_source: crate::mode_run::PilotThrottleSource,
+    /// Whether manual-mode nav mirror ran this tick.
+    pub manual_mode_nav_applied: bool,
+    /// Whether manual-mode RC passthrough ran in set_servos.
+    pub manual_mode_servos_applied: bool,
     /// `THR_PASS_STAB` parameter.
     pub throttle_passthru_stabilize: bool,
     /// Guided mode passthrough throttle flag.
@@ -657,6 +665,8 @@ impl Default for PlaneMainLoop {
             throttle_use_limits: true,
             throttle_use_battery_comp: true,
             pilot_throttle_source: crate::mode_run::PilotThrottleSource::TrimAdjusted,
+            manual_mode_nav_applied: false,
+            manual_mode_servos_applied: false,
             throttle_passthru_stabilize: false,
             guided_throttle_passthru: false,
             allow_forward_throttle_in_vtol: true,
@@ -1012,6 +1022,18 @@ impl PlaneMainLoop {
             &self.features,
         );
 
+        let manual_nav = manual_mode_nav_tick(&ManualModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_sensor_cd: self.attitude.roll_sensor_cd,
+            pitch_sensor_cd: self.attitude.pitch_sensor_cd,
+        });
+        self.manual_mode_nav_applied = manual_nav.applied;
+        if manual_nav.applied {
+            self.nav_tecs.nav_roll_cd = manual_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = manual_nav.nav_pitch_cd;
+        }
+
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
             0.0
         } else {
@@ -1137,6 +1159,17 @@ impl PlaneMainLoop {
     pub fn set_servos(&mut self) {
         self.ticks.set_servos += 1;
         apply_stabilize_to_servos(&self.stabilize_servos, &mut self.servos);
+
+        let manual_servos = manual_mode_servos_tick(
+            self.servos,
+            &ManualModeServosInputs {
+                control_mode: self.mode.control_mode,
+                features: self.features,
+                rc_sticks: self.rc_sticks,
+            },
+        );
+        self.manual_mode_servos_applied = manual_servos.applied;
+        self.servos = manual_servos.servos;
 
         let ds_out = deepstall_override_scheduler_tick(
             &mut self.landing,
