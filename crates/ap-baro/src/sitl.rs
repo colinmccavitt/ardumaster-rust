@@ -274,6 +274,14 @@ impl Default for SitlBaroBackend {
 
 impl SitlBaroBackend {
     #[must_use]
+    pub fn with_config(config: SitlBaroConfig) -> Self {
+        Self {
+            config,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
     pub const fn config(&self) -> &SitlBaroConfig {
         &self.config
     }
@@ -385,6 +393,140 @@ impl SitlBaroBackend {
         }
         self.has_pending = false;
         Some(self.pending)
+    }
+}
+
+
+/// Dual-instance capacity, upstream `BARO_MAX_INSTANCES`.
+pub const SITL_BARO_MAX_INSTANCES: usize = 2;
+
+/// Per-instance health aggregation, upstream `AP_Baro` frontend flags.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaroHealthFlags {
+    /// Instance has published at least one tick and is not disabled.
+    pub healthy: [bool; SITL_BARO_MAX_INSTANCES],
+    /// Instance currently holds a valid sample.
+    pub have_sample: [bool; SITL_BARO_MAX_INSTANCES],
+    pub instance_count: u8,
+    /// Selected primary baro index, upstream `_primary`.
+    pub primary: u8,
+}
+
+impl BaroHealthFlags {
+    #[must_use]
+    pub fn any_healthy(&self) -> bool {
+        self.healthy[..self.instance_count as usize]
+            .iter()
+            .any(|&healthy| healthy)
+    }
+
+    #[must_use]
+    pub fn primary_healthy(&self) -> bool {
+        let i = self.primary as usize;
+        i < self.instance_count as usize && self.healthy[i]
+    }
+}
+
+/// Multi-instance SITL baro cluster stub, upstream dual `AP_Baro_SITL` drivers.
+#[derive(Debug, Clone)]
+pub struct SitlBaroCluster {
+    backends: [SitlBaroBackend; SITL_BARO_MAX_INSTANCES],
+    instance_count: u8,
+    primary: u8,
+}
+
+impl Default for SitlBaroCluster {
+    fn default() -> Self {
+        let mut cluster = Self {
+            backends: [SitlBaroBackend::default(), SitlBaroBackend::default()],
+            instance_count: 0,
+            primary: 0,
+        };
+        let _ = cluster.register(SitlBaroBackend::default());
+        cluster
+    }
+}
+
+impl SitlBaroCluster {
+    #[must_use]
+    pub const fn instance_count(&self) -> u8 {
+        self.instance_count
+    }
+
+    #[must_use]
+    pub const fn primary(&self) -> u8 {
+        self.primary
+    }
+
+    pub fn register(&mut self, backend: SitlBaroBackend) -> Result<u8, ()> {
+        if self.instance_count as usize >= SITL_BARO_MAX_INSTANCES {
+            return Err(());
+        }
+        let idx = self.instance_count as usize;
+        self.backends[idx] = backend;
+        self.instance_count += 1;
+        Ok(self.instance_count - 1)
+    }
+
+    pub fn set_primary(&mut self, index: u8) {
+        if index < self.instance_count {
+            self.primary = index;
+        }
+    }
+
+    #[must_use]
+    pub fn backend(&self, index: u8) -> Option<&SitlBaroBackend> {
+        (index < self.instance_count).then(|| &self.backends[index as usize])
+    }
+
+    #[must_use]
+    pub fn backend_mut(&mut self, index: u8) -> Option<&mut SitlBaroBackend> {
+        (index < self.instance_count).then(|| &mut self.backends[index as usize])
+    }
+
+    pub fn timer_tick_all(
+        &mut self,
+        sim_altitude_m: f32,
+        airspeed_bf: Vector3f,
+        now_ms: u32,
+        noise_sample: f32,
+    ) {
+        for i in 0..self.instance_count {
+            let idx = i as usize;
+            let noise = if i == 0 { noise_sample } else { 0.0 };
+            let _ = self.backends[idx].timer_tick(
+                sim_altitude_m,
+                airspeed_bf,
+                now_ms,
+                noise,
+            );
+        }
+    }
+
+    #[must_use]
+    pub fn health_flags(&self) -> BaroHealthFlags {
+        let mut flags = BaroHealthFlags {
+            instance_count: self.instance_count,
+            primary: self.primary,
+            ..BaroHealthFlags::default()
+        };
+        for i in 0..self.instance_count as usize {
+            flags.healthy[i] = self.backends[i].healthy();
+            flags.have_sample[i] = self.backends[i].state().have_sample;
+        }
+        flags
+    }
+
+    /// Primary instance sample after `update()`, upstream `_primary_baro`.
+    #[must_use]
+    pub fn primary_sample(&mut self) -> Option<BaroSampleState> {
+        let primary = self.primary as usize;
+        self.backends[primary]
+            .update()
+            .or_else(|| {
+                let sample = *self.backends[primary].state();
+                sample.have_sample.then_some(sample)
+            })
     }
 }
 
@@ -510,6 +652,40 @@ mod tests {
         assert!(baro.timer_tick(0.0, Vector3f::zero(), 10, 0.0));
         assert!(baro.update().is_some());
         assert!(baro.update().is_none());
+    }
+    #[test]
+    fn cluster_registers_two_instances() {
+        let mut cluster = SitlBaroCluster::default();
+        assert_eq!(cluster.instance_count(), 1);
+        assert!(cluster.register(SitlBaroBackend::default()).is_ok());
+        assert_eq!(cluster.instance_count(), 2);
+        assert!(cluster.register(SitlBaroBackend::default()).is_err());
+    }
+
+    #[test]
+    fn cluster_health_flags_track_primary_and_secondary() {
+        let mut cluster = SitlBaroCluster::default();
+        let secondary = SitlBaroBackend::with_config(SitlBaroConfig {
+            disabled: true,
+            ..SitlBaroConfig::default()
+        });
+        let _ = cluster.register(secondary);
+        cluster.timer_tick_all(100.0, Vector3f::zero(), 10, 0.0);
+        let flags = cluster.health_flags();
+        assert_eq!(flags.instance_count, 2);
+        assert!(flags.healthy[0]);
+        assert!(flags.have_sample[0]);
+        assert!(!flags.healthy[1]);
+    }
+
+    #[test]
+    fn cluster_primary_sample_comes_from_selected_index() {
+        let mut cluster = SitlBaroCluster::default();
+        let _ = cluster.register(SitlBaroBackend::default());
+        cluster.set_primary(1);
+        cluster.timer_tick_all(250.0, Vector3f::zero(), 10, 0.0);
+        let sample = cluster.primary_sample().expect("primary sample");
+        assert!((sample.altitude_m - 250.0).abs() < 1.0);
     }
 
 }
