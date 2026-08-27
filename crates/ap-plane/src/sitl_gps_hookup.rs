@@ -153,7 +153,7 @@ impl SitlGpsHookup {
     pub fn gps_dual_health_publish(&mut self) -> GpsDualHealthFlags {
         self.sync_dual_truth();
         if let Some(dual) = self.dual.as_mut() {
-            return dual.dual_health_flags();
+            return dual.dual_health_flags_at(self.truth.now_ms);
         }
         let health = self.gps_health_publish();
         GpsDualHealthFlags {
@@ -213,15 +213,17 @@ impl SitlGpsHookup {
         self.sync_dual_truth();
         let now_ms = self.truth.now_ms;
         if let Some(dual) = self.dual.as_mut() {
-            if !dual.dual_enabled {
-                return dual.output_health_at(now_ms).is_healthy();
-            }
-            match dual.auto_switch {
-                GpsAutoSwitch::Blend => dual.output_health_at(now_ms).is_healthy(),
-                GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
-                    dual.output_health_at(now_ms).is_healthy()
+            let health_ok = if !dual.dual_enabled {
+                dual.output_health_at(now_ms).is_healthy()
+            } else {
+                match dual.auto_switch {
+                    GpsAutoSwitch::Blend => dual.output_health_at(now_ms).is_healthy(),
+                    GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
+                        dual.output_health_at(now_ms).is_healthy()
+                    }
                 }
-            }
+            };
+            health_ok && dual.dual_health_flags_at(now_ms).rtk_yaw_fresh
         } else {
             self.gps_health_publish().is_healthy()
         }

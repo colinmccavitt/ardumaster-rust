@@ -344,10 +344,18 @@ impl GpsDualStub {
 
     #[must_use]
     pub fn dual_health_flags(&mut self) -> GpsDualHealthFlags {
+        let now_ms = self
+            .primary_truth
+            .now_ms
+            .max(self.secondary_truth.now_ms);
+        self.dual_health_flags_at(now_ms)
+    }
+
+    #[must_use]
+    pub fn dual_health_flags_at(&mut self, now_ms: u32) -> GpsDualHealthFlags {
         self.sync_moving_baseline_yaw();
         let p = self.instance_health_at(0, self.primary_truth.now_ms);
         let s = self.instance_health_at(1, self.secondary_truth.now_ms);
-        let now_ms = self.instance_now_ms(self.primary_instance.min(1));
         GpsDualHealthFlags {
             per_instance: [p, s],
             instance_count: if self.dual_enabled { 2 } else { 1 },
@@ -358,6 +366,11 @@ impl GpsDualStub {
             ],
             rtk_yaw_fresh: self.moving_baseline.rover_yaw_pre_arm_ok(now_ms),
         }
+    }
+
+    /// Inject rover yaw for integration tests (moving-baseline pre-arm gating).
+    pub fn set_rover_yaw_state(&mut self, yaw: crate::moving_baseline::GpsYawState) {
+        self.moving_baseline.rover_yaw = yaw;
     }
 
     /// Active output status, upstream primary/blended instance selection.

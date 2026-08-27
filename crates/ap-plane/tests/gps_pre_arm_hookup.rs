@@ -102,10 +102,48 @@ fn rtk_rover_yaw_stale_blocks_dual_pre_arm() {
     let _ = hookup.gps_status_publish();
     assert!(hookup.gps_dual_pre_arm_ok());
     hookup.truth.now_ms = 200 + GPS_YAW_TIMEOUT_MS + 1;
-    if let Some(dual) = hookup.dual.as_mut() {
-        dual.secondary_truth.now_ms = hookup.truth.now_ms;
-    }
-    let _ = hookup.gps_status_publish();
     assert!(!hookup.gps_dual_pre_arm_ok());
 }
 
+
+
+#[test]
+fn rtk_rover_yaw_poor_accuracy_blocks_dual_pre_arm() {
+    use ap_gps::{
+        GpsParams, GpsYawState, GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER,
+        GPS_YAW_MAX_ACCURACY_DEG,
+    };
+    use ap_plane::sitl_gps_hookup::SitlGpsHookup;
+
+    let mut hookup = SitlGpsHookup::default();
+    let mut params = GpsParams::default();
+    params.gps1.gps_type = GPS_TYPE_UBLOX_RTK_BASE;
+    params.gps2.gps_type = GPS_TYPE_UBLOX_RTK_ROVER;
+    hookup.apply_gps_params(params);
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.latitude_deg = dual.primary_truth.latitude_deg + 0.001;
+        dual.secondary_truth.now_ms = 200;
+    }
+    let _ = hookup.gps_status_publish();
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.set_rover_yaw_state(GpsYawState {
+            have_gps_yaw: true,
+            gps_yaw_deg: 90.0,
+            gps_yaw_accuracy_deg: GPS_YAW_MAX_ACCURACY_DEG + 15.0,
+            gps_yaw_time_ms: 200,
+            have_gps_yaw_accuracy: true,
+        });
+    }
+    assert!(!hookup.gps_dual_pre_arm_ok());
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.set_rover_yaw_state(GpsYawState {
+            have_gps_yaw: true,
+            gps_yaw_deg: 90.0,
+            gps_yaw_accuracy_deg: GPS_YAW_MAX_ACCURACY_DEG,
+            gps_yaw_time_ms: 200,
+            have_gps_yaw_accuracy: true,
+        });
+    }
+    assert!(hookup.gps_dual_pre_arm_ok());
+}

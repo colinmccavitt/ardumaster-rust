@@ -53,7 +53,7 @@ pub use blend::{
 pub use dual::{GpsDualStub, GpsInstanceTruth};
 pub use moving_baseline::{
     GpsMovingBaseline, GpsYawState, GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER,
-    GPS_YAW_TIMEOUT_MS,
+    GPS_YAW_MAX_ACCURACY_DEG, GPS_YAW_TIMEOUT_MS,
 };
 pub use params::{
     GpsInstanceParams, GpsParams, GPS_BLEND_MASK_PARAM_DEFAULT, GPS_TYPE_NONE,

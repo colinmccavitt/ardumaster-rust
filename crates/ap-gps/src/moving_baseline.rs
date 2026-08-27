@@ -6,6 +6,8 @@ pub const GPS_TYPE_UBLOX_RTK_BASE: u8 = 25;
 pub const GPS_TYPE_UBLOX_RTK_ROVER: u8 = 26;
 pub const GPS_YAW_TIMEOUT_MS: u32 = 15_000;
 pub const GPS_YAW_DEFAULT_ACCURACY_DEG: f32 = 10.0;
+/// Maximum GPS yaw error for arming when accuracy is reported.
+pub const GPS_YAW_MAX_ACCURACY_DEG: f32 = GPS_YAW_DEFAULT_ACCURACY_DEG;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GpsYawState {
@@ -31,6 +33,14 @@ impl GpsYawState {
     #[must_use]
     pub fn yaw_fresh(self, now_ms: u32) -> bool {
         self.have_gps_yaw && now_ms.wrapping_sub(self.gps_yaw_time_ms) <= GPS_YAW_TIMEOUT_MS
+    }
+
+    /// Whether reported yaw accuracy passes the pre-arm gate.
+    #[must_use]
+    pub fn yaw_accuracy_pre_arm_ok(self) -> bool {
+        !self.have_gps_yaw
+            || !self.have_gps_yaw_accuracy
+            || self.gps_yaw_accuracy_deg <= GPS_YAW_MAX_ACCURACY_DEG
     }
 }
 
@@ -115,10 +125,16 @@ impl GpsMovingBaseline {
         if self.base_instance().is_none() {
             return;
         }
+        let prev_accuracy = self.rover_yaw.have_gps_yaw_accuracy;
+        let prev_accuracy_deg = self.rover_yaw.gps_yaw_accuracy_deg;
         self.rover_yaw = GpsYawState::from_heading(
             Self::heading_from_positions(base_lat_deg, base_lon_deg, rover_lat_deg, rover_lon_deg),
             now_ms,
         );
+        if prev_accuracy {
+            self.rover_yaw.have_gps_yaw_accuracy = true;
+            self.rover_yaw.gps_yaw_accuracy_deg = prev_accuracy_deg;
+        }
     }
 
     #[must_use]
@@ -149,7 +165,9 @@ impl GpsMovingBaseline {
     #[must_use]
     pub fn rover_yaw_pre_arm_ok(self, now_ms: u32) -> bool {
         self.rover_instance()
-            .is_none_or(|_| self.rover_yaw.yaw_fresh(now_ms))
+.is_none_or(|_| {
+            self.rover_yaw.yaw_fresh(now_ms) && self.rover_yaw.yaw_accuracy_pre_arm_ok()
+        })
     }
 }
 
@@ -180,5 +198,21 @@ mod tests {
         mb.rover_yaw = GpsYawState::from_heading(45.0, 100);
         assert!(mb.rover_yaw_pre_arm_ok(500));
         assert!(!mb.rover_yaw_pre_arm_ok(20_000));
+    }
+
+    #[test]
+    fn poor_yaw_accuracy_fails_pre_arm() {
+        let mut mb =
+            GpsMovingBaseline::from_types(GPS_TYPE_UBLOX_RTK_BASE, GPS_TYPE_UBLOX_RTK_ROVER);
+        mb.rover_yaw = GpsYawState {
+            have_gps_yaw: true,
+            gps_yaw_deg: 90.0,
+            gps_yaw_accuracy_deg: GPS_YAW_MAX_ACCURACY_DEG + 5.0,
+            gps_yaw_time_ms: 500,
+            have_gps_yaw_accuracy: true,
+        };
+        assert!(!mb.rover_yaw_pre_arm_ok(500));
+        mb.rover_yaw.gps_yaw_accuracy_deg = GPS_YAW_MAX_ACCURACY_DEG;
+        assert!(mb.rover_yaw_pre_arm_ok(500));
     }
 }
