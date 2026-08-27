@@ -80,7 +80,7 @@ impl DcmDriftLoop {
         timing: &LoopTiming,
         loop_dt: f32,
     ) {
-        let Some((delta_velocity, delta_velocity_dt)) = imu.get_delta_velocity(timing) else {
+        let Some((delta_velocity, delta_velocity_dt)) = ins.get_delta_velocity(timing) else {
             return;
         };
         if delta_velocity_dt <= 0.0 {
