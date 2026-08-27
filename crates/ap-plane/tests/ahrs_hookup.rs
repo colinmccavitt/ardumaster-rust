@@ -349,3 +349,68 @@ fn main_loop_publishes_dead_reckoning_offset_from_ahrs() {
     assert_eq!(vehicle.dead_reckoning_east_m, 0.0);
 }
 
+#[test]
+fn attitude_rad_accessors_match_centidegrees() {
+    use ap_math::scalar::cd_to_rad;
+
+    let attitude = AhrsAttitude {
+        roll_sensor_cd: 4500,
+        pitch_sensor_cd: -2000,
+        yaw_sensor_cd: 9000,
+    };
+    assert!((attitude.roll_rad() - cd_to_rad(4500.0)).abs() < 1e-6);
+    assert!((attitude.pitch_rad() - cd_to_rad(-2000.0)).abs() < 1e-6);
+    assert!((attitude.yaw_rad() - cd_to_rad(9000.0)).abs() < 1e-6);
+}
+
+#[test]
+fn ahrs_healthy_false_when_matrix_needs_reset() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth};
+    use ap_plane::ahrs_hookup::ahrs_healthy;
+
+    assert!(!ahrs_healthy(MatrixHealth::NeedsReset, true, AhrsBackendKind::Dcm));
+    assert!(!ahrs_healthy(MatrixHealth::NeedsReset, true, AhrsBackendKind::Ekf3));
+}
+
+#[test]
+fn ahrs_healthy_requires_ekf_when_active_backend_is_ekf3() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth};
+    use ap_plane::ahrs_hookup::ahrs_healthy;
+
+    assert!(ahrs_healthy(MatrixHealth::Ok, true, AhrsBackendKind::Ekf3));
+    assert!(!ahrs_healthy(MatrixHealth::Ok, false, AhrsBackendKind::Ekf3));
+    assert!(ahrs_healthy(MatrixHealth::Ok, false, AhrsBackendKind::Dcm));
+}
+
+#[test]
+fn main_loop_publishes_ahrs_healthy_from_update() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth, YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.yaw_ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        gps_lat_e7: Some(473_582_100),
+        gps_lng_e7: Some(-122_234_567),
+        ..YawDriftContext::default()
+    };
+    vehicle.gps_yaw = Some(YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    });
+
+    vehicle.ahrs_update();
+
+    assert!(vehicle.ahrs_healthy);
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::Ok);
+
+    vehicle.ahrs.dcm.matrix.a.x = f32::NAN;
+    vehicle.ahrs_update();
+    assert!(!vehicle.ahrs_healthy);
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::NeedsReset);
+}
+

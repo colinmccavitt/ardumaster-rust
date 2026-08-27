@@ -10,7 +10,7 @@ use ap_ahrs::{
     MatrixHealth, WindVaneSample, YawCompassSample, YawDriftContext, YawGpsSample, YawUpdateInputs,
 };
 use ap_ins::{InertialSensorFrontend, LoopTiming};
-use ap_math::scalar::{rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
+use ap_math::scalar::{cd_to_rad, rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
 use ap_math::vector3::Vector3f;
 
 /// Attitude sensors published each loop, upstream `AP_AHRS` roll/pitch/yaw_sensor.
@@ -22,6 +22,26 @@ pub struct AhrsAttitude {
     pub pitch_sensor_cd: i32,
     /// Yaw, centidegrees, `0..35999`. Upstream `ahrs.yaw_sensor`.
     pub yaw_sensor_cd: i32,
+}
+
+impl AhrsAttitude {
+    /// Roll attitude in radians, upstream `AP_AHRS::get_roll_rad()`.
+    #[must_use]
+    pub fn roll_rad(self) -> f32 {
+        cd_to_rad(self.roll_sensor_cd as f32)
+    }
+
+    /// Pitch attitude in radians, upstream `AP_AHRS::get_pitch_rad()`.
+    #[must_use]
+    pub fn pitch_rad(self) -> f32 {
+        cd_to_rad(self.pitch_sensor_cd as f32)
+    }
+
+    /// Yaw attitude in radians, upstream `AP_AHRS::get_yaw_rad()`.
+    #[must_use]
+    pub fn yaw_rad(self) -> f32 {
+        cd_to_rad(self.yaw_sensor_cd as f32)
+    }
 }
 
 /// Running AHRS state the vehicle loop owns, upstream `AP::ahrs()`.
@@ -163,6 +183,14 @@ impl AhrsFeed {
 
     /// NE offset from last GPS fix while dead-reckoning, upstream position offsets.
     #[must_use]
+    /// Whether AHRS is healthy for arming and navigation, upstream `AP_AHRS::healthy()`.
+    #[must_use]
+    pub fn healthy(&self) -> bool {
+        ahrs_healthy(self.matrix_health, self.ekf_healthy, self.active_backend)
+    }
+
+    /// NE offset from last GPS fix while dead-reckoning, upstream position offsets.
+    #[must_use]
     pub fn dead_reckoning_offset(&self) -> (f32, f32, bool) {
         let p = &self.drift.position;
         (p.offset_north_m, p.offset_east_m, p.have_position)
@@ -173,6 +201,22 @@ impl AhrsFeed {
         if vane.speed_true_mps > 0.0 {
             self.drift.wind.wind = vane.to_wind_ned();
         }
+    }
+}
+
+/// Combined AHRS health for arming checks, upstream `AP_AHRS::healthy()`.
+#[must_use]
+pub fn ahrs_healthy(
+    matrix_health: MatrixHealth,
+    ekf_healthy: bool,
+    active_backend: AhrsBackendKind,
+) -> bool {
+    if matrix_health != MatrixHealth::Ok {
+        return false;
+    }
+    match active_backend {
+        AhrsBackendKind::Ekf3 => ekf_healthy,
+        AhrsBackendKind::Dcm => true,
     }
 }
 

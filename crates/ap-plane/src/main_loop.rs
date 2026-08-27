@@ -196,6 +196,8 @@ pub struct PlaneMainLoop {
     pub active_ahrs_backend: ap_ahrs::AhrsBackendKind,
     /// DCM matrix health from last AHRS update.
     pub ahrs_matrix_health: ap_ahrs::MatrixHealth,
+    /// Whether AHRS is healthy for arming, upstream `AP_AHRS::healthy()`.
+    pub ahrs_healthy: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
     /// Dead-reckoning east offset (m) when GPS absent.
@@ -359,6 +361,7 @@ impl Default for PlaneMainLoop {
             ekf_healthy: false,
             active_ahrs_backend: ap_ahrs::AhrsBackendKind::Dcm,
             ahrs_matrix_health: ap_ahrs::MatrixHealth::Ok,
+            ahrs_healthy: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
             have_dead_reckoning_position: false,
@@ -443,7 +446,7 @@ impl PlaneMainLoop {
             self.eas2tas,
             &mut self.ahrs.last_gps_fix_ms,
         );
-        let (_health, attitude) = self.ahrs.update_from_ins(
+        let (health, attitude) = self.ahrs.update_from_ins(
             &self.ins,
             &self.loop_timing,
             yaw,
@@ -453,7 +456,8 @@ impl PlaneMainLoop {
         self.estimated_wind = self.ahrs.wind_estimate();
         self.ekf_healthy = self.ahrs.ekf_healthy;
         self.active_ahrs_backend = self.ahrs.active_backend;
-        self.ahrs_matrix_health = self.ahrs.matrix_health;
+        self.ahrs_matrix_health = health;
+        self.ahrs_healthy = self.ahrs.healthy();
         let (n, e, have) = self.ahrs.dead_reckoning_offset();
         self.dead_reckoning_north_m = n;
         self.dead_reckoning_east_m = e;
