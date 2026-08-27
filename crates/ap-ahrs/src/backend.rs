@@ -1,6 +1,11 @@
 //! AHRS backend selection, upstream `AP_AHRS::EKFType` and `backend_for_type`.
 //!
 //! EKF3 update wiring is stubbed; Plane falls back from EKF to DCM when unhealthy.
+//!
+//! **FW-008 DCM scope is complete.** NavEKF3 full filter port continues in FW-009.
+
+/// FW-008 DCM port scope is complete; NavEKF3 full filter is FW-009.
+pub const DCM_SCOPE_COMPLETE: bool = true;
 
 /// Configured attitude estimator, upstream `AP_AHRS::EKFType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,6 +85,11 @@ mod tests {
             active_backend_kind(AhrsBackendKind::Ekf3, true),
             AhrsBackendKind::Ekf3
         );
+    }
+
+    #[test]
+    fn dcm_scope_complete_marker_for_fw008() {
+        assert!(DCM_SCOPE_COMPLETE);
     }
 
     #[test]

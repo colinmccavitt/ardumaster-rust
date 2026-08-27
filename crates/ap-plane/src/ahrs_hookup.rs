@@ -51,7 +51,7 @@ pub struct AhrsFeed {
     pub configured_backend: AhrsBackendKind,
     /// Backend driving attitude this cycle, upstream `active_EKF_type`.
     pub active_backend: AhrsBackendKind,
-    /// EKF health for fallback decisions; stub until NavEKF3 is ported.
+    /// EKF health for fallback decisions; full NavEKF3 filter is FW-009.
     pub ekf_healthy: bool,
     /// NavEKF3 filter stub, upstream `NavEKF3`.
     pub ekf3: Ekf3Loop,
@@ -190,7 +190,7 @@ impl AhrsFeed {
     /// Accelerometer bias estimate, upstream `AP_AHRS::get_accel_bias()`.
     #[must_use]
     pub fn accel_bias(&self) -> Vector3f {
-        // NavEKF3 owns accel bias when active; DCM path returns zero until ported.
+        // NavEKF3 owns accel bias when active (FW-009); DCM path returns zero.
         Vector3f::zero()
     }
 

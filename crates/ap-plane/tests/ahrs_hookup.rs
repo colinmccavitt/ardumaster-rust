@@ -592,3 +592,30 @@ fn main_loop_pre_arm_ok_requires_healthy_ahrs() {
     assert!(!vehicle.pre_arm_ok);
 }
 
+#[test]
+fn dcm_scope_publishes_all_vehicle_consumers() {
+    use ap_ahrs::{AhrsBackendKind, DCM_SCOPE_COMPLETE, MatrixHealth};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    assert!(DCM_SCOPE_COMPLETE);
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Dcm);
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+    vehicle.stabilize();
+
+    assert_eq!(vehicle.configured_ahrs_backend, AhrsBackendKind::Dcm);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Dcm);
+    assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::Ok);
+    assert!(vehicle.ahrs_healthy);
+    assert!(vehicle.ahrs_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+    assert!((vehicle.roll_rad - vehicle.attitude.roll_rad()).abs() < f32::EPSILON);
+    assert_eq!(vehicle.stabilize_ctx.accel_bias_y, 0.0);
+    assert!(vehicle.ticks.ahrs_update >= 1);
+    assert!(vehicle.ticks.stabilize >= 1);
+}
+

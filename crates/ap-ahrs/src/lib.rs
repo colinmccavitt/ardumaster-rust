@@ -1,4 +1,4 @@
-//! Port of `AP_AHRS_DCM`, ArduPilot's fallback attitude estimator. FW-008.
+//! Port of `AP_AHRS_DCM`, ArduPilot's fallback attitude estimator. FW-008 DCM scope complete.
 //!
 //! DCM carries the vehicle's attitude as a direction cosine matrix and rotates
 //! it by each gyro sample. That integration drifts, in two ways that need
@@ -33,7 +33,7 @@ pub mod ekf3_loop;
 pub mod wind_estimation;
 pub mod yaw_drift;
 
-pub use backend::{active_backend_kind, backend_for_kind, AhrsBackendKind};
+pub use backend::{active_backend_kind, backend_for_kind, AhrsBackendKind, DCM_SCOPE_COMPLETE};
 pub use ekf3_loop::{ekf3_full_update_from_ins, ekf3_step_from_ins, Ekf3Loop, Ekf3UpdateOutcome};
 pub use dcm_drift_loop::{
     dcm_step_with_drift_from_ins, dcm_step_with_drift_from_ins_yaw, DcmDriftLoop,
