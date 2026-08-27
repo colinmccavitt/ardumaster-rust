@@ -557,6 +557,7 @@ pub fn convert_g2_objects<S: Storage + ?Sized>(
             c.new_key,
             c.old_index,
             false,
+            false,
             c.members,
             object_bytes,
         )?;
@@ -640,6 +641,7 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
     new_key: u16,
     old_index: u32,
     is_top_level: bool,
+    force: bool,
     member: GroupMemberDescriptor,
     object_bytes: &mut [u8],
 ) -> Result<ConvertOutcome, StorageError> {
@@ -663,7 +665,7 @@ pub fn convert_class_entry<S: Storage + ?Sized>(
         member.var_type.as_u8(),
         member.dest_group_element,
     );
-    if configured_in_storage(storage, new_header) {
+    if !force && configured_in_storage(storage, new_header) {
         return Ok(ConvertOutcome::SkippedConfigured);
     }
 
@@ -690,6 +692,7 @@ pub fn convert_class<S: Storage + ?Sized>(
     new_key: u16,
     old_index: u32,
     is_top_level: bool,
+    force: bool,
     members: &[GroupMemberDescriptor],
     object_bytes: &mut [u8],
 ) -> Result<ConvertClassStats, StorageError> {
@@ -701,6 +704,7 @@ pub fn convert_class<S: Storage + ?Sized>(
             new_key,
             old_index,
             is_top_level,
+            force,
             *member,
             object_bytes,
         )? {
@@ -712,18 +716,87 @@ pub fn convert_class<S: Storage + ?Sized>(
     Ok(stats)
 }
 
+/// One top-level object migrated via [`convert_class`], upstream
+/// `Plane::load_parameters` airspeed/fence/rpm blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassConversionEntry {
+    /// Old top-level key before the object moved to AP_Vehicle.
+    pub old_key: u16,
+    /// Index in the old parameter tree.
+    pub old_index: u32,
+    /// Whether this is a top-level conversion.
+    pub is_top_level: bool,
+    /// Write even when the destination is already configured (RPM migration).
+    pub force: bool,
+    /// Destination object name for callers resolving member layout.
+    pub object_name: &'static str,
+}
+
+/// Resolved class conversion with destination key and member descriptors.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassConversion<'a> {
+    pub entry: ClassConversionEntry,
+    pub new_key: u16,
+    pub members: &'a [GroupMemberDescriptor],
+}
+
+/// Migrate formerly top-level objects, upstream `AP_Param::convert_class` calls
+/// in `Plane::load_parameters`.
+pub fn convert_class_objects<S: Storage + ?Sized>(
+    storage: &mut S,
+    conversions: &[ClassConversion<'_>],
+    object_bytes: &mut [&mut [u8]],
+) -> Result<ConvertClassStats, StorageError> {
+    let mut stats = ConvertClassStats::default();
+    for (c, obj) in conversions.iter().zip(object_bytes.iter_mut()) {
+        let sub = convert_class(
+            storage,
+            c.entry.old_key,
+            c.new_key,
+            c.entry.old_index,
+            c.entry.is_top_level,
+            c.entry.force,
+            c.members,
+            obj,
+        )?;
+        stats.saved += sub.saved;
+        stats.skipped += sub.skipped;
+        stats.not_found += sub.not_found;
+    }
+    Ok(stats)
+}
+
+/// Aggregated stats from Plane load-time parameter migrations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LoadParametersStats {
+    pub named: ConvertClassStats,
+    pub rc_options: ConvertClassStats,
+    pub g2: ConvertClassStats,
+    pub class: ConvertClassStats,
+}
+
+#[must_use]
+pub const fn merge_convert_stats(a: ConvertClassStats, b: ConvertClassStats) -> ConvertClassStats {
+    ConvertClassStats {
+        saved: a.saved + b.saved,
+        skipped: a.skipped + b.skipped,
+        not_found: a.not_found + b.not_found,
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     struct Ram {
-        bytes: [u8; 128],
+        bytes: [u8; 512],
     }
 
     impl Ram {
         fn formatted() -> Self {
-            let mut s = Self { bytes: [0xFF; 128] };
+            let mut s = Self { bytes: [0xFF; 512] };
             s.bytes[0] = EEPROM_MAGIC[0];
             s.bytes[1] = EEPROM_MAGIC[1];
             s.bytes[2] = EEPROM_REVISION;
@@ -753,7 +826,7 @@ mod tests {
     #[test]
     fn format_storage_writes_header_and_sentinel() {
         let mut s = Ram {
-            bytes: [0; 128],
+            bytes: [0; 512],
         };
         format_storage(&mut s).expect("format");
         assert!(eeprom_header_valid(&s));
@@ -934,6 +1007,7 @@ mod tests {
             new_key,
             3,
             false,
+            false,
             &members,
             &mut obj,
         )
@@ -977,6 +1051,7 @@ mod tests {
             old_key,
             new_key,
             1,
+            false,
             false,
             &members,
             &mut obj,
@@ -1240,6 +1315,96 @@ mod tests {
         assert_eq!(stats.saved, 1);
         let got = f32::from_le_bytes([obj[0], obj[1], obj[2], obj[3]]);
         assert!((got - 1.5).abs() < 1e-6);
+    }
+    #[test]
+    fn convert_class_objects_runs_plane_airspeed_entry() {
+        use crate::plane::{PLANE_AIRSPEED_CLASS_CONVERSION, PLANE_CLASS_CONVERSIONS};
+
+        assert_eq!(PLANE_CLASS_CONVERSIONS[0], PLANE_AIRSPEED_CLASS_CONVERSION);
+
+        let mut s = Ram::formatted();
+        let old_ge = old_group_element_for_member(0, 0, true);
+        let old_h = ParamHeader::new(
+            PLANE_AIRSPEED_CLASS_CONVERSION.old_key,
+            VarType::Float.as_u8(),
+            old_ge,
+        );
+        save(&mut s, old_h, ParamValue::Float(12.0), None, false).expect("old airspeed");
+
+        let mut obj = [0u8; 4];
+        let members = [GroupMemberDescriptor {
+            offset: 0,
+            var_type: VarType::Float,
+            idx: 0,
+            dest_group_element: 0,
+        }];
+        let conversions = [ClassConversion {
+            entry: PLANE_AIRSPEED_CLASS_CONVERSION,
+            new_key: 257,
+            members: &members,
+        }];
+        let mut bufs: [&mut [u8]; 1] = [&mut obj];
+        let stats = convert_class_objects(&mut s, &conversions, &mut bufs).expect("convert");
+        assert_eq!(stats.saved, 1);
+        let got = f32::from_le_bytes([obj[0], obj[1], obj[2], obj[3]]);
+        assert!((got - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_parameters_migrations_runs_orchestration_stub() {
+        use crate::info::{EnumFilter, GroupInfo, ParamInfo, FRAME_PLANE};
+        use crate::plane::load_parameters_migrations;
+
+        static FENCE_ALT_MIN: [GroupInfo<'static>; 1] = [GroupInfo {
+            name: "ALT_MIN",
+            idx: 7,
+            ptype: VarType::Float.as_u8(),
+            flags: 0,
+            group: None,
+        }];
+        static TABLE: [ParamInfo<'static>; 2] = [
+            ParamInfo {
+                name: "FENCE_",
+                key: 132,
+                ptype: VarType::Group.as_u8(),
+                flags: 0,
+                group: Some(&FENCE_ALT_MIN),
+            },
+            ParamInfo {
+                name: "RC3_OPTION",
+                key: 50,
+                ptype: VarType::Int16.as_u8(),
+                flags: 0,
+                group: None,
+            },
+        ];
+
+        let filter = EnumFilter::for_frame(FRAME_PLANE);
+        let mut s = Ram::formatted();
+
+        let old_fence = ParamHeader::new(228, VarType::Int16.as_u8(), 0);
+        save(&mut s, old_fence, ParamValue::Int16(-5), None, false).expect("old fence");
+        let old_rc = ParamHeader::new(58, VarType::Int8.as_u8(), 0);
+        save(&mut s, old_rc, ParamValue::Int8(3), None, false).expect("old rc chan");
+
+        let mut g2_obj = [0u8; 8];
+        let mut class_bufs: [&mut [u8]; 0] = [];
+
+        let stats = load_parameters_migrations(
+            &mut s,
+            &TABLE,
+            filter,
+            &[],
+            &mut g2_obj,
+            &[],
+            &mut class_bufs,
+        )
+        .expect("load");
+
+        assert_eq!(stats.named.saved, 1);
+        assert_eq!(stats.rc_options.saved, 1);
+        assert_eq!(stats.g2.saved, 0);
+        assert_eq!(stats.class.saved, 0);
     }
 
 
