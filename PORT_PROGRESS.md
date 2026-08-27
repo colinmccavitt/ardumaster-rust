@@ -24,7 +24,7 @@
 | **FW-029** | 100 | Done |
 | **FW-004** | 100 | Done |
 | **FW-011** | 68 | INS→AHRS publish |
-| **FW-008** | 45 | Vehicle wiring (PlaneMainLoop ahrs_update) |
+| **FW-008** | 60 | EKF backend selection stub |
 | **FW-020** | 15 | Wire AHRS feed, stabilize/set_servos |
 
 ## Session log (recent)
