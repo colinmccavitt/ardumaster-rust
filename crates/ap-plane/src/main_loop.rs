@@ -65,6 +65,9 @@ use crate::mode::ModeState;
 use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
+use crate::mode_glue_hookup::{
+    apply_mode_entry_throttle_suppression, resolve_effective_stick_mixing,
+};
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
 };
@@ -302,6 +305,10 @@ pub struct PlaneMainLoop {
     pub mode_entry_throttle_applied: bool,
     /// Whether mode-transition logic cleared throttle suppression.
     pub mode_transition_throttle_cleared: bool,
+    /// Whether mode glue zeroed pilot throttle on mode entry.
+    pub mode_glue_throttle_zeroed: bool,
+    /// Effective stick mixing after mode glue resolution.
+    pub effective_stick_mixing: Option<StickMixing>,
     /// Whether configured throttle limits apply this tick.
     pub throttle_use_limits: bool,
     /// Whether battery voltage compensation applies this tick.
@@ -549,6 +556,8 @@ impl Default for PlaneMainLoop {
             disarm_throttle_applied: false,
             mode_entry_throttle_applied: false,
             mode_transition_throttle_cleared: false,
+            mode_glue_throttle_zeroed: false,
+            effective_stick_mixing: Some(StickMixing::Fbw),
             throttle_use_limits: true,
             throttle_use_battery_comp: true,
             pilot_throttle_source: crate::mode_run::PilotThrottleSource::TrimAdjusted,
@@ -720,9 +729,16 @@ impl PlaneMainLoop {
         self.last_target_altitude = mission_out.target;
         self.mission_advanced = mission_out.advanced;
 
+        self.effective_stick_mixing = crate::mode_table::ModeNumber::from_number(
+            self.mode.control_mode,
+            &self.features,
+        )
+        .map(|mode| resolve_effective_stick_mixing(mode, self.stick_mixing))
+        .unwrap_or(self.stick_mixing);
+
         self.last_stabilize = dispatch_stabilize_from_mode(
             self.mode.control_mode,
-            self.stick_mixing,
+            self.effective_stick_mixing,
             &self.features,
         );
 
@@ -751,6 +767,13 @@ impl PlaneMainLoop {
             use_battery_compensation: self.throttle_use_battery_comp,
             battery_voltage_ratio: self.battery_voltage_ratio,
         });
+        let (pilot_throttle, zeroed) = apply_mode_entry_throttle_suppression(
+            self.mode.control_mode,
+            &self.features,
+            self.mode_entry.throttle_suppressed,
+            pilot_throttle,
+        );
+        self.mode_glue_throttle_zeroed = zeroed;
         self.stabilize_demands.throttle_scaled = pilot_throttle;
         self.servos.throttle_scaled = pilot_throttle;
 
@@ -813,7 +836,7 @@ impl PlaneMainLoop {
             &self.speed_scaler_inputs,
             self.last_stabilize,
             &self.rc_sticks,
-            self.stick_mixing,
+            self.effective_stick_mixing,
             self.attitude.roll_sensor_cd,
         );
         self.surface_speed_scaler = self.stabilize_ctx.scaler;
@@ -836,7 +859,7 @@ impl PlaneMainLoop {
         self.stabilize_servos.rudder_scaled = vtol_yaw_stick_glue_tick(
             self.stabilize_servos.rudder_scaled,
             &VtolYawStickGlueInputs {
-                stick_mixing: self.stick_mixing,
+                stick_mixing: self.effective_stick_mixing,
                 yaw_norm_dz: self.rc_sticks.yaw_norm_dz,
                 rudder_limit_scaled: 4500.0,
             },

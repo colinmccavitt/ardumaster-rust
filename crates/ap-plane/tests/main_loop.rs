@@ -802,8 +802,11 @@ fn update_control_mode_maps_pilot_throttle_from_rc() {
 #[test]
 fn stabilize_applies_vtol_yaw_stick_mixing() {
     use ap_plane::mode_run::StickMixing;
+    use ap_plane::mode_table::ModeNumber;
     let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::QHover.as_number();
     vehicle.stick_mixing = Some(StickMixing::VtolYaw);
+    vehicle.effective_stick_mixing = Some(StickMixing::VtolYaw);
     vehicle.rc_sticks.yaw_norm_dz = 1.0;
     vehicle.last_stabilize = ap_plane::main_loop::StabilizeDispatch {
         yaw: true,
@@ -811,4 +814,41 @@ fn stabilize_applies_vtol_yaw_stick_mixing() {
     };
     vehicle.stabilize();
     assert!(vehicle.stabilize_servos.rudder_scaled > 4000.0);
+}
+
+
+#[test]
+fn mode_glue_zeros_pilot_throttle_on_auto_entry() {
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = true;
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(2000);
+    vehicle.rc_failsafe_inputs.throttle_cfg = ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig {
+        radio_min: 1000,
+        radio_max: 2000,
+        ..Default::default()
+    };
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+    vehicle.pilot_throttle_source = ap_plane::mode_run::PilotThrottleSource::Direct;
+    vehicle.update_control_mode();
+    assert!(vehicle.mode_glue_throttle_zeroed);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}
+
+#[test]
+fn mode_glue_resolves_vtol_yaw_only_in_vtol_mode() {
+    use ap_plane::mode_run::StickMixing;
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.stick_mixing = Some(StickMixing::VtolYaw);
+    vehicle.mode.control_mode = ModeNumber::FlyByWireB.as_number();
+    vehicle.update_control_mode();
+    assert_eq!(vehicle.effective_stick_mixing, None);
+
+    vehicle.mode.control_mode = ModeNumber::QHover.as_number();
+    vehicle.update_control_mode();
+    assert_eq!(vehicle.effective_stick_mixing, Some(StickMixing::VtolYaw));
 }
