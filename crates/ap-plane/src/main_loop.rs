@@ -19,6 +19,7 @@ use ap_landing::deepstall_stage::DeepstallStage;
 use crate::deepstall_override_scheduler_hookup::{
     deepstall_override_scheduler_tick, DeepstallOverrideSchedulerInputs,
 };
+use crate::go_around_hookup::apply_landing_go_around_latch;
 use crate::landing_hookup::ServoOutputState;
 use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
@@ -211,6 +212,8 @@ pub struct PlaneMainLoop {
     pub landing_throttle_applied: bool,
     /// Go-around requested because deepstall elevator is missing.
     pub landing_request_go_around: bool,
+    /// Whether the latest `set_servos` tick latched go-around into landing flags.
+    pub last_go_around_latched: bool,
     /// Mission index and completion, upstream `AP_Mission`.
     pub mission: MissionContext,
     /// HAL inputs for mission advancement and target altitude each tick.
@@ -445,6 +448,7 @@ impl Default for PlaneMainLoop {
             landing_servo_override_applied: false,
             landing_throttle_applied: false,
             landing_request_go_around: false,
+            last_go_around_latched: false,
             mission: MissionContext::default(),
             mission_inputs: MissionSchedulerInputs::default(),
             last_target_altitude: TargetAltitude::FromNextWaypoint,
@@ -659,6 +663,10 @@ impl PlaneMainLoop {
                 .unwrap_or(false);
             if self.rangefinder_bump.flags.commanded_go_around {
                 self.landing_request_go_around = true;
+                apply_landing_go_around_latch(
+                    &mut self.landing.flags,
+                    true,
+                );
             }
         }
     }
@@ -715,7 +723,9 @@ impl PlaneMainLoop {
             },
         );
         self.landing_servo_override_applied = ds_out.applied_override;
-        self.landing_request_go_around = ds_out.request_go_around;
+        if ds_out.request_go_around {
+            self.landing_request_go_around = true;
+        }
         self.servos = ds_out.servos;
 
         let thr_out = landing_throttle_scheduler_tick(
@@ -762,6 +772,11 @@ impl PlaneMainLoop {
         );
         self.disarm_throttle_applied = arm_out.applied;
         self.servos = arm_out.servos;
+
+        self.last_go_around_latched = apply_landing_go_around_latch(
+            &mut self.landing.flags,
+            self.landing_request_go_around,
+        );
     }
 }
 
