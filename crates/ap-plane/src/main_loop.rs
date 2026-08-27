@@ -734,6 +734,24 @@ impl PlaneMainLoop {
             battery_voltage_ratio: self.battery_voltage_ratio,
         }
     }
+    /// Build SRV output glue inputs for the set_servos flap/auto-flap path.
+    fn srv_output_glue_inputs(&self) -> SrvOutputSchedulerInputs {
+        SrvOutputSchedulerInputs {
+            mixing: self.srv_output.mixing,
+            flap_params: self.srv_output.flap_params,
+            manual_flap_percent: self.srv_output_inputs.manual_flap_percent,
+            flap_speed_source_ms: self.airspeed_tas,
+            has_auto_flap_schedule: self.srv_output.has_auto_flap_schedule,
+            flight_stage_is_takeoff: self.srv_output.flight_stage_is_takeoff,
+            flight_stage_is_land: self.flight_stage_is_land,
+            apply_elevon_mixing: self.srv_output.apply_elevon_mixing,
+            apply_vtail_mixing: self.srv_output.apply_vtail_mixing,
+            apply_dspoiler_mixing: self.srv_output.apply_dspoiler_mixing,
+            dspoiler: self.srv_output.dspoiler,
+            dt: self.loop_timing.delta_time,
+            elevator_scaled: self.stabilize_servos.elevator_scaled,
+        }
+    }
 
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
@@ -925,10 +943,11 @@ impl PlaneMainLoop {
         self.landing_throttle_applied = thr_out.applied;
         self.servos = thr_out.servos;
 
+        let srv_inp = self.srv_output_glue_inputs();
         let srv_out = srv_output_scheduler_tick(
             self.servos,
             &mut self.srv_output,
-            &self.srv_output_inputs,
+            &srv_inp,
         );
         self.last_auto_flap_percent = srv_out.auto_flap_percent;
 

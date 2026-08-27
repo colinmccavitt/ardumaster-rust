@@ -505,25 +505,19 @@ fn set_servos_zeros_throttle_when_landing_suppressed() {
 fn set_servos_applies_elevon_mixing_via_srv_output() {
     use ap_plane::landing_hookup::ServoOutputState;
     use ap_plane::srv_output_hookup::MixingParams;
-    use ap_plane::srv_output_scheduler_hookup::SrvOutputSchedulerInputs;
     use ap_servo::function::Function;
 
     let mut vehicle = PlaneMainLoop::default();
     vehicle.stabilize_servos.aileron_scaled = 1000.0;
+    vehicle.stabilize_servos.elevator_scaled = 500.0;
     vehicle.servos = ServoOutputState {
         aileron_scaled: 1000.0,
         ..ServoOutputState::default()
     };
     vehicle.srv_output.apply_elevon_mixing = true;
-    vehicle.srv_output_inputs = SrvOutputSchedulerInputs {
-        mixing: MixingParams {
-            mixing_gain: 1.0,
-            mixing_offset: 0,
-        },
-        apply_elevon_mixing: true,
-        elevator_scaled: 500.0,
-        dt: 0.02,
-        ..SrvOutputSchedulerInputs::default()
+    vehicle.srv_output.mixing = MixingParams {
+        mixing_gain: 1.0,
+        mixing_offset: 0,
     };
     vehicle.srv_output.registry.assign(Function::AILERON, 1 << 0);
     vehicle.srv_output.registry.assign(Function::ELEVATOR, 1 << 1);
@@ -932,5 +926,27 @@ fn update_control_and_set_servos_share_pilot_throttle_glue() {
     vehicle.soft_armed = true;
     vehicle.set_servos();
     assert!((vehicle.servos.throttle_scaled - update_throttle).abs() < 0.1);
+}
+
+#[test]
+fn set_servos_applies_auto_flap_from_airspeed_via_glue() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::srv_output_scheduler_hookup::FlapSpeedParams;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.airspeed_tas = 14.0;
+    vehicle.srv_output.has_auto_flap_schedule = true;
+    vehicle.srv_output.flap_params = FlapSpeedParams {
+        flap_1_speed: 20,
+        flap_1_percent: 50,
+        flap_2_speed: 15,
+        flap_2_percent: 100,
+        ..FlapSpeedParams::default()
+    };
+    vehicle.servos = ServoOutputState::default();
+
+    vehicle.set_servos();
+
+    assert_eq!(vehicle.last_auto_flap_percent, 100);
 }
 
