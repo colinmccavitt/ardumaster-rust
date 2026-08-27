@@ -907,3 +907,30 @@ fn update_control_mode_uses_mode_glue_update_control_tick() {
     assert_eq!(vehicle.stabilize_demands.throttle_scaled, 0.0);
     assert_eq!(vehicle.servos.throttle_scaled, 0.0);
 }
+
+#[test]
+fn update_control_and_set_servos_share_pilot_throttle_glue() {
+    use ap_plane::mode_run::PilotThrottleSource;
+    use ap_plane::mode_table::ModeNumber;
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::FlyByWireB.as_number();
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(1800);
+    vehicle.rc_failsafe_inputs.throttle_cfg = RcChannelConfig {
+        radio_min: 1000,
+        radio_max: 2000,
+        ..Default::default()
+    };
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+    vehicle.pilot_throttle_source = PilotThrottleSource::Direct;
+    vehicle.update_control_mode();
+    let update_throttle = vehicle.servos.throttle_scaled;
+
+    vehicle.servos.throttle_scaled = 0.0;
+    vehicle.mode_entry.throttle_suppressed = false;
+    vehicle.soft_armed = true;
+    vehicle.set_servos();
+    assert!((vehicle.servos.throttle_scaled - update_throttle).abs() < 0.1);
+}
+

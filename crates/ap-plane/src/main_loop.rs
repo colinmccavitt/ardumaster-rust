@@ -74,9 +74,7 @@ use crate::mode_transition_throttle_hookup::{
 use crate::throttle_context_hookup::{
     throttle_context_tick, ThrottleContextInputs,
 };
-use crate::yaw_throttle_glue_hookup::{
-    pilot_throttle_glue_tick, PilotThrottleGlueInputs,
-};
+use crate::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -712,6 +710,21 @@ impl PlaneMainLoop {
         self.wind_alignment = self.ahrs.wind_alignment(degrees(self.attitude.yaw_rad()));
     }
 
+    /// Build pilot-throttle glue inputs shared by update_control and set_servos.
+    fn pilot_throttle_glue_inputs(&self) -> PilotThrottleGlueInputs {
+        PilotThrottleGlueInputs {
+            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+            pilot_throttle_source: self.pilot_throttle_source,
+            trim_throttle: self.trim_throttle,
+            throttle_min: self.throttle_min,
+            throttle_max: self.throttle_max,
+            use_throttle_limits: self.throttle_use_limits,
+            use_battery_compensation: self.throttle_use_battery_comp,
+            battery_voltage_ratio: self.battery_voltage_ratio,
+        }
+    }
+
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
         self.ticks.update_control_mode += 1;
@@ -757,17 +770,7 @@ impl PlaneMainLoop {
         self.pilot_throttle_source = thr_ctx.pilot_throttle_source;
 
         let glue_out = mode_glue_update_control_tick(&ModeGlueUpdateControlInputs {
-            pilot_throttle: PilotThrottleGlueInputs {
-                throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
-                throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
-                pilot_throttle_source: self.pilot_throttle_source,
-                trim_throttle: self.trim_throttle,
-                throttle_min: self.throttle_min,
-                throttle_max: self.throttle_max,
-                use_throttle_limits: self.throttle_use_limits,
-                use_battery_compensation: self.throttle_use_battery_comp,
-                battery_voltage_ratio: self.battery_voltage_ratio,
-            },
+            pilot_throttle: self.pilot_throttle_glue_inputs(),
             control_mode: self.mode.control_mode,
             features: self.features,
             stick_mixing: self.stick_mixing,
@@ -946,17 +949,7 @@ impl PlaneMainLoop {
                 transition_cleared: trans_out.cleared,
                 throttle_suppressed: self.mode_entry.throttle_suppressed,
                 current_throttle: self.servos.throttle_scaled,
-                pilot_throttle: PilotThrottleGlueInputs {
-                    throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
-                    throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
-                    pilot_throttle_source: self.pilot_throttle_source,
-                    trim_throttle: self.trim_throttle,
-                    throttle_min: self.throttle_min,
-                    throttle_max: self.throttle_max,
-                    use_throttle_limits: self.throttle_use_limits,
-                    use_battery_compensation: self.throttle_use_battery_comp,
-                    battery_voltage_ratio: self.battery_voltage_ratio,
-                },
+                pilot_throttle: self.pilot_throttle_glue_inputs(),
             },
         );
         self.mode_glue_throttle_restored = glue_servos_out.throttle_restored;
