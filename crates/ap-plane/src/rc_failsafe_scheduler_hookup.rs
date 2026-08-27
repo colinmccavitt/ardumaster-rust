@@ -89,7 +89,7 @@ pub fn norm_input_dz(pwm: u16, cfg: &RcChannelConfig) -> f32 {
         (f32::from(pwm) - center) * 2.0 / f32::from(range)
     };
     let dz = f32::from(cfg.deadzone) * 0.001;
-    if libm::fabsf(norm) < dz {
+    if (if norm < 0.0 { -norm } else { norm }) < dz {
         0.0
     } else {
         norm
