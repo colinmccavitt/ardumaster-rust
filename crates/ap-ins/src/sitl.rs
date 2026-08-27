@@ -25,6 +25,7 @@ use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{is_zero, radians, wrap_pi, Real};
 use ap_math::vector3::Vector3f;
 
+use crate::frontend::{InertialSensorFrontend, InsSensorRateHooks};
 use crate::ImuInstance;
 
 /// Body-frame kinematics as the simulator reports them.
@@ -872,6 +873,12 @@ pub struct SitlImuBackend {
     pub drift_time_min: f32,
     /// Backend instance index for fail-mask checks.
     pub instance_index: u8,
+    /// Registered gyro instance, upstream `gyro_instance`.
+    pub gyro_instance: u8,
+    /// Registered accelerometer instance, upstream `accel_instance`.
+    pub accel_instance: u8,
+    /// Per-sub-sample hooks, copied from [`InertialSensorFrontend`] at [`Self::start`].
+    pub sensor_rate_hooks: InsSensorRateHooks,
     /// Bit mask: set bits skip accelerometer sample generation.
     pub accel_fail_mask: u32,
     /// Bit mask: set bits skip gyro sample generation.
@@ -921,6 +928,9 @@ impl SitlImuBackend {
             drift_speed_dps: 0.0,
             drift_time_min: 0.0,
             instance_index: 0,
+            gyro_instance: 0,
+            accel_instance: 0,
+            sensor_rate_hooks: InsSensorRateHooks::default(),
             accel_fail_mask: 0,
             gyro_fail_mask: 0,
             temperature: SitlImuTemperature::default(),
@@ -952,6 +962,20 @@ impl SitlImuBackend {
     #[must_use]
     pub const fn gyro_file_nsamples(fast_sampling: bool) -> u8 {
         if fast_sampling { 8 } else { 1 }
+    }
+
+    /// Register gyro/accel with the frontend, upstream `AP_InertialSensor_SITL::start`.
+    pub fn start(&mut self, frontend: &mut InertialSensorFrontend) -> bool {
+        let Some((gyro, accel)) =
+            frontend.register_sitl_backend(self.gyro_rate_hz, self.accel_rate_hz)
+        else {
+            return false;
+        };
+        self.gyro_instance = gyro;
+        self.accel_instance = accel;
+        self.instance_index = gyro;
+        self.sensor_rate_hooks = frontend.sensor_rate_hooks;
+        true
     }
 
     /// Generate one averaged kinematic accelerometer sample, upstream
@@ -992,6 +1016,8 @@ impl SitlImuBackend {
             if let Some(tcal) = &self.temp_cal {
                 sitl_tempcal_apply_accel(tcal, self.last_temperature_c, &mut sample);
             }
+            self.sensor_rate_hooks
+                .notify_accel(self.accel_instance, sample);
             let _ = sitl_ins_file_write_sample(
                 self.accel_file_mode,
                 &mut self.accel_write_buf,
@@ -1045,6 +1071,8 @@ impl SitlImuBackend {
             if let Some(tcal) = &self.temp_cal {
                 sitl_tempcal_apply_gyro(tcal, self.last_temperature_c, &mut sample);
             }
+            self.sensor_rate_hooks
+                .notify_gyro(self.gyro_instance, sample);
             let _ = sitl_ins_file_write_sample(
                 self.gyro_file_mode,
                 &mut self.gyro_write_buf,
@@ -1173,6 +1201,8 @@ pub struct SitlInsInstanceFiles<'a> {
 /// indices; this mirrors that layout for host-side simulation.
 #[derive(Debug, Clone)]
 pub struct SitlInsCluster {
+    /// Shared frontend: registration, sample rates, sensor-rate hooks.
+    pub frontend: InertialSensorFrontend,
     backends: [Option<SitlImuBackend>; SITL_INS_MAX_INSTANCES],
     count: u8,
 }
@@ -1187,21 +1217,24 @@ impl SitlInsCluster {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            frontend: InertialSensorFrontend::new(),
             backends: [None, None, None],
             count: 0,
         }
     }
 
-    /// Register a backend, assign [`SitlImuBackend::instance_index`], return the slot.
+    /// Register a backend with the frontend, upstream `start()` + `_add_backend`.
     pub fn register(&mut self, mut backend: SitlImuBackend) -> Option<u8> {
-        let idx = self.count as usize;
-        if idx >= SITL_INS_MAX_INSTANCES {
+        if self.count as usize >= SITL_INS_MAX_INSTANCES {
             return None;
         }
-        backend.instance_index = self.count;
+        if !backend.start(&mut self.frontend) {
+            return None;
+        }
+        let idx = backend.gyro_instance as usize;
         self.backends[idx] = Some(backend);
-        self.count += 1;
-        Some(self.count - 1)
+        self.count = self.frontend.gyro_count();
+        Some(self.backends[idx].as_ref().unwrap().gyro_instance)
     }
 
     #[must_use]
@@ -1934,6 +1967,55 @@ mod tests {
             "file playback must skip temp cal, got {}",
             backend.imu.accel().x
         );
+    }
+
+    #[test]
+    fn cluster_register_records_sample_rates_in_frontend() {
+        let mut cluster = SitlInsCluster::new();
+        cluster.register(SitlImuBackend::new(8000, 1000)).unwrap();
+        cluster.register(SitlImuBackend::new(4000, 500)).unwrap();
+        assert_eq!(cluster.frontend.get_gyro_rate_hz(0), 8000);
+        assert_eq!(cluster.frontend.get_accel_rate_hz(0), 1000);
+        assert_eq!(cluster.frontend.get_gyro_rate_hz(1), 4000);
+        assert_eq!(cluster.frontend.get_accel_rate_hz(1), 500);
+    }
+
+    #[test]
+    fn fast_sampling_fires_sensor_rate_hooks_per_subsample() {
+        static mut ACCEL_HOOKS: u32 = 0;
+        static mut GYRO_HOOKS: u32 = 0;
+        fn on_accel(_: u8, _: Vector3f) {
+            unsafe {
+                ACCEL_HOOKS += 1;
+            }
+        }
+        fn on_gyro(_: u8, _: Vector3f) {
+            unsafe {
+                GYRO_HOOKS += 1;
+            }
+        }
+
+        let mut cluster = SitlInsCluster::new();
+        cluster.frontend.sensor_rate_hooks.on_accel = Some(on_accel);
+        cluster.frontend.sensor_rate_hooks.on_gyro = Some(on_gyro);
+        let mut backend = SitlImuBackend::new(1000, 1000);
+        backend.fast_sampling = true;
+        cluster.register(backend).unwrap();
+
+        let state = SitlBodyState {
+            z_accel: -9.80665,
+            roll_rate_dps: 1.0,
+            ..SitlBodyState::default()
+        };
+        unsafe {
+            ACCEL_HOOKS = 0;
+            GYRO_HOOKS = 0;
+        }
+        cluster.timer_update(0, &state, &[]);
+        unsafe {
+            assert_eq!(ACCEL_HOOKS, 4, "fast sampling emits four accel sub-samples");
+            assert_eq!(GYRO_HOOKS, 8, "fast sampling emits eight gyro sub-samples");
+        }
     }
 
     #[test]

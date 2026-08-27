@@ -42,7 +42,13 @@
 
 #![no_std]
 
+pub mod frontend;
 pub mod sitl;
+
+pub use frontend::{
+    InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
+    SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,
+};
 
 use ap_filter::biquad::LowPassFilter2p;
 use ap_math::vector3::Vector3f;
