@@ -5,8 +5,9 @@
 //! path reads on the next tasks.
 
 use ap_ahrs::{
-    dcm_step_with_drift_from_ins_yaw, Dcm, DcmDriftLoop, DriftMotionInputs, MatrixHealth,
-    YawCompassSample, YawDriftContext, YawGpsSample, YawUpdateInputs,
+    active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, AhrsBackendKind,
+    Dcm, DcmDriftLoop, DriftMotionInputs, MatrixHealth, YawCompassSample, YawDriftContext,
+    YawGpsSample, YawUpdateInputs,
 };
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::{rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
@@ -23,9 +24,15 @@ pub struct AhrsAttitude {
     pub yaw_sensor_cd: i32,
 }
 
-/// Running DCM estimator state the vehicle loop owns.
+/// Running AHRS state the vehicle loop owns, upstream `AP::ahrs()`.
 #[derive(Debug, Clone)]
 pub struct AhrsFeed {
+    /// Parameter-selected backend, upstream `configured_ekf_type`.
+    pub configured_backend: AhrsBackendKind,
+    /// Backend driving attitude this cycle, upstream `active_EKF_type`.
+    pub active_backend: AhrsBackendKind,
+    /// EKF health for fallback decisions; stub until NavEKF3 is ported.
+    pub ekf_healthy: bool,
     /// Direction-cosine attitude estimate.
     pub dcm: Dcm,
     /// Roll/pitch drift and compass yaw correction.
@@ -36,6 +43,9 @@ pub struct AhrsFeed {
 impl Default for AhrsFeed {
     fn default() -> Self {
         Self {
+            configured_backend: AhrsBackendKind::default(),
+            active_backend: AhrsBackendKind::default(),
+            ekf_healthy: false,
             dcm: Dcm::new(),
             drift: DcmDriftLoop::default(),
             last_gps_fix_ms: 0,
@@ -60,7 +70,34 @@ pub fn attitude_from_dcm(dcm: &Dcm) -> AhrsAttitude {
 
 impl AhrsFeed {
     /// One AHRS update from INS samples, upstream `AP_AHRS_DCM::update`.
+    /// Refresh active backend from configured type and EKF health.
+    pub fn update_active_backend(&mut self) {
+        self.active_backend = active_backend_kind(self.configured_backend, self.ekf_healthy);
+    }
+
+    /// Set configured backend from `AHRS_EKF_TYPE`, upstream `update_configured_ekf_type`.
+    pub fn set_configured_backend(&mut self, kind: AhrsBackendKind) {
+        self.configured_backend = kind;
+        self.active_backend = backend_for_kind(kind);
+    }
+
+    /// One AHRS update from INS samples, upstream `AP_AHRS::update`.
     pub fn update_from_ins(
+        &mut self,
+        ins: &InertialSensorFrontend,
+        timing: &LoopTiming,
+        yaw: Option<YawUpdateInputs>,
+        motion: DriftMotionInputs,
+    ) -> (MatrixHealth, AhrsAttitude) {
+        self.update_active_backend();
+        match self.active_backend {
+            AhrsBackendKind::Dcm | AhrsBackendKind::Ekf3 => {
+                self.update_dcm_from_ins(ins, timing, yaw, motion)
+            }
+        }
+    }
+
+    fn update_dcm_from_ins(
         &mut self,
         ins: &InertialSensorFrontend,
         timing: &LoopTiming,

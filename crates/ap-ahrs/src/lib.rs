@@ -22,12 +22,14 @@
 
 #![no_std]
 
+pub mod backend;
 pub mod dcm_drift_loop;
 pub mod dcm_loop;
 pub mod drift;
 pub mod wind_estimation;
 pub mod yaw_drift;
 
+pub use backend::{active_backend_kind, backend_for_kind, AhrsBackendKind};
 pub use dcm_drift_loop::{
     dcm_step_with_drift_from_ins, dcm_step_with_drift_from_ins_yaw, DcmDriftLoop,
     DriftMotionInputs, YawUpdateInputs, DRIFT_CORRECTION_INTERVAL_S,

@@ -100,3 +100,29 @@ fn drift_motion_inputs_builds_gps_velocity() {
     assert!(vel.y > GPS_SPEED_MIN);
 }
 
+#[test]
+fn backend_selection_defaults_to_dcm() {
+    let feed = AhrsFeed::default();
+    assert_eq!(feed.configured_backend, ap_ahrs::AhrsBackendKind::Dcm);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+}
+
+#[test]
+fn configured_ekf3_resolves_to_dcm_while_unported() {
+    let mut feed = AhrsFeed::default();
+    feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
+    assert_eq!(feed.configured_backend, ap_ahrs::AhrsBackendKind::Ekf3);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+}
+
+#[test]
+fn ahrs_update_refreshes_active_backend() {
+    let mut feed = AhrsFeed::default();
+    feed.configured_backend = ap_ahrs::AhrsBackendKind::Ekf3;
+    feed.ekf_healthy = false;
+    let ins = ap_ins::InertialSensorFrontend::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+    feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+}
+
