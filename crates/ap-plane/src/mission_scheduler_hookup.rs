@@ -53,7 +53,7 @@ impl Default for MissionSchedulerInputs {
 }
 
 /// Result of one mission scheduler tick.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MissionSchedulerOutput {
     pub prev_wp: Location,
     pub next_wp: Location,
@@ -61,6 +61,19 @@ pub struct MissionSchedulerOutput {
     pub advanced: bool,
     pub complete: bool,
     pub ran: bool,
+}
+
+impl Default for MissionSchedulerOutput {
+    fn default() -> Self {
+        Self {
+            prev_wp: Location::new(0, 0),
+            next_wp: Location::new(0, 0),
+            target: TargetAltitude::FromNextWaypoint,
+            advanced: false,
+            complete: false,
+            ran: false,
+        }
+    }
 }
 
 fn is_auto_mode(control_mode: u8) -> bool {
@@ -103,7 +116,7 @@ pub fn mission_scheduler_tick(
     let mut advanced = false;
     if !ctx.complete {
         let dist_m = inp.current_loc.get_distance(next_wp);
-        if dist_m <= inp.wp_radius_m {
+        if dist_m <= f64::from(inp.wp_radius_m) {
             let next_index = ctx.current_index.saturating_add(1);
             if next_index >= u16::from(inp.waypoint_count) {
                 ctx.complete = true;

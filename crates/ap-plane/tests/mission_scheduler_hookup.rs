@@ -36,16 +36,18 @@ fn mission_tick_advances_within_wp_radius() {
     let mut ctx = MissionContext::default();
     let landing = LandingContext::default();
     let target = wp(-35_000_000, 149_000_000);
-    let mut next = target;
-    next.offset(500.0, 0.0);
+    let mut near = target;
+    near.offset(50.0, 0.0);
+    let mut far = target;
+    far.offset(1000.0, 0.0);
     let out = mission_scheduler_tick(
         &mut ctx,
         &landing,
         &MissionSchedulerInputs {
             control_mode: ModeNumber::Auto.as_number(),
-            current_loc: next,
+            current_loc: near,
             waypoint_count: 2,
-            waypoints: [target, next, wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0)],
+            waypoints: [target, far, wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0), wp(0, 0)],
             wp_radius_m: 100.0,
             ..MissionSchedulerInputs::default()
         },
