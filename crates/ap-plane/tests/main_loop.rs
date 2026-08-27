@@ -1,9 +1,8 @@
 //! Main vehicle loop scheduler wiring and mode dispatch.
 
 use ap_hal::time::{Clock, Micros, Millis};
-use ap_plane::main_loop::{
-    mode_run_dispatch, plane_fast_tasks, run_scheduler_tick, PlaneMainLoop, StabilizeDispatch,
-};
+use ap_plane::main_loop::{plane_fast_tasks, run_scheduler_tick, PlaneMainLoop, StabilizeDispatch};
+use ap_plane::mode_table_hookup::dispatch_stabilize_from_mode;
 use ap_plane::mode_run::StickMixing;
 use ap_plane::mode_table::{BuildFeatures, ModeNumber};
 use ap_scheduler::scheduler::Scheduler;
@@ -54,7 +53,7 @@ fn fast_tasks_run_in_scheduler_order() {
 
 #[test]
 fn stabilize_mode_enables_attitude_paths_and_stick_mixing() {
-    let dispatch = mode_run_dispatch(
+    let dispatch = dispatch_stabilize_from_mode(
         ModeNumber::Stabilize.as_number(),
         Some(StickMixing::Fbw),
         &BuildFeatures::default(),
@@ -72,7 +71,7 @@ fn stabilize_mode_enables_attitude_paths_and_stick_mixing() {
 
 #[test]
 fn manual_mode_skips_stabilization() {
-    let dispatch = mode_run_dispatch(
+    let dispatch = dispatch_stabilize_from_mode(
         ModeNumber::Manual.as_number(),
         Some(StickMixing::Fbw),
         &BuildFeatures::default(),

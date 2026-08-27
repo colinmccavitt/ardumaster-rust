@@ -17,6 +17,7 @@ use crate::landing_loop::LandingContext;
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
+use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
     RcStickInputs, SpeedScalerInputs, StabilizeContext, StabilizeControllers, StabilizeDemands,
@@ -205,7 +206,7 @@ impl PlaneMainLoop {
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
     pub fn update_control_mode(&mut self) {
         self.ticks.update_control_mode += 1;
-        self.last_stabilize = mode_run_dispatch(
+        self.last_stabilize = dispatch_stabilize_from_mode(
             self.mode.control_mode,
             self.stick_mixing,
             &self.features,
@@ -267,42 +268,9 @@ impl PlaneMainLoop {
     }
 }
 
-/// The stabilization dispatch for one mode iteration, upstream `Mode::run`'s
-/// body before the mode-specific logic.
-#[must_use]
-pub fn mode_run_dispatch(
-    control_mode: u8,
-    stick_mixing: Option<StickMixing>,
-    features: &BuildFeatures,
-) -> StabilizeDispatch {
-    let Some(mode) = ModeNumber::from_number(control_mode, features) else {
-        return StabilizeDispatch::default();
-    };
 
-    let fbw_stick_mixing = applies_fbw_stick_mixing(stick_mixing);
-
-    match mode {
-        ModeNumber::Manual | ModeNumber::Training => StabilizeDispatch {
-            roll: false,
-            pitch: false,
-            yaw: false,
-            fbw_stick_mixing: false,
-        },
-        ModeNumber::Acro | ModeNumber::QAcro => StabilizeDispatch {
-            roll: true,
-            pitch: true,
-            yaw: true,
-            fbw_stick_mixing: false,
-        },
-        ModeNumber::Initialising | ModeNumber::Circle => StabilizeDispatch::default(),
-        _ => StabilizeDispatch {
-            roll: true,
-            pitch: true,
-            yaw: true,
-            fbw_stick_mixing,
-        },
-    }
-}
+/// Re-export for tests that import from `main_loop`.
+pub use crate::mode_table_hookup::dispatch_stabilize_from_mode as mode_run_dispatch;
 
 fn task_ahrs(v: &mut PlaneMainLoop) {
     v.ahrs_update();

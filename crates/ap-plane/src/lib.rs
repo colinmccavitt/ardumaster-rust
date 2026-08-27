@@ -25,6 +25,7 @@ pub mod rangefinder_bump_hookup;
 pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
+pub mod mode_table_hookup;
 pub mod servo_mix;
 pub mod stabilize_hookup;
 pub mod target_altitude;
