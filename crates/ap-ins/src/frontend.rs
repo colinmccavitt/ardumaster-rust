@@ -5,7 +5,7 @@
 
 use ap_math::vector3::Vector3f;
 
-use crate::hntch_params::InsHntchParams;
+use crate::hntch_params::{InsHntchParams, INS_HNTCH_MAX_MOTORS};
 use crate::{ImuInstance, LoopTiming, DEFAULT_GYRO_FILTER_HZ};
 
 /// Maximum IMU instances, upstream `INS_MAX_INSTANCES` for Plane.
@@ -353,18 +353,23 @@ impl InertialSensorFrontend {
 
     /// Retune gyro filters from INS_HNTCH_* and INS_GYRO_FILTER, upstream
     /// `AP_InertialSensor::update_gyro_filters`.
-    pub fn update_gyro_filters(&mut self, hntch: &InsHntchParams, gyro_filter_hz: f32) {
+    pub fn update_gyro_filters(
+        &mut self,
+        hntch: &InsHntchParams,
+        gyro_filter_hz: f32,
+        motor_count: u8,
+    ) {
         let apply_all = hntch.enable_on_all_imus();
         for i in 0..self.gyro_count as usize {
             let instance = i as u8;
             let apply_notch = hntch.enable && (apply_all || instance == self.primary);
             let rate = f32::from(self.get_gyro_rate_hz(instance));
             if let Some(imu) = self.imu_mut(instance) {
-                if apply_notch && hntch.num_notches() > 0 {
+                if apply_notch && hntch.num_notches(motor_count) > 0 {
                     imu.set_gyro_notch(
                         rate,
                         hntch.harmonic_notch_params(),
-                        hntch.num_notches(),
+                        hntch.num_notches(motor_count),
                     );
                 }
                 imu.set_gyro_filter(rate, gyro_filter_hz);
@@ -378,7 +383,8 @@ impl InertialSensorFrontend {
         &mut self,
         hntch: &InsHntchParams,
         throttle: f32,
-        rpm: Option<f32>,
+        motor_rpm: &[f32; INS_HNTCH_MAX_MOTORS],
+        motor_count: u8,
     ) {
         if !hntch.enable || hntch.tracking_mode() == ap_filter::harmonic::TrackingMode::Fixed {
             return;
@@ -390,7 +396,7 @@ impl InertialSensorFrontend {
                 continue;
             }
             if let Some(imu) = self.imu_mut(instance) {
-                hntch.update_notch_center(imu, throttle, rpm);
+                hntch.update_notch_centers(imu, throttle, motor_rpm, motor_count);
             }
         }
     }
@@ -566,7 +572,7 @@ mod tests {
             harmonics: 1,
             ..InsHntchParams::default()
         };
-        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ);
+        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ, 1);
         assert!(fe.imu(0).unwrap().gyro_notch_is_initialised());
     }
 
@@ -585,10 +591,10 @@ mod tests {
             freq_min_ratio: 0.5,
             ..InsHntchParams::default()
         };
-        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ);
-        fe.update_dynamic_notch(&hntch, 1.0, None);
+        fe.update_gyro_filters(&hntch, DEFAULT_GYRO_FILTER_HZ, 1);
+        fe.update_dynamic_notch(&hntch, 1.0, &[0.0; INS_HNTCH_MAX_MOTORS], 1);
         for _ in 0..32 {
-            fe.update_dynamic_notch(&hntch, 0.25, None);
+            fe.update_dynamic_notch(&hntch, 0.25, &[0.0; INS_HNTCH_MAX_MOTORS], 1);
         }
         let center = fe.imu(0).unwrap().gyro_notch_center(0).expect("notch");
         assert!((center - 50.0).abs() < 1.0, "quarter throttle -> 50 Hz, got {center}");

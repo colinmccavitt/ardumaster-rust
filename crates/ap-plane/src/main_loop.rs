@@ -335,7 +335,8 @@ impl PlaneMainLoop {
         if let Some(hntch) = self.ins_hntch.as_mut() {
             let hntch_inp = InsHntchSchedulerInputs {
                 throttle: self.sitl_ins_motor.throttle,
-                motor_rpm: self.sitl_ins_motor.motor_rpm.first().copied(),
+                motor_mask: self.sitl_ins_motor.motor_mask,
+                motor_rpm: self.sitl_ins_motor.motor_rpm,
             };
             if let Some(noise) = self.sitl_ins_noise.as_mut() {
                 let _ = ins_hntch_scheduler_tick_cluster(

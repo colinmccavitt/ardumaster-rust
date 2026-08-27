@@ -5,7 +5,10 @@
 //! samples reach the AHRS.
 
 use ap_ins::sitl::SitlInsCluster;
-use ap_ins::{DEFAULT_GYRO_FILTER_HZ, InertialSensorFrontend, InsHntchParams, TrackingMode};
+use ap_ins::{
+    motor_count_from_runtime, DEFAULT_GYRO_FILTER_HZ, InertialSensorFrontend,
+    InsHntchParams, INS_HNTCH_MAX_MOTORS, TrackingMode,
+};
 
 /// Bound INS_HNTCH_* parameters and gyro low-pass cutoff for one vehicle.
 #[derive(Debug, Clone)]
@@ -42,7 +45,8 @@ impl InsHntchHookup {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InsHntchSchedulerInputs {
     pub throttle: f32,
-    pub motor_rpm: Option<f32>,
+    pub motor_mask: u32,
+    pub motor_rpm: [f32; INS_HNTCH_MAX_MOTORS],
 }
 
 /// Per-tick harmonic notch accounting.
@@ -61,14 +65,16 @@ pub fn ins_hntch_scheduler_tick(
 ) -> InsHntchSchedulerOutput {
     let mut out = InsHntchSchedulerOutput::default();
 
+    let motor_count = motor_count_from_runtime(inp.motor_mask, &inp.motor_rpm);
+
     if hookup.filters_dirty {
-        ins.update_gyro_filters(&hookup.params, hookup.gyro_filter_hz);
+        ins.update_gyro_filters(&hookup.params, hookup.gyro_filter_hz, motor_count);
         hookup.filters_dirty = false;
         out.filters_configured = true;
     }
 
     if hookup.params.enable && hookup.params.tracking_mode() != TrackingMode::Fixed {
-        ins.update_dynamic_notch(&hookup.params, inp.throttle, inp.motor_rpm);
+        ins.update_dynamic_notch(&hookup.params, inp.throttle, &inp.motor_rpm, motor_count);
         out.dynamic_notch_updated = true;
     }
 
@@ -83,20 +89,27 @@ pub fn ins_hntch_scheduler_tick_cluster(
     hookup: &mut InsHntchHookup,
     inp: &InsHntchSchedulerInputs,
 ) -> InsHntchSchedulerOutput {
+    let motor_count = motor_count_from_runtime(inp.motor_mask, &inp.motor_rpm);
     let out = ins_hntch_scheduler_tick(&mut cluster.frontend, hookup, inp);
     for i in 0..cluster.instance_count() {
         let instance = i;
         let rate = f32::from(cluster.frontend.get_gyro_rate_hz(instance));
         if let Some(backend) = cluster.backend_mut(instance) {
             if out.filters_configured {
-                hookup
-                    .params
-                    .apply_gyro_filters_to_imu(&mut backend.imu, rate, hookup.gyro_filter_hz);
+                hookup.params.apply_gyro_filters_to_imu(
+                    &mut backend.imu,
+                    rate,
+                    hookup.gyro_filter_hz,
+                    motor_count,
+                );
             }
             if out.dynamic_notch_updated {
-                hookup
-                    .params
-                    .update_notch_center(&mut backend.imu, inp.throttle, inp.motor_rpm);
+                hookup.params.update_notch_centers(
+                    &mut backend.imu,
+                    inp.throttle,
+                    &inp.motor_rpm,
+                    motor_count,
+                );
             }
         }
     }
@@ -180,7 +193,7 @@ mod tests {
             &mut hookup,
             &InsHntchSchedulerInputs {
                 throttle: 1.0,
-                motor_rpm: None,
+                ..InsHntchSchedulerInputs::default()
             },
         );
         hookup.filters_dirty = false;
@@ -190,7 +203,7 @@ mod tests {
                 &mut hookup,
                 &InsHntchSchedulerInputs {
                     throttle: 0.25,
-                    motor_rpm: None,
+                    ..InsHntchSchedulerInputs::default()
                 },
             );
         }

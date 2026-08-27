@@ -59,7 +59,7 @@ pub mod sitl_file_playback;
 pub mod sitl_noise;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
-pub use hntch_params::InsHntchParams;
+pub use hntch_params::{motor_count_from_runtime, InsHntchParams, INS_HNTCH_MAX_MOTORS};
 pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use sitl_fail_msk::SitlFailMskParams;
 pub use sitl_temp_cal::{SitlImuTempParams, SitlInsTempCalParams};
@@ -477,6 +477,13 @@ the difference is a sample interval, not an absolute time"
     pub fn update_gyro_notch_center(&mut self, center_freq_hz: f32) {
         if self.gyro_notch.is_initialised() {
             self.gyro_notch.update(center_freq_hz);
+        }
+    }
+
+    /// Retune from several independent fundamentals (one per motor).
+    pub fn update_gyro_notch_centers(&mut self, centers: &[f32]) {
+        if self.gyro_notch.is_initialised() {
+            self.gyro_notch.update_multi(centers);
         }
     }
 
