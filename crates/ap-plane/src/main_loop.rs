@@ -76,6 +76,9 @@ use crate::sitl_compass_hookup::SitlCompassHookup;
 use crate::airspeed_health_scheduler_hookup::{
     airspeed_health_scheduler_tick, AirspeedHealthSchedulerInputs,
 };
+use crate::airspeed_offset_calibration_hookup::{
+    airspeed_offset_calibration_tick, AirspeedOffsetCalibrationInputs,
+};
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
@@ -219,6 +222,10 @@ pub struct PlaneMainLoop {
     pub airspeed_healthy: bool,
     /// Per-instance airspeed health flags, upstream `AP_Airspeed` frontend.
     pub airspeed_health: AirspeedHealthFlags,
+    /// Request pitot offset calibration on the next `ahrs_update`.
+    pub airspeed_calibrate_requested: bool,
+    /// True after a successful pitot offset latch, upstream `calibrate()`.
+    pub airspeed_offset_calibrated: bool,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
     pub mag_sample: Option<MagSampleState>,
     /// Whether the SITL compass backend is healthy, upstream `AP_Compass::healthy()`.
@@ -495,6 +502,8 @@ impl Default for PlaneMainLoop {
             airspeed_sample: None,
             airspeed_healthy: false,
             airspeed_health: AirspeedHealthFlags::default(),
+            airspeed_calibrate_requested: false,
+            airspeed_offset_calibrated: false,
             baro_sample: None,
             mag_sample: None,
             compass_healthy: false,
@@ -839,6 +848,16 @@ impl PlaneMainLoop {
             self.airspeed_health = out.health;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
+            }
+            if self.airspeed_calibrate_requested {
+                let cal = airspeed_offset_calibration_tick(
+                    airspeed,
+                    AirspeedOffsetCalibrationInputs {
+                        request_calibrate: true,
+                    },
+                );
+                self.airspeed_offset_calibrated = cal.calibrated;
+                self.airspeed_calibrate_requested = false;
             }
         }
         if let Some(vane) = self.wind_vane {

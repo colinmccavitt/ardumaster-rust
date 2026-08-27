@@ -26,11 +26,19 @@ pub struct AirspeedSampleState {
 #[derive(Debug, Clone, Copy)]
 pub struct SitlAirspeedConfig {
     pub disabled: bool,
+    /// Latched pitot TAS offset, upstream `ARSPD_OFFSET` (m/s stub).
+    pub offset_mps: f32,
+    /// Skip startup / requested calibration, upstream `ARSPD_SKIP_CAL`.
+    pub skip_cal: bool,
 }
 
 impl Default for SitlAirspeedConfig {
     fn default() -> Self {
-        Self { disabled: false }
+        Self {
+            disabled: false,
+            offset_mps: 0.0,
+            skip_cal: false,
+        }
     }
 }
 
@@ -62,6 +70,8 @@ pub struct SitlAirspeedBackend {
     last_sample_time_ms: u32,
     pending: AirspeedSampleState,
     has_pending: bool,
+    /// Raw pitot TAS before offset, used by `calibrate()`.
+    raw_tas_mps: f32,
 }
 
 impl Default for SitlAirspeedBackend {
@@ -71,6 +81,7 @@ impl Default for SitlAirspeedBackend {
             last_sample_time_ms: 0,
             pending: AirspeedSampleState::default(),
             has_pending: false,
+            raw_tas_mps: 0.0,
         }
     }
 }
@@ -100,8 +111,24 @@ impl SitlAirspeedBackend {
         self.last_sample_time_ms != 0 && !self.config.disabled
     }
 
+    /// Raw pitot TAS before offset subtraction.
+    #[must_use]
+    pub const fn raw_tas_mps(&self) -> f32 {
+        self.raw_tas_mps
+    }
+
     pub fn set_config(&mut self, config: SitlAirspeedConfig) {
         self.config = config;
+    }
+
+    /// Latch current raw TAS as the pitot offset, upstream `AP_Airspeed::calibrate()`.
+    #[must_use]
+    pub fn calibrate_offset(&mut self) -> bool {
+        if self.config.skip_cal || self.config.disabled || self.last_sample_time_ms == 0 {
+            return false;
+        }
+        self.config.offset_mps = self.raw_tas_mps;
+        true
     }
 
     /// Run the 100 Hz timer path from sim truth and EAS2TAS.
@@ -120,7 +147,9 @@ impl SitlAirspeedBackend {
             return false;
         }
 
-        let tas_mps = pitot_tas_from_body(airspeed_bf);
+        let raw_tas = pitot_tas_from_body(airspeed_bf);
+        self.raw_tas_mps = raw_tas;
+        let tas_mps = (raw_tas - self.config.offset_mps).max(0.0);
         let eas_mps = eas_from_tas(tas_mps, eas2tas);
         self.pending = AirspeedSampleState {
             tas_mps,
@@ -250,6 +279,18 @@ impl SitlAirspeedCluster {
             })
     }
 
+    /// Calibrate every enabled instance, upstream `AP_Airspeed::calibrate()`.
+    #[must_use]
+    pub fn calibrate_offsets(&mut self) -> bool {
+        let mut any = false;
+        for i in 0..self.instance_count as usize {
+            if self.backends[i].calibrate_offset() {
+                any = true;
+            }
+        }
+        any
+    }
+
     #[must_use]
     pub fn health_flags(&self) -> AirspeedHealthFlags {
         let mut flags = AirspeedHealthFlags {
@@ -268,7 +309,10 @@ impl SitlAirspeedCluster {
     pub fn cluster_with_disabled_primary() -> Self {
         Self {
             backends: [
-                SitlAirspeedBackend::with_config(SitlAirspeedConfig { disabled: true }),
+                SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+                    disabled: true,
+                    ..SitlAirspeedConfig::default()
+                }),
                 SitlAirspeedBackend::default(),
             ],
             instance_count: 2,
@@ -309,7 +353,10 @@ mod tests {
 
     #[test]
     fn producer_unhealthy_when_disabled() {
-        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig { disabled: true });
+        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+            disabled: true,
+            ..SitlAirspeedConfig::default()
+        });
         assert!(!backend.timer_tick(Vector3f::new(15.0, 0.0, 0.0), 1.0, 10));
         assert!(!backend.healthy());
     }
@@ -322,5 +369,39 @@ mod tests {
         assert_eq!(flags.instance_count, 2);
         assert!(!flags.healthy[0]);
         assert!(flags.healthy[1]);
+    }
+
+    #[test]
+    fn calibrate_latches_raw_tas_as_offset() {
+        let mut backend = SitlAirspeedBackend::default();
+        assert!(backend.timer_tick(Vector3f::new(3.0, 0.0, 0.0), 1.0, 10));
+        assert!((backend.state().tas_mps - 3.0).abs() < 1e-6);
+        assert!(backend.calibrate_offset());
+        assert!((backend.config().offset_mps - 3.0).abs() < 1e-6);
+        assert!(backend.timer_tick(Vector3f::new(3.0, 0.0, 0.0), 1.0, 20));
+        assert!(backend.state().tas_mps.abs() < 1e-6);
+        assert!(backend.timer_tick(Vector3f::new(23.0, 0.0, 0.0), 1.0, 30));
+        assert!((backend.state().tas_mps - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skip_cal_leaves_offset_unchanged() {
+        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+            skip_cal: true,
+            ..SitlAirspeedConfig::default()
+        });
+        assert!(backend.timer_tick(Vector3f::new(4.0, 0.0, 0.0), 1.0, 10));
+        assert!(!backend.calibrate_offset());
+        assert_eq!(backend.config().offset_mps, 0.0);
+    }
+
+    #[test]
+    fn cluster_calibrate_offsets_both_instances() {
+        let mut cluster = SitlAirspeedCluster::default();
+        let _ = cluster.register(SitlAirspeedBackend::default());
+        cluster.timer_tick_all(Vector3f::new(2.5, 0.0, 0.0), 1.0, 10);
+        assert!(cluster.calibrate_offsets());
+        assert!((cluster.backend(0).unwrap().config().offset_mps - 2.5).abs() < 1e-6);
+        assert!((cluster.backend(1).unwrap().config().offset_mps - 2.5).abs() < 1e-6);
     }
 }

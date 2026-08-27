@@ -71,6 +71,12 @@ impl SitlAirspeedHookup {
         self.cluster.backend(self.cluster.primary())
     }
 
+    /// Latch pitot offsets on every enabled instance, upstream `calibrate()`.
+    #[must_use]
+    pub fn calibrate_offsets(&mut self) -> bool {
+        self.cluster.calibrate_offsets()
+    }
+
     /// Run timer tick and publish pitot TAS/EAS + health.
     #[must_use]
     pub fn publish(&mut self, eas2tas: f32) -> SitlAirspeedPublish {
