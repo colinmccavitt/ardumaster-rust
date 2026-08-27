@@ -732,3 +732,26 @@ fn scheduler_tick_latches_go_around_from_rangefinder_bump_abort() {
     assert!(vehicle.landing.flags.commanded_go_around);
 }
 
+#[test]
+fn set_servos_clears_mode_entry_throttle_on_altitude() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = true;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = true;
+    vehicle.relative_altitude_m = 15.0;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 80.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.mode_transition_throttle_cleared);
+    assert!(!vehicle.mode_entry.throttle_suppressed);
+    assert!(!vehicle.mode_entry_throttle_applied);
+    assert_eq!(vehicle.servos.throttle_scaled, 80.0);
+}
+

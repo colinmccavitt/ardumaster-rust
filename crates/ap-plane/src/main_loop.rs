@@ -62,6 +62,9 @@ use crate::mode::ModeState;
 use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
+use crate::mode_transition_throttle_hookup::{
+    mode_transition_throttle_tick, ModeTransitionThrottleInputs,
+};
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -273,6 +276,10 @@ pub struct PlaneMainLoop {
     pub disarm_throttle_applied: bool,
     /// Whether mode-entry suppress_throttle zeroed throttle.
     pub mode_entry_throttle_applied: bool,
+    /// Whether mode-transition logic cleared throttle suppression.
+    pub mode_transition_throttle_cleared: bool,
+    /// Altitude above home/reference, metres. Upstream `relative_altitude`.
+    pub relative_altitude_m: f32,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -484,6 +491,8 @@ impl Default for PlaneMainLoop {
             soft_armed: false,
             disarm_throttle_applied: false,
             mode_entry_throttle_applied: false,
+            mode_transition_throttle_cleared: false,
+            relative_altitude_m: 0.0,
             servos: ServoOutputState::default(),
         }
     }
@@ -757,6 +766,17 @@ impl PlaneMainLoop {
             &self.srv_pwm_inputs,
         );
         self.last_pwm_publish_ran = pwm_out.ran;
+
+        let trans_out = mode_transition_throttle_tick(
+            &mut self.mode_entry,
+            &ModeTransitionThrottleInputs {
+                control_mode: self.mode.control_mode,
+                relative_altitude_m: self.relative_altitude_m,
+                gps: self.gps_status,
+                features: self.features,
+            },
+        );
+        self.mode_transition_throttle_cleared = trans_out.cleared;
 
         let sup_out = suppress_throttle_scheduler_tick(
             self.servos,

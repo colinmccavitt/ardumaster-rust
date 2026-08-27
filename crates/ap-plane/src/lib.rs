@@ -39,6 +39,7 @@ pub mod mode;
 pub mod mode_run;
 pub mod mode_table;
 pub mod mode_entry_scheduler_hookup;
+pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;
 pub mod srv_output_hookup;
