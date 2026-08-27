@@ -149,7 +149,10 @@ impl SitlGpsHookup {
         0
     }
 
-    /// Dual-GPS pre-arm gate: both instances healthy when dual enabled.
+    /// Dual-GPS pre-arm gate, upstream `AP_GPS::pre_arm_checks`.
+    ///
+    /// Blend requires both instances healthy; UsePrimary/UseBest follow the active
+    /// failover output so arming succeeds when the selected receiver is healthy.
     #[must_use]
     pub fn gps_dual_pre_arm_ok(&mut self) -> bool {
         self.sync_dual_truth();
@@ -157,10 +160,17 @@ impl SitlGpsHookup {
             if !dual.dual_enabled {
                 return dual.output_health().is_healthy();
             }
-            let primary = dual.instance_status(0);
-            let secondary = dual.instance_status(1);
-            GpsHealthFlags::from_status(&primary).is_healthy()
-                && GpsHealthFlags::from_status(&secondary).is_healthy()
+            match dual.auto_switch {
+                GpsAutoSwitch::Blend => {
+                    let primary = dual.instance_status(0);
+                    let secondary = dual.instance_status(1);
+                    GpsHealthFlags::from_status(&primary).is_healthy()
+                        && GpsHealthFlags::from_status(&secondary).is_healthy()
+                }
+                GpsAutoSwitch::UsePrimary | GpsAutoSwitch::UseBest => {
+                    dual.output_health().is_healthy()
+                }
+            }
         } else {
             self.gps_health_publish().is_healthy()
         }

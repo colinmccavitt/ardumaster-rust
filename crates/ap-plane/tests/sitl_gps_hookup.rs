@@ -251,7 +251,7 @@ fn dual_gps_yaw_publish_uses_blended_output() {
 }
 
 #[test]
-fn dual_gps_pre_arm_requires_both_instances() {
+fn dual_gps_pre_arm_requires_both_instances_for_blend() {
     use ap_gps::GpsAutoSwitch;
 
     let mut hookup = SitlGpsHookup::default();
@@ -267,6 +267,38 @@ fn dual_gps_pre_arm_requires_both_instances() {
     hookup2.truth.now_ms = 200;
     // secondary never ticked — instance 1 has no fix.
     assert!(!hookup2.gps_dual_pre_arm_ok());
+}
+
+#[test]
+fn dual_gps_use_primary_pre_arm_follows_failover_output() {
+    let mut hookup = hookup_with_disabled_primary();
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.now_ms = 200;
+    }
+    assert_eq!(hookup.gps_active_instance(), 1);
+    assert!(hookup.gps_dual_pre_arm_ok());
+}
+
+#[test]
+fn main_loop_pre_arm_passes_after_gps_failover() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = hookup_with_disabled_primary();
+    hookup.truth.now_ms = 200;
+    if let Some(dual) = hookup.dual.as_mut() {
+        dual.secondary_truth.now_ms = 200;
+    }
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.gps_active_instance, 1);
+    assert!(vehicle.gps_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
 }
 
 #[test]
