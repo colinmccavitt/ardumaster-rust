@@ -31,6 +31,7 @@ use crate::sitl_ins_host_files::SitlInsHostFiles;
 use crate::sitl_ins_noise_hookup::{
     sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
 };
+use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
@@ -102,6 +103,8 @@ pub struct PlaneMainLoop {
     pub airspeed_tas: f32,
     /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
     pub sitl_yaw: Option<SitlYawPublish>,
+    /// Optional SITL AHRS publish (yaw + airspeed TAS); takes precedence over `sitl_yaw`.
+    pub sitl_ahrs: Option<SitlAhrsPublish>,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
     /// Optional INS harmonic notch hookup; configures gyro filters each tick.
@@ -182,6 +185,7 @@ impl Default for PlaneMainLoop {
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             sitl_yaw: None,
+            sitl_ahrs: None,
             sitl_ins_noise: None,
             ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
@@ -301,7 +305,17 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
-        if let Some(source) = self.sitl_yaw {
+        if let Some(source) = self.sitl_ahrs {
+            let samples = publish_sitl_ahrs_samples(
+                &source,
+                self.ahrs.dcm.matrix,
+                self.loop_timing.delta_time,
+            );
+            self.compass = samples.yaw.compass;
+            self.gps_yaw = samples.yaw.gps_yaw;
+            self.yaw_ctx = samples.yaw.yaw_ctx;
+            self.airspeed_tas = samples.airspeed_tas;
+        } else if let Some(source) = self.sitl_yaw {
             let samples = publish_sitl_yaw_samples(
                 &source,
                 self.ahrs.dcm.matrix,

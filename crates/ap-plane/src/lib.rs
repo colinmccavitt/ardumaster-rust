@@ -18,6 +18,7 @@ pub mod ins_hntch_scheduler_hookup;
 pub mod sitl_ins_host_files;
 pub mod sitl_ins_noise_hookup;
 pub mod sitl_yaw_hookup;
+pub mod sitl_ahrs_hookup;
 pub mod nav_tecs_hookup;
 pub mod entry_state;
 pub mod landing_hookup;
