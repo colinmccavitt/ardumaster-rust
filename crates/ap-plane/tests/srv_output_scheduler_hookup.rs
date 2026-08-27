@@ -147,3 +147,39 @@ fn scheduler_tick_applies_dspoiler_mixing_after_elevon() {
     );
 }
 
+
+
+#[test]
+fn scheduler_tick_uses_manual_flap_from_rc() {
+    let mixing = MixingParams {
+        mixing_gain: 1.0,
+        mixing_offset: 0,
+    };
+    let mut state = SrvOutputHookupState::default();
+    for (idx, func) in [
+        ap_servo::function::Function::FLAP,
+        ap_servo::function::Function::FLAP_AUTO,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        state.registry.assign(func, 1_u32 << idx);
+    }
+    let servos = ServoOutputState::default();
+    let out = srv_output_scheduler_tick(
+        servos,
+        &mut state,
+        &SrvOutputSchedulerInputs {
+            mixing,
+            manual_flap_percent: 80,
+            has_auto_flap_schedule: false,
+            dt: 0.02,
+            ..SrvOutputSchedulerInputs::default()
+        },
+    );
+    assert_eq!(out.auto_flap_percent, 0);
+    assert_eq!(
+        state.registry.output_scaled(ap_servo::function::Function::FLAP),
+        80.0
+    );
+}

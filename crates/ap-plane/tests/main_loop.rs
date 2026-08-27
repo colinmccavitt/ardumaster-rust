@@ -424,6 +424,8 @@ fn scheduler_tick_reads_rc_channels() {
         throttle_pwm: Some(1100),
         roll_cfg: RcChannelConfig::default(),
         pitch_cfg: RcChannelConfig::default(),
+        flap_pwm: None,
+        flap_cfg: RcChannelConfig::default(),
         failsafe_cfg: RcFailsafeConfig {
             throttle_failsafe_enabled: true,
             throttle_failsafe_pwm: 975,

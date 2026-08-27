@@ -28,6 +28,9 @@ use crate::arming_scheduler_hookup::{
 use crate::srv_output_scheduler_hookup::{
     srv_output_scheduler_tick, SrvOutputHookupState, SrvOutputSchedulerInputs,
 };
+use crate::srv_pwm_publish_hookup::{
+    srv_pwm_publish_tick, SrvPwmPublishInputs, SrvPwmPublishState,
+};
 use crate::rangefinder_bump_hookup::{RangefinderBumpContext, RangefinderBumpHookupInputs};
 use crate::rangefinder_bump_scheduler_hookup::{rangefinder_bump_scheduler_tick, RangefinderBumpSchedulerInputs};
 use crate::rc_failsafe_scheduler_hookup::{rc_failsafe_scheduler_tick, RcFailsafeSchedulerInputs};
@@ -214,6 +217,9 @@ pub struct PlaneMainLoop {
     pub srv_output: SrvOutputHookupState,
     /// HAL inputs for SRV output mapping during `set_servos`.
     pub srv_output_inputs: SrvOutputSchedulerInputs,
+    /// Output channels for registry PWM publish.
+    pub srv_pwm: SrvPwmPublishState,
+    pub srv_pwm_inputs: SrvPwmPublishInputs,
     /// Auto flap percent from the latest SRV output tick.
     pub last_auto_flap_percent: i8,
     /// `hal.util->get_soft_armed()`.
@@ -383,6 +389,8 @@ impl Default for PlaneMainLoop {
                 dt: 0.02,
                 ..SrvOutputSchedulerInputs::default()
             },
+            srv_pwm: SrvPwmPublishState::default(),
+            srv_pwm_inputs: SrvPwmPublishInputs::default(),
             last_auto_flap_percent: 0,
             soft_armed: false,
             disarm_throttle_applied: false,
@@ -489,6 +497,7 @@ impl PlaneMainLoop {
         let rc_out = rc_failsafe_scheduler_tick(&self.rc_failsafe_inputs);
         self.in_rc_failsafe = rc_out.in_rc_failsafe;
         self.rc_sticks = rc_out.rc_sticks;
+        self.srv_output_inputs.manual_flap_percent = rc_out.manual_flap_percent;
 
         let mission_out = mission_scheduler_tick(
             &mut self.mission,
@@ -606,6 +615,12 @@ impl PlaneMainLoop {
             &self.srv_output_inputs,
         );
         self.last_auto_flap_percent = srv_out.auto_flap_percent;
+
+        let _pwm_out = srv_pwm_publish_tick(
+            &mut self.srv_output.registry,
+            &mut self.srv_pwm,
+            &self.srv_pwm_inputs,
+        );
 
         let arm_out = arming_scheduler_tick(
             self.servos,
