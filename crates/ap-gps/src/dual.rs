@@ -70,6 +70,11 @@ impl GpsDualStub {
         params.apply_instance(1, &mut self.secondary);
     }
 
+    #[must_use]
+    pub const fn blend_mask(&self) -> u8 {
+        self.blender.blend_mask()
+    }
+
     fn read_instance(backend: &mut SitlGpsBackend, truth: &GpsInstanceTruth) -> GpsFixState {
         backend.read(
             truth.velocity_ned,
@@ -138,8 +143,10 @@ impl GpsDualStub {
                 let s = self.secondary_status();
                 if s.num_sats > p.num_sats {
                     1
-                } else {
+                } else if p.num_sats > s.num_sats {
                     0
+                } else {
+                    self.primary_instance
                 }
             }
             (true, false) => 0,
@@ -149,8 +156,10 @@ impl GpsDualStub {
                 let s = self.secondary_status();
                 if s.num_sats > p.num_sats {
                     1
-                } else {
+                } else if p.num_sats > s.num_sats {
                     0
+                } else {
+                    self.primary_instance
                 }
             }
         }
@@ -161,7 +170,8 @@ impl GpsDualStub {
         if !self.dual_enabled || self.auto_switch != GpsAutoSwitch::UsePrimary {
             return;
         }
-        for i in 0..2u8 {
+        let order = [self.primary_instance, 1 - self.primary_instance];
+        for i in order {
             let now_ms = self.instance_now_ms(i);
             if self.instance_health_at(i, now_ms).is_healthy() {
                 self.primary_instance = i;
@@ -532,5 +542,38 @@ mod tests {
         let health = stub.output_health();
         assert!(health.is_healthy());
         assert_eq!(stub.output_active_instance(), GPS_BLENDED_INSTANCE);
+    }
+
+    #[test]
+    fn use_best_tie_prefers_configured_primary() {
+        let mut stub = GpsDualStub::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::UseBest;
+        stub.primary_instance = 1;
+        stub.primary.num_sats = 12;
+        stub.secondary.num_sats = 12;
+        stub.primary_truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+        stub.secondary_truth.velocity_ned = Vector3f::new(9.0, 0.0, 0.0);
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        assert_eq!(stub.output_active_instance(), 1);
+    }
+
+    #[test]
+    fn use_primary_failover_scans_configured_primary_first() {
+        let mut stub = GpsDualStub::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::UsePrimary;
+        stub.primary_instance = 1;
+        stub.primary.num_sats = 18;
+        stub.secondary.num_sats = 10;
+        stub.primary_truth.velocity_ned = Vector3f::new(8.0, 0.0, 0.0);
+        stub.secondary_truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        stub.select_primary_healthy();
+        assert_eq!(stub.primary_instance, 1);
+        let status = stub.output_status();
+        assert!((status.velocity_ned.x - 5.0).abs() < 1e-3);
     }
 

@@ -130,6 +130,11 @@ impl GpsBlender {
     }
 
     #[must_use]
+    pub const fn blend_mask(&self) -> u8 {
+        self.blend_mask
+    }
+
+    #[must_use]
     pub const fn output_is_blended(&self) -> bool {
         self.weights[0] > 0.0 || self.weights[1] > 0.0
     }

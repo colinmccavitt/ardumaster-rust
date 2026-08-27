@@ -84,6 +84,11 @@ impl SitlGpsHookup {
         }
     }
 
+    /// Alias for param-table init, upstream var_info-driven frontend setup.
+    pub fn configure_from_params(&mut self, params: GpsParams) {
+        self.apply_gps_params(params);
+    }
+
     pub fn apply_gps_params(&mut self, params: GpsParams) {
         params.apply_instance(0, &mut self.backend);
         if params.dual_enabled() {
