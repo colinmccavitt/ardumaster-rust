@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 ap-ahrs = { workspace = true }
+ap-baro = { workspace = true }
 ap-control = { workspace = true }
 ap-declination = { workspace = true }
 ap-gps = { workspace = true }

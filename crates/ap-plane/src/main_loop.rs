@@ -55,6 +55,7 @@ use crate::sitl_ins_noise_hookup::{
     sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
 };
 use crate::sitl_ahrs_hookup::{publish_sitl_ahrs_samples, SitlAhrsPublish};
+use crate::sitl_baro_hookup::SitlBaroHookup;
 use crate::sitl_gps_hookup::SitlGpsHookup;
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::entry_state::ModeEntryState;
@@ -167,6 +168,12 @@ pub struct PlaneMainLoop {
     pub sitl_ahrs: Option<SitlAhrsPublish>,
     /// Optional SITL GPS fix producer; takes precedence over manual GPS in `sitl_yaw`.
     pub sitl_gps: Option<SitlGpsHookup>,
+    /// Optional SITL baro producer; publishes EAS2TAS each `ahrs_update`.
+    pub sitl_baro: Option<SitlBaroHookup>,
+    /// Latest baro sample from the SITL backend, upstream `AP_Baro` frontend.
+    pub baro_sample: Option<ap_baro::sitl::BaroSampleState>,
+    /// Whether the SITL baro backend is healthy, upstream `AP_Baro::healthy()`.
+    pub baro_healthy: bool,
     /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
     pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
     /// Optional INS harmonic notch hookup; configures gyro filters each tick.
@@ -371,6 +378,9 @@ impl Default for PlaneMainLoop {
             sitl_yaw: None,
             sitl_ahrs: None,
             sitl_gps: None,
+            sitl_baro: None,
+            baro_sample: None,
+            baro_healthy: false,
             sitl_ins_noise: None,
             ins_hntch: None,
             sitl_ins_motor: SitlInsMotorRuntime::default(),
@@ -603,6 +613,12 @@ impl PlaneMainLoop {
                 },
             );
             self.ins = hookup.cluster.frontend.clone();
+        }
+        if let Some(baro) = self.sitl_baro.as_mut() {
+            let published = baro.publish();
+            self.baro_sample = Some(published.sample);
+            self.baro_healthy = published.healthy;
+            self.eas2tas = published.eas2tas;
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);
