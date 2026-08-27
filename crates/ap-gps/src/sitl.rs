@@ -39,6 +39,8 @@ pub fn velocity_to_speed_course(velocity: Vector3f) -> (f32, f32) {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SitlGpsBackend {
+    /// Reported satellite count, upstream GPA.SVCount stub.
+    pub num_sats: u8,
     last_update_ms: u32,
     state: GpsFixState,
     lag_buffer: GpsLagBuffer,
@@ -47,6 +49,7 @@ pub struct SitlGpsBackend {
 impl Default for SitlGpsBackend {
     fn default() -> Self {
         Self {
+            num_sats: 15,
             last_update_ms: 0,
             state: GpsFixState::default(),
             lag_buffer: GpsLagBuffer::new(SITL_GPS_DEFAULT_LAG_SEC),
@@ -87,7 +90,7 @@ impl SitlGpsBackend {
 
         let fix = GpsFixState {
             fix_type: FixType::Fix3D,
-            num_sats: 15,
+            num_sats: self.num_sats,
             velocity_ned,
             ground_speed,
             ground_course_deg,

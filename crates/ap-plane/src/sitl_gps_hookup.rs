@@ -138,6 +138,16 @@ impl SitlGpsHookup {
         self.dual.is_some_and(|dual| dual.output_is_blended())
     }
 
+    /// Active GPS instance index (0/1/blended=2), upstream `primary_instance()`.
+    #[must_use]
+    pub fn gps_active_instance(&mut self) -> u8 {
+        self.sync_dual_truth();
+        if let Some(dual) = self.dual.as_mut() {
+            return dual.output_active_instance();
+        }
+        0
+    }
+
     /// Dual-GPS pre-arm gate: both instances healthy when dual enabled.
     #[must_use]
     pub fn gps_dual_pre_arm_ok(&mut self) -> bool {

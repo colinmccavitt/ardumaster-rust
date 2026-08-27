@@ -3,7 +3,10 @@
 //! Holds two [`SitlGpsBackend`] instances and optionally blends their lag-buffered
 //! outputs when [`GpsAutoSwitch::Blend`] is selected.
 
-use crate::blend::{GpsAutoSwitch, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT};
+use crate::blend::{
+    GpsAutoSwitch, GpsBlendInstance, GpsBlender, GPS_BLEND_MASK_DEFAULT,
+    GPS_BLENDED_INSTANCE,
+};
 use crate::health::GpsHealthFlags;
 use crate::sitl::{GpsFixState, SitlGpsBackend, SITL_GPS_UPDATE_MS};
 use crate::status::GpsStatus;
@@ -144,6 +147,39 @@ impl GpsDualStub {
         GpsHealthFlags::from_status(&status)
     }
 
+
+    /// Active output instance index, upstream `AP_GPS::primary_instance()` / blended.
+    #[must_use]
+    pub fn output_active_instance(&mut self) -> u8 {
+        if !self.dual_enabled {
+            return 0;
+        }
+        match self.auto_switch {
+            GpsAutoSwitch::UsePrimary => self.primary_instance,
+            GpsAutoSwitch::UseBest => {
+                let p = self.primary_status();
+                let s = self.secondary_status();
+                if s.num_sats > p.num_sats {
+                    1
+                } else {
+                    0
+                }
+            }
+            GpsAutoSwitch::Blend => {
+                let instances = self.blend_instances();
+                if self.blender.calc_weights(&instances) {
+                    GPS_BLENDED_INSTANCE
+                } else if self.primary_status().have_fix {
+                    self.primary_instance
+                } else if self.secondary_status().have_fix {
+                    1 - self.primary_instance
+                } else {
+                    self.primary_instance
+                }
+            }
+        }
+    }
+
     #[must_use]
     pub fn output_is_blended(&self) -> bool {
         self.dual_enabled && self.auto_switch == GpsAutoSwitch::Blend && self.blender.output_is_blended()
@@ -189,4 +225,20 @@ mod tests {
         assert!((status.velocity_ned.x - 8.0).abs() < 0.5);
         assert!(stub.output_is_blended());
     }
+    #[test]
+    fn use_best_selects_higher_satellite_count() {
+        let mut stub = GpsDualStub::default();
+        stub.dual_enabled = true;
+        stub.auto_switch = GpsAutoSwitch::UseBest;
+        stub.primary.num_sats = 10;
+        stub.secondary.num_sats = 18;
+        stub.primary_truth.velocity_ned = Vector3f::new(5.0, 0.0, 0.0);
+        stub.secondary_truth.velocity_ned = Vector3f::new(9.0, 0.0, 0.0);
+        stub.primary_truth.now_ms = 200;
+        stub.secondary_truth.now_ms = 200;
+        assert_eq!(stub.output_active_instance(), 1);
+        let status = stub.output_status();
+        assert!((status.velocity_ned.x - 9.0).abs() < 1e-3);
+    }
+
 }
