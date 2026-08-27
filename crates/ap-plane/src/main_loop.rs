@@ -9,7 +9,10 @@ use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{yaw_update_inputs, AhrsAttitude, AhrsFeed};
-use crate::landing_hookup::ServoOutputState;
+use ap_landing::deepstall_override::DeepstallOverrideInputs;
+use ap_landing::deepstall_stage::DeepstallStage;
+use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
+use crate::landing_loop::LandingContext;
 use crate::mode::ModeState;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -91,6 +94,16 @@ pub struct PlaneMainLoop {
     pub stabilize_ctx: StabilizeContext,
     /// Scaled demands from the latest `stabilize`.
     pub stabilize_servos: StabilizeServoDemands,
+    /// Landing state machine and flags, upstream `AP_Landing`.
+    pub landing: LandingContext,
+    /// Upstream `flight_stage == LAND`.
+    pub flight_stage_is_land: bool,
+    /// Deepstall servo override HAL inputs for the landing hookup.
+    pub deepstall_override: DeepstallOverrideInputs,
+    /// Whether landing overrode servos on the last `set_servos`.
+    pub landing_servo_override_applied: bool,
+    /// Go-around requested because deepstall elevator is missing.
+    pub landing_request_go_around: bool,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -124,6 +137,24 @@ impl Default for PlaneMainLoop {
             stabilize_demands: StabilizeDemands::default(),
             stabilize_ctx: StabilizeContext::default(),
             stabilize_servos: StabilizeServoDemands::default(),
+            landing: LandingContext::default(),
+            flight_stage_is_land: false,
+            deepstall_override: DeepstallOverrideInputs {
+                stage: DeepstallStage::FlyToLanding,
+                stall_entry_ms: 0,
+                now_ms: 0,
+                slew_speed: 1.0,
+                initial_elevator_pwm: 1500,
+                target_elevator_pwm: 1500,
+                airspeed_ms: None,
+                handoff_airspeed_ms: 12.0,
+                handoff_lower_limit_ms: 8.0,
+                steering_pid: 0.0,
+                aileron_scalar: 1.0,
+                elevator_present: true,
+            },
+            landing_servo_override_applied: false,
+            landing_request_go_around: false,
             servos: ServoOutputState::default(),
         }
     }
@@ -185,10 +216,23 @@ impl PlaneMainLoop {
         self.stabilize_servos = out.servos;
     }
 
-    /// Upstream `Plane::set_servos`. Publishes scaled/PWM demands from stabilize.
+    /// Upstream `Plane::set_servos`. Publishes scaled/PWM demands from stabilize,
+    /// then applies landing servo overrides when in LAND.
     pub fn set_servos(&mut self) {
         self.ticks.set_servos += 1;
         apply_stabilize_to_servos(&self.stabilize_servos, &mut self.servos);
+
+        let hookup_inp = LandingServoHookupInputs {
+            flight_stage_is_land: self.flight_stage_is_land,
+            landing_flags: self.landing.flags,
+            landing_type: self.landing.landing_type,
+            deepstall_stage: self.landing.machine.deepstall.stage,
+            deepstall: self.deepstall_override,
+        };
+        let result = landing_servo_hookup(self.servos, &hookup_inp);
+        self.landing_servo_override_applied = result.applied_override;
+        self.landing_request_go_around = result.request_go_around;
+        self.servos = result.outputs;
     }
 }
 
