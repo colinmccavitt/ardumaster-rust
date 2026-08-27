@@ -1,7 +1,6 @@
 //! AHRS backend selection, upstream `AP_AHRS::EKFType` and `backend_for_type`.
 //!
-//! The full EKF is not ported yet; [`AhrsBackendKind::Ekf3`] resolves to DCM until
-//! NavEKF3 lands. Plane still falls back from EKF to DCM when unhealthy.
+//! EKF3 update wiring is stubbed; Plane falls back from EKF to DCM when unhealthy.
 
 /// Configured attitude estimator, upstream `AP_AHRS::EKFType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -27,19 +26,18 @@ impl AhrsBackendKind {
     /// Whether this backend is implemented in the port.
     #[must_use]
     pub const fn is_available(self) -> bool {
-        matches!(self, Self::Dcm)
+        matches!(self, Self::Dcm | Self::Ekf3)
     }
 }
 
 /// Resolve a configured type to an allocated backend, upstream `backend_for_type`.
 ///
-/// Unimplemented backends fall back to DCM rather than leaving the vehicle
-/// without an attitude source.
+/// Resolve configured type to the allocated backend instance.
 #[must_use]
 pub const fn backend_for_kind(kind: AhrsBackendKind) -> AhrsBackendKind {
     match kind {
         AhrsBackendKind::Dcm => AhrsBackendKind::Dcm,
-        AhrsBackendKind::Ekf3 => AhrsBackendKind::Dcm,
+        AhrsBackendKind::Ekf3 => AhrsBackendKind::Ekf3,
     }
 }
 
@@ -63,9 +61,9 @@ mod tests {
     }
 
     #[test]
-    fn ekf3_stub_falls_back_to_dcm() {
-        assert!(!AhrsBackendKind::Ekf3.is_available());
-        assert_eq!(backend_for_kind(AhrsBackendKind::Ekf3), AhrsBackendKind::Dcm);
+    fn ekf3_resolves_to_ekf3_backend() {
+        assert!(AhrsBackendKind::Ekf3.is_available());
+        assert_eq!(backend_for_kind(AhrsBackendKind::Ekf3), AhrsBackendKind::Ekf3);
     }
 
     #[test]
@@ -77,10 +75,10 @@ mod tests {
     }
 
     #[test]
-    fn healthy_ekf_stays_on_dcm_until_ported() {
+    fn healthy_ekf_stays_on_ekf3() {
         assert_eq!(
             active_backend_kind(AhrsBackendKind::Ekf3, true),
-            AhrsBackendKind::Dcm
+            AhrsBackendKind::Ekf3
         );
     }
 

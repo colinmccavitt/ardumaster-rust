@@ -108,21 +108,34 @@ fn backend_selection_defaults_to_dcm() {
 }
 
 #[test]
-fn configured_ekf3_resolves_to_dcm_while_unported() {
+fn configured_ekf3_starts_unhealthy_until_first_update() {
     let mut feed = AhrsFeed::default();
     feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
     assert_eq!(feed.configured_backend, ap_ahrs::AhrsBackendKind::Ekf3);
-    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Ekf3);
+    assert!(!feed.ekf_healthy);
 }
 
 #[test]
-fn ahrs_update_refreshes_active_backend() {
+fn ahrs_update_refreshes_active_backend_after_ekf3() {
     let mut feed = AhrsFeed::default();
-    feed.configured_backend = ap_ahrs::AhrsBackendKind::Ekf3;
-    feed.ekf_healthy = false;
+    feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
     let ins = ap_ins::InertialSensorFrontend::default();
     let timing = LoopTiming::new(1.0 / 400.0);
     feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
-    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Dcm);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Ekf3);
+    assert!(feed.ekf_healthy);
+}
+
+#[test]
+fn ekf3_path_dispatches_through_update_hook() {
+    let mut feed = AhrsFeed::default();
+    feed.set_configured_backend(ap_ahrs::AhrsBackendKind::Ekf3);
+    let ins = ap_ins::InertialSensorFrontend::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+    feed.update_from_ins(&ins, &timing, None, ap_ahrs::DriftMotionInputs::default());
+    assert!(feed.ekf3.initialized);
+    assert!(feed.ekf_healthy);
+    assert_eq!(feed.active_backend, ap_ahrs::AhrsBackendKind::Ekf3);
 }
 

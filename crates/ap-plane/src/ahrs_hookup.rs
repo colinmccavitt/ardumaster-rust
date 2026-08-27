@@ -5,9 +5,9 @@
 //! path reads on the next tasks.
 
 use ap_ahrs::{
-    active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, AhrsBackendKind,
-    Dcm, DcmDriftLoop, DriftMotionInputs, MatrixHealth, YawCompassSample, YawDriftContext,
-    YawGpsSample, YawUpdateInputs,
+    active_backend_kind, backend_for_kind, dcm_step_with_drift_from_ins_yaw, ekf3_step_from_ins,
+    AhrsBackendKind, Dcm, DcmDriftLoop, DriftMotionInputs, Ekf3Loop, MatrixHealth, YawCompassSample,
+    YawDriftContext, YawGpsSample, YawUpdateInputs,
 };
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_math::scalar::{rad_to_cd, radians, wrap_180_cd, wrap_360_cd, Real};
@@ -33,6 +33,8 @@ pub struct AhrsFeed {
     pub active_backend: AhrsBackendKind,
     /// EKF health for fallback decisions; stub until NavEKF3 is ported.
     pub ekf_healthy: bool,
+    /// NavEKF3 filter stub, upstream `NavEKF3`.
+    pub ekf3: Ekf3Loop,
     /// Direction-cosine attitude estimate.
     pub dcm: Dcm,
     /// Roll/pitch drift and compass yaw correction.
@@ -46,6 +48,7 @@ impl Default for AhrsFeed {
             configured_backend: AhrsBackendKind::default(),
             active_backend: AhrsBackendKind::default(),
             ekf_healthy: false,
+            ekf3: Ekf3Loop::default(),
             dcm: Dcm::new(),
             drift: DcmDriftLoop::default(),
             last_gps_fix_ms: 0,
@@ -89,12 +92,13 @@ impl AhrsFeed {
         yaw: Option<YawUpdateInputs>,
         motion: DriftMotionInputs,
     ) -> (MatrixHealth, AhrsAttitude) {
-        self.update_active_backend();
-        match self.active_backend {
-            AhrsBackendKind::Dcm | AhrsBackendKind::Ekf3 => {
-                self.update_dcm_from_ins(ins, timing, yaw, motion)
-            }
-        }
+        let result = match backend_for_kind(self.configured_backend) {
+            AhrsBackendKind::Ekf3 => self.update_ekf3_from_ins(ins, timing, yaw, motion),
+            AhrsBackendKind::Dcm => self.update_dcm_from_ins(ins, timing, yaw, motion),
+        };
+        self.ekf_healthy = self.ekf3.healthy;
+        self.active_backend = active_backend_kind(self.configured_backend, self.ekf_healthy);
+        result
     }
 
     fn update_dcm_from_ins(
@@ -105,6 +109,25 @@ impl AhrsFeed {
         motion: DriftMotionInputs,
     ) -> (MatrixHealth, AhrsAttitude) {
         let health = dcm_step_with_drift_from_ins_yaw(
+            &mut self.dcm,
+            &mut self.drift,
+            ins,
+            timing,
+            yaw,
+            motion,
+        );
+        (health, attitude_from_dcm(&self.dcm))
+    }
+
+    fn update_ekf3_from_ins(
+        &mut self,
+        ins: &InertialSensorFrontend,
+        timing: &LoopTiming,
+        yaw: Option<YawUpdateInputs>,
+        motion: DriftMotionInputs,
+    ) -> (MatrixHealth, AhrsAttitude) {
+        let health = ekf3_step_from_ins(
+            &mut self.ekf3,
             &mut self.dcm,
             &mut self.drift,
             ins,
