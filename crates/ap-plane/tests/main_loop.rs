@@ -886,3 +886,24 @@ fn mode_glue_restores_pilot_throttle_after_transition() {
     assert!(!vehicle.mode_glue_throttle_zeroed);
     assert!((vehicle.servos.throttle_scaled - 100.0).abs() < 0.1);
 }
+
+
+#[test]
+fn update_control_mode_uses_mode_glue_tick() {
+    use ap_plane::mode_run::StickMixing;
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = true;
+    vehicle.stick_mixing = Some(StickMixing::Fbw);
+    vehicle.rc_failsafe_inputs.throttle_pwm = Some(2000);
+    vehicle.rc_failsafe_inputs.has_valid_input = true;
+
+    vehicle.update_control_mode();
+
+    assert!(vehicle.mode_glue_throttle_zeroed);
+    assert_eq!(vehicle.effective_stick_mixing, Some(StickMixing::Fbw));
+    assert_eq!(vehicle.stabilize_demands.throttle_scaled, 0.0);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}

@@ -67,8 +67,7 @@ use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
 use crate::mode_glue_hookup::{
-    apply_mode_entry_throttle_suppression, resolve_effective_stick_mixing,
-    restore_pilot_throttle_on_transition_clear,
+    mode_glue_tick, restore_pilot_throttle_on_transition_clear, ModeGlueInputs,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -741,19 +740,6 @@ impl PlaneMainLoop {
         self.last_target_altitude = mission_out.target;
         self.mission_advanced = mission_out.advanced;
 
-        self.effective_stick_mixing = crate::mode_table::ModeNumber::from_number(
-            self.mode.control_mode,
-            &self.features,
-        )
-        .map(|mode| resolve_effective_stick_mixing(mode, self.stick_mixing))
-        .unwrap_or(self.stick_mixing);
-
-        self.last_stabilize = dispatch_stabilize_from_mode(
-            self.mode.control_mode,
-            self.effective_stick_mixing,
-            &self.features,
-        );
-
         let thr_ctx = throttle_context_tick(&ThrottleContextInputs {
             control_mode: self.mode.control_mode,
             features: self.features,
@@ -779,15 +765,24 @@ impl PlaneMainLoop {
             use_battery_compensation: self.throttle_use_battery_comp,
             battery_voltage_ratio: self.battery_voltage_ratio,
         });
-        let (pilot_throttle, zeroed) = apply_mode_entry_throttle_suppression(
-            self.mode.control_mode,
-            &self.features,
-            self.mode_entry.throttle_suppressed,
+        let glue_out = mode_glue_tick(&ModeGlueInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            stick_mixing: self.stick_mixing,
+            throttle_suppressed: self.mode_entry.throttle_suppressed,
             pilot_throttle,
+        });
+        self.effective_stick_mixing = glue_out.effective_stick_mixing;
+        self.mode_glue_throttle_zeroed = glue_out.throttle_zeroed_by_mode_entry;
+
+        self.last_stabilize = dispatch_stabilize_from_mode(
+            self.mode.control_mode,
+            self.effective_stick_mixing,
+            &self.features,
         );
-        self.mode_glue_throttle_zeroed = zeroed;
-        self.stabilize_demands.throttle_scaled = pilot_throttle;
-        self.servos.throttle_scaled = pilot_throttle;
+
+        self.stabilize_demands.throttle_scaled = glue_out.pilot_throttle;
+        self.servos.throttle_scaled = glue_out.pilot_throttle;
 
         let mode_pre_arm = pre_arm_checks(true, "");
         let with_ahrs = plane_pre_arm_checks(mode_pre_arm, self.ahrs_pre_arm_ok);
