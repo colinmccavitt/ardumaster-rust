@@ -13,6 +13,7 @@ use ap_landing::deepstall_override::DeepstallOverrideInputs;
 use ap_landing::deepstall_stage::DeepstallStage;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
 use crate::landing_loop::LandingContext;
+use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
 use crate::stabilize_hookup::{
     apply_stabilize_to_servos, prepare_stabilize_path, stabilize_controllers, NavCommandInputs,
@@ -78,6 +79,8 @@ pub struct PlaneMainLoop {
     pub gps_yaw: Option<YawGpsSample>,
     /// Vehicle context for compass vs GPS yaw selection.
     pub yaw_ctx: YawDriftContext,
+    /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
+    pub sitl_yaw: Option<SitlYawPublish>,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
     /// Raw navigation commands before limiting, upstream nav_controller/TECS.
@@ -129,6 +132,7 @@ impl Default for PlaneMainLoop {
             compass: None,
             gps_yaw: None,
             yaw_ctx: YawDriftContext::default(),
+            sitl_yaw: None,
             controllers: StabilizeControllers::default(),
             nav_commands: NavCommandInputs::default(),
             rc_sticks: RcStickInputs::default(),
@@ -164,6 +168,16 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
+        if let Some(source) = self.sitl_yaw {
+            let samples = publish_sitl_yaw_samples(
+                &source,
+                self.ahrs.dcm.matrix,
+                self.loop_timing.delta_time,
+            );
+            self.compass = samples.compass;
+            self.gps_yaw = samples.gps_yaw;
+            self.yaw_ctx = samples.yaw_ctx;
+        }
         let yaw = yaw_update_inputs(self.compass, self.gps_yaw, self.yaw_ctx);
         let (_health, attitude) = self.ahrs.update_from_ins(
             &self.ins,
