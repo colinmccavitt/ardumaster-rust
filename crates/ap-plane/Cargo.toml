@@ -16,6 +16,7 @@ ap-landing = { workspace = true }
 ap-math = { workspace = true }
 ap-pid = { workspace = true }
 ap-scheduler = { workspace = true }
+ap-sim = { workspace = true }
 
 [dev-dependencies]
 ap-hal = { workspace = true }
@@ -28,6 +29,7 @@ ap-nav = { workspace = true, features = ["replay"] }
 ap-pid = { workspace = true }
 ap-replay = { workspace = true }
 ap-scheduler = { workspace = true }
+ap-sim = { workspace = true }
 ap-servo = { workspace = true }
 
 [lints]

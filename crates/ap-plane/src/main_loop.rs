@@ -5,7 +5,8 @@
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
 use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
-use ap_ins::{InertialSensorFrontend, LoopTiming};
+use ap_ins::sitl::SitlBodyState;
+use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
@@ -17,6 +18,9 @@ use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, Serv
 use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
 use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
+use crate::sitl_ins_noise_hookup::{
+    sitl_ins_noise_scheduler_tick, SitlInsNoiseHookup, SitlInsNoiseSchedulerInputs,
+};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
@@ -88,6 +92,14 @@ pub struct PlaneMainLoop {
     pub airspeed_tas: f32,
     /// Optional SITL yaw publish source; when set, samples are refreshed each `ahrs_update`.
     pub sitl_yaw: Option<SitlYawPublish>,
+    /// Optional SITL INS noise cluster hookup; when set, runs before AHRS each tick.
+    pub sitl_ins_noise: Option<SitlInsNoiseHookup>,
+    /// Per-tick motor runtime for SIM_VIB noise injection.
+    pub sitl_ins_motor: SitlInsMotorRuntime,
+    /// Kinematic body state for the SITL INS cluster this tick.
+    pub sitl_body: SitlBodyState,
+    /// Monotonic time in microseconds for SITL INS timer_update.
+    pub sitl_now_us: u64,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
     /// L1/TECS navigation publish source refreshed before stabilize.
@@ -151,6 +163,10 @@ impl Default for PlaneMainLoop {
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             sitl_yaw: None,
+            sitl_ins_noise: None,
+            sitl_ins_motor: SitlInsMotorRuntime::default(),
+            sitl_body: SitlBodyState::default(),
+            sitl_now_us: 0,
             controllers: StabilizeControllers::default(),
             nav_tecs: NavTecsPublish::default(),
             nav_commands: NavCommandInputs::default(),
@@ -237,6 +253,17 @@ impl PlaneMainLoop {
             self.compass = samples.compass;
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
+        }
+        if let Some(hookup) = self.sitl_ins_noise.as_mut() {
+            let _ = sitl_ins_noise_scheduler_tick(
+                hookup,
+                &SitlInsNoiseSchedulerInputs {
+                    body: self.sitl_body,
+                    motor: self.sitl_ins_motor,
+                    now_us: self.sitl_now_us,
+                },
+            );
+            self.ins = hookup.cluster.frontend.clone();
         }
         let yaw = yaw_update_inputs(self.compass, self.gps_yaw, self.yaw_ctx);
         let motion = drift_motion_inputs(

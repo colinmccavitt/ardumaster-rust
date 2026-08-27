@@ -222,6 +222,32 @@ impl M3 {
 /// Standard gravity, m/s2.
 pub const GRAVITY: f64 = 9.806_65;
 
+
+/// Per-tick motor/throttle state from a host-side plane simulator frame.
+///
+/// Kept in `ap-sim` (not `ap-ins`) so kinematic truth stays independent of
+/// firmware types; [`ap_plane::sitl_ins_noise_hookup`] converts into
+/// [`SitlInsMotorRuntime`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PlaneMotorFrame {
+    pub motors_on: bool,
+    /// Throttle demand, percent `0..100`.
+    pub throttle_pct: f64,
+    pub motor_rpm: [f64; 8],
+}
+
+impl PlaneMotorFrame {
+    /// Build from a throttle percentage, motors on when throttle is positive.
+    #[must_use]
+    pub fn from_throttle_pct(throttle_pct: f64) -> Self {
+        Self {
+            motors_on: throttle_pct > 0.0,
+            throttle_pct,
+            ..Self::default()
+        }
+    }
+}
+
 /// One IMU sample, in the form `AP_InertialSensor` would hand over.
 #[derive(Debug, Clone, Copy)]
 pub struct ImuSample {
