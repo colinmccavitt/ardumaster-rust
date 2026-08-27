@@ -16,6 +16,7 @@ ap-landing = { workspace = true }
 ap-math = { workspace = true }
 ap-pid = { workspace = true }
 ap-scheduler = { workspace = true }
+ap-servo = { workspace = true }
 ap-sim = { workspace = true }
 
 [dev-dependencies]
