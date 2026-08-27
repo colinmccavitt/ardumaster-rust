@@ -152,6 +152,8 @@ fn mode_glue_set_servos_tick_restores_then_keeps_pilot_throttle() {
     use ap_plane::landing_hookup::ServoOutputState;
     use ap_plane::mode_glue_hookup::{mode_glue_set_servos_tick, ModeGlueSetServosInputs};
     use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+    use ap_plane::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
 
     let out = mode_glue_set_servos_tick(
         ServoOutputState {
@@ -164,14 +166,18 @@ fn mode_glue_set_servos_tick_restores_then_keeps_pilot_throttle() {
             transition_cleared: true,
             throttle_suppressed: false,
             current_throttle: 0.0,
-            pilot_throttle: 75.0,
+            pilot_throttle: PilotThrottleGlueInputs {
+                throttle_pwm: Some(1750),
+                throttle_cfg: RcChannelConfig::default(),
+                ..PilotThrottleGlueInputs::default()
+            },
         },
     );
     assert!(out.throttle_restored);
     assert!(out.clear_throttle_zeroed);
     assert!(!out.mode_entry_applied);
-    assert_eq!(out.servos.throttle_scaled, 75.0);
-    assert_eq!(out.stabilize_throttle, Some(75.0));
+    assert!((out.servos.throttle_scaled - 79.1).abs() < 0.5);
+    assert_eq!(out.stabilize_throttle, Some(out.servos.throttle_scaled));
 }
 
 #[test]
@@ -179,6 +185,8 @@ fn mode_glue_set_servos_tick_zeros_when_still_suppressed() {
     use ap_plane::landing_hookup::ServoOutputState;
     use ap_plane::mode_glue_hookup::{mode_glue_set_servos_tick, ModeGlueSetServosInputs};
     use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+    use ap_plane::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
 
     let out = mode_glue_set_servos_tick(
         ServoOutputState {
@@ -191,7 +199,11 @@ fn mode_glue_set_servos_tick_zeros_when_still_suppressed() {
             transition_cleared: false,
             throttle_suppressed: true,
             current_throttle: 60.0,
-            pilot_throttle: 75.0,
+            pilot_throttle: PilotThrottleGlueInputs {
+                throttle_pwm: Some(1750),
+                throttle_cfg: RcChannelConfig::default(),
+                ..PilotThrottleGlueInputs::default()
+            },
         },
     );
     assert!(!out.throttle_restored);
@@ -250,6 +262,37 @@ fn mode_glue_update_control_tick_passes_pilot_throttle_when_not_suppressed() {
     assert!(!out.throttle_zeroed_by_mode_entry);
     assert!((out.pilot_throttle - 100.0).abs() < 0.1);
 }
+
+#[test]
+fn mode_glue_set_servos_tick_maps_rc_throttle_before_restore() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_glue_hookup::{mode_glue_set_servos_tick, ModeGlueSetServosInputs};
+    use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+    use ap_plane::rc_failsafe_scheduler_hookup::RcChannelConfig;
+    use ap_plane::yaw_throttle_glue_hookup::PilotThrottleGlueInputs;
+
+    let out = mode_glue_set_servos_tick(
+        ServoOutputState {
+            throttle_scaled: 0.0,
+            ..ServoOutputState::default()
+        },
+        &ModeGlueSetServosInputs {
+            control_mode: ModeNumber::FlyByWireB.as_number(),
+            features: BuildFeatures::default(),
+            transition_cleared: true,
+            throttle_suppressed: false,
+            current_throttle: 0.0,
+            pilot_throttle: PilotThrottleGlueInputs {
+                throttle_pwm: Some(2000),
+                throttle_cfg: RcChannelConfig::default(),
+                ..PilotThrottleGlueInputs::default()
+            },
+        },
+    );
+    assert!(out.throttle_restored);
+    assert!((out.servos.throttle_scaled - 100.0).abs() < 0.1);
+}
+
 
 #[test]
 fn mode_glue_stabilize_tick_mixes_vtol_yaw_into_rudder() {
