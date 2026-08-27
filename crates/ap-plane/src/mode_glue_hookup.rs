@@ -169,3 +169,68 @@ pub fn mode_glue_restore_tick(inp: &ModeGlueRestoreInputs) -> ModeGlueRestoreOut
     }
 }
 
+use crate::landing_hookup::ServoOutputState;
+use crate::suppress_throttle_scheduler_hookup::{
+    suppress_throttle_scheduler_tick, SuppressThrottleSchedulerInputs,
+};
+
+/// Inputs for the set_servos mode-glue throttle path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueSetServosInputs {
+    pub control_mode: u8,
+    pub features: BuildFeatures,
+    pub transition_cleared: bool,
+    pub throttle_suppressed: bool,
+    pub current_throttle: f32,
+    pub pilot_throttle: f32,
+}
+
+/// Result of the set_servos mode-glue throttle path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueSetServosOutput {
+    pub servos: ServoOutputState,
+    /// Stabilize demand throttle when restore syncs pilot stick.
+    pub stabilize_throttle: Option<f32>,
+    pub throttle_restored: bool,
+    pub clear_throttle_zeroed: bool,
+    pub mode_entry_applied: bool,
+}
+
+/// Restore pilot throttle on transition clear, then apply mode-entry suppression.
+#[must_use]
+pub fn mode_glue_set_servos_tick(
+    servos: ServoOutputState,
+    inp: &ModeGlueSetServosInputs,
+) -> ModeGlueSetServosOutput {
+    let restore_out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
+        transition_cleared: inp.transition_cleared,
+        throttle_suppressed: inp.throttle_suppressed,
+        current_throttle: inp.current_throttle,
+        pilot_throttle: inp.pilot_throttle,
+    });
+
+    let mut servos = servos;
+    let mut stabilize_throttle = None;
+    if restore_out.restored {
+        servos.throttle_scaled = restore_out.pilot_throttle;
+        stabilize_throttle = Some(restore_out.pilot_throttle);
+    }
+
+    let sup_out = suppress_throttle_scheduler_tick(
+        servos,
+        &SuppressThrottleSchedulerInputs {
+            control_mode: inp.control_mode,
+            throttle_suppressed: inp.throttle_suppressed,
+            features: inp.features,
+        },
+    );
+
+    ModeGlueSetServosOutput {
+        servos: sup_out.servos,
+        stabilize_throttle,
+        throttle_restored: restore_out.restored,
+        clear_throttle_zeroed: restore_out.restored,
+        mode_entry_applied: sup_out.applied,
+    }
+}
+

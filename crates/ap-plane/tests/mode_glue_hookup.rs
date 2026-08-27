@@ -146,3 +146,57 @@ fn mode_glue_restore_tick_skips_when_still_suppressed() {
     assert!(!out.restored);
     assert_eq!(out.pilot_throttle, 0.0);
 }
+
+#[test]
+fn mode_glue_set_servos_tick_restores_then_keeps_pilot_throttle() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_glue_hookup::{mode_glue_set_servos_tick, ModeGlueSetServosInputs};
+    use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+
+    let out = mode_glue_set_servos_tick(
+        ServoOutputState {
+            throttle_scaled: 0.0,
+            ..ServoOutputState::default()
+        },
+        &ModeGlueSetServosInputs {
+            control_mode: ModeNumber::Auto.as_number(),
+            features: BuildFeatures::default(),
+            transition_cleared: true,
+            throttle_suppressed: false,
+            current_throttle: 0.0,
+            pilot_throttle: 75.0,
+        },
+    );
+    assert!(out.throttle_restored);
+    assert!(out.clear_throttle_zeroed);
+    assert!(!out.mode_entry_applied);
+    assert_eq!(out.servos.throttle_scaled, 75.0);
+    assert_eq!(out.stabilize_throttle, Some(75.0));
+}
+
+#[test]
+fn mode_glue_set_servos_tick_zeros_when_still_suppressed() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_glue_hookup::{mode_glue_set_servos_tick, ModeGlueSetServosInputs};
+    use ap_plane::mode_table::{BuildFeatures, ModeNumber};
+
+    let out = mode_glue_set_servos_tick(
+        ServoOutputState {
+            throttle_scaled: 60.0,
+            ..ServoOutputState::default()
+        },
+        &ModeGlueSetServosInputs {
+            control_mode: ModeNumber::Auto.as_number(),
+            features: BuildFeatures::default(),
+            transition_cleared: false,
+            throttle_suppressed: true,
+            current_throttle: 60.0,
+            pilot_throttle: 75.0,
+        },
+    );
+    assert!(!out.throttle_restored);
+    assert!(out.mode_entry_applied);
+    assert_eq!(out.servos.throttle_scaled, 0.0);
+    assert_eq!(out.stabilize_throttle, None);
+}
+

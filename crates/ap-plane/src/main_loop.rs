@@ -34,9 +34,7 @@ use crate::arming_scheduler_hookup::{
 use crate::srv_output_scheduler_hookup::{
     srv_output_scheduler_tick, SrvOutputHookupState, SrvOutputSchedulerInputs,
 };
-use crate::suppress_throttle_scheduler_hookup::{
-    suppress_throttle_scheduler_tick, SuppressThrottleSchedulerInputs,
-};
+
 use crate::srv_pwm_publish_hookup::{
     srv_pwm_publish_tick, sync_pwm_channels_from_registry, SrvPwmPublishInputs,
     SrvPwmPublishState,
@@ -67,7 +65,7 @@ use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
 use crate::mode_glue_hookup::{
-    mode_glue_restore_tick, mode_glue_tick, ModeGlueInputs, ModeGlueRestoreInputs,
+    mode_glue_set_servos_tick, mode_glue_tick, ModeGlueInputs, ModeGlueSetServosInputs,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -951,29 +949,26 @@ impl PlaneMainLoop {
             use_battery_compensation: self.throttle_use_battery_comp,
             battery_voltage_ratio: self.battery_voltage_ratio,
         });
-        let restore_out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
-            transition_cleared: trans_out.cleared,
-            throttle_suppressed: self.mode_entry.throttle_suppressed,
-            current_throttle: self.servos.throttle_scaled,
-            pilot_throttle,
-        });
-        self.mode_glue_throttle_restored = restore_out.restored;
-        if restore_out.restored {
-            self.mode_glue_throttle_zeroed = false;
-            self.servos.throttle_scaled = restore_out.pilot_throttle;
-            self.stabilize_demands.throttle_scaled = restore_out.pilot_throttle;
-        }
-
-        let sup_out = suppress_throttle_scheduler_tick(
+        let glue_servos_out = mode_glue_set_servos_tick(
             self.servos,
-            &SuppressThrottleSchedulerInputs {
+            &ModeGlueSetServosInputs {
                 control_mode: self.mode.control_mode,
-                throttle_suppressed: self.mode_entry.throttle_suppressed,
                 features: self.features,
+                transition_cleared: trans_out.cleared,
+                throttle_suppressed: self.mode_entry.throttle_suppressed,
+                current_throttle: self.servos.throttle_scaled,
+                pilot_throttle,
             },
         );
-        self.mode_entry_throttle_applied = sup_out.applied;
-        self.servos = sup_out.servos;
+        self.mode_glue_throttle_restored = glue_servos_out.throttle_restored;
+        if glue_servos_out.clear_throttle_zeroed {
+            self.mode_glue_throttle_zeroed = false;
+        }
+        if let Some(throttle) = glue_servos_out.stabilize_throttle {
+            self.stabilize_demands.throttle_scaled = throttle;
+        }
+        self.mode_entry_throttle_applied = glue_servos_out.mode_entry_applied;
+        self.servos = glue_servos_out.servos;
 
         let arm_out = arming_scheduler_tick(
             self.servos,
