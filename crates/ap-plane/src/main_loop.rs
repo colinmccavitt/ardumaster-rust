@@ -4,8 +4,11 @@
 //! `ap-scheduler` owns tick ordering; this module is where the vehicle wires
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
+use ap_ahrs::YawCompassSample;
+use ap_ins::{ImuInstance, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
+use crate::ahrs_hookup::{AhrsAttitude, AhrsFeed};
 use crate::mode::ModeState;
 use crate::mode_run::{applies_fbw_stick_mixing, StickMixing};
 use crate::mode_table::{BuildFeatures, ModeNumber};
@@ -36,14 +39,33 @@ pub struct StabilizeDispatch {
     pub fbw_stick_mixing: bool,
 }
 
+/// Which stabilization paths ran on the last `stabilize` call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StabilizeRun {
+    pub roll: bool,
+    pub pitch: bool,
+    pub yaw: bool,
+}
+
 /// Vehicle state the main loop carries between scheduler ticks.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PlaneMainLoop {
     pub mode: ModeState,
     pub stick_mixing: Option<StickMixing>,
     pub features: BuildFeatures,
     pub ticks: FastTaskTicks,
     pub last_stabilize: StabilizeDispatch,
+    pub last_stabilize_run: StabilizeRun,
+    /// DCM estimator and drift correction, upstream `AP::ahrs()`.
+    pub ahrs: AhrsFeed,
+    /// Primary IMU instance, upstream `AP::ins().get_primary_imu()`.
+    pub imu: ImuInstance,
+    /// Loop timing passed into INS and AHRS, upstream scheduler deltas.
+    pub loop_timing: LoopTiming,
+    /// Attitude sensors published by the latest `ahrs_update`.
+    pub attitude: AhrsAttitude,
+    /// Optional compass sample for yaw drift correction.
+    pub compass: Option<YawCompassSample>,
 }
 
 impl Default for PlaneMainLoop {
@@ -59,14 +81,26 @@ impl Default for PlaneMainLoop {
             features: BuildFeatures::default(),
             ticks: FastTaskTicks::default(),
             last_stabilize: StabilizeDispatch::default(),
+            last_stabilize_run: StabilizeRun::default(),
+            ahrs: AhrsFeed::default(),
+            imu: ImuInstance::default(),
+            loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
+            attitude: AhrsAttitude::default(),
+            compass: None,
         }
     }
 }
 
 impl PlaneMainLoop {
-    /// Upstream `Plane::ahrs_update`. Skeleton: later slices feed INS/AHRS.
+    /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
+        let (_health, attitude) = self.ahrs.update_from_ins(
+            &self.imu,
+            &self.loop_timing,
+            self.compass,
+        );
+        self.attitude = attitude;
     }
 
     /// Upstream `Plane::update_control_mode`. Dispatches to the active mode.
@@ -79,9 +113,16 @@ impl PlaneMainLoop {
         );
     }
 
-    /// Upstream `Plane::stabilize`. Skeleton: honours [`StabilizeDispatch`].
+    /// Upstream `Plane::stabilize`. Records which attitude paths the active
+    /// mode selected; controller calls land in a later slice.
     pub fn stabilize(&mut self) {
         self.ticks.stabilize += 1;
+        let d = self.last_stabilize;
+        self.last_stabilize_run = StabilizeRun {
+            roll: d.roll,
+            pitch: d.pitch,
+            yaw: d.yaw,
+        };
     }
 
     /// Upstream `Plane::set_servos`. Skeleton: later slices publish PWM.
@@ -185,4 +226,3 @@ pub fn run_scheduler_tick(
     scheduler.tick();
     scheduler.run(vehicle, clock, time_available_us)
 }
-

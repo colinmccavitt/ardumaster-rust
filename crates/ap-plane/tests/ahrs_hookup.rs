@@ -1,0 +1,55 @@
+//! AHRS attitude feed from DCM into the main loop.
+
+use ap_ahrs::Dcm;
+use ap_ins::LoopTiming;
+use ap_math::matrix3::Matrix3f;
+use ap_math::scalar::cd_to_rad;
+use ap_plane::ahrs_hookup::{attitude_from_dcm, AhrsAttitude, AhrsFeed};
+use ap_plane::main_loop::PlaneMainLoop;
+
+#[test]
+fn attitude_from_dcm_matches_euler() {
+    let roll = cd_to_rad(4500.0_f32);
+    let pitch = cd_to_rad(-2000.0_f32);
+    let yaw = cd_to_rad(9000.0_f32);
+    let mut dcm = Dcm::new();
+    dcm.matrix = Matrix3f::from_euler(roll, pitch, yaw);
+
+    let attitude = attitude_from_dcm(&dcm);
+    assert_eq!(attitude.roll_sensor_cd, 4500);
+    assert_eq!(attitude.pitch_sensor_cd, -2000);
+    assert_eq!(attitude.yaw_sensor_cd, 9000);
+}
+
+#[test]
+fn ahrs_update_publishes_attitude_on_main_loop() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let roll = cd_to_rad(3000.0_f32);
+    let pitch = cd_to_rad(1000.0_f32);
+    vehicle.ahrs.dcm.matrix = Matrix3f::from_euler(roll, pitch, 0.0);
+
+    vehicle.ahrs_update();
+
+    assert_eq!(vehicle.ticks.ahrs_update, 1);
+    assert_eq!(
+        vehicle.attitude,
+        AhrsAttitude {
+            roll_sensor_cd: 3000,
+            pitch_sensor_cd: 1000,
+            yaw_sensor_cd: 0,
+        }
+    );
+}
+
+#[test]
+fn ahrs_feed_update_from_ins_with_no_samples_keeps_attitude() {
+    let mut feed = AhrsFeed::default();
+    let imu = ap_ins::ImuInstance::default();
+    let timing = LoopTiming::new(1.0 / 400.0);
+
+    let (health, attitude) = feed.update_from_ins(&imu, &timing, None);
+
+    assert_eq!(health, ap_ahrs::MatrixHealth::Ok);
+    assert_eq!(attitude, AhrsAttitude::default());
+}

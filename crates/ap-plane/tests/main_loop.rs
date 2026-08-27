@@ -100,3 +100,24 @@ fn update_control_mode_records_mode_dispatch() {
     );
 }
 
+#[test]
+fn stabilize_records_active_attitude_paths() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.last_stabilize = StabilizeDispatch {
+        roll: true,
+        pitch: false,
+        yaw: true,
+        fbw_stick_mixing: false,
+    };
+
+    vehicle.stabilize();
+
+    assert_eq!(
+        vehicle.last_stabilize_run,
+        ap_plane::main_loop::StabilizeRun {
+            roll: true,
+            pitch: false,
+            yaw: true,
+        }
+    );
+}
