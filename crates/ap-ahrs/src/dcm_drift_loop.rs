@@ -98,6 +98,12 @@ impl Default for DcmDriftLoop {
 }
 
 impl DcmDriftLoop {
+    /// Whether GPS velocity is fused for drift correction, upstream `using_gps()`.
+    #[must_use]
+    pub fn using_gps(&self) -> bool {
+        self.have_gps_lock
+    }
+
     /// Drift loop with roll/pitch gains and default yaw gains.
     #[must_use]
     pub fn new(gains: DriftGains) -> Self {

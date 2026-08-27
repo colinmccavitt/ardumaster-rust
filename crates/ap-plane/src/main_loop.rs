@@ -229,6 +229,10 @@ pub struct PlaneMainLoop {
     pub ahrs_matrix_health: ap_ahrs::MatrixHealth,
     /// Whether AHRS is healthy for arming, upstream `AP_AHRS::healthy()`.
     pub ahrs_healthy: bool,
+    /// Whether GPS velocity is fused, upstream `AP_AHRS::using_gps()`.
+    pub ahrs_using_gps: bool,
+    /// Pre-arm AHRS gate, upstream `AP_AHRS::pre_arm_check(false)`.
+    pub ahrs_pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
     /// Dead-reckoning east offset (m) when GPS absent.
@@ -436,6 +440,8 @@ impl Default for PlaneMainLoop {
             wind_alignment: 0.0,
             ahrs_matrix_health: ap_ahrs::MatrixHealth::Ok,
             ahrs_healthy: false,
+            ahrs_using_gps: false,
+            ahrs_pre_arm_ok: false,
             dead_reckoning_north_m: 0.0,
             dead_reckoning_east_m: 0.0,
             have_dead_reckoning_position: false,
@@ -548,6 +554,8 @@ impl PlaneMainLoop {
         self.active_ahrs_backend = self.ahrs.active_backend;
         self.ahrs_matrix_health = health;
         self.ahrs_healthy = self.ahrs.healthy();
+        self.ahrs_using_gps = self.ahrs.using_gps();
+        self.ahrs_pre_arm_ok = self.ahrs.pre_arm_check(false);
         let (n, e, have) = self.ahrs.dead_reckoning_offset();
         self.dead_reckoning_north_m = n;
         self.dead_reckoning_east_m = e;
@@ -629,6 +637,9 @@ impl PlaneMainLoop {
     pub fn stabilize(&mut self) {
         self.ticks.stabilize += 1;
         feed_nav_commands(&mut self.nav_commands, &self.nav_tecs);
+        self.stabilize_ctx.eas2tas = self.eas2tas;
+        self.stabilize_ctx.accel_bias_y = self.ahrs.accel_bias().y;
+        self.stabilize_ctx.now_ms = self.yaw_ctx.now_ms;
         prepare_stabilize_path(
             &mut self.stabilize_demands,
             &mut self.stabilize_ctx,

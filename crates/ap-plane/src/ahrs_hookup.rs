@@ -181,6 +181,28 @@ impl AhrsFeed {
         wind_alignment(heading_deg, self.wind_estimate())
     }
 
+    /// Whether GPS is used for drift correction, upstream `AP_AHRS::using_gps()`.
+    #[must_use]
+    pub fn using_gps(&self) -> bool {
+        self.drift.using_gps()
+    }
+
+    /// Accelerometer bias estimate, upstream `AP_AHRS::get_accel_bias()`.
+    #[must_use]
+    pub fn accel_bias(&self) -> Vector3f {
+        // NavEKF3 owns accel bias when active; DCM path returns zero until ported.
+        Vector3f::zero()
+    }
+
+    /// Pre-arm AHRS check, upstream `AP_AHRS::pre_arm_check()`.
+    #[must_use]
+    pub fn pre_arm_check(&self, force: bool) -> bool {
+        if force {
+            return true;
+        }
+        self.healthy()
+    }
+
     /// Whether AHRS is healthy for arming and navigation, upstream `AP_AHRS::healthy()`.
     #[must_use]
     pub fn healthy(&self) -> bool {

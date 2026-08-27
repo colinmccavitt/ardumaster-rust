@@ -487,3 +487,73 @@ fn configured_backend_stays_ekf3_when_active_falls_back_to_dcm() {
     assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::NeedsReset);
 }
 
+#[test]
+fn drift_loop_using_gps_reflects_gps_lock() {
+    use ap_ahrs::DcmDriftLoop;
+
+    let mut drift = DcmDriftLoop::default();
+    assert!(!drift.using_gps());
+}
+
+#[test]
+fn ahrs_pre_arm_check_respects_force_and_health() {
+    use ap_ahrs::{AhrsBackendKind, MatrixHealth};
+    use ap_plane::ahrs_hookup::{ahrs_healthy, AhrsFeed};
+
+    let mut feed = AhrsFeed::default();
+    feed.matrix_health = MatrixHealth::NeedsReset;
+    assert!(!feed.pre_arm_check(false));
+    assert!(feed.pre_arm_check(true));
+    assert!(!ahrs_healthy(MatrixHealth::NeedsReset, true, AhrsBackendKind::Dcm));
+}
+
+#[test]
+fn main_loop_publishes_using_gps_and_pre_arm_from_ahrs() {
+    use ap_ahrs::{AhrsBackendKind, YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.yaw_ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        gps_lat_e7: Some(473_582_100),
+        gps_lng_e7: Some(-122_234_567),
+        ..YawDriftContext::default()
+    };
+    vehicle.gps_yaw = Some(YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    });
+
+    vehicle.ahrs_update();
+
+    assert!(vehicle.ahrs_pre_arm_ok);
+    assert!(vehicle.ahrs_using_gps);
+}
+
+#[test]
+fn main_loop_wires_ahrs_consumers_into_stabilize() {
+    use ap_ahrs::{AhrsBackendKind, WindVaneSample};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.eas2tas = 1.25;
+    vehicle.yaw_ctx.now_ms = 42_000;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.wind_vane = Some(WindVaneSample {
+        direction_true_rad: 0.0,
+        speed_true_mps: 5.0,
+    });
+
+    vehicle.ahrs_update();
+    vehicle.stabilize();
+
+    assert!((vehicle.stabilize_ctx.eas2tas - 1.25).abs() < f32::EPSILON);
+    assert_eq!(vehicle.stabilize_ctx.now_ms, 42_000);
+    assert_eq!(vehicle.stabilize_ctx.accel_bias_y, 0.0);
+}
+
