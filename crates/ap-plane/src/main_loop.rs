@@ -10,10 +10,12 @@ use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
 use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
+use ap_landing::landing_state_machine::VerifyLandEffects;
 use ap_landing::deepstall_stage::DeepstallStage;
 use crate::go_around_hookup::apply_landing_go_around_latch;
 use crate::landing_hookup::{landing_servo_hookup, LandingServoHookupInputs, ServoOutputState};
-use crate::landing_loop::LandingContext;
+use crate::landing_loop::{LandingContext, VerifyLandVehicleInputs};
+use crate::landing_loop_hookup::{landing_loop_scheduler_tick, LandingLoopSchedulerInputs};
 use crate::nav_tecs_hookup::{feed_nav_commands, NavTecsPublish};
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish};
 use crate::mode::ModeState;
@@ -106,6 +108,14 @@ pub struct PlaneMainLoop {
     pub stabilize_servos: StabilizeServoDemands,
     /// Landing state machine and flags, upstream `AP_Landing`.
     pub landing: LandingContext,
+    /// HAL measurements for verify_land, upstream `Plane::verify_command`.
+    pub verify_land_inputs: VerifyLandVehicleInputs,
+    /// Roll limit during LAND, upstream `roll_limit_cd`.
+    pub level_roll_limit_cd: i32,
+    /// Effects from the latest landing-loop scheduler tick.
+    pub last_verify_land_effects: VerifyLandEffects,
+    /// Whether landing suppressed throttle on the last tick.
+    pub landing_throttle_suppressed: bool,
     /// Upstream `flight_stage == LAND`.
     pub flight_stage_is_land: bool,
     /// Deepstall servo override HAL inputs for the landing hookup.
@@ -151,6 +161,47 @@ impl Default for PlaneMainLoop {
             stabilize_ctx: StabilizeContext::default(),
             stabilize_servos: StabilizeServoDemands::default(),
             landing: LandingContext::default(),
+            verify_land_inputs: VerifyLandVehicleInputs {
+                height_above_target_m: 0.0,
+                terrain_correction_m: 0.0,
+                sink_rate_ms: 0.0,
+                wp_proportion: 0.0,
+                is_flying: false,
+                rangefinder_in_range: false,
+                bearing_error_cd: 0,
+                crosstrack_error_m: 0.0,
+                nav_data_is_stale: false,
+                below_prev_wp: false,
+                prev_cmd_is_loiter_to_alt: false,
+                crash_detection_enable: false,
+                flare_cfg: ap_landing::slope_stage::FlareConfig {
+                    flare_alt: 3.0,
+                    flare_sec: 2.0,
+                    pre_flare_alt: 8.0,
+                    pre_flare_sec: 0.0,
+                    pre_flare_airspeed: 12.0,
+                },
+                deepstall: ap_landing::deepstall_stage::DeepstallVerifyInputs {
+                    distance_to_landing_m: 0.0,
+                    distance_to_arc_entry_m: 0.0,
+                    loiter_radius_m: 0.0,
+                    loiter_ccw: false,
+                    reached_loiter: false,
+                    height_error_m: 0.0,
+                    target_bearing_cd: 0,
+                    heading_error_deg: 0.0,
+                    target_heading_deg: 0.0,
+                    groundspeed_ne: ap_math::vector2::Vector2f::default(),
+                    current: ap_math::location::Location::new(0, 0),
+                    arc_exit: ap_math::location::Location::new(0, 0),
+                    arc_entry: ap_math::location::Location::new(0, 0),
+                    extended_approach: ap_math::location::Location::new(0, 0),
+                    entry_point: ap_math::location::Location::new(0, 0),
+                },
+            },
+            level_roll_limit_cd: 4500,
+            last_verify_land_effects: VerifyLandEffects::default(),
+            landing_throttle_suppressed: false,
             flight_stage_is_land: false,
             deepstall_override: DeepstallOverrideInputs {
                 stage: DeepstallStage::FlyToLanding,
@@ -211,6 +262,20 @@ impl PlaneMainLoop {
             self.stick_mixing,
             &self.features,
         );
+
+        if self.flight_stage_is_land {
+            let out = landing_loop_scheduler_tick(
+                &mut self.landing,
+                &LandingLoopSchedulerInputs {
+                    verify: self.verify_land_inputs,
+                    nav_roll_cd: self.nav_tecs.nav_roll_cd,
+                    level_roll_limit_cd: self.level_roll_limit_cd,
+                },
+            );
+            self.last_verify_land_effects = out.effects;
+            self.landing_throttle_suppressed = out.throttle_suppressed;
+            self.nav_tecs.nav_roll_cd = out.nav_roll_cd;
+        }
     }
 
     /// Upstream `Plane::stabilize`. Calls roll/pitch/yaw controllers when the

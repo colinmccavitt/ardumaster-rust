@@ -20,6 +20,7 @@ pub mod entry_state;
 pub mod landing_hookup;
 pub mod go_around_hookup;
 pub mod landing_loop;
+pub mod landing_loop_hookup;
 pub mod main_loop;
 pub mod rangefinder_bump_hookup;
 pub mod mode;

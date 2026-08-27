@@ -224,3 +224,68 @@ fn set_servos_latches_go_around_from_missing_elevator() {
     assert!(vehicle.landing.flags.commanded_go_around);
 }
 
+#[test]
+fn scheduler_tick_advances_landing_in_land_stage() {
+    use ap_landing::go_around::{LandingFlags, LandingType};
+    use ap_landing::slope_stage::SlopeStage;
+    use ap_plane::landing_loop::VerifyLandVehicleInputs;
+
+    let tasks = plane_fast_tasks();
+    let mut last = [0u16; 4];
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.flight_stage_is_land = true;
+    vehicle.landing.flags = LandingFlags {
+        in_progress: true,
+        ..LandingFlags::default()
+    };
+    vehicle.landing.landing_type = LandingType::StandardGlideSlope;
+    vehicle.verify_land_inputs = VerifyLandVehicleInputs {
+        height_above_target_m: 20.0,
+        terrain_correction_m: 0.0,
+        sink_rate_ms: 2.0,
+        wp_proportion: 0.6,
+        is_flying: true,
+        rangefinder_in_range: true,
+        bearing_error_cd: 500,
+        crosstrack_error_m: 1.0,
+        nav_data_is_stale: false,
+        below_prev_wp: false,
+        prev_cmd_is_loiter_to_alt: false,
+        crash_detection_enable: false,
+        flare_cfg: ap_landing::slope_stage::FlareConfig {
+            flare_alt: 3.0,
+            flare_sec: 2.0,
+            pre_flare_alt: 8.0,
+            pre_flare_sec: 0.0,
+            pre_flare_airspeed: 12.0,
+        },
+        deepstall: ap_landing::deepstall_stage::DeepstallVerifyInputs {
+            distance_to_landing_m: 50.0,
+            distance_to_arc_entry_m: 150.0,
+            loiter_radius_m: 100.0,
+            loiter_ccw: false,
+            reached_loiter: true,
+            height_error_m: 1.0,
+            target_bearing_cd: 500,
+            heading_error_deg: 5.0,
+            target_heading_deg: 0.0,
+            groundspeed_ne: ap_math::vector2::Vector2f::new(10.0, 0.0),
+            current: ap_math::location::Location::new(-35_000_000, 149_000_000),
+            arc_exit: ap_math::location::Location::new(-35_000_000, 149_000_000),
+            arc_entry: ap_math::location::Location::new(-35_000_000, 149_000_000),
+            extended_approach: ap_math::location::Location::new(-35_000_000, 149_000_000),
+            entry_point: ap_math::location::Location::new(-35_000_000, 149_000_000),
+        },
+    };
+    vehicle.nav_tecs.nav_roll_cd = 6000;
+    vehicle.level_roll_limit_cd = 4500;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, 400);
+    let clock = StepClock::new();
+
+    run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2500);
+
+    assert_eq!(vehicle.landing.machine.slope_stage, SlopeStage::Approach);
+    assert_eq!(vehicle.nav_tecs.nav_roll_cd, 6000);
+    assert!(!vehicle.landing_throttle_suppressed);
+}
+
