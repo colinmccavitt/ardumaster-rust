@@ -140,7 +140,7 @@ impl PlaneMainLoop {
         let out = stabilize_controllers(
             &mut self.controllers,
             &self.attitude,
-            &self.imu,
+            &self.imuself.ins,
             self.last_stabilize,
             &self.stabilize_demands,
             &self.stabilize_ctx,
