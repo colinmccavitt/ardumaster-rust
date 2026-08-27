@@ -42,6 +42,8 @@
 //! backend fail masks and [`SitlInsCluster::timer_update`] primary selection.
 //! [`SitlImuTempParams`] and [`SitlInsTempCalParams`] bind SIM_IMUT_* and
 //! SIM_IMUT{n}_* into backend temperature curve and temp-cal correction.
+//! [`SitlInsFilePlaybackParams`] binds SIM_ACC_FILE_RW / SIM_GYR_FILE_RW into
+//! backend file playback modes.
 
 #![no_std]
 
@@ -51,12 +53,14 @@ pub mod sitl;
 pub mod sitl_brd_trim;
 pub mod sitl_fail_msk;
 pub mod sitl_temp_cal;
+pub mod sitl_file_playback;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
 pub use hntch_params::InsHntchParams;
 pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use sitl_fail_msk::SitlFailMskParams;
 pub use sitl_temp_cal::{SitlImuTempParams, SitlInsTempCalParams};
+pub use sitl_file_playback::SitlInsFilePlaybackParams;
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,

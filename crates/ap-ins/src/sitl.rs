@@ -1267,6 +1267,15 @@ impl SitlInsCluster {
         }
     }
 
+    /// Apply SIM_ACC_FILE_RW / SIM_GYR_FILE_RW to every registered backend,
+    /// upstream shared `accel_file_rw` / `gyro_file_rw` for all IMU instances.
+    pub fn set_file_modes(&mut self, accel: SitlInsFileMode, gyro: SitlInsFileMode) {
+        for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
+            slot.accel_file_mode = accel;
+            slot.gyro_file_mode = gyro;
+        }
+    }
+
     /// Apply shared fail masks to every registered backend.
     pub fn set_fail_masks(&mut self, accel_fail_mask: u32, gyro_fail_mask: u32) {
         for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
