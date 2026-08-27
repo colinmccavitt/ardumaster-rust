@@ -275,3 +275,36 @@ pub fn mode_glue_update_control_tick(
     }
 }
 
+use crate::yaw_throttle_glue_hookup::{vtol_yaw_stick_glue_tick, VtolYawStickGlueInputs};
+
+/// Inputs for the stabilize mode-glue path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueStabilizeInputs {
+    pub stick_mixing: Option<StickMixing>,
+    pub yaw_norm_dz: f32,
+    pub rudder_limit_scaled: f32,
+}
+
+/// Result of the stabilize mode-glue path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueStabilizeOutput {
+    pub rudder_scaled: f32,
+}
+
+/// Mix VTOL yaw stick into rudder when effective stick mixing requires it.
+#[must_use]
+pub fn mode_glue_stabilize_tick(
+    rudder_scaled: f32,
+    inp: &ModeGlueStabilizeInputs,
+) -> ModeGlueStabilizeOutput {
+    let rudder_scaled = vtol_yaw_stick_glue_tick(
+        rudder_scaled,
+        &VtolYawStickGlueInputs {
+            stick_mixing: inp.stick_mixing,
+            yaw_norm_dz: inp.yaw_norm_dz,
+            rudder_limit_scaled: inp.rudder_limit_scaled,
+        },
+    );
+    ModeGlueStabilizeOutput { rudder_scaled }
+}
+

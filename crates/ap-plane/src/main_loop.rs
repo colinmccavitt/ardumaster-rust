@@ -65,8 +65,8 @@ use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
 use crate::mode_glue_hookup::{
-    mode_glue_set_servos_tick, mode_glue_update_control_tick, ModeGlueSetServosInputs,
-    ModeGlueUpdateControlInputs,
+    mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
+    ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -75,7 +75,7 @@ use crate::throttle_context_hookup::{
     throttle_context_tick, ThrottleContextInputs,
 };
 use crate::yaw_throttle_glue_hookup::{
-    vtol_yaw_stick_glue_tick, PilotThrottleGlueInputs, VtolYawStickGlueInputs,
+    pilot_throttle_glue_tick, PilotThrottleGlueInputs,
 };
 use crate::mode_table_hookup::dispatch_stabilize_from_mode;
 use crate::stabilize_hookup::{
@@ -871,14 +871,15 @@ impl PlaneMainLoop {
         );
         self.last_stabilize_run = out.run;
         self.stabilize_servos = out.servos;
-        self.stabilize_servos.rudder_scaled = vtol_yaw_stick_glue_tick(
+        let glue_stab_out = mode_glue_stabilize_tick(
             self.stabilize_servos.rudder_scaled,
-            &VtolYawStickGlueInputs {
+            &ModeGlueStabilizeInputs {
                 stick_mixing: self.effective_stick_mixing,
                 yaw_norm_dz: self.rc_sticks.yaw_norm_dz,
                 rudder_limit_scaled: 4500.0,
             },
         );
+        self.stabilize_servos.rudder_scaled = glue_stab_out.rudder_scaled;
     }
 
     /// Upstream `Plane::set_servos`. Publishes scaled/PWM demands from stabilize,
@@ -937,6 +938,17 @@ impl PlaneMainLoop {
         );
         self.mode_transition_throttle_cleared = trans_out.cleared;
 
+        let pilot_throttle = pilot_throttle_glue_tick(&PilotThrottleGlueInputs {
+            throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
+            throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
+            pilot_throttle_source: self.pilot_throttle_source,
+            trim_throttle: self.trim_throttle,
+            throttle_min: self.throttle_min,
+            throttle_max: self.throttle_max,
+            use_throttle_limits: self.throttle_use_limits,
+            use_battery_compensation: self.throttle_use_battery_comp,
+            battery_voltage_ratio: self.battery_voltage_ratio,
+        });
         let glue_servos_out = mode_glue_set_servos_tick(
             self.servos,
             &ModeGlueSetServosInputs {
@@ -945,17 +957,7 @@ impl PlaneMainLoop {
                 transition_cleared: trans_out.cleared,
                 throttle_suppressed: self.mode_entry.throttle_suppressed,
                 current_throttle: self.servos.throttle_scaled,
-                pilot_throttle: PilotThrottleGlueInputs {
-                    throttle_pwm: self.rc_failsafe_inputs.throttle_pwm,
-                    throttle_cfg: self.rc_failsafe_inputs.throttle_cfg,
-                    pilot_throttle_source: self.pilot_throttle_source,
-                    trim_throttle: self.trim_throttle,
-                    throttle_min: self.throttle_min,
-                    throttle_max: self.throttle_max,
-                    use_throttle_limits: self.throttle_use_limits,
-                    use_battery_compensation: self.throttle_use_battery_comp,
-                    battery_voltage_ratio: self.battery_voltage_ratio,
-                },
+                pilot_throttle,
             },
         );
         self.mode_glue_throttle_restored = glue_servos_out.throttle_restored;
