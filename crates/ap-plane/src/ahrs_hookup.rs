@@ -181,8 +181,6 @@ impl AhrsFeed {
         wind_alignment(heading_deg, self.wind_estimate())
     }
 
-    /// NE offset from last GPS fix while dead-reckoning, upstream position offsets.
-    #[must_use]
     /// Whether AHRS is healthy for arming and navigation, upstream `AP_AHRS::healthy()`.
     #[must_use]
     pub fn healthy(&self) -> bool {

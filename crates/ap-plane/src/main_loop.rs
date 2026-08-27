@@ -195,6 +195,10 @@ pub struct PlaneMainLoop {
     /// SRV registry hookup state for elevon/flap mixing.
     /// Last EKF healthy flag from AHRS update.
     pub ekf_healthy: bool,
+    /// Whether NavEKF3 has completed its first update, upstream filter initialised.
+    pub ekf3_initialized: bool,
+    /// NavEKF3 update count since boot, upstream `_framesSincePredict`.
+    pub ekf3_update_count: u32,
     /// Active AHRS backend kind after fallback resolution.
     pub active_ahrs_backend: ap_ahrs::AhrsBackendKind,
     /// DCM matrix health from last AHRS update.
@@ -366,6 +370,8 @@ impl Default for PlaneMainLoop {
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
+            ekf3_initialized: false,
+            ekf3_update_count: 0,
             active_ahrs_backend: ap_ahrs::AhrsBackendKind::Dcm,
             ahrs_matrix_health: ap_ahrs::MatrixHealth::Ok,
             ahrs_healthy: false,
@@ -464,6 +470,8 @@ impl PlaneMainLoop {
         self.attitude = attitude;
         self.estimated_wind = self.ahrs.wind_estimate();
         self.ekf_healthy = self.ahrs.ekf_healthy;
+        self.ekf3_initialized = self.ahrs.ekf3.initialized;
+        self.ekf3_update_count = self.ahrs.ekf3.update_count;
         self.active_ahrs_backend = self.ahrs.active_backend;
         self.ahrs_matrix_health = health;
         self.ahrs_healthy = self.ahrs.healthy();

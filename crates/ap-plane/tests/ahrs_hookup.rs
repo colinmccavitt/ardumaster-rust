@@ -414,3 +414,34 @@ fn main_loop_publishes_ahrs_healthy_from_update() {
     assert_eq!(vehicle.ahrs_matrix_health, MatrixHealth::NeedsReset);
 }
 
+#[test]
+fn main_loop_publishes_ekf3_status_from_update() {
+    use ap_ahrs::{AhrsBackendKind, YawDriftContext, YawGpsSample, GPS_SPEED_MIN};
+    use ap_plane::main_loop::PlaneMainLoop;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.ahrs.set_configured_backend(AhrsBackendKind::Ekf3);
+    vehicle.yaw_ctx = YawDriftContext {
+        have_gps: true,
+        now_ms: 100,
+        gps_lat_e7: Some(473_582_100),
+        gps_lng_e7: Some(-122_234_567),
+        ..YawDriftContext::default()
+    };
+    vehicle.gps_yaw = Some(YawGpsSample {
+        ground_course_deg: 0.0,
+        ground_speed: GPS_SPEED_MIN + 1.0,
+        last_fix_time_ms: 100,
+    });
+
+    vehicle.ahrs_update();
+    assert!(vehicle.ekf3_initialized);
+    assert_eq!(vehicle.ekf3_update_count, 1);
+    assert!(vehicle.ekf_healthy);
+    assert_eq!(vehicle.active_ahrs_backend, AhrsBackendKind::Ekf3);
+
+    vehicle.ahrs_update();
+    assert_eq!(vehicle.ekf3_update_count, 2);
+}
+

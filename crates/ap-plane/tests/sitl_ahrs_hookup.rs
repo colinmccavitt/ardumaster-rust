@@ -68,3 +68,32 @@ fn ahrs_update_wires_sitl_ahrs_airspeed_and_eas2tas_into_drift_motion() {
     assert!((motion.eas2tas - 1.2).abs() < 1e-6);
     assert!(motion.have_gps);
 }
+
+#[test]
+fn sitl_ahrs_gps_lat_lng_flows_to_dead_reckoning() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing = LoopTiming::new(1.0 / 400.0);
+    vehicle.sitl_ahrs = Some(SitlAhrsPublish {
+        yaw: SitlYawPublish {
+            latitude_deg: 47.35821,
+            longitude_deg: -122.234567,
+            have_gps: true,
+            ground_speed_mps: GPS_SPEED_MIN + 2.0,
+            ground_course_deg: 0.0,
+            last_fix_time_ms: 100,
+            now_ms: 100,
+            ..SitlYawPublish::default()
+        },
+        airspeed_tas_mps: 15.0,
+        eas2tas: 1.0,
+    });
+
+    vehicle.ahrs_update();
+
+    let expected_lat = (47.35821_f32 * 1e7_f32) as i32;
+    let expected_lng = (-122.234567_f32 * 1e7_f32) as i32;
+    assert_eq!(vehicle.yaw_ctx.gps_lat_e7, Some(expected_lat));
+    assert_eq!(vehicle.yaw_ctx.gps_lng_e7, Some(expected_lng));
+    assert!(vehicle.have_dead_reckoning_position);
+}
+
