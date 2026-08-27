@@ -40,6 +40,8 @@
 //! [`SitlBrdTrimParams`] binds SIM_BRD_TRIM to [`SitlImuBackend::board_trim`].
 //! [`SitlFailMskParams`] binds SIM_ACCEL_FAIL_MSK / SIM_GYRO_FAIL_MSK into
 //! backend fail masks and [`SitlInsCluster::timer_update`] primary selection.
+//! [`SitlImuTempParams`] and [`SitlInsTempCalParams`] bind SIM_IMUT_* and
+//! SIM_IMUT{n}_* into backend temperature curve and temp-cal correction.
 
 #![no_std]
 
@@ -48,11 +50,13 @@ pub mod hntch_params;
 pub mod sitl;
 pub mod sitl_brd_trim;
 pub mod sitl_fail_msk;
+pub mod sitl_temp_cal;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
 pub use hntch_params::InsHntchParams;
 pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use sitl_fail_msk::SitlFailMskParams;
+pub use sitl_temp_cal::{SitlImuTempParams, SitlInsTempCalParams};
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,

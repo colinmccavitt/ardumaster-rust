@@ -1259,6 +1259,14 @@ impl SitlInsCluster {
         }
     }
 
+    /// Apply SIM_IMUT_START/END/TCONST/FIXED to every registered backend,
+    /// upstream shared `get_temperature` curve inputs.
+    pub fn set_imu_temperature(&mut self, config: SitlImuTemperature) {
+        for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
+            slot.temperature = config;
+        }
+    }
+
     /// Apply shared fail masks to every registered backend.
     pub fn set_fail_masks(&mut self, accel_fail_mask: u32, gyro_fail_mask: u32) {
         for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
