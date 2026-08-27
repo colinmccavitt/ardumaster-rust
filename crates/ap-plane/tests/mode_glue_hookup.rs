@@ -118,3 +118,31 @@ fn restore_skips_when_throttle_already_nonzero() {
     assert!(!restored);
     assert_eq!(throttle, 50.0);
 }
+
+#[test]
+fn mode_glue_restore_tick_applies_pilot_throttle() {
+    use ap_plane::mode_glue_hookup::{mode_glue_restore_tick, ModeGlueRestoreInputs};
+
+    let out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
+        transition_cleared: true,
+        throttle_suppressed: false,
+        current_throttle: 0.0,
+        pilot_throttle: 75.0,
+    });
+    assert!(out.restored);
+    assert_eq!(out.pilot_throttle, 75.0);
+}
+
+#[test]
+fn mode_glue_restore_tick_skips_when_still_suppressed() {
+    use ap_plane::mode_glue_hookup::{mode_glue_restore_tick, ModeGlueRestoreInputs};
+
+    let out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
+        transition_cleared: true,
+        throttle_suppressed: true,
+        current_throttle: 0.0,
+        pilot_throttle: 75.0,
+    });
+    assert!(!out.restored);
+    assert_eq!(out.pilot_throttle, 0.0);
+}

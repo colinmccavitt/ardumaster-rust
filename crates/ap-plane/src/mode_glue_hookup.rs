@@ -138,3 +138,34 @@ pub fn restore_pilot_throttle_on_transition_clear(
     }
 }
 
+/// Inputs for restoring pilot throttle once mode-transition clears suppression.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueRestoreInputs {
+    pub transition_cleared: bool,
+    pub throttle_suppressed: bool,
+    pub current_throttle: f32,
+    pub pilot_throttle: f32,
+}
+
+/// Result of the set_servos mode-glue restore tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeGlueRestoreOutput {
+    pub pilot_throttle: f32,
+    pub restored: bool,
+}
+
+/// Re-apply pilot throttle after mode-transition clears entry suppression.
+#[must_use]
+pub fn mode_glue_restore_tick(inp: &ModeGlueRestoreInputs) -> ModeGlueRestoreOutput {
+    let (pilot_throttle, restored) = restore_pilot_throttle_on_transition_clear(
+        inp.transition_cleared,
+        inp.throttle_suppressed,
+        inp.current_throttle,
+        inp.pilot_throttle,
+    );
+    ModeGlueRestoreOutput {
+        pilot_throttle,
+        restored,
+    }
+}
+

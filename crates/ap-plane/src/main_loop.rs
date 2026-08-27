@@ -67,7 +67,7 @@ use crate::mode_entry_scheduler_hookup::{
     mode_entry_scheduler_tick, ModeEntrySchedulerInputs,
 };
 use crate::mode_glue_hookup::{
-    mode_glue_tick, restore_pilot_throttle_on_transition_clear, ModeGlueInputs,
+    mode_glue_restore_tick, mode_glue_tick, ModeGlueInputs, ModeGlueRestoreInputs,
 };
 use crate::mode_transition_throttle_hookup::{
     mode_transition_throttle_tick, ModeTransitionThrottleInputs,
@@ -951,16 +951,17 @@ impl PlaneMainLoop {
             use_battery_compensation: self.throttle_use_battery_comp,
             battery_voltage_ratio: self.battery_voltage_ratio,
         });
-        let (restored_throttle, restored) = restore_pilot_throttle_on_transition_clear(
-            trans_out.cleared,
-            self.mode_entry.throttle_suppressed,
-            self.servos.throttle_scaled,
+        let restore_out = mode_glue_restore_tick(&ModeGlueRestoreInputs {
+            transition_cleared: trans_out.cleared,
+            throttle_suppressed: self.mode_entry.throttle_suppressed,
+            current_throttle: self.servos.throttle_scaled,
             pilot_throttle,
-        );
-        self.mode_glue_throttle_restored = restored;
-        if restored {
+        });
+        self.mode_glue_throttle_restored = restore_out.restored;
+        if restore_out.restored {
             self.mode_glue_throttle_zeroed = false;
-            self.servos.throttle_scaled = restored_throttle;
+            self.servos.throttle_scaled = restore_out.pilot_throttle;
+            self.stabilize_demands.throttle_scaled = restore_out.pilot_throttle;
         }
 
         let sup_out = suppress_throttle_scheduler_tick(
