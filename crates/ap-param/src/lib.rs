@@ -58,7 +58,7 @@ pub use conversion::{
 pub use save::{save, scan, write_sentinel, SaveOutcome, ScanResult};
 pub use storage::{read, ParamValue, Storage, StorageError, StorageIter, StoredParam};
 
-pub use plane::{PLANE_FENCE_CONVERSIONS, PLANE_GCS_CONVERSIONS};
+pub use plane::{PLANE_FENCE_CONVERSIONS, PLANE_GCS_CONVERSIONS, PLANE_NOTCH_CONVERSIONS};
 pub use info::{
     check_frame_type, enumerate, find_by_name, group_id, EnumFilter, GroupInfo, ParamInfo, ParamName, ParamRef,
     FLAG_DEFAULT_POINTER, FLAG_ENABLE, FLAG_HIDDEN, FLAG_INFO_POINTER, FLAG_INTERNAL_USE_ONLY,

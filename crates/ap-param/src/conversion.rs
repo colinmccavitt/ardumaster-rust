@@ -991,5 +991,70 @@ mod tests {
         assert_eq!(v, ParamValue::Float(-10.0));
     }
 
+    #[test]
+    fn migrate_named_parameters_resolves_plane_notch_table() {
+        use crate::info::{find_by_name, EnumFilter, ParamInfo, FRAME_PLANE};
+        use crate::plane::PLANE_NOTCH_CONVERSIONS;
+
+        static INS: [ParamInfo<'static>; 4] = [
+            ParamInfo {
+                name: "INS_HNTC2_ENABLE",
+                key: 109,
+                ptype: VarType::Int8.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "INS_HNTC2_ATT",
+                key: 109,
+                ptype: VarType::Float.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "INS_HNTC2_FREQ",
+                key: 109,
+                ptype: VarType::Float.as_u8(),
+                flags: 0,
+                group: None,
+            },
+            ParamInfo {
+                name: "INS_HNTC2_BW",
+                key: 109,
+                ptype: VarType::Float.as_u8(),
+                flags: 0,
+                group: None,
+            },
+        ];
+
+        let filter = EnumFilter::for_frame(FRAME_PLANE);
+        let dest = find_by_name(&INS, filter, "INS_HNTC2_ENABLE").expect("descriptor");
+        let resolved = resolve_named_migration(&INS, filter, PLANE_NOTCH_CONVERSIONS[0])
+            .expect("resolved");
+        assert_eq!(
+            resolved.new_header,
+            ParamHeader::new(dest.key, dest.ptype, dest.group_element),
+        );
+
+        let mut s = Ram::formatted();
+        let old_h = ParamHeader::new(109, VarType::Int8.as_u8(), 101);
+        save(&mut s, old_h, ParamValue::Int8(1), None, false).expect("old");
+        let stats = migrate_named_parameters(&mut s, &INS, filter, PLANE_NOTCH_CONVERSIONS)
+            .expect("migrate");
+        assert_eq!(stats.saved, 1);
+        assert_eq!(stats.not_found, 3);
+        let (v, _) = find_old_parameter(
+            &s,
+            ConversionInfo {
+                old_key: dest.key,
+                old_group_element: dest.group_element,
+                old_type: VarType::Int8,
+            },
+        )
+        .expect("migrated");
+        assert_eq!(v, ParamValue::Int8(1));
+    }
+
+
 
 }

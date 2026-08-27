@@ -84,3 +84,41 @@ pub const PLANE_GCS_CONVERSIONS: &[NamedParameterMigration] = &[
         flags: ConvertFlags::NONE,
     },
 ];
+
+
+/// Old INS harmonic-notch parameters moved to `INS_HNTC2_*`, upstream
+/// `notchfilt_conversion_info` in `Parameters.cpp` (ArduPlane-4.2.x).
+pub const PLANE_NOTCH_CONVERSIONS: &[NamedParameterMigration] = &[
+    NamedParameterMigration {
+        old_key: 109, // k_param_ins
+        old_group_element: 101,
+        old_type: VarType::Int8,
+        new_name: "INS_HNTC2_ENABLE",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 109,
+        old_group_element: 293,
+        old_type: VarType::Float,
+        new_name: "INS_HNTC2_ATT",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 109,
+        old_group_element: 357,
+        old_type: VarType::Float,
+        new_name: "INS_HNTC2_FREQ",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: 109,
+        old_group_element: 421,
+        old_type: VarType::Float,
+        new_name: "INS_HNTC2_BW",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+];
