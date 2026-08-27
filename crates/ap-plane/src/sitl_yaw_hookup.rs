@@ -106,6 +106,12 @@ pub fn publish_sitl_yaw_samples(
         estimated_yaw_rad,
         wind_speed_xy: source.wind_speed_xy,
         now_ms: source.now_ms,
+        gps_lat_e7: source
+            .have_gps
+            .then(|| (source.latitude_deg * 1e7_f32) as i32),
+        gps_lng_e7: source
+            .have_gps
+            .then(|| (source.longitude_deg * 1e7_f32) as i32),
     };
 
     SitlYawSamples {
