@@ -109,6 +109,7 @@ impl SitlBaroHookup {
             sample.altitude_m,
             sample.last_sample_time_ms,
             healthy,
+            health.primary,
         );
         SitlBaroPublish {
             sample,

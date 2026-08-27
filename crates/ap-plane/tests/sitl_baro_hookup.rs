@@ -235,3 +235,33 @@ fn sitl_baro_publish_zero_climb_rate_when_unhealthy() {
     assert_eq!(published.climb_rate_mps, 0.0);
 }
 
+#[test]
+fn sitl_baro_failover_publishes_fresh_climb_rate() {
+    let mut hookup = hookup_with_disabled_primary();
+    let rate_mps = 3.0;
+    let dt_ms = 10;
+    let step_m = rate_mps * dt_ms as f32 * 0.001;
+    let mut alt = 100.0_f32;
+    let mut t = 0_u32;
+    let mut last = SitlBaroPublish::default();
+    for i in 0..25 {
+        t += dt_ms;
+        alt += step_m;
+        hookup.truth = SitlBaroTruth {
+            sim_altitude_m: alt,
+            now_ms: t,
+            ..SitlBaroTruth::default()
+        };
+        last = hookup.publish();
+        if i == 0 {
+            assert_eq!(last.health.primary, 1);
+            assert!(
+                last.climb_rate_mps.abs() < 0.5,
+                "fresh climb rate after failover, got {}",
+                last.climb_rate_mps
+            );
+        }
+    }
+    assert!((last.climb_rate_mps - rate_mps).abs() < 0.5);
+}
+
