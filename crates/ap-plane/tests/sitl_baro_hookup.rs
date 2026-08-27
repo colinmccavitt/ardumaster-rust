@@ -4,7 +4,9 @@ use ap_baro::sitl::BaroHealthFlags;
 use ap_ins::LoopTiming;
 use ap_math::vector3::Vector3f;
 use ap_plane::main_loop::PlaneMainLoop;
-use ap_plane::sitl_baro_hookup::{hookup_with_disabled_secondary, SitlBaroHookup, SitlBaroTruth};
+use ap_plane::sitl_baro_hookup::{
+    hookup_with_disabled_primary, hookup_with_disabled_secondary, SitlBaroHookup, SitlBaroTruth,
+};
 
 #[test]
 fn sitl_baro_publish_emits_sea_level_pressure_at_zero_alt() {
@@ -39,6 +41,22 @@ fn sitl_baro_eas2tas_grows_with_altitude() {
     let low_pub = low.publish();
     let high_pub = high.publish();
     assert!(high_pub.eas2tas > low_pub.eas2tas);
+}
+
+#[test]
+fn dual_baro_failover_publishes_secondary_when_primary_disabled() {
+    let mut hookup = hookup_with_disabled_primary();
+    hookup.truth = SitlBaroTruth {
+        sim_altitude_m: 200.0,
+        now_ms: 10,
+        ..SitlBaroTruth::default()
+    };
+    let published = hookup.publish();
+    assert_eq!(published.health.instance_count, 2);
+    assert_eq!(published.health.primary, 1);
+    assert!(published.health.primary_healthy());
+    assert!(published.healthy);
+    assert!((published.sample.altitude_m - 200.0).abs() < 1.0);
 }
 
 #[test]

@@ -474,6 +474,17 @@ impl SitlBaroCluster {
         }
     }
 
+    /// Re-select primary to the first healthy instance with a sample, upstream
+    /// `AP_Baro` frontend failover after backend updates.
+    pub fn select_primary_healthy(&mut self) {
+        for i in 0..self.instance_count as usize {
+            if self.backends[i].healthy() && self.backends[i].state().have_sample {
+                self.primary = i as u8;
+                return;
+            }
+        }
+    }
+
     #[must_use]
     pub fn backend(&self, index: u8) -> Option<&SitlBaroBackend> {
         (index < self.instance_count).then(|| &self.backends[index as usize])
@@ -515,6 +526,22 @@ impl SitlBaroCluster {
             flags.have_sample[i] = self.backends[i].state().have_sample;
         }
         flags
+    }
+
+    /// Cluster with disabled primary and healthy secondary for failover tests.
+    #[must_use]
+    pub fn cluster_with_disabled_primary() -> Self {
+        Self {
+            backends: [
+                SitlBaroBackend::with_config(SitlBaroConfig {
+                    disabled: true,
+                    ..SitlBaroConfig::default()
+                }),
+                SitlBaroBackend::default(),
+            ],
+            instance_count: 2,
+            primary: 0,
+        }
     }
 
     /// Primary instance sample after `update()`, upstream `_primary_baro`.
@@ -686,6 +713,18 @@ mod tests {
         cluster.timer_tick_all(250.0, Vector3f::zero(), 10, 0.0);
         let sample = cluster.primary_sample().expect("primary sample");
         assert!((sample.altitude_m - 250.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn cluster_failover_selects_secondary_when_primary_disabled() {
+        let mut cluster = SitlBaroCluster::cluster_with_disabled_primary();
+        cluster.timer_tick_all(180.0, Vector3f::zero(), 10, 0.0);
+        cluster.select_primary_healthy();
+        assert_eq!(cluster.primary(), 1);
+        let flags = cluster.health_flags();
+        assert!(!flags.healthy[0]);
+        assert!(flags.healthy[1]);
+        assert!(flags.primary_healthy());
     }
 
 }

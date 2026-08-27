@@ -87,6 +87,7 @@ impl SitlBaroHookup {
             self.truth.now_ms,
             self.truth.noise_sample,
         );
+        self.cluster.select_primary_healthy();
         let health = self.cluster.health_flags();
         let sample = self
             .cluster
@@ -123,6 +124,15 @@ pub fn secondary_disabled_cluster() -> SitlBaroCluster {
 pub fn hookup_with_disabled_secondary() -> SitlBaroHookup {
     SitlBaroHookup {
         cluster: secondary_disabled_cluster(),
+        truth: SitlBaroTruth::default(),
+    }
+}
+
+/// Hookup with a disabled primary instance for failover tests.
+#[must_use]
+pub fn hookup_with_disabled_primary() -> SitlBaroHookup {
+    SitlBaroHookup {
+        cluster: SitlBaroCluster::cluster_with_disabled_primary(),
         truth: SitlBaroTruth::default(),
     }
 }
