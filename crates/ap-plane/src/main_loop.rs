@@ -4,11 +4,11 @@
 //! `ap-scheduler` owns tick ordering; this module is where the vehicle wires
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
-use ap_ahrs::YawCompassSample;
+use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
 use ap_ins::{InertialSensorFrontend, LoopTiming};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
 
-use crate::ahrs_hookup::{AhrsAttitude, AhrsFeed};
+use crate::ahrs_hookup::{yaw_update_inputs, AhrsAttitude, AhrsFeed};
 use crate::landing_hookup::ServoOutputState;
 use crate::mode::ModeState;
 use crate::stabilize_hookup::{
@@ -71,6 +71,10 @@ pub struct PlaneMainLoop {
     pub attitude: AhrsAttitude,
     /// Optional compass sample for yaw drift correction.
     pub compass: Option<YawCompassSample>,
+    /// Optional GPS sample for yaw drift fallback.
+    pub gps_yaw: Option<YawGpsSample>,
+    /// Vehicle context for compass vs GPS yaw selection.
+    pub yaw_ctx: YawDriftContext,
     /// Roll/pitch/yaw controllers, upstream `rollController` et al.
     pub controllers: StabilizeControllers,
     /// Navigation demands fed into stabilize.
@@ -102,6 +106,8 @@ impl Default for PlaneMainLoop {
             loop_timing: LoopTiming::new(1.0 / f32::from(LOOP_RATE)),
             attitude: AhrsAttitude::default(),
             compass: None,
+            gps_yaw: None,
+            yaw_ctx: YawDriftContext::default(),
             controllers: StabilizeControllers::default(),
             stabilize_demands: StabilizeDemands::default(),
             stabilize_ctx: StabilizeContext::default(),
@@ -115,10 +121,11 @@ impl PlaneMainLoop {
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.
     pub fn ahrs_update(&mut self) {
         self.ticks.ahrs_update += 1;
+        let yaw = yaw_update_inputs(self.compass, self.gps_yaw, self.yaw_ctx);
         let (_health, attitude) = self.ahrs.update_from_ins(
             &self.ins,
             &self.loop_timing,
-            self.compass,
+            yaw,
         );
         self.attitude = attitude;
     }
@@ -140,7 +147,7 @@ impl PlaneMainLoop {
         let out = stabilize_controllers(
             &mut self.controllers,
             &self.attitude,
-            &self.imuself.ins,
+            self.ins.primary_imu().expect("primary IMU"),
             self.last_stabilize,
             &self.stabilize_demands,
             &self.stabilize_ctx,

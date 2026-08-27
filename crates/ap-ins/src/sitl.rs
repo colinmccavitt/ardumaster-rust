@@ -1251,6 +1251,14 @@ impl SitlInsCluster {
         self.backends.get_mut(index as usize)?.as_mut()
     }
 
+    /// Apply SIM_BRD_TRIM to every registered backend, upstream
+    /// `sitl->board_trim` shared across IMU instances.
+    pub fn set_board_trim(&mut self, trim: Vector3f) {
+        for slot in self.backends.iter_mut().flatten().take(self.count as usize) {
+            slot.board_trim = trim;
+        }
+    }
+
     /// Apply shared fail masks to every registered backend.
     pub fn set_fail_masks(&mut self, accel_fail_mask: u32, gyro_fail_mask: u32) {
         for slot in self.backends.iter_mut().flatten().take(self.count as usize) {

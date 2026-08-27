@@ -31,18 +31,21 @@
 //!
 //! # What this slice does not include
 //!
-//! Sculling compensation (upstream has none -- the delta velocity is a plain
-//! rectangular sum), vibration and clipping
+//! Multi-instance failover masks, sculling compensation (upstream has none --
+//! the delta velocity is a plain rectangular sum), vibration and clipping
 //! metrics, temperature calibration, board orientation, gyro/accel offset and
 //! scale calibration, and the FFT window. The SITL backend's deterministic
-//! sample path lives in [`sitl`].
+//! sample path lives in [`sitl`]. [`SitlBrdTrimParams`] binds SIM_BRD_TRIM to
+//! [`SitlImuBackend::board_trim`].
 
 #![no_std]
 
 pub mod frontend;
 pub mod sitl;
+pub mod sitl_brd_trim;
 
 pub use ap_filter::harmonic::{CompositeNotches, HarmonicNotchParams, TrackingMode};
+pub use sitl_brd_trim::SitlBrdTrimParams;
 pub use frontend::{
     InertialSensorFrontend, InsSensorRateHooks, INS_MAX_INSTANCES, sitl_bus_id,
     SITL_ACCEL_DEVNUM, SITL_GYRO_DEVNUM,
