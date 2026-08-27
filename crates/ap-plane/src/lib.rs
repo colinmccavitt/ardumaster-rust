@@ -42,6 +42,7 @@ pub mod mode_table_hookup;
 pub mod servo_mix;
 pub mod srv_output_hookup;
 pub mod srv_output_scheduler_hookup;
+pub mod suppress_throttle_scheduler_hookup;
 pub mod srv_pwm_publish_hookup;
 pub mod stabilize_hookup;
 pub mod target_altitude;

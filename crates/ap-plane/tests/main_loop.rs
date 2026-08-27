@@ -593,3 +593,23 @@ fn update_control_mode_resets_mode_entry_on_change() {
     assert_eq!(vehicle.tracked_control_mode, ModeNumber::Manual.as_number());
 }
 
+#[test]
+fn set_servos_zeros_throttle_on_mode_entry_suppression() {
+    use ap_plane::landing_hookup::ServoOutputState;
+    use ap_plane::mode_table::ModeNumber;
+
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.soft_armed = true;
+    vehicle.mode.control_mode = ModeNumber::Auto.as_number();
+    vehicle.mode_entry.throttle_suppressed = true;
+    vehicle.servos = ServoOutputState {
+        throttle_scaled: 80.0,
+        ..ServoOutputState::default()
+    };
+
+    vehicle.set_servos();
+
+    assert!(vehicle.mode_entry_throttle_applied);
+    assert_eq!(vehicle.servos.throttle_scaled, 0.0);
+}
+

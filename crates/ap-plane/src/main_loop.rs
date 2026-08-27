@@ -29,6 +29,9 @@ use crate::arming_scheduler_hookup::{
 use crate::srv_output_scheduler_hookup::{
     srv_output_scheduler_tick, SrvOutputHookupState, SrvOutputSchedulerInputs,
 };
+use crate::suppress_throttle_scheduler_hookup::{
+    suppress_throttle_scheduler_tick, SuppressThrottleSchedulerInputs,
+};
 use crate::srv_pwm_publish_hookup::{
     srv_pwm_publish_tick, SrvPwmPublishInputs, SrvPwmPublishState,
 };
@@ -244,6 +247,8 @@ pub struct PlaneMainLoop {
     pub soft_armed: bool,
     /// Whether disarm zeroed throttle on the last `set_servos`.
     pub disarm_throttle_applied: bool,
+    /// Whether mode-entry suppress_throttle zeroed throttle.
+    pub mode_entry_throttle_applied: bool,
     /// Servo outputs about to be published, upstream `set_servos` state.
     pub servos: ServoOutputState,
 }
@@ -444,6 +449,7 @@ impl Default for PlaneMainLoop {
             last_auto_flap_percent: 0,
             soft_armed: false,
             disarm_throttle_applied: false,
+            mode_entry_throttle_applied: false,
             servos: ServoOutputState::default(),
         }
     }
@@ -692,6 +698,17 @@ impl PlaneMainLoop {
             &mut self.srv_pwm,
             &self.srv_pwm_inputs,
         );
+
+        let sup_out = suppress_throttle_scheduler_tick(
+            self.servos,
+            &SuppressThrottleSchedulerInputs {
+                control_mode: self.mode.control_mode,
+                throttle_suppressed: self.mode_entry.throttle_suppressed,
+                features: self.features,
+            },
+        );
+        self.mode_entry_throttle_applied = sup_out.applied;
+        self.servos = sup_out.servos;
 
         let arm_out = arming_scheduler_tick(
             self.servos,
