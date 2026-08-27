@@ -216,6 +216,148 @@ pub fn approach_height_above_target_m(
     }
 }
 
+/// Persistent state carried across `verify_land` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeepstallVerifyState {
+    pub stage: DeepstallStage,
+    pub loiter_sum_cd: i32,
+    pub last_target_bearing_cd: i32,
+}
+
+impl Default for DeepstallVerifyState {
+    fn default() -> Self {
+        Self {
+            stage: DeepstallStage::INITIAL,
+            loiter_sum_cd: 0,
+            last_target_bearing_cd: 0,
+        }
+    }
+}
+
+/// Measurements supplied each `verify_land` tick.
+#[derive(Debug, Clone, Copy)]
+pub struct DeepstallVerifyInputs {
+    pub distance_to_landing_m: f32,
+    pub distance_to_arc_entry_m: f32,
+    pub loiter_radius_m: f32,
+    pub loiter_ccw: bool,
+    pub reached_loiter: bool,
+    pub height_error_m: f32,
+    pub target_bearing_cd: i32,
+    pub heading_error_deg: f32,
+    pub target_heading_deg: f32,
+    pub groundspeed_ne: Vector2f,
+    pub current: Location,
+    pub arc_exit: Location,
+    pub arc_entry: Location,
+    pub extended_approach: Location,
+    pub entry_point: Location,
+}
+
+/// Side effects the vehicle should perform after a step.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeepstallVerifyEffects {
+    pub rebuild_approach_path: bool,
+    pub record_breakout_at_current: bool,
+    pub entered_land: bool,
+}
+
+/// Result of one `verify_land` tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeepstallVerifyStep {
+    pub state: DeepstallVerifyState,
+    pub effects: DeepstallVerifyEffects,
+}
+
+/// Advance the deepstall stage machine one tick, upstream
+/// `AP_Landing_Deepstall::verify_land`.
+#[must_use]
+pub fn deepstall_verify_land_step(
+    state: DeepstallVerifyState,
+    inp: &DeepstallVerifyInputs,
+) -> DeepstallVerifyStep {
+    let mut effects = DeepstallVerifyEffects::default();
+    let mut stage = state.stage;
+    let mut loiter_sum_cd = state.loiter_sum_cd;
+    let mut last_target_bearing_cd = state.last_target_bearing_cd;
+
+    match stage {
+        DeepstallStage::FlyToLanding => {
+            if fly_to_landing_may_advance(inp.distance_to_landing_m, inp.loiter_radius_m) {
+                stage = DeepstallStage::EstimateWind;
+                loiter_sum_cd = 0;
+            }
+        }
+        DeepstallStage::EstimateWind => {
+            if inp.reached_loiter && libm::fabsf(inp.height_error_m) <= LOITER_ALT_TOLERANCE_M {
+                let (sum, last) = accumulate_loiter_cd(
+                    loiter_sum_cd,
+                    inp.target_bearing_cd,
+                    last_target_bearing_cd,
+                    inp.loiter_ccw,
+                );
+                loiter_sum_cd = sum;
+                last_target_bearing_cd = last;
+            }
+            if estimate_wind_may_advance(inp.reached_loiter, inp.height_error_m, loiter_sum_cd) {
+                stage = DeepstallStage::WaitForBreakout;
+                loiter_sum_cd = 0;
+            }
+        }
+        DeepstallStage::WaitForBreakout => {
+            if loiter_sum_cd < LOITER_COMPLETE_CD {
+                effects.rebuild_approach_path = true;
+            }
+            if wait_for_breakout_may_advance(inp.heading_error_deg, inp.height_error_m) {
+                stage = DeepstallStage::FlyToArc;
+                effects.record_breakout_at_current = true;
+            } else {
+                let (sum, last) = accumulate_loiter_cd(
+                    loiter_sum_cd,
+                    inp.target_bearing_cd,
+                    last_target_bearing_cd,
+                    false,
+                );
+                loiter_sum_cd = sum;
+                last_target_bearing_cd = last;
+            }
+        }
+        DeepstallStage::FlyToArc => {
+            if fly_to_arc_may_advance(inp.distance_to_arc_entry_m, inp.loiter_radius_m) {
+                stage = DeepstallStage::Arc;
+            }
+        }
+        DeepstallStage::Arc => {
+            if arc_may_advance(inp.reached_loiter, inp.target_heading_deg, inp.groundspeed_ne) {
+                stage = DeepstallStage::Approach;
+            }
+        }
+        DeepstallStage::Approach => {
+            if let Some(next) = deepstall_stage_after_approach(approach_advance(
+                inp.current,
+                inp.arc_exit,
+                inp.entry_point,
+                inp.extended_approach,
+            )) {
+                stage = next;
+                if next == DeepstallStage::Land {
+                    effects.entered_land = true;
+                }
+            }
+        }
+        DeepstallStage::Land => {}
+    }
+
+    DeepstallVerifyStep {
+        state: DeepstallVerifyState {
+            stage,
+            loiter_sum_cd,
+            last_target_bearing_cd,
+        },
+        effects,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +479,66 @@ mod tests {
             approach_advance(past_entry, arc_exit, entry, extended),
             ApproachAdvance::AdvanceToLand
         );
+    }
+
+    fn sample_verify_inputs() -> DeepstallVerifyInputs {
+        DeepstallVerifyInputs {
+            distance_to_landing_m: 50.0,
+            distance_to_arc_entry_m: 150.0,
+            loiter_radius_m: 100.0,
+            loiter_ccw: false,
+            reached_loiter: true,
+            height_error_m: 1.0,
+            target_bearing_cd: 500,
+            heading_error_deg: 5.0,
+            target_heading_deg: 0.0,
+            groundspeed_ne: Vector2f::new(10.0, 0.0),
+            current: Location::new(-35_000_000, 149_000_000),
+            arc_exit: Location::new(-35_000_000, 149_000_000),
+            arc_entry: Location::new(-35_000_000, 149_000_000),
+            extended_approach: Location::new(-35_000_000, 149_000_000),
+            entry_point: Location::new(-35_000_000, 149_000_000),
+        }
+    }
+
+    #[test]
+    fn verify_land_advances_fly_to_landing_near_target() {
+        let state = DeepstallVerifyState::default();
+        let mut inp = sample_verify_inputs();
+        inp.distance_to_landing_m = 150.0;
+        let step = deepstall_verify_land_step(state, &inp);
+        assert_eq!(step.state.stage, DeepstallStage::EstimateWind);
+        assert_eq!(step.state.loiter_sum_cd, 0);
+    }
+
+    #[test]
+    fn verify_land_wind_loiter_then_breakout() {
+        let mut state = DeepstallVerifyState {
+            stage: DeepstallStage::EstimateWind,
+            loiter_sum_cd: LOITER_COMPLETE_CD - 100,
+            last_target_bearing_cd: 0,
+        };
+        let inp = sample_verify_inputs();
+        let step = deepstall_verify_land_step(state, &inp);
+        assert_eq!(step.state.stage, DeepstallStage::WaitForBreakout);
+        state = step.state;
+        let step = deepstall_verify_land_step(state, &inp);
+        assert_eq!(step.state.stage, DeepstallStage::FlyToArc);
+        assert!(step.effects.record_breakout_at_current);
+    }
+
+    #[test]
+    fn verify_land_breakout_rebuilds_path_until_one_loiter() {
+        let state = DeepstallVerifyState {
+            stage: DeepstallStage::WaitForBreakout,
+            loiter_sum_cd: 0,
+            last_target_bearing_cd: 0,
+        };
+        let mut inp = sample_verify_inputs();
+        inp.heading_error_deg = 30.0;
+        inp.height_error_m = 20.0;
+        let step = deepstall_verify_land_step(state, &inp);
+        assert!(step.effects.rebuild_approach_path);
+        assert_eq!(step.state.stage, DeepstallStage::WaitForBreakout);
     }
 }

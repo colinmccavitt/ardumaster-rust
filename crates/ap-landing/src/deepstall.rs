@@ -333,7 +333,7 @@ pub fn deepstall_elevator_output_pwm(
 ) -> u16 {
     let t = constrain_value(slew_progress, 0.0, 1.0);
     let out = f32::from(initial_pwm) + (f32::from(target_pwm) - f32::from(initial_pwm)) * t;
-    out.round() as u16
+    libm::roundf(out) as u16
 }
 
 /// Crosstrack error for the deepstall arc, upstream the `% ab` in `update_steering`.
