@@ -136,6 +136,8 @@ pub struct PlaneMainLoop {
     pub compass: Option<YawCompassSample>,
     /// Optional GPS sample for yaw drift fallback.
     pub gps_yaw: Option<YawGpsSample>,
+    /// Lag-buffered GPS status from the fix producer, upstream `AP_GPS::status()`.
+    pub gps_status: Option<ap_gps::GpsStatus>,
     /// Vehicle context for compass vs GPS yaw selection.
     pub yaw_ctx: YawDriftContext,
     /// True airspeed for no-GPS drift and wind estimation, m/s.
@@ -322,6 +324,7 @@ impl Default for PlaneMainLoop {
             yaw_rad: 0.0,
             compass: None,
             gps_yaw: None,
+            gps_status: None,
             yaw_ctx: YawDriftContext::default(),
             airspeed_tas: 0.0,
             eas2tas: 1.0,
@@ -491,6 +494,7 @@ impl PlaneMainLoop {
             self.compass = samples.compass;
             self.gps_yaw = samples.gps_yaw;
             self.yaw_ctx = samples.yaw_ctx;
+            self.gps_status = Some(gps.gps_status_publish());
         } else if let Some(source) = self.sitl_ahrs {
             let samples = publish_sitl_ahrs_samples(
                 &source,

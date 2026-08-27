@@ -3,7 +3,7 @@
 //! [`SitlGpsHookup`] runs the [`SitlGpsBackend`] read path and fills
 //! [`SitlYawPublish`] GPS fields before compass/GPS samples reach the DCM.
 
-use ap_gps::SitlGpsBackend;
+use ap_gps::{GpsStatus, SitlGpsBackend};
 use ap_math::vector3::Vector3f;
 
 use crate::sitl_yaw_hookup::{publish_sitl_yaw_samples, SitlYawPublish, SitlYawSamples};
@@ -64,6 +64,20 @@ impl SitlGpsHookup {
     #[must_use]
     pub fn delayed_fix(&self) -> ap_gps::GpsFixState {
         self.backend.delayed_state(self.truth.now_ms)
+    }
+
+    /// Lag-buffered GPS status for vehicle consumers, upstream `AP_GPS::status()`.
+    #[must_use]
+    pub fn gps_status_publish(&mut self) -> GpsStatus {
+        self.backend.read(
+            self.truth.velocity_ned,
+            self.truth.latitude_deg,
+            self.truth.longitude_deg,
+            self.truth.altitude_m,
+            self.truth.now_ms,
+        );
+        let fix = self.backend.delayed_state(self.truth.now_ms);
+        GpsStatus::from_fix(&fix, self.gps_lag_sec())
     }
 
     #[must_use]

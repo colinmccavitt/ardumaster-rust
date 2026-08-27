@@ -65,3 +65,35 @@ fn lag_buffer_feeds_yaw_publish_with_delayed_velocity() {
     assert!((hookup.current_fix().ground_speed - 25.0).abs() < 1e-3);
     assert!((hookup.delayed_fix().ground_speed - 10.0).abs() < 1e-3);
 }
+
+#[test]
+fn gps_status_publish_exposes_lag_buffered_velocity() {
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(10.0, 0.0, -2.0);
+    hookup.truth.now_ms = 200;
+    let status = hookup.gps_status_publish();
+    assert!(status.have_fix);
+    assert!(status.has_3d_fix());
+    assert!((status.velocity_ned.x - 10.0).abs() < 1e-3);
+    assert!((status.velocity_ned.z - (-2.0)).abs() < 1e-3);
+    assert_eq!(status.num_sats, 15);
+}
+
+#[test]
+fn main_loop_publishes_gps_status_from_producer() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    let mut hookup = SitlGpsHookup::default();
+    hookup.truth.velocity_ned = Vector3f::new(8.0, 6.0, 0.0);
+    hookup.truth.now_ms = 200;
+    hookup.compass_use_for_yaw = false;
+    vehicle.sitl_gps = Some(hookup);
+
+    vehicle.ahrs_update();
+
+    let status = vehicle.gps_status.expect("gps status published");
+    assert!(status.have_fix);
+    assert!((status.ground_speed - 10.0).abs() < 1e-2);
+    assert_eq!(vehicle.ticks.ahrs_update, 1);
+}
+
