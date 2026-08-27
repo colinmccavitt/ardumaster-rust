@@ -60,3 +60,57 @@ fn ahrs_update_wires_sitl_compass_sample_and_health_flags() {
     assert!(mag.have_sample);
     assert!(mag.mag_body.length() > 0.1);
 }
+
+#[test]
+fn main_loop_pre_arm_passes_with_healthy_sitl_compass() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_compass = Some(SitlCompassHookup::with_dual_backends());
+    vehicle.sitl_compass.as_mut().unwrap().truth = SitlCompassTruth {
+        latitude_deg: 51.875,
+        longitude_deg: -0.154,
+        now_ms: 10,
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert!(vehicle.compass_health.primary_healthy());
+    assert!(vehicle.compass_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_refuses_when_compass_unhealthy() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.sitl_compass = Some(SitlCompassHookup::default());
+    vehicle.ahrs_pre_arm_ok = true;
+    vehicle.compass_health = ap_compass::sitl::CompassHealthFlags::default();
+
+    vehicle.update_control_mode();
+
+    assert!(!vehicle.compass_pre_arm_ok);
+    assert!(!vehicle.pre_arm_ok);
+}
+
+#[test]
+fn main_loop_pre_arm_passes_after_compass_failover() {
+    let mut vehicle = PlaneMainLoop::default();
+    vehicle.loop_timing.delta_time = 1.0 / 400.0;
+    vehicle.sitl_compass = Some(hookup_with_disabled_primary());
+    vehicle.sitl_compass.as_mut().unwrap().truth = SitlCompassTruth {
+        latitude_deg: 51.875,
+        longitude_deg: -0.154,
+        now_ms: 10,
+    };
+    vehicle.ahrs_pre_arm_ok = true;
+
+    vehicle.ahrs_update();
+    vehicle.update_control_mode();
+
+    assert_eq!(vehicle.compass_health.primary, 1);
+    assert!(vehicle.compass_health.primary_healthy());
+    assert!(vehicle.compass_pre_arm_ok);
+    assert!(vehicle.pre_arm_ok);
+}

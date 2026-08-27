@@ -16,6 +16,7 @@ use crate::ahrs_hookup::{drift_motion_inputs, yaw_update_inputs, AhrsAttitude, A
 use crate::ahrs_pre_arm_hookup::plane_pre_arm_checks;
 use crate::baro_arm_calibration_hookup::BaroArmCalibrationInputs;
 use crate::baro_pre_arm_hookup::{baro_pre_arm_check, plane_pre_arm_checks_baro};
+use crate::compass_pre_arm_hookup::{compass_pre_arm_check, plane_pre_arm_checks_compass};
 use crate::gps_pre_arm_hookup::{gps_pre_arm_check, plane_pre_arm_checks_gps};
 use crate::mode_run::{pre_arm_checks, PreArmResult};
 use ap_landing::deepstall_override::DeepstallOverrideInputs;
@@ -333,11 +334,13 @@ pub struct PlaneMainLoop {
     pub gps_pre_arm_ok: bool,
     /// Pre-arm baro gate when SITL baro configured.
     pub baro_pre_arm_ok: bool,
+    /// Pre-arm compass gate when SITL compass configured.
+    pub compass_pre_arm_ok: bool,
     /// Ground pressure latched on the latest arm rising edge.
     pub baro_arm_calibration_latched: bool,
     /// Previous soft_armed for baro arm-calibration edge detect.
     baro_was_soft_armed: bool,
-    /// Combined mode + AHRS + GPS + baro pre-arm result for arming.
+    /// Combined mode + AHRS + GPS + baro + compass pre-arm result for arming.
     pub pre_arm_ok: bool,
     /// Dead-reckoning north offset (m) when GPS absent.
     pub dead_reckoning_north_m: f32,
@@ -624,6 +627,7 @@ impl Default for PlaneMainLoop {
             ahrs_pre_arm_ok: false,
             gps_pre_arm_ok: false,
             baro_pre_arm_ok: false,
+            compass_pre_arm_ok: false,
             baro_arm_calibration_latched: false,
             baro_was_soft_armed: false,
             pre_arm_ok: false,
@@ -1029,8 +1033,12 @@ impl PlaneMainLoop {
         let with_gps = plane_pre_arm_checks_gps(with_ahrs, self.gps_pre_arm_ok);
         let require_baro = self.sitl_baro.is_some();
         self.baro_pre_arm_ok = baro_pre_arm_check(self.baro_health, require_baro);
+        let with_baro = plane_pre_arm_checks_baro(with_gps, self.baro_pre_arm_ok);
+        let require_compass = self.sitl_compass.is_some();
+        self.compass_pre_arm_ok =
+            compass_pre_arm_check(self.compass_health, require_compass);
         self.pre_arm_ok = matches!(
-            plane_pre_arm_checks_baro(with_gps, self.baro_pre_arm_ok),
+            plane_pre_arm_checks_compass(with_baro, self.compass_pre_arm_ok),
             PreArmResult::Allowed
         );
 
