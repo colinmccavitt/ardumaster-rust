@@ -95,6 +95,7 @@ pub mod fence_failsafe_hookup;
 pub mod failsafe_in_landing_sequence_hookup;
 pub mod failsafe_off_event_hookup;
 pub mod failsafe_check_hookup;
+pub mod failsafe_event_dispatcher_completeness;
 pub mod rc_channel_scale_hookup;
 pub mod rc_aux_switch_hookup;
 pub mod mission_alt_offset_glue_hookup;
