@@ -27,6 +27,7 @@ pub mod air_mode;
 pub mod poscontrol;
 pub mod tailsitter;
 pub mod transition;
+pub mod transition_fsm;
 pub mod vtol_mode;
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
