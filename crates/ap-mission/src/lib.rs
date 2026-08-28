@@ -52,6 +52,17 @@ pub use loiter_to_alt::{
     VerifyLoiterToAltOutput, LOITER_TO_ALT_BAND_CM, MAV_CMD_NAV_LOITER_TO_ALT,
 };
 
+mod continue_and_change_alt;
+pub use continue_and_change_alt::{
+    continue_and_change_alt_cmd, continue_and_change_alt_reached, do_continue_and_change_alt,
+    is_nav_continue_and_change_alt, verify_continue_and_change_alt, DoContinueAndChangeAltInputs,
+    DoContinueAndChangeAltOutput, VerifyContinueAndChangeAltInputs,
+    VerifyContinueAndChangeAltOutput, CHANGE_ALT_CLIMB, CHANGE_ALT_DESCEND, CHANGE_ALT_NEUTRAL,
+    CONTINUE_AND_CHANGE_ALT_BAND_CM, CONTINUE_AND_CHANGE_ALT_EXTEND_M,
+    CONTINUE_AND_CHANGE_ALT_EXTEND_THRESHOLD_M, CONTINUE_AND_CHANGE_ALT_OFFSET_M, HOLD_COURSE_NONE,
+    MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;

@@ -1,6 +1,6 @@
 [package]
 name = "ap-mission"
-description = "Port of ArduPilot libraries/AP_Mission plus NAV_WAYPOINT verify, NAV_LOITER_UNLIM, NAV_LOITER_TURNS, and NAV_LOITER_TIME (Plane-4.7.0). Tracked as FW-024."
+description = "Port of ArduPilot libraries/AP_Mission plus NAV_WAYPOINT verify, NAV_LOITER_*, and NAV_CONTINUE_AND_CHANGE_ALT (Plane-4.7.0). Tracked as FW-024."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
