@@ -2,15 +2,19 @@
 
 use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_rtl::{
-    rtl_alt_type, rtl_descent_complete, rtl_descent_run, rtl_descent_start, rtl_init,
-    rtl_is_landing, rtl_loiter_complete, rtl_loiter_yaw_aligned, rtl_mode_flags,
-    rtl_restart_without_terrain, rtl_run, RtlAltType, RtlDescentView, RtlInitView, RtlRunView,
-    RtlRunner, RtlSubMode, MODE_NUMBER_LAND, MODE_NUMBER_RTL, MODE_REASON_TERRAIN_FAILSAFE,
-    RTL_ALT_FINAL_M_DEFAULT, RTL_ALT_MIN_M, RTL_ALT_M_DEFAULT, RTL_CLIMB_MIN_M_DEFAULT,
-    RTL_DESCENT_COMPLETE_M, RTL_LOITER_TIME_MS, RTL_LOITER_YAW_ALIGN_DEG,
+    rtl_alt_type, rtl_build_path, rtl_descent_complete, rtl_descent_run, rtl_descent_start,
+    rtl_get_wp, rtl_init, rtl_is_landing, rtl_land_run, rtl_land_start, rtl_loiter_complete,
+    rtl_loiter_yaw_aligned, rtl_mode_flags, rtl_option_is_enabled, rtl_restart_without_terrain,
+    rtl_run, rtl_use_pilot_yaw, RtlAltType, RtlDescentView, RtlInitView, RtlLandStartView,
+    RtlLandView, RtlPathFrame, RtlPathView, RtlPathWarn, RtlReturnAltType, RtlRunView, RtlRunner,
+    RtlSubMode, RtlTerrainSource, MODE_NUMBER_LAND, MODE_NUMBER_RTL,
+    MODE_REASON_TERRAIN_FAILSAFE, RTL_ALT_FINAL_M_DEFAULT, RTL_ALT_MIN_M, RTL_ALT_M_DEFAULT,
+    RTL_CLIMB_MIN_M_DEFAULT, RTL_CONE_SLOPE_DEFAULT, RTL_DESCENT_COMPLETE_M,
+    RTL_LOITER_TIME_MS, RTL_LOITER_YAW_ALIGN_DEG, RTL_MIN_CONE_SLOPE,
+    RTL_OPTION_IGNORE_PILOT_YAW,
 };
 use ap_math::scalar::radians;
-use ap_motors::spool::DesiredSpoolState;
+use ap_motors::spool::{DesiredSpoolState, SpoolState};
 
 #[test]
 fn constants_match_upstream_defines() {
@@ -395,4 +399,333 @@ fn descent_run_repositioning_latches_repo_and_does_not_clear_it() {
     view.land_repo_active = true;
     let held = rtl_descent_run(&view);
     assert!(held.land_repo_active);
+}
+
+#[test]
+fn cone_constants_match_upstream() {
+    assert_eq!(RTL_CONE_SLOPE_DEFAULT.to_bits(), 3.0f32.to_bits());
+    assert_eq!(RTL_MIN_CONE_SLOPE.to_bits(), 0.5f32.to_bits());
+    assert_eq!(RTL_OPTION_IGNORE_PILOT_YAW, 1 << 2);
+}
+
+#[test]
+fn build_path_default_climbs_to_current_and_lands() {
+    let out = rtl_build_path(&RtlPathView::ready());
+    assert_eq!(out.origin.lat, 0);
+    assert_eq!(out.origin.frame, RtlPathFrame::AboveHome);
+    assert_eq!(out.climb.lat, 0);
+    assert_eq!(out.climb.lng, 0);
+    assert_eq!(out.climb.alt_m.to_bits(), 20.0f32.to_bits());
+    assert_eq!(out.climb.frame, RtlPathFrame::AboveHome);
+    assert_eq!(out.return_target.alt_m.to_bits(), 20.0f32.to_bits());
+    assert_eq!(out.return_target.frame, RtlPathFrame::AboveHome);
+    assert_eq!(out.descent.lat, 0);
+    assert_eq!(out.descent.alt_m.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.descent.frame, RtlPathFrame::AboveOrigin);
+    assert!(out.land);
+    assert_eq!(out.alt_type, RtlReturnAltType::Relative);
+    assert_eq!(out.warn, RtlPathWarn::None);
+    assert!(out.cone_applied);
+    assert!(!out.fence_reduced);
+    assert!(!out.no_descend_raised);
+}
+
+#[test]
+fn build_path_alt_final_above_zero_does_not_land() {
+    let mut view = RtlPathView::ready();
+    view.alt_final_m = 10.0;
+    let out = rtl_build_path(&view);
+    assert!(!out.land);
+    assert_eq!(out.descent.alt_m.to_bits(), 10.0f32.to_bits());
+    assert_eq!(out.descent.frame, RtlPathFrame::AboveOrigin);
+}
+
+#[test]
+fn build_path_rtl_alt_wins_when_above_current() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 15.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.return_target.alt_m.to_bits(), 15.0f32.to_bits());
+    assert!(!out.no_descend_raised);
+}
+
+#[test]
+fn build_path_cone_trims_when_close_to_home() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 15.0;
+    view.return_dist_m = 2.0;
+    view.cone_slope = 3.0;
+    let out = rtl_build_path(&view);
+    assert!(out.cone_applied);
+    assert_eq!(out.return_target.alt_m.to_bits(), 6.0f32.to_bits());
+}
+
+#[test]
+fn build_path_cone_ignored_below_min_slope() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 15.0;
+    view.return_dist_m = 2.0;
+    view.cone_slope = 0.4;
+    let out = rtl_build_path(&view);
+    assert!(!out.cone_applied);
+    assert_eq!(out.return_target.alt_m.to_bits(), 15.0f32.to_bits());
+}
+
+#[test]
+fn build_path_climb_min_raises_the_floor() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 8.0;
+    view.climb_min_m = 10.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.return_target.alt_m.to_bits(), 15.0f32.to_bits());
+}
+
+#[test]
+fn build_path_negative_climb_min_is_ignored() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 8.0;
+    view.climb_min_m = -4.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.return_target.alt_m.to_bits(), 8.0f32.to_bits());
+}
+
+#[test]
+fn build_path_fence_reduces_then_no_descend_can_raise() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 30.0;
+    view.fence_alt_max = true;
+    view.fence_alt_ok = true;
+    view.fence_alt_m = 12.0;
+    let out = rtl_build_path(&view);
+    assert!(out.fence_reduced);
+    assert!(!out.no_descend_raised);
+    assert_eq!(out.return_target.alt_m.to_bits(), 12.0f32.to_bits());
+
+    view.fence_alt_m = 3.0;
+    let raised = rtl_build_path(&view);
+    assert!(raised.fence_reduced);
+    assert!(raised.no_descend_raised);
+    assert_eq!(raised.return_target.alt_m.to_bits(), 5.0f32.to_bits());
+}
+
+#[test]
+fn build_path_fence_skipped_when_get_alt_fails() {
+    let mut view = RtlPathView::ready();
+    view.current_alt_m = 5.0;
+    view.altitude_m = 30.0;
+    view.fence_alt_max = true;
+    view.fence_alt_ok = false;
+    view.fence_alt_m = 12.0;
+    let out = rtl_build_path(&view);
+    assert!(!out.fence_reduced);
+    assert_eq!(out.return_target.alt_m.to_bits(), 30.0f32.to_bits());
+}
+
+#[test]
+fn build_path_terrain_unavailable_falls_back_and_warns() {
+    let mut view = RtlPathView::ready();
+    view.rtl_alt_type = RtlAltType::Terrain;
+    view.terrain_source = RtlTerrainSource::Unavailable;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.alt_type, RtlReturnAltType::Relative);
+    assert_eq!(out.warn, RtlPathWarn::MissingRangefinder);
+    assert_eq!(out.return_target.frame, RtlPathFrame::AboveHome);
+}
+
+#[test]
+fn build_path_rangefinder_ok_flies_above_terrain() {
+    let mut view = RtlPathView::ready();
+    view.rtl_alt_type = RtlAltType::Terrain;
+    view.terrain_source = RtlTerrainSource::Rangefinder;
+    view.rangefinder_ok = true;
+    view.rangefinder_height_m = 12.0;
+    view.current_alt_m = 40.0;
+    view.altitude_m = 15.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.alt_type, RtlReturnAltType::Rangefinder);
+    assert_eq!(out.warn, RtlPathWarn::None);
+    assert_eq!(out.return_target.frame, RtlPathFrame::AboveTerrain);
+    assert_eq!(out.climb.frame, RtlPathFrame::AboveTerrain);
+    assert_eq!(out.return_target.alt_m.to_bits(), 15.0f32.to_bits());
+}
+
+#[test]
+fn build_path_rangefinder_fail_falls_back() {
+    let mut view = RtlPathView::ready();
+    view.rtl_alt_type = RtlAltType::Terrain;
+    view.terrain_source = RtlTerrainSource::Rangefinder;
+    view.rangefinder_ok = false;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.alt_type, RtlReturnAltType::Relative);
+    assert_eq!(out.warn, RtlPathWarn::MissingRangefinder);
+    assert_eq!(out.return_target.frame, RtlPathFrame::AboveHome);
+}
+
+#[test]
+fn build_path_terrain_db_ok_uses_terrain_alt() {
+    let mut view = RtlPathView::ready();
+    view.rtl_alt_type = RtlAltType::Terrain;
+    view.terrain_source = RtlTerrainSource::TerrainDatabase;
+    view.terrain_db_ok = true;
+    view.terrain_db_current_alt_m = 18.0;
+    view.terrain_db_return_alt_cm = 400;
+    view.altitude_m = 15.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.alt_type, RtlReturnAltType::TerrainDatabase);
+    assert_eq!(out.warn, RtlPathWarn::None);
+    assert_eq!(out.return_target.frame, RtlPathFrame::AboveTerrain);
+    assert_eq!(out.return_target.alt_m.to_bits(), 18.0f32.to_bits());
+}
+
+#[test]
+fn build_path_terrain_db_fail_falls_back() {
+    let mut view = RtlPathView::ready();
+    view.rtl_alt_type = RtlAltType::Terrain;
+    view.terrain_source = RtlTerrainSource::TerrainDatabase;
+    view.terrain_db_ok = false;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.alt_type, RtlReturnAltType::Relative);
+    assert_eq!(out.warn, RtlPathWarn::MissingTerrainData);
+}
+
+#[test]
+fn build_path_relative_frame_fail_warns_and_seeds_zero() {
+    let mut view = RtlPathView::ready();
+    view.relative_frame_ok = false;
+    view.current_alt_m = 5.0;
+    view.altitude_m = 15.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.warn, RtlPathWarn::UnexpectedTargetAlt);
+    assert_eq!(out.alt_type, RtlReturnAltType::Relative);
+    assert_eq!(out.return_target.alt_m.to_bits(), 15.0f32.to_bits());
+}
+
+#[test]
+fn build_path_climb_copies_origin_latlng_and_return_alt() {
+    let mut view = RtlPathView::ready();
+    view.origin_lat = 1_000;
+    view.origin_lng = 2_000;
+    view.return_lat = 3_000;
+    view.return_lng = 4_000;
+    view.current_alt_m = 5.0;
+    let out = rtl_build_path(&view);
+    assert_eq!(out.climb.lat, 1_000);
+    assert_eq!(out.climb.lng, 2_000);
+    assert_eq!(out.return_target.lat, 3_000);
+    assert_eq!(out.return_target.lng, 4_000);
+    assert_eq!(out.descent.lat, 3_000);
+    assert_eq!(out.descent.lng, 4_000);
+    assert_eq!(out.climb.alt_m.to_bits(), out.return_target.alt_m.to_bits());
+}
+
+#[test]
+fn land_start_seeds_land_and_inits_inactive_controllers() {
+    let mut view = RtlLandStartView::ready();
+    view.ne_is_active = false;
+    view.d_is_active = false;
+    view.speed_ne_ms = 6.0;
+    view.wp_accel_mss = 1.5;
+    let out = rtl_land_start(&view);
+    assert_eq!(out.state, RtlSubMode::Land);
+    assert!(!out.state_complete);
+    assert_eq!(out.ne_speed_ms.to_bits(), 6.0f32.to_bits());
+    assert_eq!(out.ne_accel_mss.to_bits(), 1.5f32.to_bits());
+    assert!(out.init_ne);
+    assert!(out.init_d);
+    assert_eq!(out.yaw, YawMode::Hold);
+}
+
+#[test]
+fn land_start_skips_init_when_controllers_are_active() {
+    let out = rtl_land_start(&RtlLandStartView::ready());
+    assert!(!out.init_ne);
+    assert!(!out.init_d);
+}
+
+#[test]
+fn land_run_flies_unlimited_and_asks_normal_or_precland() {
+    let out = rtl_land_run(&RtlLandView::landing());
+    assert!(!out.state_complete);
+    assert!(!out.disarm_landed);
+    assert!(!out.safe_ground);
+    assert_eq!(
+        out.desired_spool,
+        Some(DesiredSpoolState::ThrottleUnlimited)
+    );
+    assert!(out.land_normal_or_precland);
+}
+
+#[test]
+fn land_run_complete_without_idle_does_not_disarm() {
+    let mut view = RtlLandView::landing();
+    view.land_complete = true;
+    view.spool_state = SpoolState::ThrottleUnlimited;
+    let out = rtl_land_run(&view);
+    assert!(out.state_complete);
+    assert!(!out.disarm_landed);
+    assert!(out.safe_ground);
+    assert!(!out.land_normal_or_precland);
+    assert_eq!(out.desired_spool, None);
+}
+
+#[test]
+fn land_run_disarms_when_complete_idle_and_asked() {
+    let mut view = RtlLandView::landing();
+    view.land_complete = true;
+    view.spool_state = SpoolState::GroundIdle;
+    let out = rtl_land_run(&view);
+    assert!(out.disarm_landed);
+    assert!(out.safe_ground);
+
+    view.disarm_on_land = false;
+    let held = rtl_land_run(&view);
+    assert!(!held.disarm_landed);
+    assert!(held.safe_ground);
+}
+
+#[test]
+fn land_run_grounds_before_controllers() {
+    let mut view = RtlLandView::landing();
+    view.auto_armed = false;
+    let out = rtl_land_run(&view);
+    assert!(out.safe_ground);
+    assert!(!out.land_normal_or_precland);
+    assert_eq!(out.desired_spool, None);
+}
+
+#[test]
+fn use_pilot_yaw_defers_to_land_on_descent() {
+    assert!(rtl_use_pilot_yaw(RtlSubMode::FinalDescent, true, 0));
+    assert!(!rtl_use_pilot_yaw(RtlSubMode::Land, false, 0));
+    assert!(rtl_use_pilot_yaw(RtlSubMode::ReturnHome, false, 0));
+    assert!(!rtl_use_pilot_yaw(
+        RtlSubMode::ReturnHome,
+        true,
+        RTL_OPTION_IGNORE_PILOT_YAW
+    ));
+}
+
+#[test]
+fn get_wp_is_false_only_on_land() {
+    assert!(rtl_get_wp(RtlSubMode::Starting));
+    assert!(rtl_get_wp(RtlSubMode::InitialClimb));
+    assert!(rtl_get_wp(RtlSubMode::ReturnHome));
+    assert!(rtl_get_wp(RtlSubMode::LoiterAtHome));
+    assert!(rtl_get_wp(RtlSubMode::FinalDescent));
+    assert!(!rtl_get_wp(RtlSubMode::Land));
+}
+
+#[test]
+fn option_is_enabled_is_the_bit() {
+    assert!(rtl_option_is_enabled(
+        RTL_OPTION_IGNORE_PILOT_YAW,
+        RTL_OPTION_IGNORE_PILOT_YAW
+    ));
+    assert!(!rtl_option_is_enabled(0, RTL_OPTION_IGNORE_PILOT_YAW));
 }

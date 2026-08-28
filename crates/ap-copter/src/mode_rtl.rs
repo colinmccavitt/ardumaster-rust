@@ -5,10 +5,11 @@
 //! home, loiter, then either descend to `RTL_ALT_FINAL` or land. This file
 //! owns the init that parks the machine on [`RtlSubMode::Starting`] and the
 //! run that advances that machine. The path geometry (`build_path` /
-//! `compute_return_target`) and the LAND controller are not here — they
-//! are later leftovers. Descent start/run and restart-without-terrain
-//! are here. What is here is *which state we
-//! are in* and *which runner that state calls*.
+//! `compute_return_target`) and the LAND controller (`land_start` /
+//! `land_run`) are here, as are descent start/run and
+//! restart-without-terrain. What is here is *which state we are in*,
+//! *which runner that state calls*, and the leftover those runners
+//! still needed.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -53,7 +54,7 @@ use crate::auto_yaw::YawMode;
 use crate::land_horizontal::land_cancelled_by_throttle;
 use crate::mode_brake::is_disarmed_or_landed;
 use ap_math::scalar::{radians, wrap_pi};
-use ap_motors::spool::DesiredSpoolState;
+use ap_motors::spool::{DesiredSpoolState, SpoolState};
 
 /// `RTL_ALT_M_DEFAULT`, metres.
 pub const RTL_ALT_M_DEFAULT: f32 = 15.0;
@@ -137,7 +138,7 @@ pub enum RtlRunner {
     LoiterAtHome,
     /// `descent_run`. See [`rtl_descent_run`].
     FinalDescent,
-    /// `land_run(disarm_on_land)`. Not expanded in this leftover.
+    /// `land_run(disarm_on_land)`. See [`rtl_land_run`].
     Land {
         /// The `disarm_on_land` argument. Bare `run()` passes `true`.
         disarm_on_land: bool,
@@ -735,4 +736,522 @@ pub fn rtl_descent_run(view: &RtlDescentView) -> RtlDescentRun {
         d_slew: true,
         state_complete: rtl_descent_complete(view.descent_target_alt_m, view.pos_u_m),
     }
+}
+
+/// `RTL_CONE_SLOPE_DEFAULT`. Height / distance of the return cone.
+pub const RTL_CONE_SLOPE_DEFAULT: f32 = 3.0;
+
+/// `RTL_MIN_CONE_SLOPE`. Shallower slopes are ignored so the return
+/// cannot crawl home at a few centimetres of climb.
+pub const RTL_MIN_CONE_SLOPE: f32 = 0.5;
+
+/// `ModeRTL::Option::IgnorePilotYaw`, bit 2 of `RTL_OPTIONS`.
+pub const RTL_OPTION_IGNORE_PILOT_YAW: u32 = 1 << 2;
+
+/// `ModeRTL::ReturnTargetAltType`.
+///
+/// This is not [`RtlAltType`]. That is the parameter. This is the leftover
+/// of what `compute_return_target` actually flies after the terrain-source
+/// switch and its fallbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtlReturnAltType {
+    /// Altitude above home.
+    Relative,
+    /// Altitude above terrain from the rangefinder.
+    Rangefinder,
+    /// Altitude above terrain from the terrain database.
+    TerrainDatabase,
+}
+
+/// `AC_WPNav::TerrainSource` as `compute_return_target` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtlTerrainSource {
+    /// `TERRAIN_UNAVAILABLE`.
+    Unavailable,
+    /// `TERRAIN_FROM_RANGEFINDER`.
+    Rangefinder,
+    /// `TERRAIN_FROM_TERRAINDATABASE`.
+    TerrainDatabase,
+}
+
+/// Leftover GCS / logger warn of `compute_return_target`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtlPathWarn {
+    /// No warning. The chosen alt type held.
+    None,
+    /// Terrain source unavailable, or the rangefinder was unhealthy.
+    /// Both paths log `RTL_MISSING_RNGFND`.
+    MissingRangefinder,
+    /// Terrain-database frame change failed. Logs `MISSING_TERRAIN_DATA`.
+    MissingTerrainData,
+    /// Relative `ABOVE_HOME` conversion failed. Should never happen.
+    UnexpectedTargetAlt,
+}
+
+/// Altitude frame the leftover parked a path point on.
+///
+/// This is not `Location::AltFrame`. The leftover records the *ask*, not
+/// a converted Location: `change_alt_frame` needs origin / home / terrain
+/// that this leftover does not own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtlPathFrame {
+    /// `Location::AltFrame::ABOVE_HOME`.
+    AboveHome,
+    /// `Location::AltFrame::ABOVE_TERRAIN`.
+    AboveTerrain,
+    /// `Location::AltFrame::ABOVE_ORIGIN`. Descent after the leftover change.
+    AboveOrigin,
+}
+
+/// One RTL path point. Lat/lng are 1e-7 degrees; alt is metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RtlPathPoint {
+    /// Latitude, 1e-7 degrees.
+    pub lat: i32,
+    /// Longitude, 1e-7 degrees.
+    pub lng: i32,
+    /// Altitude, metres, in [`RtlPathPoint::frame`].
+    pub alt_m: f32,
+    /// Frame the leftover wrote.
+    pub frame: RtlPathFrame,
+}
+
+/// Vehicle view `ModeRTL::build_path` / `compute_return_target` read.
+#[derive(Debug, Clone, Copy)]
+pub struct RtlPathView {
+    /// Stopping-point latitude after `get_stopping_point`.
+    pub origin_lat: i32,
+    /// Stopping-point longitude.
+    pub origin_lng: i32,
+    /// Rally-or-home return latitude.
+    pub return_lat: i32,
+    /// Rally-or-home return longitude.
+    pub return_lng: i32,
+    /// `return_target.alt` after a successful `ABOVE_HOME` change, centimetres.
+    /// Used on the relative path. Home's stored alt is typically zero.
+    pub relative_return_alt_cm: i32,
+    /// `return_target.change_alt_frame(ABOVE_HOME)` succeeded.
+    pub relative_frame_ok: bool,
+    /// `copter.current_loc.alt * 0.01`, metres, before the pos-offset subtract.
+    pub current_alt_m: f32,
+    /// `pos_control->get_pos_offset_U_m()`.
+    pub pos_offset_u_m: f32,
+    /// `terrain_following_allowed` from init / restart.
+    pub terrain_following_allowed: bool,
+    /// `get_alt_type()`.
+    pub rtl_alt_type: RtlAltType,
+    /// `wp_nav->get_terrain_source()`.
+    pub terrain_source: RtlTerrainSource,
+    /// `get_rangefinder_height_interpolated_m` succeeded.
+    pub rangefinder_ok: bool,
+    /// Height that call wrote, metres. Only read when [`Self::rangefinder_ok`].
+    pub rangefinder_height_m: f32,
+    /// Both `current_loc.get_alt_m(ABOVE_TERRAIN)` and
+    /// `return_target.change_alt_frame(ABOVE_TERRAIN)` succeeded.
+    pub terrain_db_ok: bool,
+    /// Current altitude above terrain, metres. Only read when db ok.
+    pub terrain_db_current_alt_m: f32,
+    /// `return_target.alt` after the ABOVE_TERRAIN change, centimetres.
+    pub terrain_db_return_alt_cm: i32,
+    /// `climb_min_m.get()`.
+    pub climb_min_m: f32,
+    /// `altitude_m.get()` — `RTL_ALT`.
+    pub altitude_m: f32,
+    /// `return_target.get_distance(origin_point)`, metres.
+    pub return_dist_m: f32,
+    /// `g.rtl_cone_slope`.
+    pub cone_slope: f32,
+    /// Alt-max fence is enabled.
+    pub fence_alt_max: bool,
+    /// `return_target.get_alt_m(fence_alt_max_frame, ...)` succeeded.
+    /// The leftover then compares the just-computed target against
+    /// [`Self::fence_alt_m`] — the usual case where the fence frame matches
+    /// the return frame. A mismatched fence frame must not use this leftover
+    /// unmodified.
+    pub fence_alt_ok: bool,
+    /// `fence.get_safe_alt_max_m()`.
+    pub fence_alt_m: f32,
+    /// `alt_final_m.get()`. Zero or below means land.
+    pub alt_final_m: f32,
+}
+
+impl RtlPathView {
+    /// Home return, 20 m current, default RTL_ALT / cone, land at the end.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            origin_lat: 0,
+            origin_lng: 0,
+            return_lat: 0,
+            return_lng: 0,
+            relative_return_alt_cm: 0,
+            relative_frame_ok: true,
+            current_alt_m: 20.0,
+            pos_offset_u_m: 0.0,
+            terrain_following_allowed: true,
+            rtl_alt_type: RtlAltType::Relative,
+            terrain_source: RtlTerrainSource::Unavailable,
+            rangefinder_ok: false,
+            rangefinder_height_m: 0.0,
+            terrain_db_ok: false,
+            terrain_db_current_alt_m: 0.0,
+            terrain_db_return_alt_cm: 0,
+            climb_min_m: RTL_CLIMB_MIN_M_DEFAULT,
+            altitude_m: RTL_ALT_M_DEFAULT,
+            return_dist_m: 100.0,
+            cone_slope: RTL_CONE_SLOPE_DEFAULT,
+            fence_alt_max: false,
+            fence_alt_ok: false,
+            fence_alt_m: 0.0,
+            alt_final_m: RTL_ALT_FINAL_M_DEFAULT,
+        }
+    }
+}
+
+/// Leftover of `ModeRTL::build_path` / `compute_return_target`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RtlPath {
+    /// Origin after `change_alt_frame(ABOVE_HOME)`.
+    pub origin: RtlPathPoint,
+    /// Climb target: origin lat/lng, return alt and frame.
+    pub climb: RtlPathPoint,
+    /// Return target after the altitude leftover.
+    pub return_target: RtlPathPoint,
+    /// Descent target after `change_alt_frame(ABOVE_ORIGIN)`.
+    pub descent: RtlPathPoint,
+    /// `alt_final_m <= 0`.
+    pub land: bool,
+    /// Alt type actually flown after fallbacks.
+    pub alt_type: RtlReturnAltType,
+    /// GCS / logger leftover. [`RtlPathWarn::None`] if the type held.
+    pub warn: RtlPathWarn,
+    /// The cone-slope trim ran (`cone_slope >= RTL_MIN_CONE_SLOPE`).
+    pub cone_applied: bool,
+    /// Fence leftover reduced the target.
+    pub fence_reduced: bool,
+    /// The no-descend clamp raised the target to current altitude.
+    pub no_descend_raised: bool,
+}
+
+/// Pick `ReturnTargetAltType` and the current / seed altitudes.
+fn rtl_return_alt_seed(view: &RtlPathView) -> (RtlReturnAltType, RtlPathWarn, f32, f32) {
+    let mut curr_alt_m = view.current_alt_m - view.pos_offset_u_m;
+    let mut alt_type = RtlReturnAltType::Relative;
+    let mut warn = RtlPathWarn::None;
+
+    if view.terrain_following_allowed && view.rtl_alt_type == RtlAltType::Terrain {
+        match view.terrain_source {
+            RtlTerrainSource::Unavailable => {
+                alt_type = RtlReturnAltType::Relative;
+                warn = RtlPathWarn::MissingRangefinder;
+            }
+            RtlTerrainSource::Rangefinder => {
+                alt_type = RtlReturnAltType::Rangefinder;
+            }
+            RtlTerrainSource::TerrainDatabase => {
+                alt_type = RtlReturnAltType::TerrainDatabase;
+            }
+        }
+    }
+
+    let seed_alt_m;
+
+    if alt_type == RtlReturnAltType::Rangefinder {
+        if view.rangefinder_ok {
+            curr_alt_m = view.rangefinder_height_m - view.pos_offset_u_m;
+            seed_alt_m = libm::fmaxf(
+                curr_alt_m + libm::fmaxf(0.0, view.climb_min_m),
+                libm::fmaxf(view.altitude_m, RTL_ALT_MIN_M),
+            );
+        } else {
+            alt_type = RtlReturnAltType::Relative;
+            warn = RtlPathWarn::MissingRangefinder;
+            seed_alt_m = relative_seed(view, &mut warn);
+        }
+    } else if alt_type == RtlReturnAltType::TerrainDatabase {
+        if view.terrain_db_ok {
+            curr_alt_m = view.terrain_db_current_alt_m - view.pos_offset_u_m;
+            seed_alt_m = libm::fmaxf(view.terrain_db_return_alt_cm as f32, 0.0) * 0.01;
+        } else {
+            alt_type = RtlReturnAltType::Relative;
+            warn = RtlPathWarn::MissingTerrainData;
+            seed_alt_m = relative_seed(view, &mut warn);
+        }
+    } else {
+        seed_alt_m = relative_seed(view, &mut warn);
+    }
+
+    (alt_type, warn, curr_alt_m, seed_alt_m)
+}
+
+fn relative_seed(view: &RtlPathView, warn: &mut RtlPathWarn) -> f32 {
+    if view.relative_frame_ok {
+        libm::fmaxf(view.relative_return_alt_cm as f32, 0.0) * 0.01
+    } else {
+        if *warn == RtlPathWarn::None {
+            *warn = RtlPathWarn::UnexpectedTargetAlt;
+        }
+        0.0
+    }
+}
+
+/// The return-altitude leftover shared by every alt type.
+///
+/// Upstream is the block after the RELATIVE conversion: raise to
+/// `max(RTL_ALT, min_rtl)`, trim by the cone, clamp to the fence, then
+/// refuse to descend below current.
+fn rtl_raise_return_alt(
+    seed_alt_m: f32,
+    curr_alt_m: f32,
+    view: &RtlPathView,
+) -> (f32, bool, bool, bool) {
+    let min_rtl_alt_m = libm::fmaxf(
+        RTL_ALT_MIN_M,
+        curr_alt_m + libm::fmaxf(0.0, view.climb_min_m),
+    );
+    let mut target_alt_m = libm::fmaxf(seed_alt_m, libm::fmaxf(view.altitude_m, min_rtl_alt_m));
+
+    let cone_applied = view.cone_slope >= RTL_MIN_CONE_SLOPE;
+    if cone_applied {
+        target_alt_m = libm::fminf(
+            target_alt_m,
+            libm::fmaxf(view.return_dist_m * view.cone_slope, min_rtl_alt_m),
+        );
+    }
+
+    let mut fence_reduced = false;
+    if view.fence_alt_max && view.fence_alt_ok && target_alt_m > view.fence_alt_m {
+        target_alt_m = view.fence_alt_m;
+        fence_reduced = true;
+    }
+
+    let no_descend_raised = target_alt_m < curr_alt_m;
+    if no_descend_raised {
+        target_alt_m = curr_alt_m;
+    }
+
+    (target_alt_m, cone_applied, fence_reduced, no_descend_raised)
+}
+
+/// Upstream `ModeRTL::build_path` including `compute_return_target`.
+///
+/// Origin / climb / descent geometry is the leftover of `build_path`.
+/// The altitude machine is the leftover of `compute_return_target`. Rally
+/// vs home is not here — the view already holds the return lat/lng.
+#[must_use]
+pub fn rtl_build_path(view: &RtlPathView) -> RtlPath {
+    let (alt_type, warn, curr_alt_m, seed_alt_m) = rtl_return_alt_seed(view);
+    let (return_alt_m, cone_applied, fence_reduced, no_descend_raised) =
+        rtl_raise_return_alt(seed_alt_m, curr_alt_m, view);
+
+    let return_frame = if alt_type == RtlReturnAltType::Relative {
+        RtlPathFrame::AboveHome
+    } else {
+        RtlPathFrame::AboveTerrain
+    };
+
+    let origin = RtlPathPoint {
+        lat: view.origin_lat,
+        lng: view.origin_lng,
+        alt_m: 0.0,
+        frame: RtlPathFrame::AboveHome,
+    };
+    let return_target = RtlPathPoint {
+        lat: view.return_lat,
+        lng: view.return_lng,
+        alt_m: return_alt_m,
+        frame: return_frame,
+    };
+    let climb = RtlPathPoint {
+        lat: view.origin_lat,
+        lng: view.origin_lng,
+        alt_m: return_alt_m,
+        frame: return_frame,
+    };
+    let descent = RtlPathPoint {
+        lat: view.return_lat,
+        lng: view.return_lng,
+        alt_m: view.alt_final_m,
+        frame: RtlPathFrame::AboveOrigin,
+    };
+
+    RtlPath {
+        origin,
+        climb,
+        return_target,
+        descent,
+        land: view.alt_final_m <= 0.0,
+        alt_type,
+        warn,
+        cone_applied,
+        fence_reduced,
+        no_descend_raised,
+    }
+}
+
+/// Leftover of `ModeRTL::land_start`.
+///
+/// The first-switch walk in [`rtl_run`] already parks `_state` on
+/// [`RtlSubMode::Land`]. This leftover is the controller seed that walk
+/// does not own: NE / D limits from the waypoint navigator, init if
+/// inactive, hold yaw. Landing-gear deploy is not here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RtlLandStart {
+    /// Always [`RtlSubMode::Land`].
+    pub state: RtlSubMode,
+    /// Always false.
+    pub state_complete: bool,
+    /// Horizontal max / correction speed from `wp_nav`.
+    pub ne_speed_ms: f32,
+    /// Horizontal max / correction accel from `wp_nav`.
+    pub ne_accel_mss: f32,
+    /// `NE_init_controller` — only when NE was inactive.
+    pub init_ne: bool,
+    /// `D_init_controller` — only when D was inactive.
+    pub init_d: bool,
+    /// Always [`YawMode::Hold`].
+    pub yaw: YawMode,
+}
+
+/// Vehicle view `ModeRTL::land_start` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct RtlLandStartView {
+    /// `pos_control->NE_is_active()`.
+    pub ne_is_active: bool,
+    /// `pos_control->D_is_active()`.
+    pub d_is_active: bool,
+    /// `wp_nav->get_default_speed_NE_ms()`.
+    pub speed_ne_ms: f32,
+    /// `wp_nav->get_wp_acceleration_mss()`.
+    pub wp_accel_mss: f32,
+}
+
+impl RtlLandStartView {
+    /// Both controllers already running, default WP speeds.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            ne_is_active: true,
+            d_is_active: true,
+            speed_ne_ms: 5.0,
+            wp_accel_mss: 1.0,
+        }
+    }
+}
+
+/// Upstream `ModeRTL::land_start`.
+#[must_use]
+pub const fn rtl_land_start(view: &RtlLandStartView) -> RtlLandStart {
+    RtlLandStart {
+        state: RtlSubMode::Land,
+        state_complete: false,
+        ne_speed_ms: view.speed_ne_ms,
+        ne_accel_mss: view.wp_accel_mss,
+        init_ne: !view.ne_is_active,
+        init_d: !view.d_is_active,
+        yaw: YawMode::Hold,
+    }
+}
+
+/// Vehicle view `ModeRTL::land_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct RtlLandView {
+    /// `motors->armed()`.
+    pub armed: bool,
+    /// `copter.ap.auto_armed`.
+    pub auto_armed: bool,
+    /// `copter.ap.land_complete`.
+    pub land_complete: bool,
+    /// `motors->get_spool_state()`.
+    pub spool_state: SpoolState,
+    /// The `disarm_on_land` argument. Bare `run()` passes `true`.
+    pub disarm_on_land: bool,
+}
+
+impl RtlLandView {
+    /// Armed, auto-armed, airborne, disarm-on-land.
+    #[must_use]
+    pub const fn landing() -> Self {
+        Self {
+            armed: true,
+            auto_armed: true,
+            land_complete: false,
+            spool_state: SpoolState::ThrottleUnlimited,
+            disarm_on_land: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeRTL::land_run` tick.
+///
+/// RTL land is not [`crate::mode_land::land_run`]. There is no pause, no
+/// no-GPS runner, no throttle-cancel. `_state_complete` is
+/// `land_complete`, then the GPS landing leftover
+/// `land_run_normal_or_precland()` with no pause argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RtlLandRun {
+    /// `_state_complete` after this tick. Always `land_complete`.
+    pub state_complete: bool,
+    /// `disarm_on_land && land_complete && GROUND_IDLE` asked `disarm(LANDED)`.
+    pub disarm_landed: bool,
+    /// `is_disarmed_or_landed` fired; `make_safe_ground_handling` and return.
+    pub safe_ground: bool,
+    /// Spool ask on the flying path. `None` on the ground path.
+    pub desired_spool: Option<DesiredSpoolState>,
+    /// Flying path asked `land_run_normal_or_precland()` (pause default false).
+    pub land_normal_or_precland: bool,
+}
+
+/// Upstream `ModeRTL::land_run`.
+#[must_use]
+pub fn rtl_land_run(view: &RtlLandView) -> RtlLandRun {
+    let disarm_landed =
+        view.disarm_on_land && view.land_complete && view.spool_state == SpoolState::GroundIdle;
+    if is_disarmed_or_landed(view.armed, view.auto_armed, view.land_complete) {
+        return RtlLandRun {
+            state_complete: view.land_complete,
+            disarm_landed,
+            safe_ground: true,
+            desired_spool: None,
+            land_normal_or_precland: false,
+        };
+    }
+    RtlLandRun {
+        state_complete: view.land_complete,
+        disarm_landed,
+        safe_ground: false,
+        desired_spool: Some(DesiredSpoolState::ThrottleUnlimited),
+        land_normal_or_precland: true,
+    }
+}
+
+/// `ModeRTL::option_is_enabled`.
+#[must_use]
+pub const fn rtl_option_is_enabled(rtl_options: u32, option: u32) -> bool {
+    (rtl_options & option) != 0
+}
+
+/// `ModeRTL::use_pilot_yaw`.
+///
+/// Descent and land use Land's leftover ([`crate::mode_land::land_use_pilot_yaw`]).
+/// Every earlier stage uses the RTL option bit.
+#[must_use]
+pub const fn rtl_use_pilot_yaw(
+    state: RtlSubMode,
+    land_repositioning: bool,
+    rtl_options: u32,
+) -> bool {
+    if matches!(state, RtlSubMode::FinalDescent | RtlSubMode::Land) {
+        land_repositioning
+    } else {
+        !rtl_option_is_enabled(rtl_options, RTL_OPTION_IGNORE_PILOT_YAW)
+    }
+}
+
+/// `ModeRTL::get_wp`. Whether the leftover asks `wp_nav` for the OA dest.
+///
+/// LAND has no waypoint destination. Every other submode does.
+#[must_use]
+pub const fn rtl_get_wp(state: RtlSubMode) -> bool {
+    !matches!(state, RtlSubMode::Land)
 }
