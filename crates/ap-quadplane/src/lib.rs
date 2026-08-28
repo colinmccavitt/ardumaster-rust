@@ -30,6 +30,7 @@ pub mod completeness;
 pub mod landing;
 pub mod logging;
 pub mod mode_q;
+pub mod mode_qautotune;
 pub mod mode_qland;
 pub mod mode_qrtl;
 pub mod motor_test;
