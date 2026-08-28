@@ -14,8 +14,9 @@
 //! Height / baro fusion enable (`selectHeightForFusion`, `FuseBaro`,
 //! baro offset) lives in [`height_fusion`]. Range-finder / optical-flow
 //! fusion enable (`SelectFlowFusion`, `EstimateTerrainOffset` quality
-//! gates) lives in [`rng_flow_fusion`]. Covariance prediction and
-//! the 3-axis Kalman mag update are not here.
+//! gates) lives in [`rng_flow_fusion`]. Covariance prediction
+//! (process-noise inject + `P` symmetry) lives in [`covariance`].
+//! The 3-axis Kalman mag update is not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -42,12 +43,14 @@
 //! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
 //! enable is [`pos_vel_fusion`]; TAS / air-data enable is
 //! [`air_data_fusion`]; height / baro enable is [`height_fusion`];
-//! range-finder / optical-flow enable is [`rng_flow_fusion`].
+//! range-finder / optical-flow enable is [`rng_flow_fusion`];
+//! covariance prediction is [`covariance`].
 
 #![no_std]
 
 pub mod air_data_fusion;
 pub mod control;
+pub mod covariance;
 pub mod gyro_bias;
 pub mod height_fusion;
 pub mod mag_fusion;
@@ -57,6 +60,11 @@ pub mod rng_flow_fusion;
 
 pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
 pub use control::{AidingMode, FilterControl};
+pub use covariance::{
+    CovMatrix, Covariance, ProcessNoise, ABIAS_P_NSE_DEFAULT, GBIAS_P_NSE_DEFAULT,
+    MAGB_P_NSE_DEFAULT, MAGE_P_NSE_DEFAULT, POS_VAR_GROWTH_LIMIT, PROCESS_NOISE_LEN,
+    WIND_P_NSE_DEFAULT,
+};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use height_fusion::{
     HeightFuseSel, HeightFusion, HeightSource, HGT_INNOV_GATE_DEFAULT, HGT_RETRY_TIME_MODE12_MS,
@@ -203,6 +211,8 @@ pub struct NavEkf3Core {
     height: HeightFusion,
     /// Range-finder / optical-flow fusion enable, upstream `SelectFlowFusion`.
     rng_flow: RngFlowFusion,
+    /// State covariance, upstream `P` / `CovariancePrediction`.
+    covariance: Covariance,
 }
 
 impl Default for NavEkf3Core {
@@ -226,6 +236,7 @@ impl NavEkf3Core {
             air_data: AirDataFusion::new(),
             height: HeightFusion::new(),
             rng_flow: RngFlowFusion::new(),
+            covariance: Covariance::new(),
         }
     }
 
@@ -276,6 +287,7 @@ impl NavEkf3Core {
         self.air_data.reset();
         self.height.reset();
         self.rng_flow.reset();
+        self.covariance.covariance_init();
         true
     }
 
@@ -294,6 +306,10 @@ impl NavEkf3Core {
         self.control.control_filter_modes();
         if predict {
             self.frames_since_predict = 0;
+            // Upstream `UpdateFilter` runs `CovariancePrediction` after
+            // strapdown when `runUpdates` is set. This stub has no
+            // strapdown; the Q inject + symmetry copy-back still run.
+            self.covariance.covariance_prediction();
         } else {
             self.frames_since_predict = self.frames_since_predict.saturating_add(1);
         }
@@ -310,7 +326,8 @@ impl NavEkf3Core {
         // Upstream `UpdateFilter` runs `SelectFlowFusion` before TAS.
         self.rng_flow
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
-        self.rng_flow.select_rng_flow_fusion(self.states_initialised);
+        self.rng_flow
+            .select_rng_flow_fusion(self.states_initialised);
         // Upstream `UpdateFilter` runs `SelectTasFusion` after pos/vel.
         self.air_data
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
@@ -463,7 +480,24 @@ impl NavEkf3Core {
     pub fn select_rng_flow_fusion(&mut self) {
         self.rng_flow
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
-        self.rng_flow.select_rng_flow_fusion(self.states_initialised);
+        self.rng_flow
+            .select_rng_flow_fusion(self.states_initialised);
+    }
+
+    /// Covariance helper, upstream `P` / `CovariancePrediction`.
+    #[must_use]
+    pub const fn covariance(&self) -> &Covariance {
+        &self.covariance
+    }
+
+    /// Mutable covariance so tests can poke `P` before a predict.
+    pub fn covariance_mut(&mut self) -> &mut Covariance {
+        &mut self.covariance
+    }
+
+    /// Upstream `NavEKF3_core::CovariancePrediction`.
+    pub fn covariance_prediction(&mut self) {
+        self.covariance.covariance_prediction();
     }
 }
 
@@ -857,7 +891,8 @@ mod tests {
         assert_eq!(core.rng_flow().flow_fuse_sel(), FlowFuseSel::NotFusing);
 
         core.rng_flow_mut().set_range_data(true, 3.0 as Ftype);
-        core.rng_flow_mut().set_rng_innov(0.0 as Ftype, 1.0 as Ftype);
+        core.rng_flow_mut()
+            .set_rng_innov(0.0 as Ftype, 1.0 as Ftype);
         core.rng_flow_mut().set_tilt_ok(true);
         core.select_rng_flow_fusion();
         assert_eq!(core.rng_flow().rng_fuse_sel(), RngFuseSel::FuseRng);
@@ -871,11 +906,50 @@ mod tests {
         flow.rng_flow_mut().set_use_optflow_xy(true);
         flow.rng_flow_mut()
             .set_flow_data(true, 0.2 as Ftype, 0.1 as Ftype);
-        flow.rng_flow_mut().set_flow_innov(0.0 as Ftype, 1.0 as Ftype);
+        flow.rng_flow_mut()
+            .set_flow_innov(0.0 as Ftype, 1.0 as Ftype);
         flow.rng_flow_mut().set_tilt_ok(true);
         flow.rng_flow_mut().set_takeoff_detected(true);
         flow.select_rng_flow_fusion();
         assert_eq!(flow.rng_flow().flow_fuse_sel(), FlowFuseSel::FuseFlow);
         assert!(flow.rng_flow().flow_fuse_performed());
+    }
+
+    #[test]
+    fn core_covariance_predict_injects_q_and_stays_symmetric() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        let before = core.covariance().variance(StateIndex::GyroBiasX);
+        core.covariance_mut().set_p(11, 10, 0.002 as Ftype);
+        core.covariance_mut().set_p(10, 11, 0.001 as Ftype);
+        core.update_filter(true);
+        let q0 = match core.covariance().process_noise().get(0) {
+            Some(&v) => v,
+            None => 0.0 as Ftype,
+        };
+        assert!(q0 > 0.0 as Ftype);
+        let after = core.covariance().variance(StateIndex::GyroBiasX);
+        let err = if after > before + q0 {
+            after - (before + q0)
+        } else {
+            (before + q0) - after
+        };
+        assert!(err < 1.0e-12 as Ftype);
+        assert!(core.covariance().is_symmetric());
+        let upper = core.covariance().p(10, 11);
+        let lower = core.covariance().p(11, 10);
+        let off = if upper > lower {
+            upper - lower
+        } else {
+            lower - upper
+        };
+        assert!(off < 1.0e-12 as Ftype);
+        let expected = 0.001 as Ftype;
+        let off_u = if upper > expected {
+            upper - expected
+        } else {
+            expected - upper
+        };
+        assert!(off_u < 1.0e-12 as Ftype);
     }
 }
