@@ -1,12 +1,16 @@
 //! QLOITER / QLAND / LoiterAltQLand `_enter` — upstream
 //! `mode_qloiter.cpp` / `mode_qland.cpp` / `mode_LoiterAltQLand.cpp`.
 
+use ap_quadplane::air_mode::QOption;
+use ap_quadplane::landing::{LandDetectView, LAND_COMPLETE_TIMEOUT_MS, LAND_RELAX_MS};
 use ap_quadplane::mode_qland::{
-    already_in_a_loiter, loiter_alt_qland_enter, qland_enter, qloiter_enter, switch_qland,
-    GuidedAltFrame, LoiterAltQLandAction, LoiterAltQLandEnterView, LoiterAltSeed, QLandEnterState,
-    QLandEnterView, QLandFamily, QLoiterEnterState, QLoiterEnterView, MODE_LOITER_ALT_QLAND,
-    MODE_QLAND, MODE_QLOITER, MODE_REASON_LOITER_ALT_IN_VTOL, MODE_REASON_LOITER_ALT_REACHED_QLAND,
-    Q_RTL_ALT_DEFAULT_M,
+    already_in_a_loiter, landing_descent_rate_ms, linear_interpolate, loiter_alt_qland_enter,
+    pos_before_land_final, qland_enter, qland_run, qloiter_enter, switch_qland, GuidedAltFrame,
+    LoiterAltQLandAction, LoiterAltQLandEnterView, LoiterAltSeed, QLandEnterState, QLandEnterView,
+    QLandFamily, QLandRunAction, QLandRunView, QLoiterEnterState, QLoiterEnterView,
+    MODE_LOITER_ALT_QLAND, MODE_QLAND, MODE_QLOITER, MODE_REASON_LOITER_ALT_IN_VTOL,
+    MODE_REASON_LOITER_ALT_REACHED_QLAND, Q_LAND_FINAL_SPD_DEFAULT_MS, Q_RTL_ALT_DEFAULT_M,
+    Q_WP_SPD_DN_DEFAULT_MS,
 };
 use ap_quadplane::poscontrol::{PositionControlState, THROTTLE_WAIT_INPUT_MIN};
 use ap_quadplane::QuadPlane;
@@ -242,4 +246,133 @@ fn loiter_alt_qland_stale_nav_uses_current_loc() {
     let out = loiter_alt_qland_enter(&mut qp, view);
     assert_eq!(out.action, LoiterAltQLandAction::StayLoiter);
     assert_eq!(out.seed, Some(LoiterAltSeed::CurrentLoc));
+}
+
+fn mm(v: f32) -> i32 {
+    (v * 1000.0) as i32
+}
+
+fn latch_land_start(qp: &mut QuadPlane, t0: u32, height_m: f32, timeout_ms: u32) -> u32 {
+    assert_ne!(t0, 0);
+    assert!(!qp.land_detector(LandDetectView::settled(t0, height_m), timeout_ms));
+    let t_land = t0 + LAND_RELAX_MS + 1;
+    assert!(!qp.land_detector(LandDetectView::settled(t_land, height_m), timeout_ms));
+    assert_eq!(qp.landing_detect().land_start_ms(), t_land);
+    t_land
+}
+
+#[test]
+fn qland_run_uses_qloiter_and_descends() {
+    let mut qp = available_qp();
+    let mut state = QLandEnterState::new();
+    assert!(qland_enter(
+        &mut qp,
+        QLandEnterView::new(QLoiterEnterView::parked_idle(), 12.5),
+        &mut state
+    ));
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandDescend);
+
+    let out = qland_run(&mut qp, QLandRunView::descending());
+    assert_eq!(out.action, QLandRunAction::Descend);
+    assert!(out.used_qloiter);
+    assert!(!out.switched_land_final);
+    assert!(!out.touchdown_expected);
+    assert!(!out.land_complete.complete);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandDescend);
+    // 12.5 m is at/above land_final_alt+6, so the interpolate is WP down-speed.
+    assert_eq!(mm(out.descent_rate_ms), mm(Q_WP_SPD_DN_DEFAULT_MS));
+    assert_eq!(mm(out.climb_rate_target_ms), mm(-Q_WP_SPD_DN_DEFAULT_MS));
+}
+
+#[test]
+fn qland_run_switches_land_final_then_can_complete() {
+    let mut qp = available_qp();
+    let mut state = QLandEnterState::new();
+    assert!(qland_enter(
+        &mut qp,
+        QLandEnterView::parked_idle(),
+        &mut state
+    ));
+
+    let switched = qland_run(&mut qp, QLandRunView::below_final());
+    assert_eq!(switched.action, QLandRunAction::Descend);
+    assert!(switched.used_qloiter);
+    assert!(switched.switched_land_final);
+    assert!(switched.target_position_setup);
+    assert!(switched.touchdown_expected);
+    assert!(!switched.land_complete.complete);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandFinal);
+    // LAND_FINAL clamps height to Q_LAND_FINAL_ALT, and 3 m is below that,
+    // so the interpolate is Q_LAND_FINAL_SPD.
+    assert_eq!(
+        mm(switched.descent_rate_ms),
+        mm(Q_LAND_FINAL_SPD_DEFAULT_MS)
+    );
+    assert_eq!(
+        mm(switched.climb_rate_target_ms),
+        mm(-Q_LAND_FINAL_SPD_DEFAULT_MS)
+    );
+
+    qp.set_options(QOption::DisableGroundEffectComp as i32);
+    let t_land = latch_land_start(&mut qp, 200, 1.0, LAND_COMPLETE_TIMEOUT_MS);
+    let complete = qland_run(
+        &mut qp,
+        QLandRunView::settled_complete(t_land + LAND_COMPLETE_TIMEOUT_MS, 1.0),
+    );
+    assert!(!complete.touchdown_expected);
+    assert!(complete.land_complete.complete);
+    assert!(complete.land_complete.disarm);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandComplete);
+}
+
+#[test]
+fn qland_run_throttle_wait_skips_descent() {
+    let mut qp = available_qp();
+    let mut state = QLandEnterState::new();
+    assert!(qland_enter(
+        &mut qp,
+        QLandEnterView::parked_idle(),
+        &mut state
+    ));
+    qp.set_throttle_wait(true);
+
+    let out = qland_run(&mut qp, QLandRunView::below_final());
+    assert_eq!(out.action, QLandRunAction::ThrottleWait);
+    assert!(out.used_qloiter);
+    assert!(!out.switched_land_final);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandDescend);
+}
+
+#[test]
+fn landing_descent_rate_clamps_in_final_and_stops_on_reposition() {
+    let mut qp = available_qp();
+    qp.poscontrol_mut()
+        .set_state(PositionControlState::LandFinal);
+    let mut view = QLandRunView::descending();
+    view.height_above_ground_m = 20.0;
+    // LAND_FINAL + high AGL uses land_final_alt for the interpolate → final spd.
+    assert_eq!(
+        mm(landing_descent_rate_ms(&qp, &view)),
+        mm(Q_LAND_FINAL_SPD_DEFAULT_MS)
+    );
+
+    qp.poscontrol_mut()
+        .set_state(PositionControlState::LandDescend);
+    view.height_above_ground_m = 9.0;
+    let mid = linear_interpolate(
+        Q_LAND_FINAL_SPD_DEFAULT_MS,
+        Q_WP_SPD_DN_DEFAULT_MS,
+        9.0,
+        qp.land_final_alt_m(),
+        qp.land_final_alt_m() + 6.0,
+    );
+    assert_eq!(mm(landing_descent_rate_ms(&qp, &view)), mm(mid));
+    assert_eq!(mm(mid), 1000);
+
+    qp.poscontrol_mut().set_pilot_correction(true, true);
+    assert_eq!(mm(landing_descent_rate_ms(&qp, &view)), 0);
+
+    assert!(pos_before_land_final(PositionControlState::LandDescend));
+    assert!(!pos_before_land_final(PositionControlState::LandFinal));
+    assert!(!pos_before_land_final(PositionControlState::LandComplete));
 }

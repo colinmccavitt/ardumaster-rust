@@ -1,8 +1,11 @@
-//! QLOITER / QLAND / LoiterAltQLand `_enter` stub, upstream
-//! `ArduPlane/mode_qloiter.cpp` / `mode_qland.cpp` /
+//! QLOITER / QLAND / LoiterAltQLand `_enter` plus QLAND `run()`,
+//! upstream `ArduPlane/mode_qloiter.cpp` / `mode_qland.cpp` /
 //! `mode_LoiterAltQLand.cpp` (Plane-4.7.0).
 //!
-//! Tracked as **VT-005**. `Mode::enter` always calls
+//! Tracked as **VT-005**. This slice is [`qland_run`]:
+//! `ModeQLand::run` always calls `ModeQLoiter::run`, and the
+//! QLAND leftover inside that run is descent-rate, land-final,
+//! and [`QuadPlane::check_land_complete`]. `Mode::enter` always calls
 //! [`QuadPlane::mode_enter`] then the mode's `_enter`. QLoiter
 //! initialises loiter_nav, latches the D-axis speed / accel limits,
 //! calls [`QuadPlane::init_throttle_wait`], records
@@ -22,6 +25,10 @@
 //! [`switch_qland`] may immediately enter QLand
 //! (`ModeReason::LOITER_ALT_REACHED_QLAND`).
 
+use crate::air_mode::QOption;
+use crate::landing::{
+    LandCompleteResult, LandCompleteView, LandDetectView, LandFinalView, RelaxView,
+};
 use crate::poscontrol::PositionControlState;
 use crate::QuadPlane;
 
@@ -469,4 +476,256 @@ pub fn loiter_alt_qland_enter(
     }
 
     LoiterAltQLandEnter::stay(seed, view.qrtl_alt_m, frame)
+}
+
+/// Default `Q_LAND_FINAL_SPD`, upstream `AP_GROUPINFO("LAND_FINAL_SPD", 26, QuadPlane, land_final_speed_ms, 0.5)`.
+pub const Q_LAND_FINAL_SPD_DEFAULT_MS: f32 = 0.5;
+
+/// Default `Q_WP_SPD_DN` / `wp_nav->get_default_speed_down_ms()`.
+///
+/// Upstream `AC_WPNav` `WP_SPD_DOWN_DEFAULT` is 1.5 m/s.
+pub const Q_WP_SPD_DN_DEFAULT_MS: f32 = 1.5;
+
+/// Extra metres above `Q_LAND_FINAL_ALT` where the descent interpolate
+/// reaches the waypoint down-speed.
+///
+/// Upstream `land_final_alt_m + 6`.
+pub const LAND_DESCENT_INTERP_SPAN_M: f32 = 6.0;
+
+/// Which path `ModeQLand::run` (via `ModeQLoiter::run`) took this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QLandRunAction {
+    /// `assist.check_VTOL_recovery()` — QHover recovery.
+    VtolRecovery,
+    /// Tailsitter FW pull-up: `Mode::run()`.
+    FwControllers,
+    /// QLoiter `throttle_wait` leftover (QLAND `_enter` normally clears this).
+    ThrottleWait,
+    /// QLAND descent / land-final / land-complete leftover.
+    Descend,
+}
+
+/// Outcome of one [`qland_run`] tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QLandRun {
+    /// Recovery / FW / wait / descent.
+    pub action: QLandRunAction,
+    /// `ModeQLand::run` always calls `mode_qloiter.run()`.
+    pub used_qloiter: bool,
+    /// `check_land_final` promoted poscontrol to `QPOS_LAND_FINAL`.
+    pub switched_land_final: bool,
+    /// `setup_target_position()` after that switch.
+    pub target_position_setup: bool,
+    /// `landing_descent_rate_ms` this tick (positive is down).
+    pub descent_rate_ms: f32,
+    /// `D_set_pos_target_from_climb_rate_ms(-descent_rate, descent_rate>0)`.
+    pub climb_rate_target_ms: f32,
+    /// `ahrs.set_touchdown_expected(true)` in LAND_FINAL without
+    /// `DISABLE_GROUND_EFFECT_COMP`.
+    pub touchdown_expected: bool,
+    /// `check_land_complete` result (idle on early-outs).
+    pub land_complete: LandCompleteResult,
+}
+
+impl QLandRun {
+    const fn early(action: QLandRunAction) -> Self {
+        Self {
+            action,
+            used_qloiter: true,
+            switched_land_final: false,
+            target_position_setup: false,
+            descent_rate_ms: 0.0,
+            climb_rate_target_ms: 0.0,
+            touchdown_expected: false,
+            land_complete: LandCompleteResult::idle(),
+        }
+    }
+}
+
+/// Plane / nav view [`qland_run`] reads after QLoiter's common control.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QLandRunView {
+    /// `quadplane.assist.check_VTOL_recovery()`.
+    pub vtol_recovery: bool,
+    /// `tailsitter.in_vtol_transition(now)`.
+    pub tailsitter_in_vtol_transition: bool,
+    /// `AP_HAL::millis()` (override-descent window; unused in this stub).
+    pub now_ms: u32,
+    /// `plane.relative_ground_altitude(RangeFinderUse::TAKEOFF_LANDING)`.
+    pub height_above_ground_m: f32,
+    /// `wp_nav->get_default_speed_down_ms()`.
+    pub wp_speed_down_ms: f32,
+    /// `quadplane.land_final_speed_ms` (`Q_LAND_FINAL_SPD`).
+    pub land_final_speed_ms: f32,
+    /// Motors / height snapshot `check_land_final` / `check_land_complete` share.
+    pub detect: LandDetectView,
+    /// `plane.in_auto_mission_id(MAV_CMD_NAV_PAYLOAD_PLACE)`.
+    pub payload_place: bool,
+    /// `control_mode == mode_auto`.
+    pub in_auto: bool,
+    /// `mission.continue_after_land()`.
+    pub continue_after_land: bool,
+}
+
+impl QLandRunView {
+    /// Mid-descent tick: 12.5 m AGL, default speeds, motors flying.
+    #[must_use]
+    pub const fn descending() -> Self {
+        Self {
+            vtol_recovery: false,
+            tailsitter_in_vtol_transition: false,
+            now_ms: 1_000,
+            height_above_ground_m: 12.5,
+            wp_speed_down_ms: Q_WP_SPD_DN_DEFAULT_MS,
+            land_final_speed_ms: Q_LAND_FINAL_SPD_DEFAULT_MS,
+            detect: LandDetectView {
+                relax: RelaxView::flying(),
+                height_m: 12.5,
+            },
+            payload_place: false,
+            in_auto: false,
+            continue_after_land: false,
+        }
+    }
+
+    /// Below `Q_LAND_FINAL_ALT`, still flying (land-final switch, not complete).
+    #[must_use]
+    pub const fn below_final() -> Self {
+        Self {
+            vtol_recovery: false,
+            tailsitter_in_vtol_transition: false,
+            now_ms: 1_000,
+            height_above_ground_m: 3.0,
+            wp_speed_down_ms: Q_WP_SPD_DN_DEFAULT_MS,
+            land_final_speed_ms: Q_LAND_FINAL_SPD_DEFAULT_MS,
+            detect: LandDetectView {
+                relax: RelaxView::flying(),
+                height_m: 3.0,
+            },
+            payload_place: false,
+            in_auto: false,
+            continue_after_land: false,
+        }
+    }
+
+    /// Settled detector tick used for land-complete.
+    #[must_use]
+    pub const fn settled_complete(now_ms: u32, height_m: f32) -> Self {
+        Self {
+            vtol_recovery: false,
+            tailsitter_in_vtol_transition: false,
+            now_ms,
+            height_above_ground_m: height_m,
+            wp_speed_down_ms: Q_WP_SPD_DN_DEFAULT_MS,
+            land_final_speed_ms: Q_LAND_FINAL_SPD_DEFAULT_MS,
+            detect: LandDetectView::settled(now_ms, height_m),
+            payload_place: false,
+            in_auto: false,
+            continue_after_land: false,
+        }
+    }
+}
+
+/// Upstream `AP_Math::linear_interpolate` (low/high output vs var).
+#[must_use]
+pub const fn linear_interpolate(
+    low_out: f32,
+    high_out: f32,
+    var: f32,
+    var_low: f32,
+    var_high: f32,
+) -> f32 {
+    if var <= var_low {
+        return low_out;
+    }
+    if var >= var_high {
+        return high_out;
+    }
+    let span = var_high - var_low;
+    low_out + (var - var_low) * (high_out - low_out) / span
+}
+
+/// `poscontrol.get_state() < QPOS_LAND_FINAL` (discriminant order).
+#[must_use]
+pub const fn pos_before_land_final(state: PositionControlState) -> bool {
+    (state as u8) < (PositionControlState::LandFinal as u8)
+}
+
+/// Upstream `QuadPlane::landing_descent_rate_ms` (rate / land-final clamp).
+///
+/// Override-descent and `THR_LANDING_CONTROL` are later leftovers.
+/// Pilot repositioning (`pilot_correction_active`) stops a positive
+/// descent (`MIN(0, ret)`).
+#[must_use]
+pub fn landing_descent_rate_ms(qp: &QuadPlane, view: &QLandRunView) -> f32 {
+    let mut height_m = view.height_above_ground_m;
+    if qp.poscontrol().state() == PositionControlState::LandFinal
+        && height_m > qp.land_final_alt_m()
+    {
+        height_m = qp.land_final_alt_m();
+    }
+    let mut ret_ms = linear_interpolate(
+        view.land_final_speed_ms,
+        view.wp_speed_down_ms,
+        height_m,
+        qp.land_final_alt_m(),
+        qp.land_final_alt_m() + LAND_DESCENT_INTERP_SPAN_M,
+    );
+    if qp.poscontrol().pilot_correction_active() && ret_ms > 0.0 {
+        ret_ms = 0.0;
+    }
+    ret_ms
+}
+
+/// Combined `ModeQLand::run`: always `mode_qloiter.run()`, then the
+/// QLAND leftover (descent / land-final / land-complete).
+///
+/// QLoiter recovery, tailsitter FW pull-up, and `throttle_wait` return
+/// before that leftover, matching the early-outs in
+/// `ModeQLoiter::run`.
+pub fn qland_run(qp: &mut QuadPlane, view: QLandRunView) -> QLandRun {
+    if view.vtol_recovery {
+        return QLandRun::early(QLandRunAction::VtolRecovery);
+    }
+    if view.tailsitter_in_vtol_transition {
+        return QLandRun::early(QLandRunAction::FwControllers);
+    }
+    if qp.throttle_wait() {
+        return QLandRun::early(QLandRunAction::ThrottleWait);
+    }
+
+    let mut switched_land_final = false;
+    let mut target_position_setup = false;
+    if pos_before_land_final(qp.poscontrol().state())
+        && qp.check_land_final(LandFinalView {
+            detect: view.detect,
+            height_above_ground_m: view.height_above_ground_m,
+        })
+    {
+        qp.poscontrol_mut()
+            .set_state(PositionControlState::LandFinal);
+        switched_land_final = true;
+        target_position_setup = true;
+    }
+
+    let descent_rate_ms = landing_descent_rate_ms(qp, &view);
+    let touchdown_expected = qp.poscontrol().state() == PositionControlState::LandFinal
+        && !qp.option_is_set(QOption::DisableGroundEffectComp);
+    let land_complete = qp.check_land_complete(LandCompleteView {
+        detect: view.detect,
+        payload_place: view.payload_place,
+        in_auto: view.in_auto,
+        continue_after_land: view.continue_after_land,
+    });
+
+    QLandRun {
+        action: QLandRunAction::Descend,
+        used_qloiter: true,
+        switched_land_final,
+        target_position_setup,
+        descent_rate_ms,
+        climb_rate_target_ms: -descent_rate_ms,
+        touchdown_expected,
+        land_complete,
+    }
 }
