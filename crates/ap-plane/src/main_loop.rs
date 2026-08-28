@@ -134,8 +134,8 @@ use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs}
 use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
 use crate::auto_mode_hookup::{
-    auto_mode_complete_tick, auto_mode_mission_tick, AutoModeCompleteInputs,
-    AutoModeMissionInputs,
+    auto_mode_complete_tick, auto_mode_loiter_to_alt_tick, auto_mode_mission_tick,
+    AutoModeCompleteInputs, AutoModeLoiterToAltInputs, AutoModeMissionInputs,
 };
 use crate::rtl_mode_hookup::{rtl_mode_climb_tick, rtl_mode_nav_tick, RtlModeClimbInputs, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
@@ -446,6 +446,32 @@ pub struct PlaneMainLoop {
     pub auto_mode_land_handoff: bool,
     /// Upstream current nav command is MAV_CMD_NAV_LAND.
     pub auto_current_nav_is_land: bool,
+    /// Upstream current nav command is MAV_CMD_NAV_LOITER_TO_ALT.
+    pub auto_current_nav_is_loiter_to_alt: bool,
+    /// Upstream `condition_value` for AUTO loiter-to-alt (0 = alt not yet reached).
+    pub auto_condition_value: i32,
+    /// Upstream `loiter.sum_cd`.
+    pub auto_loiter_sum_cd: i32,
+    /// Upstream `loiter.reached_target_alt`.
+    pub auto_loiter_reached_target_alt: bool,
+    /// Upstream `loiter.unable_to_achieve_target_alt`.
+    pub auto_loiter_unable_to_achieve_target_alt: bool,
+    /// `ModeLoiter::isHeadingLinedUp` onto the next nav command.
+    pub auto_loiter_heading_lined_up: bool,
+    /// `mission.get_next_nav_cmd` found a following nav item.
+    pub auto_loiter_next_nav_available: bool,
+    /// Upstream LOITER_TO_ALT `cmd.p1` radius, metres. Zero uses WP_LOITER_RAD.
+    pub auto_loiter_to_alt_radius_m: u16,
+    /// Whether AUTO loiter-to-alt verify glue ran this tick.
+    pub auto_mode_loiter_to_alt_applied: bool,
+    /// Whether verify_loiter_to_alt will call update_loiter this tick.
+    pub auto_mode_loiter_to_alt_allow_loiter: bool,
+    /// Altitude goal completed this tick (condition_value latched to 1).
+    pub auto_loiter_to_alt_alt_reached: bool,
+    /// verify_loiter_to_alt returned true: resume AUTO (next mission item).
+    pub auto_mode_loiter_to_alt_complete: bool,
+    /// Heading-init reset `loiter.sum_cd` this tick.
+    pub auto_loiter_to_alt_reset_sum_cd: bool,
     /// Upstream RTL_RADIUS, metres. Negative is CCW; zero uses WP_LOITER_RAD.
     pub rtl_radius_m: i16,
     /// Whether RTL enter/navigate glue ran this tick.
@@ -957,6 +983,19 @@ impl Default for PlaneMainLoop {
             auto_mode_switch_to_rtl: false,
             auto_mode_land_handoff: false,
             auto_current_nav_is_land: false,
+            auto_current_nav_is_loiter_to_alt: false,
+            auto_condition_value: 0,
+            auto_loiter_sum_cd: 0,
+            auto_loiter_reached_target_alt: false,
+            auto_loiter_unable_to_achieve_target_alt: false,
+            auto_loiter_heading_lined_up: false,
+            auto_loiter_next_nav_available: true,
+            auto_loiter_to_alt_radius_m: 0,
+            auto_mode_loiter_to_alt_applied: false,
+            auto_mode_loiter_to_alt_allow_loiter: false,
+            auto_loiter_to_alt_alt_reached: false,
+            auto_mode_loiter_to_alt_complete: false,
+            auto_loiter_to_alt_reset_sum_cd: false,
             rtl_radius_m: 0,
             rtl_mode_nav_applied: false,
             rtl_mode_started: false,
@@ -1497,6 +1536,39 @@ impl PlaneMainLoop {
             && mission_out.advanced;
         if mission_out.ran {
             self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
+        }
+
+        let loiter_to_alt = auto_mode_loiter_to_alt_tick(&AutoModeLoiterToAltInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            current_nav_is_loiter_to_alt: self.auto_current_nav_is_loiter_to_alt,
+            condition_value: self.auto_condition_value,
+            loiter_sum_cd: self.auto_loiter_sum_cd,
+            reached_target_alt: self.auto_loiter_reached_target_alt,
+            unable_to_achieve_target_alt: self.auto_loiter_unable_to_achieve_target_alt,
+            heading_lined_up: self.auto_loiter_heading_lined_up,
+            next_nav_cmd_available: self.auto_loiter_next_nav_available,
+            cmd_p1_radius_m: self.auto_loiter_to_alt_radius_m,
+        });
+        self.auto_mode_loiter_to_alt_applied = loiter_to_alt.applied;
+        self.auto_mode_loiter_to_alt_allow_loiter = loiter_to_alt.allow_loiter;
+        self.auto_loiter_to_alt_alt_reached = loiter_to_alt.alt_reached;
+        self.auto_mode_loiter_to_alt_complete = loiter_to_alt.complete;
+        self.auto_loiter_to_alt_reset_sum_cd = loiter_to_alt.reset_sum_cd;
+        if loiter_to_alt.applied {
+            self.auto_condition_value = loiter_to_alt.condition_value;
+            if loiter_to_alt.reset_sum_cd {
+                self.auto_loiter_sum_cd = 0;
+            }
+            if loiter_to_alt.complete {
+                let next = self.mission.current_index.saturating_add(1);
+                if next < u16::from(self.mission_inputs.waypoint_count) {
+                    self.mission.current_index = next;
+                    self.auto_mode_mission_advanced = true;
+                } else {
+                    self.mission.complete = true;
+                }
+            }
         }
 
         let auto_complete = auto_mode_complete_tick(&AutoModeCompleteInputs {
