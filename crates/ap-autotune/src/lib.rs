@@ -23,9 +23,10 @@
 //! `IDLE_LOWER_PD`) lives in [`action`].
 //! The `slew_limit` / `SlewLimiter` pair (default 150 deg/s, P/D
 //! slew-rate tracking) lives in [`slew`].
-//! The completeness closer (`OnMain` vs `Remaining`, IMAX-on-start,
+//! The ATRP 25 Hz log (`log_ATRP` WriteBlock every 40 ms) lives in
+//! [`log`]. The completeness closer (`OnMain` vs `Remaining`, IMAX-on-start,
 //! yaw `att_limit` 20 deg, `done_count` N-cycle save) lives in
-//! [`completeness`].
+//! [`completeness`]. Leftover Remaining rows are deferred.
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
@@ -38,6 +39,7 @@ pub mod ff_estimate;
 pub mod filters;
 pub mod gains;
 pub mod level;
+pub mod log;
 pub mod options;
 pub mod slew;
 pub mod start;
@@ -70,6 +72,10 @@ pub use gains::{apply_stop_gains, should_save_on_stop, snapshot_gains, AtGains};
 pub use level::{
     aggressiveness_target, constrain_autotune_level, tuning_row, LevelTarget, TuningRow,
     AUTOTUNE_LEVEL_DEFAULT, AUTOTUNE_LEVEL_MAX, AUTOTUNE_LEVEL_MIN, PITCH_TAU_SCALE, TUNING_TABLE,
+};
+pub use log::{
+    should_log_atrp, stamp_log_ms, AtrpLogGate, LogAtrp, ATRP_FORMAT, ATRP_LABELS, ATRP_LOG_HZ,
+    ATRP_LOG_PERIOD_MS, ATRP_NAME, HEAD_BYTE1, HEAD_BYTE2,
 };
 pub use options::{
     apply_filter_options, fltd_hz, fltt_hz, AutotuneAxes, AutotuneAxis, AutotuneOption,

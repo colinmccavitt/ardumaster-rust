@@ -3,10 +3,11 @@
 //!
 //! Catalogs the Plane AutoTune port. Items marked [`PortStatus::OnMain`]
 //! landed in earlier slices and must not be redone. [`PortStatus::ThisSlice`]
-//! includes the `slew_limit` / `SlewLimiter` pair plus Action /
-//! D-limit hunting and the earlier closer rows.
-//! [`PortStatus::Remaining`] are still-open `AP_AutoTune.cpp` gaps
-//! (ATRP log, EEPROM `save_*_if_changed`).
+//! includes the ATRP 25 Hz log plus the `slew_limit` / `SlewLimiter`
+//! pair, Action / D-limit hunting, and the earlier closer rows.
+//! [`PortStatus::Remaining`] leftovers are deferred (EEPROM
+//! `save_*_if_changed`, `update_rmax` inverse-tau, LOW_RATE/SHORT
+//! rejects, clipped actuator without I).
 //!
 //! This module does not rewrite [`crate::filters`] or [`crate::start`].
 
@@ -131,28 +132,28 @@ pub const AUTOTUNE_COMPLETENESS: &[AutotunePortItem] = &[
     },
     AutotunePortItem {
         name: "log_ATRP 25Hz",
-        status: PortStatus::Remaining,
-        note: "logger WriteBlock every 40 ms",
+        status: PortStatus::ThisSlice,
+        note: "logger WriteBlock every 40 ms (25 Hz ATRP packet)",
     },
     AutotunePortItem {
         name: "EEPROM save_*_if_changed",
         status: PortStatus::Remaining,
-        note: "save_float_if_changed / save_int16_if_changed parameter persist",
+        note: "deferred: save_float_if_changed / save_int16_if_changed parameter persist",
     },
     AutotunePortItem {
         name: "update_rmax FF/I inverse-tau",
         status: PortStatus::Remaining,
-        note: "target_tau = MAX(target_tau, 1/invtau)",
+        note: "deferred: target_tau = MAX(target_tau, 1/invtau)",
     },
     AutotunePortItem {
         name: "LOW_RATE / SHORT event rejects",
         status: PortStatus::Remaining,
-        note: "max_rate < 0.01*rmax or event < 100 ms",
+        note: "deferred: max_rate < 0.01*rmax or event < 100 ms",
     },
     AutotunePortItem {
         name: "clipped actuator without I",
         status: PortStatus::Remaining,
-        note: "constrain_float(FF+P+D+DFF+I, -45, 45) - I",
+        note: "deferred: constrain_float(FF+P+D+DFF+I, -45, 45) - I",
     },
 ];
 

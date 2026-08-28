@@ -34,10 +34,10 @@ const THIS_SLICE: &[&str] = &[
     "save_gains after N stable cycles",
     "Action / D-limit hunting",
     "slew_limit / SlewLimiter",
+    "log_ATRP 25Hz",
 ];
 
 const REMAINING: &[&str] = &[
-    "log_ATRP 25Hz",
     "EEPROM save_*_if_changed",
     "update_rmax FF/I inverse-tau",
     "LOW_RATE / SHORT event rejects",
@@ -107,6 +107,18 @@ fn completeness_table_matches_main_versus_remaining() {
         assert!(!name.is_empty(), "catalog row missing a name");
         assert!(!note.is_empty(), "{name} missing an upstream note");
         let _ = status;
+    }
+}
+
+#[test]
+fn leftover_remaining_notes_are_deferred() {
+    for item in remaining_items() {
+        assert!(
+            item.note.starts_with("deferred:"),
+            "{} remaining note must be marked deferred, got {:?}",
+            item.name,
+            item.note
+        );
     }
 }
 
