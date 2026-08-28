@@ -1,15 +1,17 @@
 //! SITL compass backend, upstream `AP_Compass_SITL::_timer`. FW-014.
 //!
 //! Rotates the WMM earth-frame field into body frame using true attitude.
-//! Applies `COMPASS_OFS` (`mag += offsets`). Optional SITL hard-iron bias is
+//! Applies `COMPASS_OFS` (`mag += offsets`) then `COMPASS_MOT * thr_or_curr`
+//! when `COMPASS_MOTCT` is current or throttle. Optional SITL hard-iron bias is
 //! added before offsets so learn-offsets can cancel metal in the frame.
-//! No noise, delay ring, or motor interference in this slice.
+//! No noise or delay ring in this slice.
 
 use ap_declination::get_mag_field_ef;
 use ap_math::matrix3::Matrix3f;
 use ap_math::scalar::{radians, Real};
 use ap_math::vector3::Vector3f;
 
+use crate::motor_comp::apply_motor_compensation;
 use crate::offset::{apply_offsets, learn_offsets, offsets_within_max};
 
 /// Minimum interval between compass updates, upstream `_timer` at 100 Hz.
@@ -35,6 +37,10 @@ pub struct SitlCompassConfig {
     pub offset: Vector3f,
     /// SITL-injected metal bias added before offsets, for learn tests.
     pub hardiron_bias: Vector3f,
+    /// Motor compensation factors, upstream `COMPASS_MOT`.
+    pub motor_compensation: Vector3f,
+    /// Motor compensation type, upstream `COMPASS_MOTCT`.
+    pub motor_comp_type: u8,
 }
 
 impl Default for SitlCompassConfig {
@@ -43,6 +49,8 @@ impl Default for SitlCompassConfig {
             disabled: false,
             offset: Vector3f::zero(),
             hardiron_bias: Vector3f::zero(),
+            motor_compensation: Vector3f::zero(),
+            motor_comp_type: 0,
         }
     }
 }
@@ -85,6 +93,7 @@ pub struct SitlCompassBackend {
     pending: MagSampleState,
     has_pending: bool,
     raw_mag_body: Vector3f,
+    thr_or_curr: f32,
     last_latitude_deg: f32,
     last_longitude_deg: f32,
     last_attitude: Matrix3f,
@@ -98,6 +107,7 @@ impl Default for SitlCompassBackend {
             pending: MagSampleState::default(),
             has_pending: false,
             raw_mag_body: Vector3f::zero(),
+            thr_or_curr: 0.0,
             last_latitude_deg: 0.0,
             last_longitude_deg: 0.0,
             last_attitude: Matrix3f::identity(),
@@ -138,6 +148,16 @@ impl SitlCompassBackend {
 
     pub fn set_config(&mut self, config: SitlCompassConfig) {
         self.config = config;
+    }
+
+    /// Throttle `0..1` or battery current in amps, upstream `_thr` / battery.
+    pub fn set_thr_or_curr(&mut self, value: f32) {
+        self.thr_or_curr = value;
+    }
+
+    #[must_use]
+    pub const fn thr_or_curr(&self) -> f32 {
+        self.thr_or_curr
     }
 
     /// Latch `COMPASS_OFS` so the corrected field matches WMM, upstream learn.
@@ -182,6 +202,12 @@ impl SitlCompassBackend {
         let (wmm, declination_rad) = mag_field_body_ned(latitude_deg, longitude_deg, attitude);
         self.raw_mag_body = wmm + self.config.hardiron_bias;
         let mag_body = apply_offsets(self.raw_mag_body, self.config.offset);
+        let mag_body = apply_motor_compensation(
+            mag_body,
+            self.config.motor_compensation,
+            self.config.motor_comp_type,
+            self.thr_or_curr,
+        );
         self.pending = MagSampleState {
             mag_body,
             declination_rad,
@@ -261,6 +287,13 @@ impl SitlCompassCluster {
     pub fn set_primary(&mut self, index: u8) {
         if (index as usize) < self.instance_count as usize {
             self.primary = index;
+        }
+    }
+
+    /// Same throttle/current on every registered instance.
+    pub fn set_thr_or_curr(&mut self, value: f32) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_thr_or_curr(value);
         }
     }
 

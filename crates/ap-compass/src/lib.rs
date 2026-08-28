@@ -7,6 +7,7 @@
 #![no_std]
 
 pub mod declination;
+pub mod motor_comp;
 pub mod offset;
 pub mod params;
 pub mod sitl;
@@ -23,5 +24,10 @@ pub use offset::{
     apply_offsets, learn_offsets, learn_offsets_enabled, offsets_within_max,
     COMPASS_LEARN_DEFAULT, COMPASS_LEARN_EKF, COMPASS_LEARN_INFLIGHT, COMPASS_LEARN_NONE,
     COMPASS_OFFSETS_MAX_DEFAULT,
+};
+pub use motor_comp::{
+    apply_motor_compensation, learn_motor_compensation, motor_comp_enabled, motor_offset,
+    COMPASS_MOTCT_DEFAULT, COMPASS_MOT_COMP_CURRENT, COMPASS_MOT_COMP_DISABLED,
+    COMPASS_MOT_COMP_THROTTLE,
 };
 pub use params::{CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT};

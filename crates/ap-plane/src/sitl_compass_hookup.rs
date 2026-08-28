@@ -39,6 +39,8 @@ pub struct SitlCompassHookup {
     declination: CompassDeclinationState,
     pub truth: SitlCompassTruth,
     pub compass_use_for_yaw: bool,
+    /// Battery current in amps (or throttle 0..1), upstream motor compensation.
+    pub battery_current_amps: f32,
 }
 
 impl Default for SitlCompassHookup {
@@ -49,6 +51,7 @@ impl Default for SitlCompassHookup {
             declination: CompassDeclinationState::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
+            battery_current_amps: 0.0,
         }
     }
 }
@@ -74,6 +77,7 @@ impl SitlCompassHookup {
             declination: CompassDeclinationState::default(),
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
+            battery_current_amps: 0.0,
         }
     }
 
@@ -99,6 +103,12 @@ impl SitlCompassHookup {
         }
     }
 
+    /// Latch throttle/current for `COMPASS_MOT` on every instance.
+    pub fn set_thr_or_curr(&mut self, value: f32) {
+        self.battery_current_amps = value;
+        self.cluster.set_thr_or_curr(value);
+    }
+
     /// Latch `COMPASS_OFS` on every enabled instance when learn is enabled.
     #[must_use]
     pub fn learn_offsets(&mut self) -> bool {
@@ -122,6 +132,7 @@ impl SitlCompassHookup {
     #[must_use]
     pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32, gps: Option<GpsDeclinationFix>) -> SitlCompassPublish {
         self.declination.try_set_initial_location(&self.params, gps, true);
+        self.cluster.set_thr_or_curr(self.battery_current_amps);
         self.cluster.timer_tick_all(
             self.truth.latitude_deg,
             self.truth.longitude_deg,
@@ -159,5 +170,6 @@ pub fn hookup_with_disabled_primary() -> SitlCompassHookup {
         declination: CompassDeclinationState::default(),
         truth: SitlCompassTruth::default(),
         compass_use_for_yaw: true,
+        battery_current_amps: 0.0,
     }
 }

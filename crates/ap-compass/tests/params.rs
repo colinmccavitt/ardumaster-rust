@@ -39,7 +39,7 @@ fn instance_params_apply_to_sitl_config() {
     let cfg = CompassInstanceParams {
         disabled: true,
         use_for_yaw: false,
-        offset: Default::default(),
+        ..Default::default()
     }
     .apply_to_config();
     assert!(cfg.disabled);

@@ -2,6 +2,7 @@
 
 use ap_math::vector3::Vector3f;
 
+use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::sitl::{
     SitlCompassBackend, SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
@@ -19,6 +20,8 @@ pub struct CompassInstanceParams {
     pub use_for_yaw: bool,
     /// Hard-iron offset, upstream `COMPASS_OFS` / `OFS2` (field units).
     pub offset: Vector3f,
+    /// Motor compensation factors, upstream `COMPASS_MOT` / `MOT2`.
+    pub motor_compensation: Vector3f,
 }
 
 impl Default for CompassInstanceParams {
@@ -27,6 +30,7 @@ impl Default for CompassInstanceParams {
             disabled: false,
             use_for_yaw: COMPASS_USE_DEFAULT,
             offset: Vector3f::zero(),
+            motor_compensation: Vector3f::zero(),
         }
     }
 }
@@ -36,6 +40,7 @@ impl CompassInstanceParams {
         SitlCompassConfig {
             disabled: self.disabled,
             offset: self.offset,
+            motor_compensation: self.motor_compensation,
             ..SitlCompassConfig::default()
         }
     }
@@ -54,6 +59,8 @@ pub struct CompassParams {
     pub learn: u8,
     /// Max allowed offset length, upstream `COMPASS_OFFS_MAX`.
     pub offsets_max: f32,
+    /// Motor compensation type, upstream `COMPASS_MOTCT`.
+    pub motor_comp_type: u8,
 }
 
 impl Default for CompassParams {
@@ -66,6 +73,7 @@ impl Default for CompassParams {
             auto_declination: COMPASS_AUTODEC_DEFAULT,
             learn: COMPASS_LEARN_DEFAULT,
             offsets_max: COMPASS_OFFSETS_MAX_DEFAULT,
+            motor_comp_type: COMPASS_MOTCT_DEFAULT,
         }
     }
 }
@@ -76,6 +84,8 @@ impl CompassParams {
         let mut cfg = *backend.config();
         cfg.disabled = inst.disabled;
         cfg.offset = inst.offset;
+        cfg.motor_compensation = inst.motor_compensation;
+        cfg.motor_comp_type = self.motor_comp_type;
         backend.set_config(cfg);
     }
 

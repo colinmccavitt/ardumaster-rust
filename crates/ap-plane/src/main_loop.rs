@@ -79,6 +79,9 @@ use crate::compass_health_scheduler_hookup::{
 use crate::compass_offset_calibration_hookup::{
     compass_offset_calibration_tick, CompassOffsetCalibrationInputs,
 };
+use crate::compass_motor_compensation_hookup::{
+    compass_motor_compensation_tick, CompassMotorCompensationInputs,
+};
 use crate::airspeed_health_scheduler_hookup::{
     airspeed_health_scheduler_tick, AirspeedHealthSchedulerInputs,
 };
@@ -247,6 +250,8 @@ pub struct PlaneMainLoop {
     pub compass_learn_requested: bool,
     /// True after the last requested mag offset learn succeeded.
     pub compass_offsets_learned: bool,
+    /// Battery current for `COMPASS_MOT`, upstream `AP_BattMonitor::current_amps`.
+    pub compass_battery_current_amps: f32,
     /// Latest baro sample from the SITL backend, upstream `AP_Baro` frontend.
     pub baro_sample: Option<ap_baro::sitl::BaroSampleState>,
     /// Whether the SITL baro backend is healthy, upstream `AP_Baro::healthy()`.
@@ -538,6 +543,7 @@ impl Default for PlaneMainLoop {
             compass_health: CompassHealthFlags::default(),
             compass_learn_requested: false,
             compass_offsets_learned: false,
+            compass_battery_current_amps: 0.0,
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
             baro_climb_rate_mps: 0.0,
@@ -761,6 +767,12 @@ impl PlaneMainLoop {
             }
         });
         if let Some(compass) = self.sitl_compass.as_mut() {
+            let _ = compass_motor_compensation_tick(
+                compass,
+                CompassMotorCompensationInputs {
+                    thr_or_curr: self.compass_battery_current_amps,
+                },
+            );
             let out = compass_health_scheduler_tick(
                 compass,
                 &CompassHealthSchedulerInputs {
