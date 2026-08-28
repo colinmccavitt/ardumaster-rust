@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod consistent;
 pub mod declination;
 pub mod learn;
 pub mod motor_comp;
@@ -24,6 +25,7 @@ pub use sitl::{
     SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES, SITL_COMPASS_UPDATE_MS,
 };
 
+pub use consistent::{consistent, CompassInstanceField};
 pub use learn::LearnType;
 pub use motor_comp::{
     apply_motor_compensation, learn_motor_compensation, motor_comp_enabled, motor_offset,

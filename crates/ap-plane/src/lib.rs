@@ -35,6 +35,7 @@ pub mod compass_orientation_hookup;
 pub mod compass_scale_hookup;
 pub mod compass_soft_iron_hookup;
 pub mod compass_learn_hookup;
+pub mod compass_consistent_hookup;
 pub mod baro_arm_calibration_hookup;
 pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;
