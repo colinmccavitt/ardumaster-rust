@@ -82,7 +82,7 @@ pub const HAL_COMPLETENESS: &[HalPortItem] = &[
     },
     HalPortItem {
         name: "BinarySemaphore",
-        status: PortStatus::Remaining,
+        status: PortStatus::ThisSlice,
         note: "AP_HAL::BinarySemaphore wait/signal; not in the Semaphore stub",
     },
     HalPortItem {
@@ -162,8 +162,8 @@ mod tests {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
         assert_eq!(on_main, 4);
-        assert_eq!(this_slice, 2);
-        assert_eq!(remaining, 6);
+        assert_eq!(this_slice, 3);
+        assert_eq!(remaining, 5);
         assert!(completeness_has("GPIO", PortStatus::OnMain));
         assert!(completeness_has("Semaphore", PortStatus::OnMain));
         assert!(completeness_has("Util", PortStatus::OnMain));
@@ -177,9 +177,10 @@ mod tests {
             "DeviceManager get_device factory",
             PortStatus::ThisSlice
         ));
+        assert!(completeness_has("BinarySemaphore", PortStatus::ThisSlice));
         assert_eq!(on_main_items().count(), 4);
-        assert_eq!(this_slice_items().count(), 2);
-        assert_eq!(remaining_items().count(), 6);
+        assert_eq!(this_slice_items().count(), 3);
+        assert_eq!(remaining_items().count(), 5);
     }
 
     #[test]

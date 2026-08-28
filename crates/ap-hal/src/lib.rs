@@ -40,6 +40,7 @@ pub enum Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 pub mod analog;
+pub mod binary_semaphore;
 pub mod completeness;
 pub mod context;
 pub mod device;

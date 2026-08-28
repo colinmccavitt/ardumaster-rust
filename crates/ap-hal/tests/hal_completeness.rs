@@ -8,16 +8,13 @@ use ap_hal::completeness::{
 /// Surfaces already on main — do not redo these slices.
 const ON_MAIN: &[&str] = &["GPIO", "Semaphore", "Util", "Device"];
 
-const THIS_SLICE: &[&str] = &["completeness table", "DeviceManager get_device factory"];
-
-const REMAINING: &[&str] = &[
-    "WSPIDevice",
-    "CANIface",
-    "DSP",
-    "Flash",
-    "OpticalFlow",
+const THIS_SLICE: &[&str] = &[
+    "completeness table",
+    "DeviceManager get_device factory",
     "BinarySemaphore",
 ];
+
+const REMAINING: &[&str] = &["WSPIDevice", "CANIface", "DSP", "Flash", "OpticalFlow"];
 
 #[test]
 fn completeness_table_lists_gpio_semaphore_util_device_done() {
