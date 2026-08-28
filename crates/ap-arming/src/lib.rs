@@ -15,11 +15,14 @@
 pub mod accel_threshold;
 pub mod arming_options;
 pub mod check_bitmask;
+pub mod completeness;
 pub mod crash_if_disarmed;
 pub mod mission_items;
 pub mod need_loc;
 pub mod rudder_arming;
 pub mod vehicle_arm;
+
+pub use completeness::{ArmingPortItem, PortStatus, ARMING_COMPLETENESS};
 
 /// Default `ARMING_REQUIRE` on Plane, upstream `Required::YES_MIN_PWM`.
 pub const ARMING_REQUIRE_DEFAULT: Required = Required::YesMinPwm;
