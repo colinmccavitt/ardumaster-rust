@@ -185,12 +185,12 @@ fn motors_output_gates_delay_disarmed_esc_tailsitter_then_latches_active() {
 #[test]
 fn catalog_marks_motors_output_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 15);
+    assert_eq!(on_main, 16);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 3);
+    assert_eq!(remaining, 2);
     assert!(completeness_has(
         "motors_output / hold / set_armed",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
     assert!(completeness_has(
         "land-sequence predicates",
@@ -198,7 +198,7 @@ fn catalog_marks_motors_output_this_slice_and_leaves_other_rows() {
     ));
     assert!(completeness_has(
         "guided / QRTL / RTL_MODE",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     let mut qp = QuadPlane::with_enable(1);
     assert!(qp.setup());

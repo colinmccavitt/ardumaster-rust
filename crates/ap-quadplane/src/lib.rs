@@ -5,13 +5,13 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover land-sequence predicates already landed.
-//! This slice: leftover motors_output / hold_hover / hold_stabilize /
-//! set_armed on [`crate::motors_output`].
+//! Leftover motors_output / hold / set_armed already landed.
+//! This slice: leftover guided_start / guided_update / RTL_MODE on
+//! [`crate::guided`].
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
 //! leftover Q_OPTIONS, assist latches, position controllers,
-//! land-sequence, motor-test, tailsitter completeness, or the leftover
-//! catalog helpers for remaining rows.
+//! land-sequence, motors_output, motor-test, tailsitter completeness,
+//! or the leftover catalog helpers for remaining rows.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -28,6 +28,7 @@
 pub mod air_mode;
 pub mod auto_vtol;
 pub mod completeness;
+pub mod guided;
 pub mod landing;
 pub mod land_sequence;
 pub mod logging;
@@ -248,6 +249,12 @@ pub struct QuadPlane {
     last_land_final_agl_m: f32,
     /// Upstream `bool guided_takeoff`.
     guided_takeoff: bool,
+    /// `Q_RTL_MODE`, upstream `AP_Int8 rtl_mode`.
+    rtl_mode: i8,
+    /// `Q_GUIDED_MODE`, upstream `AP_Int8 guided_mode`.
+    guided_mode: i8,
+    /// `poscontrol.slow_descent` from leftover `guided_start`.
+    slow_descent: bool,
     /// AUTO mission VTOL leftover (`do_vtol_*` / `verify_*` / `control_auto`).
     auto_vtol: auto_vtol::AutoVtol,
     /// Leftover QTUN / QPOS / AttRate logger block.
@@ -291,6 +298,9 @@ impl QuadPlane {
             land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
+            rtl_mode: guided::Q_RTL_MODE_DEFAULT,
+            guided_mode: guided::Q_GUIDED_MODE_DEFAULT,
+            slow_descent: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),
@@ -333,6 +343,9 @@ impl QuadPlane {
             land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
+            rtl_mode: guided::Q_RTL_MODE_DEFAULT,
+            guided_mode: guided::Q_GUIDED_MODE_DEFAULT,
+            slow_descent: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),

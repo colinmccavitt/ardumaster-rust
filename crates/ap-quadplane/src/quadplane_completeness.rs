@@ -2,10 +2,10 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover motors_output /
-//! hold_hover / hold_stabilize / set_armed. [`PortStatus::Remaining`]
-//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
-//! (guided/QRTL, thrust-loss, TECS leftovers).
+//! be redone. [`PortStatus::ThisSlice`] is leftover guided_start /
+//! guided_update / RTL_MODE. [`PortStatus::Remaining`] are leftover
+//! `quadplane.cpp` / `.h` surfaces not yet stubbed (thrust-loss,
+//! TECS leftovers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
 //! [`crate::landing`], [`crate::land_sequence`], [`crate::logging`],
@@ -120,13 +120,13 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "motors_output / hold / set_armed",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "motors_output.rs motors_output / hold_hover / hold_stabilize / set_armed",
     },
     QuadPlanePortItem {
         name: "guided / QRTL / RTL_MODE",
-        status: PortStatus::Remaining,
-        note: "guided_start / guided_update / RTL_MODE NONE..QRTL_ALWAYS (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "guided.rs guided_start / guided_update / RTL_MODE NONE..QRTL_ALWAYS / guided_mode_enabled",
     },
     QuadPlanePortItem {
         name: "thrust-loss / ESC-cal / takeoff-failure",
@@ -595,6 +595,56 @@ pub const fn climb_rate_ms_from_cms(target_climb_rate_cms: f32) -> f32 {
     target_climb_rate_cms * 0.01
 }
 
+/// `poscontrol.slow_descent`: from_alt > to_alt (absolute, else raw).
+#[must_use]
+pub const fn guided_slow_descent(from_alt_cm: i32, to_alt_cm: i32) -> bool {
+    from_alt_cm > to_alt_cm
+}
+
+/// `guided_update` climb path: GUIDED + `guided_takeoff` + current < next.
+#[must_use]
+pub const fn guided_update_climbing(
+    in_guided: bool,
+    guided_takeoff: bool,
+    current_alt_cm: i32,
+    next_wp_alt_cm: i32,
+) -> bool {
+    in_guided && guided_takeoff && current_alt_cm < next_wp_alt_cm
+}
+
+/// Upstream `QuadPlane::guided_mode_enabled` gates.
+#[must_use]
+pub const fn guided_mode_enabled(
+    available: bool,
+    in_guided: bool,
+    in_auto: bool,
+    auto_loiter_turns: bool,
+    guided_mode: i8,
+) -> bool {
+    if !available {
+        return false;
+    }
+    if !in_guided && !in_auto {
+        return false;
+    }
+    if in_auto && auto_loiter_turns {
+        return false;
+    }
+    guided_mode != 0
+}
+
+/// ModeRTL `_enter` switches to QRTL when `Q_RTL_MODE == QRTL_ALWAYS`.
+#[must_use]
+pub const fn rtl_mode_qrtl_always(mode: RtlMode) -> bool {
+    matches!(mode, RtlMode::QrtlAlways)
+}
+
+/// ModeRTL VTOL-landing: `SWITCH_QRTL` or `VTOL_APPROACH_QRTL`.
+#[must_use]
+pub const fn rtl_mode_vtol_landing(mode: RtlMode) -> bool {
+    matches!(mode, RtlMode::SwitchQrtl | RtlMode::VtolApproachQrtl)
+}
+
 /// Rows already hooked up on `main` (must not be redone).
 #[must_use]
 pub fn on_main_items() -> impl Iterator<Item = &'static QuadPlanePortItem> {
@@ -664,9 +714,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 15);
+        assert_eq!(on_main, 16);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 3);
+        assert_eq!(remaining, 2);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -694,13 +744,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "motors_output / hold / set_armed",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "guided / QRTL / RTL_MODE",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 15);
+        assert_eq!(on_main_items().count(), 16);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 3);
+        assert_eq!(remaining_items().count(), 2);
     }
 
     #[test]
@@ -825,6 +879,27 @@ mod tests {
         assert!(land_sequence(true, false, false, false));
         assert!(land_sequence(false, true, false, false));
         assert!(!land_sequence(false, false, false, false));
+    }
+
+    #[test]
+    fn leftover_guided_start_update_and_rtl_mode_helpers() {
+        assert!(guided_slow_descent(20000, 15000));
+        assert!(!guided_slow_descent(15000, 20000));
+        assert!(guided_update_climbing(true, true, 8000, 12000));
+        assert!(!guided_update_climbing(false, true, 8000, 12000));
+        assert!(!guided_update_climbing(true, false, 8000, 12000));
+        assert!(!guided_update_climbing(true, true, 12000, 12000));
+        assert!(guided_mode_enabled(true, true, false, false, 1));
+        assert!(guided_mode_enabled(true, false, true, false, 1));
+        assert!(!guided_mode_enabled(false, true, false, false, 1));
+        assert!(!guided_mode_enabled(true, false, true, true, 1));
+        assert!(!guided_mode_enabled(true, true, false, false, 0));
+        assert!(rtl_mode_qrtl_always(RtlMode::QrtlAlways));
+        assert!(!rtl_mode_qrtl_always(RtlMode::SwitchQrtl));
+        assert!(rtl_mode_vtol_landing(RtlMode::SwitchQrtl));
+        assert!(rtl_mode_vtol_landing(RtlMode::VtolApproachQrtl));
+        assert!(!rtl_mode_vtol_landing(RtlMode::QrtlAlways));
+        assert!(!rtl_mode_vtol_landing(RtlMode::None));
     }
 
     #[test]
