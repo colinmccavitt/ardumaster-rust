@@ -6,20 +6,23 @@
 //! sends [`statustext::StatusText`] (msgid 253) via `send_text`,
 //! dispatches [`command::CommandLong`] / [`command::CommandInt`]
 //! (msgid 76 / 75) through the Plane command table (ARM/DISARM,
-//! DO_SET_MODE, NAV_TAKEOFF), and walks a small in-memory table for
+//! DO_SET_MODE, NAV_TAKEOFF), walks a small in-memory table for
 //! [`param::ParamRequestList`] / [`param::ParamSet`] (msgid 21 / 23),
-//! emitting [`param::ParamValue`] (msgid 22), and sends
+//! emitting [`param::ParamValue`] (msgid 22), sends
 //! [`pose::Attitude`] / [`pose::GlobalPositionInt`] (msgid 30 / 33) from a
-//! [`pose::PoseSnapshot`]. The rest of `modules/mavlink` stays ungenerated
-//! until later slices.
+//! [`pose::PoseSnapshot`], and uploads / downloads one waypoint through
+//! [`mission::MissionItemInt`] / [`mission::MissionRequestInt`]
+//! (msgid 73 / 51) against a small in-memory mission table. The rest of
+//! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
 //!
 //! The full common/ardupilotmega XML dialect, stream-rate scheduling,
 //! STATUSTEXT receive / chunked queueing, signing, routing, COMMAND_ACK,
-//! PARAM_REQUEST_READ, and the `GCS_MAVLINK_Plane` vehicle-side handlers.
-//! Those land in later FW-028 slices. GCS failsafe (`FS_GCS_ENABL`) already
-//! lives in `ap-plane` and is not rewritten here.
+//! PARAM_REQUEST_READ, MISSION_COUNT / MISSION_ACK, and the
+//! `GCS_MAVLINK_Plane` vehicle-side handlers. Those land in later FW-028
+//! slices. GCS failsafe (`FS_GCS_ENABL`) already lives in `ap-plane` and
+//! is not rewritten here.
 
 #![no_std]
 
@@ -27,6 +30,7 @@ pub mod command;
 pub mod dispatch;
 pub mod framing;
 pub mod heartbeat;
+pub mod mission;
 pub mod param;
 pub mod pose;
 pub mod statustext;
@@ -40,6 +44,12 @@ pub use dispatch::{Dispatch, GcsMavlink};
 pub use framing::{decode_v2, encode_v2, DecodeError, Frame};
 pub use heartbeat::{
     Heartbeat, MAV_AUTOPILOT_ARDUPILOTMEGA, MAV_TYPE_FIXED_WING, MSG_ID_HEARTBEAT,
+};
+pub use mission::{
+    MissionItemInt, MissionRequestInt, MissionTable, MAV_CMD_NAV_WAYPOINT,
+    MAV_MISSION_TYPE_MISSION, MAX_MISSION_ITEMS, MISSION_ITEM_INT_CRC, MISSION_ITEM_INT_LEN,
+    MISSION_REQUEST_INT_CRC, MISSION_REQUEST_INT_LEN, MSG_ID_MISSION_ITEM_INT,
+    MSG_ID_MISSION_REQUEST_INT,
 };
 pub use param::{
     encode_param_id, param_id_name, ParamEntry, ParamRequestList, ParamSet, ParamTable, ParamValue,

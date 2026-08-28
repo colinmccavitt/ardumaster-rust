@@ -5,9 +5,10 @@
 //! and COMMAND_INT are classified against the Plane table
 //! (ARM/DISARM, DO_SET_MODE, NAV_TAKEOFF). PARAM_REQUEST_LIST starts a
 //! queued `PARAM_VALUE` walk; PARAM_SET writes a named scalar in the
-//! in-memory table. Send path is `GCS_MAVLINK::send_heartbeat`,
+//! in-memory table. MISSION_ITEM_INT writes one waypoint; MISSION_REQUEST_INT
+//! looks it up for download. Send path is `GCS_MAVLINK::send_heartbeat`,
 //! `send_text`, `queued_param_send`, `send_parameter_value`,
-//! `send_attitude`, and `send_global_position_int`.
+//! `send_attitude`, `send_global_position_int`, and `send_mission_item_int`.
 
 use crate::command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
@@ -15,6 +16,10 @@ use crate::command::{
 };
 use crate::framing::{decode_v2, encode_v2, DecodeError, Frame};
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
+use crate::mission::{
+    MissionItemInt, MissionRequestInt, MissionTable, MISSION_ITEM_INT_LEN, MSG_ID_MISSION_ITEM_INT,
+    MSG_ID_MISSION_REQUEST_INT,
+};
 use crate::param::{
     ParamRequestList, ParamSet, ParamTable, ParamValue, MSG_ID_PARAM_REQUEST_LIST,
     MSG_ID_PARAM_SET, PARAM_VALUE_LEN,
@@ -63,7 +68,21 @@ pub enum Dispatch {
         /// `true` when `AP_Param::find` succeeded and the value was finite.
         applied: bool,
     },
-    /// Any other msgid, or a command/param not addressed to this vehicle.
+    /// Msgid 73 — MISSION_ITEM_INT written into the in-memory table.
+    MissionItemInt {
+        /// Waypoint sequence number from the payload.
+        seq: u16,
+        /// `true` when the table accepted the item.
+        stored: bool,
+    },
+    /// Msgid 51 — MISSION_REQUEST_INT looked up a stored waypoint.
+    MissionRequestInt {
+        /// Requested sequence number.
+        seq: u16,
+        /// `true` when that seq is in the table.
+        found: bool,
+    },
+    /// Any other msgid, or a command/param/mission not addressed to this vehicle.
     Unknown {
         /// Unrecognised message id.
         msgid: u32,
@@ -71,8 +90,9 @@ pub enum Dispatch {
 }
 
 /// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub,
-/// PARAM_REQUEST_LIST / PARAM_SET against an in-memory table, and
-/// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot.
+/// PARAM_REQUEST_LIST / PARAM_SET against an in-memory table,
+/// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot, and
+/// MISSION_ITEM_INT / MISSION_REQUEST_INT against an in-memory mission table.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -83,6 +103,7 @@ pub struct GcsMavlink {
     gcs_sysid: u8,
     last_gcs_heartbeat_ms: u32,
     params: ParamTable,
+    mission: MissionTable,
 }
 
 impl Default for GcsMavlink {
@@ -94,6 +115,7 @@ impl Default for GcsMavlink {
             gcs_sysid: DEFAULT_GCS_SYSID,
             last_gcs_heartbeat_ms: 0,
             params: ParamTable::plane_stub(),
+            mission: MissionTable::new(),
         }
     }
 }
@@ -129,6 +151,18 @@ impl GcsMavlink {
     pub fn param_value(&self, name: &str) -> Option<f32> {
         let id = crate::param::encode_param_id(name);
         self.params.find(&id).map(|(_, entry)| entry.value)
+    }
+
+    /// Stored mission item count.
+    #[must_use]
+    pub const fn mission_count(&self) -> u16 {
+        self.mission.count()
+    }
+
+    /// Look up a stored mission item by sequence number.
+    #[must_use]
+    pub fn mission_item(&self, seq: u16) -> Option<MissionItemInt> {
+        self.mission.get(seq).copied()
     }
 
     /// Encode one outgoing HEARTBEAT, upstream `GCS_MAVLINK::send_heartbeat`.
@@ -234,6 +268,25 @@ impl GcsMavlink {
         encode_v2(&frame, out)
     }
 
+    /// Encode one stored `MISSION_ITEM_INT`, upstream mission-download reply.
+    ///
+    /// `None` when `seq` is missing or `out` is too small.
+    #[must_use]
+    pub fn send_mission_item_int(&mut self, out: &mut [u8], seq: u16) -> Option<usize> {
+        let item = *self.mission.get(seq)?;
+        let mut payload = [0u8; MISSION_ITEM_INT_LEN];
+        item.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_MISSION_ITEM_INT,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
     /// Dispatch one already-framed message, upstream `handle_message`.
     pub fn handle_message(&mut self, frame: &Frame, now_ms: u32) -> Dispatch {
         match frame.msgid {
@@ -275,6 +328,29 @@ impl GcsMavlink {
                 },
                 _ => Dispatch::Unknown {
                     msgid: MSG_ID_PARAM_SET,
+                },
+            },
+            MSG_ID_MISSION_ITEM_INT => match MissionItemInt::from_frame(frame) {
+                Some(item) if self.addressed_to_us(item.target_system) => {
+                    let seq = item.seq;
+                    Dispatch::MissionItemInt {
+                        seq,
+                        stored: self.mission.set(item).is_some(),
+                    }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_MISSION_ITEM_INT,
+                },
+            },
+            MSG_ID_MISSION_REQUEST_INT => match MissionRequestInt::from_frame(frame) {
+                Some(req) if self.addressed_to_us(req.target_system) => {
+                    Dispatch::MissionRequestInt {
+                        seq: req.seq,
+                        found: self.mission.get(req.seq).is_some(),
+                    }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_MISSION_REQUEST_INT,
                 },
             },
             msgid => Dispatch::Unknown { msgid },
