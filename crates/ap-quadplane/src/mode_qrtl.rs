@@ -1,4 +1,5 @@
-//! QRTL `_enter` stub, upstream `ArduPlane/mode_qrtl.cpp` (Plane-4.7.0).
+//! QRTL `_enter` plus `run()` climb-then-return, upstream
+//! `ArduPlane/mode_qrtl.cpp` (Plane-4.7.0).
 //!
 //! Tracked as **VT-006**. `Mode::enter` always calls
 //! [`QuadPlane::mode_enter`] then [`qrtl_enter`]. Guided-wait takeoff
@@ -13,8 +14,15 @@
 //! `QPOS_POSITION1` and `do_RTL` at the lower of QRTL alt and the
 //! current absolute altitude.
 //!
-//! `run()` / land handoff are later slices. This module does not
-//! rewrite [`crate::mode_q`] or [`crate::landing`].
+//! This slice is [`qrtl_run`] (`ModeQRTL::run`): tailsitter FW pull-up
+//! runs `Mode::run()`; [`QrtlSubMode::Climb`] holds XY, climbs at
+//! `Q_WP_SPD_UP`, and when the stopping point reaches the climb
+//! waypoint switches to [`QrtlSubMode::Rtl`] (`do_RTL`, maybe
+//! `QPOS_POSITION1` if already inside the VTOL return radius).
+//! Already-in-RTL ticks run `vtol_position_controller` plus FW
+//! stabilize. Land handoff (`verify_vtol_land` once past
+//! `QPOS_POSITION2`) is a later slice. This module does not rewrite
+//! [`crate::mode_q`] or [`crate::landing`].
 
 use crate::poscontrol::PositionControlState;
 use crate::QuadPlane;
@@ -33,6 +41,11 @@ pub const WP_LOITER_RAD_DEFAULT_M: f32 = 60.0;
 
 /// Default `RTL_RADIUS` (metres). Zero means "use `WP_LOITER_RAD`".
 pub const RTL_RADIUS_DEFAULT_M: f32 = 0.0;
+
+/// Default `Q_WP_SPD_UP` / `wp_nav->get_default_speed_up_ms()`.
+///
+/// Upstream `AC_WPNav` `WP_SPD_UP_DEFAULT` is 2.5 m/s.
+pub const Q_WP_SPD_UP_DEFAULT_MS: f32 = 2.5;
 
 /// `ModeQRTL::SubMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,6 +373,307 @@ pub fn qrtl_enter(qp: &mut QuadPlane, view: QrtlEnterView) -> QrtlEnter {
         do_rtl: true,
         poscontrol_init_approach: true,
         slow_descent: view.current_alt_abs_cm > rtl_alt_abs_cm,
+    }
+}
+
+/// Which path `ModeQRTL::run` took this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QrtlRunAction {
+    /// Tailsitter FW pull-up: `Mode::run()`.
+    FwControllers,
+    /// `SubMode::climb` — hold XY, climb at WP speed-up.
+    Climb,
+    /// Climb finished this tick — switched to RTL and `do_RTL`.
+    ClimbThenReturn,
+    /// Already in `SubMode::RTL` — `vtol_position_controller`.
+    Return,
+}
+
+/// Outcome of one [`qrtl_run`] tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QrtlRun {
+    /// FW pull-up / climb / climb-then-return / already returning.
+    pub action: QrtlRunAction,
+    /// Latched `ModeQRTL::submode` after this tick.
+    pub submode: QrtlSubMode,
+    /// Home vs rally selected when heading home this tick.
+    pub dest: QrtlDestination,
+    /// Horizontal distance to that destination, metres.
+    pub dist_m: f32,
+    /// [`qrtl_vtol_return_radius_m`].
+    pub radius_m: f32,
+    /// `set_climb_rate_ms(wp_nav->get_default_speed_up_ms())`.
+    pub climb_rate_ms: f32,
+    /// `input_vel_accel_NE_m(0, 0)` + `run_xy_controller()`.
+    pub xy_hold: bool,
+    /// `assign_tilt_to_fwd_thr()` on the climb branch.
+    pub tilt_assigned: bool,
+    /// `set_VTOL_roll_pitch_limit` → `NE_set_externally_limited()`.
+    pub ne_externally_limited: bool,
+    /// Weathervane yaw (no pilot input) on the climb branch.
+    pub weathervane: bool,
+    /// `run_z_controller()` on the climb branch.
+    pub z_controller: bool,
+    /// `poscontrol.set_state(QPOS_POSITION1)` this tick.
+    pub position1: bool,
+    /// `plane.do_RTL(RTL_alt_abs_cm)` this tick.
+    pub do_rtl: bool,
+    /// `quadplane.poscontrol_init_approach()` this tick.
+    pub poscontrol_init_approach: bool,
+    /// `poscontrol.slow_descent` after the climb→RTL switch.
+    pub slow_descent: bool,
+    /// `home.alt + Q_RTL_ALT * 100`, maybe lowered when close-in.
+    pub rtl_alt_abs_cm: i32,
+    /// `vtol_position_controller()` on the already-RTL branch.
+    pub vtol_position_controller: bool,
+    /// `stabilize_roll/pitch/yaw` after the submode switch.
+    pub fw_stabilize: bool,
+}
+
+impl QrtlRun {
+    const fn fw_controllers() -> Self {
+        Self {
+            action: QrtlRunAction::FwControllers,
+            submode: QrtlSubMode::Climb,
+            dest: QrtlDestination::Home,
+            dist_m: 0.0,
+            radius_m: 0.0,
+            climb_rate_ms: 0.0,
+            xy_hold: false,
+            tilt_assigned: false,
+            ne_externally_limited: false,
+            weathervane: false,
+            z_controller: false,
+            position1: false,
+            do_rtl: false,
+            poscontrol_init_approach: false,
+            slow_descent: false,
+            rtl_alt_abs_cm: 0,
+            vtol_position_controller: false,
+            fw_stabilize: false,
+        }
+    }
+}
+
+/// Plane / nav view [`qrtl_run`] reads.
+///
+/// This crate does not own `plane.current_loc` / pos-control stopping
+/// points, so the caller passes them here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QrtlRunView {
+    /// `tailsitter.in_vtol_transition(now)` — FW pull-up early-out.
+    pub tailsitter_in_vtol_transition: bool,
+    /// Latched `ModeQRTL::submode` at the start of this tick.
+    pub submode: QrtlSubMode,
+    /// Horizontal distance from `current_loc` to home, metres.
+    pub home_dist_m: f32,
+    /// Distance to the nearest valid rally, metres. `None` if none.
+    pub rally_dist_m: Option<f32>,
+    /// `RALLY_INCL_HOME` — when false a rally always wins over home.
+    pub rally_incl_home: bool,
+    /// `WP_LOITER_RAD`, metres (signed; radius uses `fabsf`).
+    pub loiter_radius_m: f32,
+    /// `RTL_RADIUS`, metres (signed; radius uses `fabsf`).
+    pub rtl_radius_m: f32,
+    /// `Q_RTL_ALT`, metres.
+    pub qrtl_alt_m: f32,
+    /// `current_loc` absolute altitude, centimetres.
+    pub current_alt_abs_cm: i32,
+    /// `plane.home.alt`, centimetres AMSL.
+    pub home_alt_abs_cm: i32,
+    /// Climb-waypoint / `next_WP_loc` absolute altitude, centimetres.
+    pub next_wp_alt_abs_cm: i32,
+    /// `stopping_loc.get_height_above(next_WP_loc)`. `None` if the
+    /// height lookup fails (upstream treats that as climb finished).
+    pub stopping_height_above_next_wp_m: Option<f32>,
+    /// `current_loc.get_height_above(next_WP_loc)` after `do_RTL`.
+    /// `None` falls back to comparing absolute altitudes.
+    pub current_height_above_next_wp_m: Option<f32>,
+    /// `transition->set_VTOL_roll_pitch_limit` returned true.
+    pub vtol_roll_pitch_limited: bool,
+    /// `wp_nav->get_default_speed_up_ms()`.
+    pub wp_speed_up_ms: f32,
+}
+
+impl QrtlRunView {
+    /// Mid-climb tick: still below the climb waypoint, far from home.
+    #[must_use]
+    pub const fn climbing() -> Self {
+        Self {
+            tailsitter_in_vtol_transition: false,
+            submode: QrtlSubMode::Climb,
+            home_dist_m: 200.0,
+            rally_dist_m: None,
+            rally_incl_home: true,
+            loiter_radius_m: WP_LOITER_RAD_DEFAULT_M,
+            rtl_radius_m: RTL_RADIUS_DEFAULT_M,
+            qrtl_alt_m: Q_RTL_ALT_DEFAULT_M,
+            current_alt_abs_cm: 1000,
+            home_alt_abs_cm: 0,
+            next_wp_alt_abs_cm: 1500,
+            stopping_height_above_next_wp_m: Some(-5.0),
+            current_height_above_next_wp_m: None,
+            vtol_roll_pitch_limited: false,
+            wp_speed_up_ms: Q_WP_SPD_UP_DEFAULT_MS,
+        }
+    }
+
+    /// Stopping point has reached the climb waypoint, still far from home.
+    #[must_use]
+    pub const fn climb_done_far() -> Self {
+        let mut view = Self::climbing();
+        view.current_alt_abs_cm = 1500;
+        view.stopping_height_above_next_wp_m = Some(1.0);
+        view.current_height_above_next_wp_m = Some(0.0);
+        view
+    }
+
+    /// Climb finished inside the VTOL return radius — `QPOS_POSITION1`.
+    #[must_use]
+    pub const fn climb_done_close() -> Self {
+        let mut view = Self::climb_done_far();
+        view.home_dist_m = 50.0;
+        view.next_wp_alt_abs_cm = 1200;
+        view.current_alt_abs_cm = 1200;
+        view
+    }
+
+    /// Already in `SubMode::RTL` — position-controller return.
+    #[must_use]
+    pub const fn returning() -> Self {
+        let mut view = Self::climbing();
+        view.submode = QrtlSubMode::Rtl;
+        view.stopping_height_above_next_wp_m = None;
+        view
+    }
+
+    /// Tailsitter FW pull-up phase of VTOL transition.
+    #[must_use]
+    pub const fn tailsitter_fw_transition() -> Self {
+        let mut view = Self::climbing();
+        view.tailsitter_in_vtol_transition = true;
+        view
+    }
+}
+
+/// Upstream climb-done test: `!get_height_above(...) || is_positive(alt_diff)`.
+///
+/// A failed height lookup (`None`) heads home. A positive difference
+/// means the stopping point is already above the climb waypoint.
+#[must_use]
+pub const fn qrtl_climb_finished(stopping_height_above_next_wp_m: Option<f32>) -> bool {
+    match stopping_height_above_next_wp_m {
+        None => true,
+        Some(alt_diff) => alt_diff > 0.0,
+    }
+}
+
+/// Combined `ModeQRTL::run`: tailsitter FW pull-up, climb-then-return,
+/// or the already-RTL position-controller path.
+///
+/// Land handoff (`poscontrol >= QPOS_POSITION2` → `verify_vtol_land`)
+/// is a later slice. FW stabilize runs after the submode switch,
+/// matching upstream, except the tailsitter early-out which
+/// `return`s from `Mode::run()`.
+pub fn qrtl_run(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
+    if view.tailsitter_in_vtol_transition {
+        return QrtlRun::fw_controllers();
+    }
+
+    match view.submode {
+        QrtlSubMode::Climb => run_climb(qp, view),
+        QrtlSubMode::Rtl => run_return(view),
+    }
+}
+
+fn run_climb(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
+    let ne_externally_limited = view.vtol_roll_pitch_limited;
+    if !qrtl_climb_finished(view.stopping_height_above_next_wp_m) {
+        return QrtlRun {
+            action: QrtlRunAction::Climb,
+            submode: QrtlSubMode::Climb,
+            dest: QrtlDestination::Home,
+            dist_m: view.home_dist_m,
+            radius_m: qrtl_vtol_return_radius_m(view.loiter_radius_m, view.rtl_radius_m),
+            climb_rate_ms: view.wp_speed_up_ms,
+            xy_hold: true,
+            tilt_assigned: true,
+            ne_externally_limited,
+            weathervane: true,
+            z_controller: true,
+            position1: false,
+            do_rtl: false,
+            poscontrol_init_approach: false,
+            slow_descent: false,
+            rtl_alt_abs_cm: view.home_alt_abs_cm + (view.qrtl_alt_m * 100.0) as i32,
+            vtol_position_controller: false,
+            fw_stabilize: true,
+        };
+    }
+
+    let (dest, dist_m) =
+        calc_best_rally_or_home(view.home_dist_m, view.rally_dist_m, view.rally_incl_home);
+    let radius_m = qrtl_vtol_return_radius_m(view.loiter_radius_m, view.rtl_radius_m);
+    let mut rtl_alt_abs_cm = view.home_alt_abs_cm + (view.qrtl_alt_m * 100.0) as i32;
+    let mut position1 = false;
+    if dist_m < radius_m {
+        if view.next_wp_alt_abs_cm < rtl_alt_abs_cm {
+            rtl_alt_abs_cm = view.next_wp_alt_abs_cm;
+        }
+        qp.poscontrol_mut()
+            .set_state(PositionControlState::Position1);
+        position1 = true;
+    }
+
+    let slow_descent = match view.current_height_above_next_wp_m {
+        Some(alt_diff) => is_positive(alt_diff),
+        None => view.current_alt_abs_cm > rtl_alt_abs_cm,
+    };
+
+    QrtlRun {
+        action: QrtlRunAction::ClimbThenReturn,
+        submode: QrtlSubMode::Rtl,
+        dest,
+        dist_m,
+        radius_m,
+        climb_rate_ms: view.wp_speed_up_ms,
+        xy_hold: true,
+        tilt_assigned: true,
+        ne_externally_limited,
+        weathervane: true,
+        z_controller: true,
+        position1,
+        do_rtl: true,
+        poscontrol_init_approach: true,
+        slow_descent,
+        rtl_alt_abs_cm,
+        vtol_position_controller: false,
+        fw_stabilize: true,
+    }
+}
+
+fn run_return(view: QrtlRunView) -> QrtlRun {
+    let (dest, dist_m) =
+        calc_best_rally_or_home(view.home_dist_m, view.rally_dist_m, view.rally_incl_home);
+    QrtlRun {
+        action: QrtlRunAction::Return,
+        submode: QrtlSubMode::Rtl,
+        dest,
+        dist_m,
+        radius_m: qrtl_vtol_return_radius_m(view.loiter_radius_m, view.rtl_radius_m),
+        climb_rate_ms: 0.0,
+        xy_hold: false,
+        tilt_assigned: false,
+        ne_externally_limited: false,
+        weathervane: false,
+        z_controller: false,
+        position1: false,
+        do_rtl: false,
+        poscontrol_init_approach: false,
+        slow_descent: false,
+        rtl_alt_abs_cm: view.home_alt_abs_cm + (view.qrtl_alt_m * 100.0) as i32,
+        vtol_position_controller: true,
+        fw_stabilize: true,
     }
 }
 

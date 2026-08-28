@@ -1,12 +1,13 @@
-//! QRTL `_enter` — home/rally, climb cone, QLAND-instead-of-RTL.
+//! QRTL `_enter` plus `run()` climb-then-return.
 //!
-//! Upstream `ArduPlane/mode_qrtl.cpp` `ModeQRTL::_enter`.
+//! Upstream `ArduPlane/mode_qrtl.cpp` `ModeQRTL::_enter` / `run`.
 
 use ap_quadplane::landing::Q_LAND_FINAL_ALT_DEFAULT_M;
 use ap_quadplane::mode_qrtl::{
-    calc_best_rally_or_home, qrtl_climb_cone_target_alt_m, qrtl_enter, qrtl_min_climb_m,
-    qrtl_vtol_return_radius_m, ModeQrtl, QrtlDestination, QrtlEnterAction, QrtlEnterView,
-    QrtlSubMode, MODE_QRTL, Q_RTL_ALT_DEFAULT_M, Q_RTL_ALT_MIN_DEFAULT_M, RTL_RADIUS_DEFAULT_M,
+    calc_best_rally_or_home, qrtl_climb_cone_target_alt_m, qrtl_climb_finished, qrtl_enter,
+    qrtl_min_climb_m, qrtl_run, qrtl_vtol_return_radius_m, ModeQrtl, QrtlDestination,
+    QrtlEnterAction, QrtlEnterView, QrtlRunAction, QrtlRunView, QrtlSubMode, MODE_QRTL,
+    Q_RTL_ALT_DEFAULT_M, Q_RTL_ALT_MIN_DEFAULT_M, Q_WP_SPD_UP_DEFAULT_MS, RTL_RADIUS_DEFAULT_M,
     WP_LOITER_RAD_DEFAULT_M,
 };
 use ap_quadplane::poscontrol::PositionControlState;
@@ -47,6 +48,7 @@ fn qrtl_defaults_match_upstream_params() {
     assert!(approx(WP_LOITER_RAD_DEFAULT_M, 60.0));
     assert!(approx(RTL_RADIUS_DEFAULT_M, 0.0));
     assert!(approx(Q_LAND_FINAL_ALT_DEFAULT_M, 6.0));
+    assert!(approx(Q_WP_SPD_UP_DEFAULT_MS, 2.5));
 }
 
 #[test]
@@ -234,4 +236,132 @@ fn qrtl_enter_calls_mode_enter_when_not_guided_wait() {
     assert_eq!(qp.lean_angle_max_cd(), 0);
     assert!(qp.poscontrol().mode_enter_cleared());
     assert!(!qp.guided_wait_takeoff_on_mode_enter());
+}
+
+#[test]
+fn climb_finished_when_stopping_point_is_above_or_unreadable() {
+    assert!(!qrtl_climb_finished(Some(-5.0)));
+    assert!(!qrtl_climb_finished(Some(0.0)));
+    assert!(qrtl_climb_finished(Some(0.1)));
+    assert!(qrtl_climb_finished(None));
+}
+
+#[test]
+fn qrtl_run_climb_holds_xy_and_climbs_at_wp_speed_up() {
+    let mut qp = available_qp();
+    let out = qrtl_run(&mut qp, QrtlRunView::climbing());
+
+    assert_eq!(out.action, QrtlRunAction::Climb);
+    assert_eq!(out.submode, QrtlSubMode::Climb);
+    assert!(approx(out.climb_rate_ms, Q_WP_SPD_UP_DEFAULT_MS));
+    assert!(out.xy_hold);
+    assert!(out.tilt_assigned);
+    assert!(out.weathervane);
+    assert!(out.z_controller);
+    assert!(out.fw_stabilize);
+    assert!(!out.ne_externally_limited);
+    assert!(!out.do_rtl);
+    assert!(!out.poscontrol_init_approach);
+    assert!(!out.position1);
+    assert!(!out.vtol_position_controller);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::None);
+}
+
+#[test]
+fn qrtl_run_climb_then_return_far_from_home() {
+    let mut qp = available_qp();
+    let out = qrtl_run(&mut qp, QrtlRunView::climb_done_far());
+
+    assert_eq!(out.action, QrtlRunAction::ClimbThenReturn);
+    assert_eq!(out.submode, QrtlSubMode::Rtl);
+    assert_eq!(out.dest, QrtlDestination::Home);
+    assert!(approx(out.dist_m, 200.0));
+    assert!(approx(out.radius_m, 90.0));
+    assert!(approx(out.climb_rate_ms, Q_WP_SPD_UP_DEFAULT_MS));
+    assert!(out.xy_hold);
+    assert!(out.do_rtl);
+    assert!(out.poscontrol_init_approach);
+    assert!(!out.position1);
+    assert!(!out.vtol_position_controller);
+    assert!(out.fw_stabilize);
+    assert_eq!(out.rtl_alt_abs_cm, 1500);
+    assert!(!out.slow_descent);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::None);
+}
+
+#[test]
+fn qrtl_run_climb_then_return_close_in_jumps_to_position1() {
+    let mut qp = available_qp();
+    let out = qrtl_run(&mut qp, QrtlRunView::climb_done_close());
+
+    assert_eq!(out.action, QrtlRunAction::ClimbThenReturn);
+    assert_eq!(out.submode, QrtlSubMode::Rtl);
+    assert!(out.do_rtl);
+    assert!(out.position1);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::Position1);
+    // Close-in uses MIN(QRTL alt, climb WP abs) = MIN(1500, 1200).
+    assert_eq!(out.rtl_alt_abs_cm, 1200);
+}
+
+#[test]
+fn qrtl_run_climb_done_with_failed_height_lookup_heads_home() {
+    let mut qp = available_qp();
+    let mut view = QrtlRunView::climbing();
+    view.stopping_height_above_next_wp_m = None;
+    let out = qrtl_run(&mut qp, view);
+
+    assert_eq!(out.action, QrtlRunAction::ClimbThenReturn);
+    assert_eq!(out.submode, QrtlSubMode::Rtl);
+    assert!(out.do_rtl);
+}
+
+#[test]
+fn qrtl_run_already_returning_uses_vtol_position_controller() {
+    let mut qp = available_qp();
+    let out = qrtl_run(&mut qp, QrtlRunView::returning());
+
+    assert_eq!(out.action, QrtlRunAction::Return);
+    assert_eq!(out.submode, QrtlSubMode::Rtl);
+    assert!(out.vtol_position_controller);
+    assert!(out.fw_stabilize);
+    assert!(!out.xy_hold);
+    assert!(!out.do_rtl);
+    assert!(!out.z_controller);
+    assert!(!out.position1);
+}
+
+#[test]
+fn qrtl_run_tailsitter_fw_pullup_skips_climb() {
+    let mut qp = available_qp();
+    let out = qrtl_run(&mut qp, QrtlRunView::tailsitter_fw_transition());
+
+    assert_eq!(out.action, QrtlRunAction::FwControllers);
+    assert!(!out.fw_stabilize);
+    assert!(!out.xy_hold);
+    assert!(!out.do_rtl);
+    assert!(!out.vtol_position_controller);
+}
+
+#[test]
+fn qrtl_run_climb_marks_ne_limited_when_vtol_attitude_limited() {
+    let mut qp = available_qp();
+    let mut view = QrtlRunView::climbing();
+    view.vtol_roll_pitch_limited = true;
+    let out = qrtl_run(&mut qp, view);
+
+    assert_eq!(out.action, QrtlRunAction::Climb);
+    assert!(out.ne_externally_limited);
+}
+
+#[test]
+fn qrtl_run_climb_then_return_uses_closer_rally_for_radius() {
+    let mut qp = available_qp();
+    let mut view = QrtlRunView::climb_done_far();
+    view.rally_dist_m = Some(40.0);
+    let out = qrtl_run(&mut qp, view);
+
+    assert_eq!(out.dest, QrtlDestination::Rally);
+    assert!(approx(out.dist_m, 40.0));
+    assert!(out.position1);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::Position1);
 }
