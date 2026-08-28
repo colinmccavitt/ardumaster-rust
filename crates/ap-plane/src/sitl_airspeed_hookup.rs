@@ -64,6 +64,8 @@ pub struct SitlAirspeedPublish {
     pub autocal: u8,
     /// Skip startup / requested offset calibration, upstream ARSPD_SKIP_CAL.
     pub skip_cal: bool,
+    /// Pitot connector order, upstream `ARSPD_TUBE_ORDER`.
+    pub tube_order: u8,
 }
 
 impl SitlAirspeedHookup {
@@ -146,6 +148,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_TUBE_ORDER` on every enabled instance.
+    pub fn set_tube_order(&mut self, tube_order: u8) {
+        let mut params = self.params;
+        params.airspeed1.tube_order = tube_order;
+        params.airspeed2.tube_order = tube_order;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -200,6 +210,7 @@ impl SitlAirspeedHookup {
                 .backend(self.cluster.primary())
                 .map(|backend| backend.config().skip_cal)
                 .unwrap_or(ARSPD_SKIP_CAL_DEFAULT),
+            tube_order: self.params.primary_tube_order(),
         }
     }
 }

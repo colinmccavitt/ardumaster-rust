@@ -31,6 +31,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert!((params.primary_psi_range() - 1.0).abs() < 1e-6);
     assert_eq!(params.airspeed1.sensor_type, ARSPD_TYPE_SITL);
     assert_eq!(params.primary_sensor_type(), ARSPD_TYPE_DEFAULT);
+    assert_eq!(params.airspeed1.tube_order, 2);
+    assert_eq!(params.primary_tube_order(), 2);
 }
 
 #[test]
@@ -61,6 +63,7 @@ fn instance_params_apply_to_sitl_config() {
         pin: 13,
         psi_range: 2.0,
         sensor_type: ARSPD_TYPE_SITL,
+        tube_order: 2,
     }
     .apply_to_config();
     assert!(cfg.disabled);

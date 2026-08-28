@@ -5,6 +5,7 @@
 
 use ap_airspeed::analog::AnalogAirspeedBackend;
 use ap_airspeed::params::AirspeedParams;
+use ap_airspeed::tube_order::last_pressure_pa;
 use ap_hal::analog::MockAnalogSource;
 
 /// Analog pitot hookup for the vehicle loop, fed by a mock/SITL analog source.
@@ -31,6 +32,8 @@ pub struct AirspeedAnalogPublish {
     pub pin: i8,
     /// Bound `ARSPD_PSI_RANGE`.
     pub psi_range: f32,
+    /// Bound `ARSPD_TUBE_ORDER`.
+    pub tube_order: u8,
 }
 
 impl AirspeedAnalogHookup {
@@ -75,6 +78,13 @@ impl AirspeedAnalogHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_TUBE_ORDER` on the primary analog instance.
+    pub fn set_tube_order(&mut self, tube_order: u8) {
+        let mut params = self.params;
+        params.airspeed1.tube_order = tube_order;
+        self.apply_airspeed_params(params);
+    }
+
     /// Drive the mock analog source to a ratiometric voltage.
     pub fn set_voltage(&mut self, volts: f32) {
         let mut source = MockAnalogSource::new();
@@ -93,11 +103,15 @@ impl AirspeedAnalogHookup {
     #[must_use]
     pub fn publish(&mut self) -> AirspeedAnalogPublish {
         let pressure = self.backend.get_differential_pressure();
+        let tube_order = self.params.primary_tube_order();
         AirspeedAnalogPublish {
-            pressure_pa: pressure.unwrap_or(0.0),
+            pressure_pa: pressure
+                .map(|raw| last_pressure_pa(raw, tube_order))
+                .unwrap_or(0.0),
             have_pressure: pressure.is_some(),
             pin: self.backend.config().pin,
             psi_range: self.backend.config().psi_range,
+            tube_order,
         }
     }
 }

@@ -10,6 +10,7 @@ pub mod analog;
 pub mod backend;
 pub mod params;
 pub mod sitl;
+pub mod tube_order;
 
 pub use sitl::{
     apply_autocal_ratio, apply_pitot_ratio, apply_temp_compensation, eas_from_tas,
@@ -32,4 +33,8 @@ pub use backend::{
 };
 pub use params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
+};
+pub use tube_order::{
+    airspeed_from_pressure, last_pressure_pa, PitotTubeOrder, ARSPD_TUBE_ORDER_AUTO,
+    ARSPD_TUBE_ORDER_DEFAULT, ARSPD_TUBE_ORDER_NEGATIVE, ARSPD_TUBE_ORDER_POSITIVE,
 };
