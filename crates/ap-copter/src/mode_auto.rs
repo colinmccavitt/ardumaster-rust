@@ -12,8 +12,10 @@
 //! [`auto_wp_start`] is the next: `ModeAuto::wp_start`, which
 //! `do_nav_wp` and the fly-to-location arm of `do_land` call.
 //! [`auto_land_start`] is the descending arm: `ModeAuto::land_start`,
-//! which `do_land` and `verify_land` call. The other `do_*` bodies,
-//! `rtl_start`, and the `*_run` controllers are later slices.
+//! which `do_land` and `verify_land` call. [`auto_rtl_start`] is
+//! `ModeAuto::rtl_start`, which `do_RTL` calls: it reuses
+//! [`crate::mode_rtl::rtl_init`] with checks ignored and parks in RTL.
+//! The other `do_*` bodies and the `*_run` controllers are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -92,6 +94,16 @@
 //! init side-effects, if they ran, stay. Success skips
 //! `set_mode_to_default` only for ROI, or FIXED when
 //! `WP_YAW_BEHAVIOR` is NONE, and parks in WP.
+//!
+//! # rtl_start reuses ModeRTL::init, then parks
+//!
+//! `do_RTL` is a one-line caller of this leftover. The body is
+//! [`crate::mode_rtl::rtl_init`] with `ignore_checks = true`, so a
+//! missing home is not a refuse. Success sets `_mode = RTL`. Failure
+//! is a flow-of-control error — RTL never refuses when that argument
+//! is true.
+
+use crate::mode_rtl::{rtl_init, RtlInit, RtlInitView};
 
 /// `Mode::Number::AUTO`.
 pub const MODE_NUMBER_AUTO: u8 = 3;
@@ -1176,4 +1188,103 @@ pub const fn auto_land_start(view: &AutoLandStartView) -> AutoLandStart {
         prec_land_active: false,
         submode: AutoSubMode::Land,
     }
+}
+
+/// Vehicle view [`auto_rtl_start`] reads.
+///
+/// `rtl_start` always passes `ignore_checks = true` to `ModeRTL::init`.
+/// A missing home is therefore not a refuse. [`rtl_init`] is the body;
+/// this leftover is the AUTO parking around it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoRtlStartView {
+    /// `AP::ahrs().home_is_set()`. Ignored because checks are ignored.
+    pub home_is_set: bool,
+    /// `copter.failsafe.terrain`.
+    pub terrain_failsafe: bool,
+    /// `speed_ms.get()`, handed to `wp_and_spline_init_m`. Zero means
+    /// "use WP_SPD".
+    pub speed_ms: f32,
+}
+
+impl AutoRtlStartView {
+    /// Home set, no terrain failsafe, WP_SPD.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            home_is_set: true,
+            terrain_failsafe: false,
+            speed_ms: 0.0,
+        }
+    }
+
+    /// No home. Still succeeds because `rtl_start` ignores checks.
+    #[must_use]
+    pub const fn no_home() -> Self {
+        let mut view = Self::ready();
+        view.home_is_set = false;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::rtl_start` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoRtlStart {
+    /// `mode_rtl.init(true)` succeeded.
+    pub ok: bool,
+    /// `INTERNAL_ERROR(flow_of_control)` — init failed despite
+    /// `ignore_checks`. The C++ comment says this never happens.
+    pub flow_of_control_error: bool,
+    /// `_mode` after a successful start. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+    /// What [`rtl_init`] produced. Always called.
+    pub rtl: RtlInit,
+}
+
+impl AutoRtlStart {
+    /// Shared refuse leftover: RTL init failed; `_mode` is unchanged.
+    #[must_use]
+    const fn refused(rtl: RtlInit) -> Self {
+        Self {
+            ok: false,
+            flow_of_control_error: true,
+            submode: None,
+            rtl,
+        }
+    }
+}
+
+/// Park in RTL after `mode_rtl.init(true)`, or raise the internal error.
+///
+/// Split out so the flow-of-control arm can be tested without rewriting
+/// [`rtl_init`], which never fails when checks are ignored.
+#[must_use]
+pub const fn auto_rtl_from_init(rtl: RtlInit) -> AutoRtlStart {
+    if rtl.ok {
+        AutoRtlStart {
+            ok: true,
+            flow_of_control_error: false,
+            submode: Some(AutoSubMode::Rtl),
+            rtl,
+        }
+    } else {
+        AutoRtlStart::refused(rtl)
+    }
+}
+
+/// Upstream `ModeAuto::rtl_start`.
+///
+/// `do_RTL` is a one-line caller of this leftover. The body is
+/// [`rtl_init`] with `ignore_checks = true`. Success parks in RTL.
+/// Failure is a flow-of-control error — RTL never refuses when
+/// checks are ignored.
+#[must_use]
+pub fn auto_rtl_start(view: &AutoRtlStartView) -> AutoRtlStart {
+    auto_rtl_from_init(rtl_init(
+        &RtlInitView {
+            home_is_set: view.home_is_set,
+            terrain_failsafe: view.terrain_failsafe,
+            speed_ms: view.speed_ms,
+        },
+        true,
+    ))
 }
