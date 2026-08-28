@@ -45,7 +45,8 @@ impl LogRequestList {
     #[must_use]
     pub fn encode(&self, buf: &mut [u8]) -> Option<usize> {
         let dest = buf.get_mut(..LOG_REQUEST_LIST_LEN)?;
-        dest.get_mut(..2)?.copy_from_slice(&self.start.to_le_bytes());
+        dest.get_mut(..2)?
+            .copy_from_slice(&self.start.to_le_bytes());
         dest.get_mut(2..4)?.copy_from_slice(&self.end.to_le_bytes());
         *dest.get_mut(4)? = self.target_system;
         *dest.get_mut(5)? = self.target_component;
@@ -89,10 +90,13 @@ impl LogEntry {
     #[must_use]
     pub fn encode(&self, buf: &mut [u8]) -> Option<usize> {
         let dest = buf.get_mut(..LOG_ENTRY_LEN)?;
-        dest.get_mut(..4)?.copy_from_slice(&self.time_utc.to_le_bytes());
-        dest.get_mut(4..8)?.copy_from_slice(&self.size.to_le_bytes());
+        dest.get_mut(..4)?
+            .copy_from_slice(&self.time_utc.to_le_bytes());
+        dest.get_mut(4..8)?
+            .copy_from_slice(&self.size.to_le_bytes());
         dest.get_mut(8..10)?.copy_from_slice(&self.id.to_le_bytes());
-        dest.get_mut(10..12)?.copy_from_slice(&self.num_logs.to_le_bytes());
+        dest.get_mut(10..12)?
+            .copy_from_slice(&self.num_logs.to_le_bytes());
         dest.get_mut(12..14)?
             .copy_from_slice(&self.last_log_num.to_le_bytes());
         Some(LOG_ENTRY_LEN)
@@ -103,18 +107,8 @@ impl LogEntry {
     pub fn decode(buf: &[u8]) -> Option<Self> {
         let src = buf.get(..LOG_ENTRY_LEN)?;
         Some(Self {
-            time_utc: u32::from_le_bytes([
-                *src.get(0)?,
-                *src.get(1)?,
-                *src.get(2)?,
-                *src.get(3)?,
-            ]),
-            size: u32::from_le_bytes([
-                *src.get(4)?,
-                *src.get(5)?,
-                *src.get(6)?,
-                *src.get(7)?,
-            ]),
+            time_utc: u32::from_le_bytes([*src.get(0)?, *src.get(1)?, *src.get(2)?, *src.get(3)?]),
+            size: u32::from_le_bytes([*src.get(4)?, *src.get(5)?, *src.get(6)?, *src.get(7)?]),
             id: u16::from_le_bytes([*src.get(8)?, *src.get(9)?]),
             num_logs: u16::from_le_bytes([*src.get(10)?, *src.get(11)?]),
             last_log_num: u16::from_le_bytes([*src.get(12)?, *src.get(13)?]),
@@ -217,6 +211,58 @@ impl<const N: usize> LogTransfer<N> {
     #[must_use]
     pub const fn last_log_id(&self) -> u16 {
         self.last_log_id
+    }
+
+    /// Catalog log-number at a 0-based index. `None` if out of range.
+    #[must_use]
+    pub fn log_id_at(&self, index: u16) -> Option<u16> {
+        if index >= self.count {
+            return None;
+        }
+        self.ids.get(usize::from(index)).copied()
+    }
+
+    /// Whether the catalog already holds this log number.
+    #[must_use]
+    pub fn contains_log(&self, id: u16) -> bool {
+        let mut i = 0u16;
+        while i < self.count {
+            if self.log_id_at(i) == Some(id) {
+                return true;
+            }
+            i = i.saturating_add(1);
+        }
+        false
+    }
+
+    /// Remove the oldest catalog row. Upstream oldest-log unlink.
+    ///
+    /// Returns the dropped log number, or `None` if the catalog is empty.
+    /// `last_log_id` is unchanged (highest number seen, not the remaining max).
+    pub fn drop_oldest(&mut self) -> Option<u16> {
+        if self.count == 0 {
+            return None;
+        }
+        let dropped = self.ids.get(0).copied()?;
+        let n = usize::from(self.count);
+        let mut i = 0usize;
+        while i.saturating_add(1) < n {
+            let next_id = self.ids.get(i.saturating_add(1)).copied()?;
+            let next_sz = self.sizes.get(i.saturating_add(1)).copied()?;
+            *self.ids.get_mut(i)? = next_id;
+            *self.sizes.get_mut(i)? = next_sz;
+            i = i.saturating_add(1);
+        }
+        if let Some(last) = n.checked_sub(1) {
+            if let Some(slot) = self.ids.get_mut(last) {
+                *slot = 0;
+            }
+            if let Some(slot) = self.sizes.get_mut(last) {
+                *slot = 0;
+            }
+        }
+        self.count = self.count.saturating_sub(1);
+        Some(dropped)
     }
 
     /// Open a named log on the file-backend mock and register it.
