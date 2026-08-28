@@ -142,6 +142,23 @@ pub fn tas_for_nav(tas_mps: f32, use_for_control: bool) -> f32 {
     }
 }
 
+/// TECS consumes TAS only when the instance is healthy and ARSPD_USE is set.
+/// Upstream AP_Airspeed::use() requires healthy().
+#[must_use]
+pub fn use_airspeed_for_tecs(healthy: bool, use_for_control: bool) -> bool {
+    healthy && use_for_control
+}
+
+/// TAS published to TECS: zero unless healthy-for-TECS.
+#[must_use]
+pub fn tas_for_tecs(tas_mps: f32, healthy: bool, use_for_control: bool) -> f32 {
+    if use_airspeed_for_tecs(healthy, use_for_control) {
+        tas_mps
+    } else {
+        0.0
+    }
+}
+
 /// Equivalent airspeed from true and EAS2TAS, upstream `get_airspeed()`.
 #[must_use]
 pub fn eas_from_tas(tas_mps: f32, eas2tas: f32) -> f32 {
@@ -261,6 +278,12 @@ impl SitlAirspeedBackend {
     #[must_use]
     pub fn use_for_control(&self) -> bool {
         use_airspeed_for_control(self.config.disabled, self.config.use_airspeed)
+    }
+
+    /// Upstream AP_Airspeed::use() including the healthy() gate for TECS.
+    #[must_use]
+    pub fn use_for_tecs(&self) -> bool {
+        use_airspeed_for_tecs(self.healthy(), self.use_for_control())
     }
 
     /// Latch current raw TAS as the pitot offset, upstream `AP_Airspeed::calibrate()`.
@@ -460,6 +483,14 @@ impl SitlAirspeedCluster {
             .unwrap_or(false)
     }
 
+    /// Primary instance healthy-for-TECS gate.
+    #[must_use]
+    pub fn primary_use_for_tecs(&self) -> bool {
+        self.backend(self.primary)
+            .map(SitlAirspeedBackend::use_for_tecs)
+            .unwrap_or(false)
+    }
+
     pub fn timer_tick_all(
         &mut self,
         airspeed_bf: Vector3f,
@@ -641,6 +672,33 @@ mod tests {
         assert!(backend.timer_tick(Vector3f::new(16.0, 0.0, 0.0), 1.0, 10));
         assert!(backend.healthy());
         assert!((backend.state().tas_mps - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unhealthy_gates_tecs_publish() {
+        assert!(!use_airspeed_for_tecs(false, true));
+        assert!(!use_airspeed_for_tecs(true, false));
+        assert!(use_airspeed_for_tecs(true, true));
+        assert_eq!(tas_for_tecs(20.0, false, true), 0.0);
+        assert_eq!(tas_for_tecs(20.0, true, false), 0.0);
+        assert!((tas_for_tecs(20.0, true, true) - 20.0).abs() < 1e-6);
+        let mut backend = SitlAirspeedBackend::default();
+        assert!(!backend.healthy());
+        assert!(backend.use_for_control());
+        assert!(!backend.use_for_tecs());
+        assert_eq!(
+            tas_for_tecs(backend.state().tas_mps, backend.healthy(), backend.use_for_control()),
+            0.0
+        );
+        assert!(backend.timer_tick(Vector3f::new(16.0, 0.0, 0.0), 1.0, 10));
+        assert!(backend.healthy());
+        assert!(backend.use_for_tecs());
+        assert!(
+            (tas_for_tecs(backend.state().tas_mps, backend.healthy(), backend.use_for_control())
+                - 16.0)
+                .abs()
+                < 1e-6
+        );
     }
 
     #[test]

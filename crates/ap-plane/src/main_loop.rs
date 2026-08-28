@@ -94,6 +94,7 @@ use crate::airspeed_offset_calibration_hookup::{
 use crate::airspeed_analog_hookup::AirspeedAnalogHookup;
 use crate::airspeed_type_hookup::select_airspeed_backend;
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
+use crate::airspeed_tecs_health_hookup::publish_airspeed_for_tecs;
 use ap_airspeed::backend::{AirspeedBackendKind, ARSPD_TYPE_SITL};
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
@@ -951,14 +952,17 @@ impl Default for PlaneMainLoop {
 impl PlaneMainLoop {
     /// Whether TECS should use the airspeed throttle path, upstream `use_airspeed()`.
     fn tecs_use_airspeed(&self) -> bool {
-        if !self.airspeed_use_for_control {
-            return false;
-        }
-        if self.sitl_airspeed.is_some() {
-            self.airspeed_healthy && self.airspeed_tas > 1.0
+        let healthy = if self.sitl_airspeed.is_some() {
+            self.airspeed_healthy
         } else {
-            self.airspeed_tas > 1.0
-        }
+            true
+        };
+        let gated = publish_airspeed_for_tecs(
+            self.airspeed_tas,
+            healthy,
+            self.airspeed_use_for_control,
+        );
+        gated.use_for_tecs && gated.tas_for_tecs > 1.0
     }
 
     /// Upstream `Plane::ahrs_update`. Runs INS→DCM and publishes attitude sensors.

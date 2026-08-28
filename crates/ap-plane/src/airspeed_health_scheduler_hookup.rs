@@ -23,6 +23,8 @@ pub struct AirspeedHealthSchedulerOutput {
     pub primary_switched: bool,
     /// Whether TAS is used for TECS/nav, upstream `ARSPD_USE`.
     pub use_airspeed: bool,
+    /// Whether TAS is published to TECS (healthy and ARSPD_USE).
+    pub use_for_tecs: bool,
 }
 
 /// Run timer tick, primary selection, and health refresh.
@@ -39,6 +41,7 @@ pub fn airspeed_health_scheduler_tick(
         health: published.health,
         primary_switched: published.health.primary != prev_primary,
         use_airspeed: published.use_airspeed,
+        use_for_tecs: published.use_for_tecs,
     }
 }
 

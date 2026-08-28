@@ -58,6 +58,8 @@ pub struct SitlAirspeedPublish {
     pub ratio: f32,
     /// Whether TAS is used for TECS/nav, upstream `ARSPD_USE`.
     pub use_airspeed: bool,
+    /// Whether TAS is published to TECS, upstream AP_Airspeed::use() plus healthy().
+    pub use_for_tecs: bool,
     /// Primary instance temperature (deg C), upstream `get_temperature()`.
     pub temperature_c: f32,
     /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL`.
@@ -226,6 +228,7 @@ impl SitlAirspeedHookup {
             health,
             ratio,
             use_airspeed: self.cluster.primary_use_for_control(),
+            use_for_tecs: self.cluster.primary_use_for_tecs(),
             temperature_c: self
                 .cluster
                 .backend(self.cluster.primary())
