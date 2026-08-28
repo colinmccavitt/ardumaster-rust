@@ -5,20 +5,24 @@
 //! own min/trim/max, an optional reverse, and a deadzone around trim so a
 //! resting stick is zero rather than a few counts of noise.
 //!
-//! Scaling and the aux-function switch latch live here so radio.cpp work can
+//! Scaling, the aux-function switch latch, and the FS_THR_VALUE / THR_FS_VALUE PWM floor live here so radio.cpp work can
 //! share one conversion. The HAL owns the raw PWM microsecond I/O; Plane's
 //! failsafe hookup already reads those pulses.
 
 #![no_std]
 
 pub mod aux_switch;
+pub mod fs_thr;
 
 pub use aux_switch::{
     get_aux_switch_pos, init_position_on_first_radio_read, read_3pos_switch, AuxFunc,
     AuxSwitchLatch, AuxSwitchPos, AUX_SWITCH_PWM_TRIGGER_HIGH, AUX_SWITCH_PWM_TRIGGER_LOW,
     RC_MAX_LIMIT_PWM, RC_MIN_LIMIT_PWM, SWITCH_DEBOUNCE_TIME_MS,
 };
-
+pub use fs_thr::{
+    throttle_below_fs_thr_value, throttle_pwm_in_failsafe, ThrFailsafe, FS_THR_VALUE_DEFAULT,
+    FS_THR_VALUE_MAX, FS_THR_VALUE_MIN, THR_FS_VALUE_DEFAULT, THR_FS_VALUE_MAX, THR_FS_VALUE_MIN,
+};
 
 /// Upstream `RC_CHAN_MIN_DEFAULT` / `RC_Channel::radio_min` default.
 pub const RC_CHAN_MIN_DEFAULT: u16 = 1100;
