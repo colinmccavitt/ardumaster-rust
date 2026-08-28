@@ -85,6 +85,7 @@ pub mod rc_aux_switch_hookup;
 pub mod mission_alt_offset_glue_hookup;
 pub mod rangefinder_correction_glue_hookup;
 pub mod mission_item_storage_hookup;
+pub mod nav_waypoint_verify_hookup;
 pub mod mission_scheduler_hookup;
 pub mod mode;
 pub mod mode_run;

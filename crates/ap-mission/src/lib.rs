@@ -19,6 +19,9 @@
 
 use ap_math::location::{AltFrame, Location};
 
+mod verify_nav_wp;
+pub use verify_nav_wp::{verify_nav_wp, VerifyNavWpInputs, WP_RADIUS_DEFAULT_M};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
