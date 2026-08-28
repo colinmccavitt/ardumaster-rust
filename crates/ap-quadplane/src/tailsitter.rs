@@ -31,7 +31,9 @@
 //!
 //! The vectored-yaw tilt mix is [`VectoredYawMix`] (`Q_TAILSIT_VHGAIN` /
 //! `Q_TAILSIT_VFGAIN`). Hover stick remapping is [`Tailsitter::check_input`]
-//! (`Q_TAILSIT_INPUT` PlaneMode / BodyFrameRoll).
+//! (`Q_TAILSIT_INPUT` PlaneMode / BodyFrameRoll). Forward-flight lift-motor
+//! hold is [`Tailsitter::output_kind`] / [`mask_motor_actuator`]
+//! (`Q_TAILSIT_MOTMX` / `output_motor_mask`).
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -45,6 +47,9 @@ pub const VECTORED_HOVER_GAIN_DEFAULT: f32 = 0.5;
 
 /// Default `Q_TAILSIT_INPUT`, upstream `AP_GROUPINFO("INPUT", ..., 0)`.
 pub const TAILSIT_INPUT_DEFAULT: i8 = 0;
+
+/// Default `Q_TAILSIT_MOTMX`, upstream `AP_GROUPINFO("MOTMX", ..., 0)`.
+pub const TAILSIT_MOTMX_DEFAULT: u16 = 0;
 
 /// Bit 0 of `Q_TAILSIT_INPUT` — PlaneMode stick swap.
 ///
@@ -91,6 +96,68 @@ pub enum TailsitInput {
     BodyFrameRoll,
     /// Both bits. `check_input` swap plus pitch-rotated body-frame roll.
     PlaneModeBodyFrameRoll,
+}
+
+/// Which path `Tailsitter::output` takes this cycle.
+///
+/// Copter tailsitters keep selected motors spinning in forward flight
+/// via `Q_TAILSIT_MOTMX` and `AP_MotorsMulticopter::output_motor_mask`.
+/// Duo-motor tailsitters typically leave the mask at 0; the call still
+/// happens, it just writes no motors. The vectored tilt mix after that
+/// call is [`VectoredYawMix`], not this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputKind {
+    /// Early return: `!enabled() || motor_test || !quadplane.initialised`.
+    Silent,
+    /// FW / VTOL-transition and not assisted: `output_motor_mask`.
+    MotorMask,
+    /// Active VTOL, or assisted flight: copter `motors_output`.
+    Copter,
+}
+
+/// Inputs `Tailsitter::output` reads besides its own params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputContext {
+    /// `quadplane.initialised`.
+    pub initialised: bool,
+    /// `quadplane.motor_test.running`.
+    pub motor_test: bool,
+    /// `quadplane.in_vtol_mode()`.
+    pub in_vtol_mode: bool,
+    /// `transition_state == ANGLE_WAIT_FW` — [`Tailsitter::active`].
+    pub angle_wait_fw: bool,
+    /// `Tailsitter::in_vtol_transition`.
+    pub in_vtol_transition: bool,
+    /// `quadplane.assisted_flight`.
+    pub assisted_flight: bool,
+}
+
+impl OutputContext {
+    /// Initialised QuadPlane, no motor test, FW cruise, not assisted.
+    #[must_use]
+    pub const fn fw_cruise() -> Self {
+        Self {
+            initialised: true,
+            motor_test: false,
+            in_vtol_mode: false,
+            angle_wait_fw: false,
+            in_vtol_transition: false,
+            assisted_flight: false,
+        }
+    }
+
+    /// Initialised QuadPlane in a Q* hover, not transitioning.
+    #[must_use]
+    pub const fn vtol_hover() -> Self {
+        Self {
+            initialised: true,
+            motor_test: false,
+            in_vtol_mode: true,
+            angle_wait_fw: false,
+            in_vtol_transition: false,
+            assisted_flight: false,
+        }
+    }
 }
 
 /// What `Tailsitter::setup` reads off QuadPlane and the tailsitter params.
@@ -156,6 +223,7 @@ pub struct Tailsitter {
     enable: i8,
     setup_complete: bool,
     frame_class: u8,
+    motor_mask: u16,
     vectored_hover_gain: f32,
     tilt_motor_left: bool,
     tilt_motor_right: bool,
@@ -180,6 +248,7 @@ impl Tailsitter {
             enable,
             setup_complete,
             frame_class: cfg.frame_class,
+            motor_mask: cfg.motor_mask,
             vectored_hover_gain: cfg.vectored_hover_gain,
             tilt_motor_left: cfg.tilt_motor_left,
             tilt_motor_right: cfg.tilt_motor_right,
@@ -298,6 +367,76 @@ impl Tailsitter {
         } else {
             (roll, yaw)
         }
+    }
+
+    /// Current `Q_TAILSIT_MOTMX` after setup.
+    #[must_use]
+    pub const fn motor_mask(&self) -> u16 {
+        self.motor_mask
+    }
+
+    /// Upstream `Tailsitter::output` path this cycle.
+    ///
+    /// Silent when disabled, QuadPlane is not initialised, or a motor
+    /// test is running (the test must not be overwritten). MotorMask
+    /// when not [`Tailsitter::active`] or in the FW→VTOL transition,
+    /// unless assisted flight has already taken the copter path.
+    /// Copter otherwise (Q* hover, or assisted FW).
+    #[must_use]
+    pub const fn output_kind(&self, ctx: OutputContext) -> OutputKind {
+        if !self.enabled() || !ctx.initialised || ctx.motor_test {
+            return OutputKind::Silent;
+        }
+        if (!self.active(ctx.in_vtol_mode, ctx.angle_wait_fw) || ctx.in_vtol_transition)
+            && !ctx.assisted_flight
+        {
+            return OutputKind::MotorMask;
+        }
+        OutputKind::Copter
+    }
+
+    /// Whether `output` calls `motors->output_min` before the path.
+    ///
+    /// Disarm / emergency-stop still take [`OutputKind`]; they do not
+    /// become Silent. Upstream writes min, then continues.
+    #[must_use]
+    pub const fn output_min_first(soft_armed: bool, emergency_stop: bool) -> bool {
+        !soft_armed || emergency_stop
+    }
+}
+
+/// Whether motor `i` stays live in FW under `Q_TAILSIT_MOTMX`.
+///
+/// Upstream `output_motor_mask` walks `AP_MOTORS_MAX_NUM_MOTORS` and
+/// writes only motors that are enabled *and* have the mask bit set.
+/// This stub is the mask-bit half (`mask & (1U << i)`).
+#[must_use]
+pub const fn motor_in_fw_mask(mask: u16, motor: u8) -> bool {
+    motor < 16 && (mask & (1u16 << motor)) != 0
+}
+
+/// Actuator for one motor on the FW mask path.
+///
+/// Upstream `AP_MotorsMulticopter::output_motor_mask`: motors not in
+/// the mask are not written (`None`). Motors in the mask get
+/// `thrust + roll_factor * rudder_dt * 0.5` when armed and interlocked,
+/// otherwise zero throttle. Copter-frame roll is plane-frame yaw.
+#[must_use]
+pub fn mask_motor_actuator(
+    mask: u16,
+    motor: u8,
+    thrust: f32,
+    roll_factor: f32,
+    rudder_dt: f32,
+    armed_interlock: bool,
+) -> Option<f32> {
+    if !motor_in_fw_mask(mask, motor) {
+        return None;
+    }
+    if armed_interlock {
+        Some(thrust + roll_factor * rudder_dt * 0.5)
+    } else {
+        Some(0.0)
     }
 }
 
