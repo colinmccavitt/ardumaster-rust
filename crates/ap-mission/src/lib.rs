@@ -77,6 +77,14 @@ pub use do_jump::{
     MAV_CMD_DO_JUMP,
 };
 
+mod do_change_speed;
+pub use do_change_speed::{
+    do_change_speed, do_change_speed_cmd, is_do_change_speed, speed_content, DoChangeSpeedInputs,
+    DoChangeSpeedOutput, SpeedCommand, AIRSPEED_MAX_DEFAULT_MS, AIRSPEED_MIN_DEFAULT_MS,
+    CHANGE_SPEED_RESET_MS, MAV_CMD_DO_CHANGE_SPEED, NEW_AIRSPEED_CM_NONE, SPEED_TYPE_AIRSPEED,
+    SPEED_TYPE_CLIMB_SPEED, SPEED_TYPE_DESCENT_SPEED, SPEED_TYPE_GROUNDSPEED,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
