@@ -38,6 +38,7 @@ ap-declination = { path = "crates/ap-declination" }
 ap-ekf3 = { path = "crates/ap-ekf3" }
 ap-gps = { path = "crates/ap-gps" }
 ap-landing = { path = "crates/ap-landing" }
+ap-logger = { path = "crates/ap-logger" }
 ap-ins = { path = "crates/ap-ins" }
 ap-sim = { path = "crates/ap-sim" }
 ap-scheduler = { path = "crates/ap-scheduler" }

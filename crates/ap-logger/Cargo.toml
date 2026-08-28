@@ -1,0 +1,12 @@
+[package]
+name = "ap-logger"
+description = "Port of ArduPilot libraries/AP_Logger: backend WriteBlock surface first (Plane-4.7.0). Tracked as FW-030."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
