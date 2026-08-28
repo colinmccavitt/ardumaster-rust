@@ -28,15 +28,15 @@
 //! elapsed since the last send of that msgid. [`registry`] is the
 //! FMT / `LogStructure` table: register rows, then look up `type`
 //! and `length` by message name (`msg_fmt_for_name`).
-//!
-//! # What this crate does not include yet
-//!
-//! The DataFlash page map and the `AP_Logger` front-end. Those land
-//! in later FW-030 slices.
+//! [`completeness`] is the closer catalog: backend, FMT, Write,
+//! bitmask, file, transfer, replay, drop, erase, rotate, streaming,
+//! and registry are on main; leftover DataFlash page-map /
+//! `AP_Logger` front-end surfaces stay documented-deferred.
 
 #![no_std]
 
 pub mod backend;
+pub mod completeness;
 pub mod dropped;
 pub mod erase;
 pub mod file;
@@ -50,6 +50,7 @@ pub mod transfer;
 pub mod write;
 
 pub use backend::{LogBackend, MemoryBackend};
+pub use completeness::{LoggerPortItem, PortStatus, LOGGER_COMPLETENESS};
 pub use dropped::DroppedMessages;
 pub use erase::{LogErase, LogEraseRequest, LOG_ERASE_LEN, MSG_ID_LOG_ERASE};
 pub use file::{FileBackend, LOG_FILE_PATH_MAX};
