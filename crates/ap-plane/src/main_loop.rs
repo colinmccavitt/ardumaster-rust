@@ -137,7 +137,7 @@ use crate::auto_mode_hookup::{
     auto_mode_complete_tick, auto_mode_mission_tick, AutoModeCompleteInputs,
     AutoModeMissionInputs,
 };
-use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
+use crate::rtl_mode_hookup::{rtl_mode_climb_tick, rtl_mode_nav_tick, RtlModeClimbInputs, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
 use crate::takeoff_mode_hookup::{takeoff_mode_nav_tick, TakeoffModeNavInputs};
@@ -458,6 +458,26 @@ pub struct PlaneMainLoop {
     pub rtl_loiter_radius_m: u16,
     /// RTL_RADIUS < 0 selects counterclockwise loiter.
     pub rtl_loiter_ccw: bool,
+    /// Upstream FlightOptions::CLIMB_BEFORE_TURN. Overrides RTL_CLIMB_MIN.
+    pub rtl_climb_before_turn: bool,
+    /// Upstream `g2.rtl_climb_min`, metres. Zero disables the climb-min gate.
+    pub rtl_climb_min_m: u16,
+    /// Upstream `current_loc.alt` for the RTL climb gate, centimetres.
+    pub rtl_current_alt_cm: i32,
+    /// Upstream `next_WP_loc.alt` (RTL altitude), centimetres.
+    pub rtl_next_wp_alt_cm: i32,
+    /// Upstream `prev_WP_loc.alt` at RTL enter, centimetres.
+    pub rtl_prev_wp_alt_cm: i32,
+    /// Upstream `rtl.done_climb`.
+    pub rtl_done_climb: bool,
+    /// Whether RTL climb-then-home remaining-leg glue ran this tick.
+    pub rtl_mode_climb_applied: bool,
+    /// Climb gate is enabled this tick (`CLIMB_BEFORE_TURN` or RTL_CLIMB_MIN).
+    pub rtl_climb_gated: bool,
+    /// ModeRTL::update still constrains roll to LEVEL_ROLL_LIMIT.
+    pub rtl_climb_constrain_roll: bool,
+    /// Climb completed this tick: prev_WP = current, setup_alt_slope.
+    pub rtl_setup_remaining_leg: bool,
     /// Upstream WP_LOITER_RAD (aparm.loiter_radius), metres. Negative is CCW.
     pub wp_loiter_rad_m: i16,
     /// Upstream FlightOptions::ENABLE_LOITER_ALT_CONTROL.
@@ -943,6 +963,16 @@ impl Default for PlaneMainLoop {
             rtl_mode_loiter_allowed: false,
             rtl_loiter_radius_m: 0,
             rtl_loiter_ccw: false,
+            rtl_climb_before_turn: false,
+            rtl_climb_min_m: 0,
+            rtl_current_alt_cm: 0,
+            rtl_next_wp_alt_cm: 0,
+            rtl_prev_wp_alt_cm: 0,
+            rtl_done_climb: false,
+            rtl_mode_climb_applied: false,
+            rtl_climb_gated: false,
+            rtl_climb_constrain_roll: false,
+            rtl_setup_remaining_leg: false,
             wp_loiter_rad_m: 0,
             loiter_alt_control_enabled: false,
             loiter_mode_nav_applied: false,
@@ -1495,6 +1525,27 @@ impl PlaneMainLoop {
             if rtl_nav.direction_set {
                 self.rtl_loiter_ccw = rtl_nav.loiter_ccw;
             }
+        }
+        if rtl_nav.started {
+            self.rtl_done_climb = false;
+        }
+
+        let rtl_climb = rtl_mode_climb_tick(&RtlModeClimbInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            done_climb: self.rtl_done_climb,
+            climb_before_turn: self.rtl_climb_before_turn,
+            rtl_climb_min_m: self.rtl_climb_min_m,
+            current_alt_cm: self.rtl_current_alt_cm,
+            next_wp_alt_cm: self.rtl_next_wp_alt_cm,
+            prev_wp_alt_cm: self.rtl_prev_wp_alt_cm,
+        });
+        self.rtl_mode_climb_applied = rtl_climb.applied;
+        self.rtl_climb_gated = rtl_climb.climb_gated;
+        self.rtl_climb_constrain_roll = rtl_climb.constrain_roll;
+        self.rtl_setup_remaining_leg = rtl_climb.setup_remaining_leg;
+        if rtl_climb.applied {
+            self.rtl_done_climb = rtl_climb.done_climb;
         }
 
         let loiter_nav = loiter_mode_nav_tick(&LoiterModeNavInputs {
