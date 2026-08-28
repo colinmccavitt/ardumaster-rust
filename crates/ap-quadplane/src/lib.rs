@@ -5,12 +5,10 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::mavlink_motor_test_start`] /
-//! [`QuadPlane::motor_test_output`] / [`QuadPlane::motor_test_stop`]
-//! (`MAV_CMD_DO_MOTOR_TEST`). Start refuses unavailable / armed /
-//! failed motors checks; output maps percent/PWM/pilot throttle,
-//! walks a multi-motor gap, and stop disarms. It does not rewrite
-//! throttle mix or weathervane.
+//! This slice: [`QuadPlane::should_relax`] / [`QuadPlane::land_detector`]
+//! / [`QuadPlane::check_land_complete`] / [`QuadPlane::check_land_final`]
+//! (`Q_LAND_ALTCHG` landing-detect) and [`QuadPlane::do_user_takeoff`]
+//! (GUIDED user takeoff). It does not rewrite motor-test or throttle mix.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -25,6 +23,7 @@
 #![no_std]
 
 pub mod air_mode;
+pub mod landing;
 pub mod mode_q;
 pub mod motor_test;
 pub mod poscontrol;
@@ -220,6 +219,14 @@ pub struct QuadPlane {
     motor_test: motor_test::MotorTest,
     /// `motors->armed()` latch written by motor-test start / stop.
     motors_armed: bool,
+    /// Upstream `landing_detect` block (`Q_LAND_ALTCHG` + timers).
+    landing_detect: landing::LandingDetect,
+    /// `Q_LAND_FINAL_ALT` / `land_final_alt_m`.
+    land_final_alt_m: f32,
+    /// `last_land_final_agl_m` height-glitch filter.
+    last_land_final_agl_m: f32,
+    /// Upstream `bool guided_takeoff`.
+    guided_takeoff: bool,
 }
 
 impl QuadPlane {
@@ -249,6 +256,10 @@ impl QuadPlane {
             weathervane: weathervane::WeatherVane::new(),
             motor_test: motor_test::MotorTest::new(),
             motors_armed: false,
+            landing_detect: landing::LandingDetect::new(),
+            land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
+            last_land_final_agl_m: 0.0,
+            guided_takeoff: false,
         }
     }
 
@@ -281,6 +292,10 @@ impl QuadPlane {
             weathervane: weathervane::WeatherVane::new(),
             motor_test: motor_test::MotorTest::new(),
             motors_armed: false,
+            landing_detect: landing::LandingDetect::new(),
+            land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
+            last_land_final_agl_m: 0.0,
+            guided_takeoff: false,
         }
     }
 

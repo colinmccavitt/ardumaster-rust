@@ -30,6 +30,8 @@ pub const Q_OPTIONS_AIRMODE_UNUSED: i32 = 1 << 9;
 pub enum QOption {
     /// Bit 9, upstream `QuadPlane::Option::AIRMODE_UNUSED`.
     AirmodeUnused = 1 << 9,
+    /// Bit 13, upstream `QuadPlane::Option::DISABLE_GROUND_EFFECT_COMP`.
+    DisableGroundEffectComp = 1 << 13,
 }
 
 /// Air-mode latch, upstream `enum class AirMode` in `defines.h`.
