@@ -14,7 +14,9 @@
 //! [`mission::MissionItemInt`] / [`mission::MissionRequestInt`]
 //! (msgid 73 / 51) against a small in-memory mission table, and sends
 //! [`health::SysStatus`] / [`health::BatteryStatus`] (msgid 1 / 147) from a
-//! [`health::HealthSnapshot`]. The rest of
+//! [`health::HealthSnapshot`], and sends [`channels::RcChannels`] /
+//! [`channels::ServoOutputRaw`] (msgid 65 / 36) from a
+//! [`channels::ChannelSnapshot`]. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
@@ -28,6 +30,7 @@
 
 #![no_std]
 
+pub mod channels;
 pub mod command;
 pub mod dispatch;
 pub mod framing;
@@ -38,6 +41,12 @@ pub mod param;
 pub mod pose;
 pub mod statustext;
 
+pub use channels::{
+    ChannelSnapshot, RcChannels, ServoOutputRaw, MSG_ID_RC_CHANNELS, MSG_ID_SERVO_OUTPUT_RAW,
+    RC_CHANNELS_COUNT, RC_CHANNELS_CRC, RC_CHANNELS_LEN, RC_CHANNELS_MIN_LEN, RC_CHANNEL_UNUSED,
+    RSSI_UNKNOWN, SERVO_OUTPUT_COUNT, SERVO_OUTPUT_RAW_CRC, SERVO_OUTPUT_RAW_LEN,
+    SERVO_OUTPUT_RAW_MIN_LEN,
+};
 pub use command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, ARM_DISARM_FORCE, COMMAND_INT_LEN,
     COMMAND_LONG_LEN, MAV_CMD_COMPONENT_ARM_DISARM, MAV_CMD_DO_SET_MODE, MAV_CMD_NAV_TAKEOFF,

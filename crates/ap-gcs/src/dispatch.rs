@@ -9,8 +9,13 @@
 //! looks it up for download. Send path is `GCS_MAVLINK::send_heartbeat`,
 //! `send_text`, `queued_param_send`, `send_parameter_value`,
 //! `send_attitude`, `send_global_position_int`, `send_mission_item_int`,
-//! `send_sys_status`, and `send_battery_status`.
+//! `send_sys_status`, `send_battery_status`, `send_rc_channels`, and
+//! `send_servo_output_raw`.
 
+use crate::channels::{
+    ChannelSnapshot, MSG_ID_RC_CHANNELS, MSG_ID_SERVO_OUTPUT_RAW, RC_CHANNELS_LEN,
+    SERVO_OUTPUT_RAW_LEN,
+};
 use crate::command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
     MSG_ID_COMMAND_LONG,
@@ -97,7 +102,8 @@ pub enum Dispatch {
 /// PARAM_REQUEST_LIST / PARAM_SET against an in-memory table,
 /// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot,
 /// MISSION_ITEM_INT / MISSION_REQUEST_INT against an in-memory mission table,
-/// and SYS_STATUS / BATTERY_STATUS stream send from a health snapshot.
+/// SYS_STATUS / BATTERY_STATUS stream send from a health snapshot,
+/// and RC_CHANNELS / SERVO_OUTPUT_RAW stream send from a channel snapshot.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -314,6 +320,55 @@ impl GcsMavlink {
             self.sysid,
             self.compid,
             MSG_ID_BATTERY_STATUS,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing RC_CHANNELS, upstream `GCS_MAVLINK::send_rc_channels`.
+    ///
+    /// Packs radio-in PWM, channel count, and RSSI from `channels` and frames
+    /// them for Write. Stream-rate gating (`MSG_RC_CHANNELS`) is later.
+    #[must_use]
+    pub fn send_rc_channels(
+        &mut self,
+        out: &mut [u8],
+        channels: &ChannelSnapshot,
+    ) -> Option<usize> {
+        let rc = channels.rc_channels();
+        let mut payload = [0u8; RC_CHANNELS_LEN];
+        rc.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_RC_CHANNELS,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing SERVO_OUTPUT_RAW, upstream
+    /// `GCS_MAVLINK::send_servo_output_raw`.
+    ///
+    /// Packs servo PWM and port from `channels` and frames them for Write.
+    /// Stream-rate gating (`MSG_SERVO_OUTPUT_RAW`) is later.
+    #[must_use]
+    pub fn send_servo_output_raw(
+        &mut self,
+        out: &mut [u8],
+        channels: &ChannelSnapshot,
+    ) -> Option<usize> {
+        let servo = channels.servo_output_raw();
+        let mut payload = [0u8; SERVO_OUTPUT_RAW_LEN];
+        servo.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_SERVO_OUTPUT_RAW,
             &payload,
         )?;
         self.seq = self.seq.wrapping_add(1);
