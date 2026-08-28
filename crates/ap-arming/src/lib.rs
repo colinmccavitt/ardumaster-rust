@@ -14,6 +14,7 @@
 
 pub mod accel_threshold;
 pub mod check_bitmask;
+pub mod mission_items;
 pub mod rudder_arming;
 pub mod vehicle_arm;
 
