@@ -20,10 +20,16 @@
 //! waypoint switches to [`QrtlSubMode::Rtl`] (`do_RTL`, maybe
 //! `QPOS_POSITION1` if already inside the VTOL return radius).
 //! Already-in-RTL ticks run `vtol_position_controller` plus FW
-//! stabilize. Land handoff (`verify_vtol_land` once past
-//! `QPOS_POSITION2`) is a later slice. This module does not rewrite
-//! [`crate::mode_q`] or [`crate::landing`].
+//! stabilize. This slice is the QRTL land handoff: once
+//! `poscontrol` is at or past `QPOS_POSITION2`, `verify_vtol_land`
+//! starts the descent and states past POSITION2 copy home altitude
+//! onto `next_WP_loc`. Approach / airbrake allow FBW stick mixing.
+//! Also `update()` (QStabilize), `update_target_altitude()`,
+//! `allows_throttle_nudging()`, and the `mode_qrtl.cpp` completeness
+//! table. This module does not rewrite [`crate::mode_q`] or
+//! [`crate::landing`].
 
+use crate::auto_vtol::{VerifyLandResult, VerifyLandView};
 use crate::poscontrol::PositionControlState;
 use crate::QuadPlane;
 
@@ -244,6 +250,12 @@ impl ModeQrtl {
     pub const fn does_auto_throttle() -> bool {
         true
     }
+
+    /// Upstream `ModeQRTL::_pre_arm_checks` — always `false`.
+    #[must_use]
+    pub const fn pre_arm_checks() -> bool {
+        false
+    }
 }
 
 /// Upstream `ModeQRTL::get_VTOL_return_radius`.
@@ -428,6 +440,12 @@ pub struct QrtlRun {
     pub vtol_position_controller: bool,
     /// `stabilize_roll/pitch/yaw` after the submode switch.
     pub fw_stabilize: bool,
+    /// `next_WP_loc.copy_alt_from(home)` when `poscontrol > QPOS_POSITION2`.
+    pub copy_home_alt: bool,
+    /// `verify_vtol_land` when `poscontrol >= QPOS_POSITION2`.
+    pub verify_vtol_land: bool,
+    /// Approach / airbrake `stabilize_stick_mixing_fbw`.
+    pub stick_mixing_fbw: bool,
 }
 
 impl QrtlRun {
@@ -451,6 +469,9 @@ impl QrtlRun {
             rtl_alt_abs_cm: 0,
             vtol_position_controller: false,
             fw_stabilize: false,
+            copy_home_alt: false,
+            verify_vtol_land: false,
+            stick_mixing_fbw: false,
         }
     }
 }
@@ -493,6 +514,8 @@ pub struct QrtlRunView {
     pub vtol_roll_pitch_limited: bool,
     /// `wp_nav->get_default_speed_up_ms()`.
     pub wp_speed_up_ms: f32,
+    /// Snapshot for [`QuadPlane::verify_vtol_land`] on the land-handoff path.
+    pub land: Option<VerifyLandView>,
 }
 
 impl QrtlRunView {
@@ -515,6 +538,7 @@ impl QrtlRunView {
             current_height_above_next_wp_m: None,
             vtol_roll_pitch_limited: false,
             wp_speed_up_ms: Q_WP_SPD_UP_DEFAULT_MS,
+            land: None,
         }
     }
 
@@ -569,12 +593,10 @@ pub const fn qrtl_climb_finished(stopping_height_above_next_wp_m: Option<f32>) -
 }
 
 /// Combined `ModeQRTL::run`: tailsitter FW pull-up, climb-then-return,
-/// or the already-RTL position-controller path.
+/// or the already-RTL position-controller path (including land handoff).
 ///
-/// Land handoff (`poscontrol >= QPOS_POSITION2` → `verify_vtol_land`)
-/// is a later slice. FW stabilize runs after the submode switch,
-/// matching upstream, except the tailsitter early-out which
-/// `return`s from `Mode::run()`.
+/// FW stabilize runs after the submode switch, matching upstream,
+/// except the tailsitter early-out which `return`s from `Mode::run()`.
 pub fn qrtl_run(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
     if view.tailsitter_in_vtol_transition {
         return QrtlRun::fw_controllers();
@@ -582,7 +604,7 @@ pub fn qrtl_run(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
 
     match view.submode {
         QrtlSubMode::Climb => run_climb(qp, view),
-        QrtlSubMode::Rtl => run_return(view),
+        QrtlSubMode::Rtl => run_return(qp, view),
     }
 }
 
@@ -608,6 +630,9 @@ fn run_climb(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
             rtl_alt_abs_cm: view.home_alt_abs_cm + (view.qrtl_alt_m * 100.0) as i32,
             vtol_position_controller: false,
             fw_stabilize: true,
+            copy_home_alt: false,
+            verify_vtol_land: false,
+            stick_mixing_fbw: false,
         };
     }
 
@@ -649,12 +674,16 @@ fn run_climb(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
         rtl_alt_abs_cm,
         vtol_position_controller: false,
         fw_stabilize: true,
+        copy_home_alt: false,
+        verify_vtol_land: false,
+        stick_mixing_fbw: false,
     }
 }
 
-fn run_return(view: QrtlRunView) -> QrtlRun {
+fn run_return(qp: &mut QuadPlane, view: QrtlRunView) -> QrtlRun {
     let (dest, dist_m) =
         calc_best_rally_or_home(view.home_dist_m, view.rally_dist_m, view.rally_incl_home);
+    let handoff = qrtl_land_handoff(qp, view.land);
     QrtlRun {
         action: QrtlRunAction::Return,
         submode: QrtlSubMode::Rtl,
@@ -674,7 +703,307 @@ fn run_return(view: QrtlRunView) -> QrtlRun {
         rtl_alt_abs_cm: view.home_alt_abs_cm + (view.qrtl_alt_m * 100.0) as i32,
         vtol_position_controller: true,
         fw_stabilize: true,
+        copy_home_alt: handoff.copy_home_alt,
+        verify_vtol_land: handoff.verify_vtol_land,
+        stick_mixing_fbw: handoff.stick_mixing_fbw,
     }
+}
+
+
+/// Default `RTL_ALTITUDE`, upstream `AP_GROUPINFO("RTL_ALTITUDE", ..., 100)`.
+pub const RTL_ALTITUDE_DEFAULT_M: f32 = 100.0;
+
+/// Default `AIRSPEED_CRUISE` used by the QRTL approach profile stub.
+pub const AIRSPEED_CRUISE_DEFAULT_MS: f32 = 12.0;
+
+/// Default TECS `_maxSinkRate` used by the QRTL approach profile stub.
+pub const TECS_MAX_SINKRATE_DEFAULT_MS: f32 = 5.0;
+
+/// Outcome of [`qrtl_land_handoff`] (`ModeQRTL::run` RTL land path).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QrtlLandHandoff {
+    /// `next_WP_loc.copy_alt_from(home)` when `poscontrol > QPOS_POSITION2`.
+    pub copy_home_alt: bool,
+    /// `quadplane.verify_vtol_land()` when `poscontrol >= QPOS_POSITION2`.
+    pub verify_vtol_land: bool,
+    /// Approach / airbrake `stabilize_stick_mixing_fbw`.
+    pub stick_mixing_fbw: bool,
+    /// Nested [`QuadPlane::verify_vtol_land`] result when it ran.
+    pub land: VerifyLandResult,
+}
+
+impl QrtlLandHandoff {
+    const fn idle() -> Self {
+        Self {
+            copy_home_alt: false,
+            verify_vtol_land: false,
+            stick_mixing_fbw: false,
+            land: VerifyLandResult::incomplete(),
+        }
+    }
+}
+
+/// `poscontrol.get_state() > QPOS_POSITION2` (discriminant order).
+#[must_use]
+pub const fn qrtl_copy_home_alt(state: PositionControlState) -> bool {
+    (state as u8) > (PositionControlState::Position2 as u8)
+}
+
+/// `poscontrol.get_state() >= QPOS_POSITION2` (discriminant order).
+#[must_use]
+pub const fn qrtl_should_verify_land(state: PositionControlState) -> bool {
+    (state as u8) >= (PositionControlState::Position2 as u8)
+}
+
+/// Approach / airbrake stick mixing on the QRTL RTL branch.
+#[must_use]
+pub const fn qrtl_stick_mixing_fbw(state: PositionControlState) -> bool {
+    matches!(
+        state,
+        PositionControlState::Airbrake | PositionControlState::Approach
+    )
+}
+
+/// Upstream `ModeQRTL::allows_throttle_nudging`.
+///
+/// Only during [`QrtlSubMode::Rtl`] while `poscontrol` is `QPOS_APPROACH`.
+#[must_use]
+pub const fn qrtl_allows_throttle_nudging(
+    submode: QrtlSubMode,
+    state: PositionControlState,
+) -> bool {
+    matches!(submode, QrtlSubMode::Rtl) && matches!(state, PositionControlState::Approach)
+}
+
+/// QRTL RTL-branch land handoff, upstream `ModeQRTL::run` `SubMode::RTL`.
+///
+/// Reads `qp.poscontrol().state()`. When `>= QPOS_POSITION2` and `land`
+/// is `Some`, calls [`QuadPlane::verify_vtol_land`]. Does not rewrite
+/// [`crate::landing`] or [`crate::auto_vtol`].
+pub fn qrtl_land_handoff(
+    qp: &mut QuadPlane,
+    land: Option<VerifyLandView>,
+) -> QrtlLandHandoff {
+    let state = qp.poscontrol().state();
+    let mut out = QrtlLandHandoff::idle();
+    out.copy_home_alt = qrtl_copy_home_alt(state);
+    out.verify_vtol_land = qrtl_should_verify_land(state);
+    out.stick_mixing_fbw = qrtl_stick_mixing_fbw(state);
+    if out.verify_vtol_land {
+        if let Some(view) = land {
+            out.land = qp.verify_vtol_land(view);
+        }
+    }
+    out
+}
+
+/// Outcome of [`qrtl_update`] (`ModeQRTL::update`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QrtlUpdate {
+    /// Upstream always calls `plane.mode_qstabilize.update()`.
+    pub used_qstabilize: bool,
+}
+
+/// Upstream `ModeQRTL::update`.
+#[must_use]
+pub const fn qrtl_update() -> QrtlUpdate {
+    QrtlUpdate {
+        used_qstabilize: true,
+    }
+}
+
+/// Plane / TECS view [`qrtl_update_target_altitude`] reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QrtlTargetAltView {
+    /// Latched `ModeQRTL::submode`.
+    pub submode: QrtlSubMode,
+    /// `quadplane.poscontrol.get_state()`.
+    pub poscontrol: PositionControlState,
+    /// `WP_LOITER_RAD`, metres (signed; radius uses `fabsf`).
+    pub loiter_radius_m: f32,
+    /// `RTL_RADIUS`, metres (signed; radius uses `fabsf`).
+    pub rtl_radius_m: f32,
+    /// `RTL_ALTITUDE`, metres.
+    pub rtl_altitude_m: f32,
+    /// `Q_RTL_ALT`, metres.
+    pub qrtl_alt_m: f32,
+    /// `TECS_controller.get_max_sinkrate()`.
+    pub tecs_max_sinkrate_ms: f32,
+    /// `aparm.airspeed_cruise`.
+    pub airspeed_cruise_ms: f32,
+    /// `auto_state.wp_distance`.
+    pub wp_distance_m: f32,
+}
+
+impl QrtlTargetAltView {
+    /// RTL + `QPOS_APPROACH`, far enough that the profile is still at `RTL_ALTITUDE`.
+    #[must_use]
+    pub const fn approach_far() -> Self {
+        Self {
+            submode: QrtlSubMode::Rtl,
+            poscontrol: PositionControlState::Approach,
+            loiter_radius_m: WP_LOITER_RAD_DEFAULT_M,
+            rtl_radius_m: RTL_RADIUS_DEFAULT_M,
+            rtl_altitude_m: RTL_ALTITUDE_DEFAULT_M,
+            qrtl_alt_m: Q_RTL_ALT_DEFAULT_M,
+            tecs_max_sinkrate_ms: TECS_MAX_SINKRATE_DEFAULT_MS,
+            airspeed_cruise_ms: AIRSPEED_CRUISE_DEFAULT_MS,
+            wp_distance_m: 2000.0,
+        }
+    }
+
+    /// Not in approach — base `Mode::update_target_altitude`.
+    #[must_use]
+    pub const fn not_approach() -> Self {
+        let mut view = Self::approach_far();
+        view.poscontrol = PositionControlState::Position1;
+        view
+    }
+}
+
+/// Outcome of [`qrtl_update_target_altitude`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QrtlTargetAlt {
+    /// Fell through to `Mode::update_target_altitude`.
+    pub used_base_mode: bool,
+    /// Height added onto `next_WP_loc` (`loc.offset_up_m`).
+    pub offset_up_m: f32,
+}
+
+/// Upstream `ModeQRTL::update_target_altitude`.
+///
+/// Outside RTL+APPROACH this is the base mode helper. In approach the
+/// target drops from `RTL_ALTITUDE` toward `Q_RTL_ALT` using TECS max
+/// sink and cruise airspeed, matching the C++ linear interpolate.
+#[must_use]
+pub fn qrtl_update_target_altitude(view: QrtlTargetAltView) -> QrtlTargetAlt {
+    if view.submode != QrtlSubMode::Rtl || view.poscontrol != PositionControlState::Approach {
+        return QrtlTargetAlt {
+            used_base_mode: true,
+            offset_up_m: 0.0,
+        };
+    }
+    let loiter = abs_f32(view.loiter_radius_m);
+    let rtl = abs_f32(view.rtl_radius_m);
+    let radius = if loiter > rtl { loiter } else { rtl };
+    let rtl_alt_delta = if view.rtl_altitude_m > view.qrtl_alt_m {
+        view.rtl_altitude_m - view.qrtl_alt_m
+    } else {
+        0.0
+    };
+    let sink_den = 0.6 * view.tecs_max_sinkrate_ms;
+    let sink_den = if sink_den > 1.0 { sink_den } else { 1.0 };
+    let sink_time = rtl_alt_delta / sink_den;
+    let sink_dist = view.airspeed_cruise_ms * sink_time;
+    let rad_min = 2.0 * radius;
+    let rad_max = 20.0 * radius;
+    let upper = rad_min + sink_dist;
+    let var_high = if rad_max < upper { rad_max } else { upper };
+    let var_high = if rad_min > var_high { rad_min } else { var_high };
+    let offset_up_m = linear_interpolate(0.0, rtl_alt_delta, view.wp_distance_m, rad_min, var_high);
+    QrtlTargetAlt {
+        used_base_mode: false,
+        offset_up_m,
+    }
+}
+
+/// Whether a catalog row is already hooked up or added by this closer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QrtlPortStatus {
+    /// Present on `main` before this closing slice.
+    OnMain,
+    /// Added by this slice (land handoff + leftover `mode_qrtl.cpp`).
+    ThisSlice,
+}
+
+/// One `mode_qrtl.cpp` surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QrtlSurface {
+    /// Function name (or `run` land-handoff leftover).
+    pub name: &'static str,
+    /// Hooked up on main or this slice.
+    pub status: QrtlPortStatus,
+    /// Short note (Rust symbol).
+    pub note: &'static str,
+}
+
+/// Completeness closer: every function in `ArduPlane/mode_qrtl.cpp`.
+pub const MODE_QRTL_CPP_SURFACES: &[QrtlSurface] = &[
+    QrtlSurface {
+        name: "_enter",
+        status: QrtlPortStatus::OnMain,
+        note: "qrtl_enter / home-rally climb cone / QLAND_INSTEAD_OF_RTL",
+    },
+    QrtlSurface {
+        name: "update",
+        status: QrtlPortStatus::ThisSlice,
+        note: "qrtl_update delegates to mode_qstabilize.update",
+    },
+    QrtlSurface {
+        name: "run",
+        status: QrtlPortStatus::OnMain,
+        note: "qrtl_run climb-then-return / vtol_position_controller",
+    },
+    QrtlSurface {
+        name: "run land handoff",
+        status: QrtlPortStatus::ThisSlice,
+        note: "qrtl_land_handoff / verify_vtol_land past QPOS_POSITION2",
+    },
+    QrtlSurface {
+        name: "update_target_altitude",
+        status: QrtlPortStatus::ThisSlice,
+        note: "qrtl_update_target_altitude RTL+APPROACH profile",
+    },
+    QrtlSurface {
+        name: "allows_throttle_nudging",
+        status: QrtlPortStatus::ThisSlice,
+        note: "qrtl_allows_throttle_nudging RTL + QPOS_APPROACH",
+    },
+    QrtlSurface {
+        name: "get_VTOL_return_radius",
+        status: QrtlPortStatus::OnMain,
+        note: "qrtl_vtol_return_radius_m MAX(abs radii)*1.5",
+    },
+];
+
+/// True when every listed `mode_qrtl.cpp` surface is `OnMain` or `ThisSlice`.
+#[must_use]
+pub const fn mode_qrtl_surfaces_complete() -> bool {
+    let mut i = 0;
+    while i < MODE_QRTL_CPP_SURFACES.len() {
+        match MODE_QRTL_CPP_SURFACES[i].status {
+            QrtlPortStatus::OnMain | QrtlPortStatus::ThisSlice => {}
+        }
+        i += 1;
+    }
+    MODE_QRTL_CPP_SURFACES.len() == 7
+}
+
+fn abs_f32(value: f32) -> f32 {
+    if value < 0.0 {
+        -value
+    } else {
+        value
+    }
+}
+
+/// Upstream `AP_Math::linear_interpolate` (low/high output vs var).
+#[must_use]
+pub const fn linear_interpolate(
+    low_out: f32,
+    high_out: f32,
+    var: f32,
+    var_low: f32,
+    var_high: f32,
+) -> f32 {
+    if var <= var_low {
+        return low_out;
+    }
+    if var >= var_high {
+        return high_out;
+    }
+    let span = var_high - var_low;
+    low_out + (var - var_low) * (high_out - low_out) / span
 }
 
 fn constrain_f32(amt: f32, low: f32, high: f32) -> f32 {

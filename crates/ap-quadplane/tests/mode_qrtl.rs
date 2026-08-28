@@ -3,11 +3,15 @@
 //! Upstream `ArduPlane/mode_qrtl.cpp` `ModeQRTL::_enter` / `run`.
 
 use ap_quadplane::landing::Q_LAND_FINAL_ALT_DEFAULT_M;
+use ap_quadplane::auto_vtol::VerifyLandView;
 use ap_quadplane::mode_qrtl::{
-    calc_best_rally_or_home, qrtl_climb_cone_target_alt_m, qrtl_climb_finished, qrtl_enter,
-    qrtl_min_climb_m, qrtl_run, qrtl_vtol_return_radius_m, ModeQrtl, QrtlDestination,
-    QrtlEnterAction, QrtlEnterView, QrtlRunAction, QrtlRunView, QrtlSubMode, MODE_QRTL,
-    Q_RTL_ALT_DEFAULT_M, Q_RTL_ALT_MIN_DEFAULT_M, Q_WP_SPD_UP_DEFAULT_MS, RTL_RADIUS_DEFAULT_M,
+    calc_best_rally_or_home, mode_qrtl_surfaces_complete, qrtl_allows_throttle_nudging,
+    qrtl_climb_cone_target_alt_m, qrtl_climb_finished, qrtl_copy_home_alt, qrtl_enter,
+    qrtl_land_handoff, qrtl_min_climb_m, qrtl_run, qrtl_should_verify_land, qrtl_stick_mixing_fbw,
+    qrtl_update, qrtl_update_target_altitude, qrtl_vtol_return_radius_m, ModeQrtl,
+    QrtlDestination, QrtlEnterAction, QrtlEnterView, QrtlPortStatus, QrtlRunAction, QrtlRunView,
+    QrtlSubMode, QrtlTargetAltView, MODE_QRTL, MODE_QRTL_CPP_SURFACES, Q_RTL_ALT_DEFAULT_M,
+    Q_RTL_ALT_MIN_DEFAULT_M, Q_WP_SPD_UP_DEFAULT_MS, RTL_ALTITUDE_DEFAULT_M, RTL_RADIUS_DEFAULT_M,
     WP_LOITER_RAD_DEFAULT_M,
 };
 use ap_quadplane::poscontrol::PositionControlState;
@@ -39,6 +43,7 @@ fn qrtl_mode_number_and_predicates_match_upstream() {
     assert!(ModeQrtl::is_vtol_mode());
     assert!(!ModeQrtl::is_vtol_man_mode());
     assert!(ModeQrtl::does_auto_throttle());
+    assert!(!ModeQrtl::pre_arm_checks());
 }
 
 #[test]
@@ -328,6 +333,9 @@ fn qrtl_run_already_returning_uses_vtol_position_controller() {
     assert!(!out.do_rtl);
     assert!(!out.z_controller);
     assert!(!out.position1);
+    assert!(!out.copy_home_alt);
+    assert!(!out.verify_vtol_land);
+    assert!(!out.stick_mixing_fbw);
 }
 
 #[test]
@@ -364,4 +372,108 @@ fn qrtl_run_climb_then_return_uses_closer_rally_for_radius() {
     assert!(approx(out.dist_m, 40.0));
     assert!(out.position1);
     assert_eq!(qp.poscontrol().state(), PositionControlState::Position1);
+}
+
+
+#[test]
+fn qrtl_land_handoff_starts_verify_at_position2() {
+    let mut qp = available_qp();
+    qp.poscontrol_mut()
+        .set_state(PositionControlState::Position2);
+    let land = VerifyLandView::hover_over(1_000, 1500, 0.5);
+    let out = qrtl_land_handoff(&mut qp, Some(land));
+
+    assert!(!qrtl_copy_home_alt(PositionControlState::Position2));
+    assert!(qrtl_should_verify_land(PositionControlState::Position2));
+    assert!(!out.copy_home_alt);
+    assert!(out.verify_vtol_land);
+    assert!(!out.stick_mixing_fbw);
+    assert!(out.land.entered_descend);
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandDescend);
+}
+
+#[test]
+fn qrtl_land_handoff_past_position2_copies_home_alt() {
+    let mut qp = available_qp();
+    qp.poscontrol_mut()
+        .set_state(PositionControlState::LandDescend);
+    let out = qrtl_land_handoff(&mut qp, None);
+
+    assert!(qrtl_copy_home_alt(PositionControlState::LandDescend));
+    assert!(out.copy_home_alt);
+    assert!(out.verify_vtol_land);
+    assert!(!out.stick_mixing_fbw);
+}
+
+#[test]
+fn qrtl_run_rtl_approach_mixes_sticks_and_does_not_land() {
+    let mut qp = available_qp();
+    qp.poscontrol_mut()
+        .set_state(PositionControlState::Approach);
+    let out = qrtl_run(&mut qp, QrtlRunView::returning());
+
+    assert_eq!(out.action, QrtlRunAction::Return);
+    assert!(out.vtol_position_controller);
+    assert!(out.stick_mixing_fbw);
+    assert!(!out.copy_home_alt);
+    assert!(!out.verify_vtol_land);
+    assert!(qrtl_stick_mixing_fbw(PositionControlState::Approach));
+    assert!(qrtl_allows_throttle_nudging(
+        QrtlSubMode::Rtl,
+        PositionControlState::Approach
+    ));
+    assert!(!qrtl_allows_throttle_nudging(
+        QrtlSubMode::Climb,
+        PositionControlState::Approach
+    ));
+    assert!(!qrtl_allows_throttle_nudging(
+        QrtlSubMode::Rtl,
+        PositionControlState::Position1
+    ));
+}
+
+#[test]
+fn qrtl_update_delegates_to_qstabilize() {
+    let out = qrtl_update();
+    assert!(out.used_qstabilize);
+}
+
+#[test]
+fn qrtl_target_altitude_uses_base_mode_outside_approach() {
+    let out = qrtl_update_target_altitude(QrtlTargetAltView::not_approach());
+    assert!(out.used_base_mode);
+    assert!(approx(out.offset_up_m, 0.0));
+}
+
+#[test]
+fn qrtl_target_altitude_holds_rtl_delta_when_far() {
+    let out = qrtl_update_target_altitude(QrtlTargetAltView::approach_far());
+    assert!(!out.used_base_mode);
+    // RTL_ALTITUDE 100 - Q_RTL_ALT 15 = 85 m, still outside rad_max.
+    assert!(approx(out.offset_up_m, RTL_ALTITUDE_DEFAULT_M - Q_RTL_ALT_DEFAULT_M));
+}
+
+#[test]
+fn mode_qrtl_cpp_surfaces_are_complete() {
+    assert!(mode_qrtl_surfaces_complete());
+    assert_eq!(MODE_QRTL_CPP_SURFACES.len(), 7);
+    let names: [&str; 7] = [
+        "_enter",
+        "update",
+        "run",
+        "run land handoff",
+        "update_target_altitude",
+        "allows_throttle_nudging",
+        "get_VTOL_return_radius",
+    ];
+    for (i, row) in MODE_QRTL_CPP_SURFACES.iter().enumerate() {
+        assert_eq!(row.name, names[i]);
+        assert!(
+            row.status == QrtlPortStatus::OnMain || row.status == QrtlPortStatus::ThisSlice
+        );
+    }
+    assert_eq!(MODE_QRTL_CPP_SURFACES[0].status, QrtlPortStatus::OnMain);
+    assert_eq!(MODE_QRTL_CPP_SURFACES[1].status, QrtlPortStatus::ThisSlice);
+    assert_eq!(MODE_QRTL_CPP_SURFACES[3].status, QrtlPortStatus::ThisSlice);
+    assert_eq!(MODE_QRTL_CPP_SURFACES[6].status, QrtlPortStatus::OnMain);
 }
