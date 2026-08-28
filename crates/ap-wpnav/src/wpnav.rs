@@ -1,9 +1,11 @@
-//! Constructor, destination set, `update_wpnav`, `advance_wp_target_along_track`, `set_spline_destination_NED_m`, and `set_spline_destination_next_NED_m` leftover.
+//! Constructor, destination set, `update_wpnav`, `advance_wp_target_along_track`, both spline destination setters, `set_wp_destination_next_NED_m`, Location wrappers, `get_terrain_*`, `get_wp_stopping_point_*`, and `force_stop_at_next_wp` leftover.
 
 use ap_math::control::{shape_vel_accel, update_vel_accel};
-use ap_math::location::{get_bearing_cd, get_bearing_rad};
+use ap_math::location::{get_bearing_cd, get_bearing_rad, AltContext, AltFrame, Location};
 use ap_math::scalar::{constrain_value, is_equal, is_positive, is_zero, GRAVITY_MSS};
+use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
+use ap_math::Ftype;
 
 /// Default horizontal acceleration, m/s². Upstream `WPNAV_ACCELERATION_MS`.
 pub const WPNAV_ACCELERATION_MS: f32 = 2.5;
@@ -43,6 +45,63 @@ pub struct AttitudeJerkLimits {
     pub accel_pitch_max_radss: f32,
     /// `get_input_tc`, seconds. Floor inside the snap formula is 0.1.
     pub input_tc: f32,
+}
+
+/// Terrain provider `get_terrain_source` reports. Upstream
+/// `AC_WPNav::TerrainSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerrainSource {
+    /// No rangefinder in use and no terrain database leftover.
+    Unavailable,
+    /// `_rangefinder_available && _rangefinder_use`.
+    FromRangefinder,
+    /// Leftover of `AP_Terrain::enabled()` when rangefinder is not selected.
+    FromTerrainDatabase,
+}
+
+/// Caller-supplied leftovers `get_terrain_U_m` reads from `AP_Terrain` and
+/// PosControl. ADR-0004 forbids those singletons.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GetTerrainContext {
+    /// Leftover of `AP_Terrain::enabled()`.
+    pub terrain_database_enabled: bool,
+    /// Leftover of `height_above_terrain` plus
+    /// `PosControl::get_pos_estimate_U_m`. Required when the source is
+    /// the terrain database.
+    pub terrain_database_u_m: Option<f32>,
+}
+
+/// Caller-supplied leftovers `get_vector_NED_m` reads from AHRS and
+/// Location altitude conversion. ADR-0004 forbids those singletons.
+#[derive(Debug, Clone, Copy)]
+pub struct GetVectorNedContext {
+    /// Leftover of `AP::ahrs().get_origin`.
+    pub origin: Location,
+    /// Leftover of `Location::get_alt_m` datums.
+    pub alt: AltContext,
+}
+
+impl Default for GetVectorNedContext {
+    fn default() -> Self {
+        Self {
+            origin: Location::new(0, 0),
+            alt: AltContext::default(),
+        }
+    }
+}
+
+/// Leftover of `update_track_with_speed_accel_limits`. S-curve / spline
+/// `set_speed_max` / `set_speed_accel` stay in `ap-math`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateTrackLimitsLeftover {
+    /// `_this_leg_is_spline` → `_spline_this_leg.set_speed_accel`.
+    pub need_this_spline_speed_accel: bool,
+    /// otherwise `_scurve_this_leg.set_speed_max`.
+    pub need_this_scurve_speed_max: bool,
+    /// `_next_leg_is_spline` → `_spline_next_leg.set_speed_accel`.
+    pub need_next_spline_speed_accel: bool,
+    /// otherwise `_scurve_next_leg.set_speed_max`.
+    pub need_next_scurve_speed_max: bool,
 }
 
 impl Default for AttitudeJerkLimits {
@@ -287,6 +346,14 @@ pub struct WpNav {
     spline_next_origin_vel_ned_ms: Vector3f,
     spline_next_destination_vel_ned_ms: Vector3f,
     need_this_leg_dest_speed_max: bool,
+    scurve_next_leg_calculated: bool,
+    last_next_arc_rad: f32,
+    need_this_leg_dest_speed_max_zero: bool,
+    need_next_scurve_init: bool,
+    rangefinder_available: bool,
+    rangefinder_use: bool,
+    rangefinder_healthy: bool,
+    rangefinder_terrain_u_m: f32,
 }
 
 impl Default for WpNav {
@@ -351,6 +418,14 @@ impl WpNav {
             spline_next_origin_vel_ned_ms: Vector3f::zero(),
             spline_next_destination_vel_ned_ms: Vector3f::zero(),
             need_this_leg_dest_speed_max: false,
+            scurve_next_leg_calculated: false,
+            last_next_arc_rad: 0.0,
+            need_this_leg_dest_speed_max_zero: false,
+            need_next_scurve_init: false,
+            rangefinder_available: false,
+            rangefinder_use: true,
+            rangefinder_healthy: false,
+            rangefinder_terrain_u_m: 0.0,
         }
     }
 
@@ -523,6 +598,74 @@ impl WpNav {
         self.need_this_leg_dest_speed_max
     }
 
+    /// True after `set_wp_destination_next_NED_m` asked for a new next-leg
+    /// `SCurve::calculate_track`. The track object stays in `ap-math`.
+    #[must_use]
+    pub fn scurve_next_leg_calculated(&self) -> bool {
+        self.scurve_next_leg_calculated
+    }
+
+    /// Arc angle last passed to next-leg `calculate_track`, radians.
+    #[must_use]
+    pub fn last_next_arc_rad(&self) -> f32 {
+        self.last_next_arc_rad
+    }
+
+    /// Leftover of `force_stop_at_next_wp` writing
+    /// `_scurve_this_leg.set_destination_speed_max(0)`.
+    #[must_use]
+    pub fn need_this_leg_dest_speed_max_zero(&self) -> bool {
+        self.need_this_leg_dest_speed_max_zero
+    }
+
+    /// Leftover of `force_stop_at_next_wp` calling `_scurve_next_leg.init()`.
+    #[must_use]
+    pub fn need_next_scurve_init(&self) -> bool {
+        self.need_next_scurve_init
+    }
+
+    /// Terrain provider. Upstream `get_terrain_source`.
+    #[must_use]
+    pub fn get_terrain_source(&self, terrain_database_enabled: bool) -> TerrainSource {
+        if self.rangefinder_available && self.rangefinder_use {
+            TerrainSource::FromRangefinder
+        } else if terrain_database_enabled {
+            TerrainSource::FromTerrainDatabase
+        } else {
+            TerrainSource::Unavailable
+        }
+    }
+
+    /// True if `WPNAV_RFND_USE` is set. Upstream `rangefinder_used`.
+    #[must_use]
+    pub fn rangefinder_used(&self) -> bool {
+        self.rangefinder_use
+    }
+
+    /// True if rangefinder use is enabled and the last reading was healthy.
+    /// Upstream `rangefinder_used_and_healthy`.
+    #[must_use]
+    pub fn rangefinder_used_and_healthy(&self) -> bool {
+        self.rangefinder_use && self.rangefinder_healthy
+    }
+
+    /// Terrain-following margin, metres, floored at 0.1.
+    /// Upstream `get_terrain_margin_m`.
+    #[must_use]
+    pub fn terrain_margin_m(&self) -> f32 {
+        self.terrain_margin_m.max(0.1)
+    }
+
+    /// Corner acceleration, m/s². Upstream `get_corner_acceleration_mss`.
+    #[must_use]
+    pub fn corner_acceleration_mss(&self) -> f32 {
+        if is_positive(self.wp_accel_c_mss) {
+            self.wp_accel_c_mss
+        } else {
+            2.0 * self.wp_acceleration_mss()
+        }
+    }
+
     /// True if the preloaded next leg is a spline.
     #[must_use]
     pub fn next_leg_is_spline(&self) -> bool {
@@ -650,6 +793,21 @@ impl WpNav {
     /// Override `WP_ACC` before init.
     pub fn set_wp_accel_mss(&mut self, accel_mss: f32) {
         self.wp_accel_mss = accel_mss;
+    }
+
+    /// Override `WP_ACC_CNR` before init.
+    pub fn set_wp_accel_c_mss(&mut self, accel_c_mss: f32) {
+        self.wp_accel_c_mss = accel_c_mss;
+    }
+
+    /// Override `TER_MARGIN` before a terrain-margin read.
+    pub fn set_terrain_margin_m(&mut self, margin_m: f32) {
+        self.terrain_margin_m = margin_m;
+    }
+
+    /// Override `WPNAV_RFND_USE`.
+    pub fn set_rangefinder_use(&mut self, use_rangefinder: bool) {
+        self.rangefinder_use = use_rangefinder;
     }
 
     /// Override `WP_SPD_UP` before a tick. Used by tests and later param load.
@@ -823,6 +981,10 @@ impl WpNav {
         self.spline_next_origin_vel_ned_ms = Vector3f::zero();
         self.spline_next_destination_vel_ned_ms = Vector3f::zero();
         self.need_this_leg_dest_speed_max = false;
+        self.scurve_next_leg_calculated = false;
+        self.last_next_arc_rad = 0.0;
+        self.need_this_leg_dest_speed_max_zero = false;
+        self.need_next_scurve_init = false;
         self.flags.fast_waypoint = false;
         self.flags.reached_destination = false;
 
@@ -913,6 +1075,10 @@ impl WpNav {
         self.spline_next_origin_vel_ned_ms = Vector3f::zero();
         self.spline_next_destination_vel_ned_ms = Vector3f::zero();
         self.need_this_leg_dest_speed_max = false;
+        self.scurve_next_leg_calculated = false;
+        self.last_next_arc_rad = 0.0;
+        self.need_this_leg_dest_speed_max_zero = false;
+        self.need_next_scurve_init = false;
         self.flags.reached_destination = false;
 
         true
@@ -976,6 +1142,312 @@ impl WpNav {
         self.need_this_leg_dest_speed_max = true;
 
         true
+    }
+
+    /// Sets the next waypoint destination from a NED metre vector.
+    ///
+    /// Upstream `AC_WPNav::set_wp_destination_next_NED_m`. Does not add
+    /// the next point when the dest terrain frame does not match the
+    /// current leg (returns true, state unchanged).
+    /// `SCurve::calculate_track` / `set_origin_speed_max` stay in
+    /// `ap-math` (COP-002) — this slice records that a next-leg scurve
+    /// is required, marks a fast waypoint, and records the spline→scurve
+    /// destination-speed leftover when the current leg is a spline.
+    pub fn set_wp_destination_next_ned_m(
+        &mut self,
+        destination_ned_m: Vector3f,
+        is_terrain_alt: bool,
+        arc_rad: f32,
+    ) -> bool {
+        // do not add next point if alt types don't match
+        if is_terrain_alt != self.is_terrain_alt {
+            return true;
+        }
+
+        // `_scurve_next_leg.calculate_track` stays in ap-math.
+        self.scurve_next_leg_calculated = true;
+        self.last_next_arc_rad = arc_rad;
+        if self.this_leg_is_spline {
+            // leftover of `_spline_this_leg.get_destination_speed_max` →
+            // `_scurve_next_leg.set_origin_speed_max` →
+            // `_spline_this_leg.set_destination_speed_max`.
+            self.need_this_leg_dest_speed_max = true;
+        }
+        self.next_leg_is_spline = false;
+        self.spline_next_leg_set = false;
+        self.spline_next_destination_ned_m = Vector3f::zero();
+        self.spline_next_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_next_destination_vel_ned_ms = Vector3f::zero();
+        self.need_this_leg_dest_speed_max_zero = false;
+        self.need_next_scurve_init = false;
+
+        // Enable fast waypoint transition since next leg is known
+        self.flags.fast_waypoint = true;
+        self.next_destination_ned_m = destination_ned_m;
+
+        true
+    }
+
+    /// Converts a Location to a NED metre vector from the EKF origin.
+    ///
+    /// Upstream `AC_WPNav::get_vector_NED_m`. Horizontal conversion is
+    /// leftover of `Location::get_vector_xy_from_origin_NE_m` (AHRS
+    /// origin); altitude conversion is leftover of `Location::get_alt_m`.
+    #[must_use]
+    pub fn get_vector_ned_m(loc: Location, ctx: GetVectorNedContext) -> Option<(Vector3f, bool)> {
+        if !ctx.origin.initialised() {
+            return None;
+        }
+        let ne = ctx.origin.get_distance_ne(loc);
+        let (z, is_terrain_alt) = if loc.alt_frame() == AltFrame::AboveTerrain {
+            let terrain_u_cm = loc.get_alt_cm(AltFrame::AboveTerrain, &ctx.alt)?;
+            let terrain_u_m = terrain_u_cm as f32 * 0.01;
+            (-terrain_u_m, true)
+        } else {
+            let origin_alt_cm = loc.get_alt_cm(AltFrame::AboveOrigin, &ctx.alt)?;
+            let origin_alt_m = origin_alt_cm as f32 * 0.01;
+            (-origin_alt_m, false)
+        };
+        Some((Vector3f::new(ne.x, ne.y, z), is_terrain_alt))
+    }
+
+    /// Sets the current destination from a Location.
+    /// Upstream `AC_WPNav::set_wp_destination_loc`.
+    pub fn set_wp_destination_loc(
+        &mut self,
+        destination: Location,
+        arc_rad: f32,
+        vec_ctx: GetVectorNedContext,
+        dest_ctx: SetWpDestinationContext,
+    ) -> bool {
+        let Some((dest_ned_m, is_terrain_alt)) = Self::get_vector_ned_m(destination, vec_ctx)
+        else {
+            return false;
+        };
+        self.set_wp_destination_ned_m(dest_ned_m, is_terrain_alt, arc_rad, dest_ctx)
+    }
+
+    /// Sets the next destination from a Location.
+    /// Upstream `AC_WPNav::set_wp_destination_next_loc`.
+    pub fn set_wp_destination_next_loc(
+        &mut self,
+        destination: Location,
+        arc_rad: f32,
+        vec_ctx: GetVectorNedContext,
+    ) -> bool {
+        let Some((dest_ned_m, is_terrain_alt)) = Self::get_vector_ned_m(destination, vec_ctx)
+        else {
+            return false;
+        };
+        self.set_wp_destination_next_ned_m(dest_ned_m, is_terrain_alt, arc_rad)
+    }
+
+    /// Current destination as a Location offset from the EKF origin.
+    ///
+    /// Upstream `AC_WPNav::get_wp_destination_loc`. `origin` is the
+    /// leftover of `AP::ahrs().get_origin`. `Location::from_ekf_offset_NED_m`
+    /// is applied here from that origin.
+    #[must_use]
+    pub fn get_wp_destination_loc(&self, origin: Location) -> Option<Location> {
+        if !origin.initialised() {
+            return None;
+        }
+        let frame = if self.is_terrain_alt {
+            AltFrame::AboveTerrain
+        } else {
+            AltFrame::AboveOrigin
+        };
+        let mut destination = origin;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "upstream assigns (-z)*100 to int32 via from_ekf_offset_NED_m"
+        )]
+        let alt_cm = (-self.destination_ned_m.z * 100.0) as i32;
+        destination.set_alt_cm(alt_cm, frame);
+        destination.offset(
+            Ftype::from(self.destination_ned_m.x),
+            Ftype::from(self.destination_ned_m.y),
+        );
+        Some(destination)
+    }
+
+    /// Sets the current spline waypoint from Locations.
+    /// Upstream `AC_WPNav::set_spline_destination_loc`.
+    pub fn set_spline_destination_loc(
+        &mut self,
+        destination: Location,
+        next_destination: Location,
+        next_is_spline: bool,
+        vec_ctx: GetVectorNedContext,
+        dest_ctx: SetWpDestinationContext,
+    ) -> bool {
+        let Some((dest_ned_m, dest_is_terrain_alt)) = Self::get_vector_ned_m(destination, vec_ctx)
+        else {
+            return false;
+        };
+        let Some((next_ned_m, next_is_terrain_alt)) =
+            Self::get_vector_ned_m(next_destination, vec_ctx)
+        else {
+            return false;
+        };
+        self.set_spline_destination_ned_m(
+            dest_ned_m,
+            dest_is_terrain_alt,
+            next_ned_m,
+            next_is_terrain_alt,
+            next_is_spline,
+            dest_ctx,
+        )
+    }
+
+    /// Sets the next spline segment from Locations.
+    /// Upstream `AC_WPNav::set_spline_destination_next_loc`.
+    pub fn set_spline_destination_next_loc(
+        &mut self,
+        next_destination: Location,
+        next_next_destination: Location,
+        next_next_is_spline: bool,
+        vec_ctx: GetVectorNedContext,
+    ) -> bool {
+        let Some((next_ned_m, next_is_terrain_alt)) =
+            Self::get_vector_ned_m(next_destination, vec_ctx)
+        else {
+            return false;
+        };
+        let Some((next_next_ned_m, next_next_is_terrain_alt)) =
+            Self::get_vector_ned_m(next_next_destination, vec_ctx)
+        else {
+            return false;
+        };
+        self.set_spline_destination_next_ned_m(
+            next_ned_m,
+            next_is_terrain_alt,
+            next_next_ned_m,
+            next_next_is_terrain_alt,
+            next_next_is_spline,
+        )
+    }
+
+    /// Terrain offset above the EKF origin, metres.
+    /// Upstream `AC_WPNav::get_terrain_U_m`.
+    #[must_use]
+    pub fn get_terrain_u_m(&self, ctx: GetTerrainContext) -> Option<f32> {
+        match self.get_terrain_source(ctx.terrain_database_enabled) {
+            TerrainSource::Unavailable => None,
+            TerrainSource::FromRangefinder => {
+                if self.rangefinder_healthy {
+                    Some(self.rangefinder_terrain_u_m)
+                } else {
+                    None
+                }
+            }
+            TerrainSource::FromTerrainDatabase => ctx.terrain_database_u_m,
+        }
+    }
+
+    /// Terrain offset below the EKF origin, metres (negated U).
+    /// Upstream `AC_WPNav::get_terrain_D_m`.
+    #[must_use]
+    pub fn get_terrain_d_m(&self, ctx: GetTerrainContext) -> Option<f32> {
+        self.get_terrain_u_m(ctx).map(|terrain_u_m| -terrain_u_m)
+    }
+
+    /// Stores a rangefinder terrain offset in metres.
+    /// Upstream `AC_WPNav::set_rangefinder_terrain_U_m`.
+    pub fn set_rangefinder_terrain_u_m(
+        &mut self,
+        available: bool,
+        healthy: bool,
+        terrain_u_m: f32,
+    ) {
+        self.rangefinder_available = available;
+        self.rangefinder_healthy = healthy;
+        self.rangefinder_terrain_u_m = terrain_u_m;
+    }
+
+    /// Stores a rangefinder terrain offset in centimetres.
+    /// Upstream `AC_WPNav::set_rangefinder_terrain_U_cm`.
+    pub fn set_rangefinder_terrain_u_cm(
+        &mut self,
+        available: bool,
+        healthy: bool,
+        terrain_u_cm: f32,
+    ) {
+        self.set_rangefinder_terrain_u_m(available, healthy, terrain_u_cm * 0.01);
+    }
+
+    /// Horizontal stopping point, metres.
+    ///
+    /// Upstream `get_wp_stopping_point_NE_m` is a leftover of
+    /// `PosControl::get_stopping_point_NE_m`.
+    #[must_use]
+    pub fn get_wp_stopping_point_ne_m(pos_control_stopping_point_ned_m: Vector3f) -> Vector2f {
+        Self::get_wp_stopping_point_ned_m(pos_control_stopping_point_ned_m).xy()
+    }
+
+    /// Horizontal stopping point, centimetres.
+    /// Upstream `get_wp_stopping_point_NE_cm`.
+    #[must_use]
+    pub fn get_wp_stopping_point_ne_cm(pos_control_stopping_point_ned_m: Vector3f) -> Vector2f {
+        let ne_m = Self::get_wp_stopping_point_ne_m(pos_control_stopping_point_ned_m);
+        Vector2f::new(ne_m.x * 100.0, ne_m.y * 100.0)
+    }
+
+    /// Full 3D NED stopping point, metres.
+    ///
+    /// Upstream `get_wp_stopping_point_NED_m` is a leftover of
+    /// `PosControl::get_stopping_point_NE_m` plus `get_stopping_point_D_m`.
+    #[must_use]
+    pub fn get_wp_stopping_point_ned_m(pos_control_stopping_point_ned_m: Vector3f) -> Vector3f {
+        pos_control_stopping_point_ned_m
+    }
+
+    /// Full 3D NEU stopping point, centimetres.
+    /// Upstream `get_wp_stopping_point_NEU_cm`.
+    #[must_use]
+    pub fn get_wp_stopping_point_neu_cm(pos_control_stopping_point_ned_m: Vector3f) -> Vector3f {
+        let ned = Self::get_wp_stopping_point_ned_m(pos_control_stopping_point_ned_m);
+        Vector3f::new(ned.x * 100.0, ned.y * 100.0, -ned.z * 100.0)
+    }
+
+    /// Forces a stop at the next waypoint instead of blending through it.
+    ///
+    /// Upstream `AC_WPNav::force_stop_at_next_wp`. No-ops (returns false)
+    /// when the current dest was already a slow waypoint. S-curve
+    /// `set_destination_speed_max(0)` / `init` stay in `ap-math`.
+    pub fn force_stop_at_next_wp(&mut self) -> bool {
+        if !self.flags.fast_waypoint {
+            return false;
+        }
+
+        self.flags.fast_waypoint = false;
+
+        if !self.this_leg_is_spline {
+            self.need_this_leg_dest_speed_max_zero = true;
+        }
+        if !self.next_leg_is_spline {
+            self.need_next_scurve_init = true;
+            self.scurve_next_leg_calculated = false;
+        }
+
+        true
+    }
+
+    /// Records the leftover of `update_track_with_speed_accel_limits`.
+    #[must_use]
+    pub fn update_track_with_speed_accel_limits(&self) -> UpdateTrackLimitsLeftover {
+        UpdateTrackLimitsLeftover {
+            need_this_spline_speed_accel: self.this_leg_is_spline,
+            need_this_scurve_speed_max: !self.this_leg_is_spline,
+            need_next_spline_speed_accel: self.next_leg_is_spline,
+            need_next_scurve_speed_max: !self.next_leg_is_spline,
+        }
+    }
+
+    /// Sets the target horizontal speed in cm/s.
+    /// Upstream `AC_WPNav::set_speed_NE_cms`.
+    pub fn set_speed_ne_cms(&mut self, speed_cms: f32) {
+        let _ = self.set_speed_ne_ms(speed_cms * 0.01);
     }
 
     /// True if `wp_and_spline_init_m` or `update_wpnav` ran within 200 ms.
@@ -1055,7 +1527,7 @@ impl WpNav {
 
     /// Marks the current dest as a fast waypoint. Upstream this bit is
     /// written by `set_wp_destination_next_NED_m` when the next dest is
-    /// preloaded; that setter is a later slice.
+    /// preloaded.
     pub fn set_fast_waypoint(&mut self, fast: bool) {
         self.flags.fast_waypoint = fast;
     }

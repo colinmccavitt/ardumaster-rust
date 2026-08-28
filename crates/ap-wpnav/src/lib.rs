@@ -26,6 +26,15 @@
 //! skip when the next dest terrain frame mismatches, then leftover
 //! `_spline_next_leg` origin / dest velocities and this-leg
 //! `set_destination_speed_max`.
+//! The next straight dest is
+//! [`set_wp_destination_next_ned_m`](WpNav::set_wp_destination_next_ned_m):
+//! same terrain-frame skip, then leftover next-leg `SCurve::calculate_track`
+//! and a fast-waypoint flag. Location wrappers convert through
+//! [`get_vector_ned_m`](WpNav::get_vector_ned_m). Terrain offset is
+//! [`get_terrain_u_m`](WpNav::get_terrain_u_m) / [`get_terrain_d_m`](WpNav::get_terrain_d_m).
+//! Stopping-point centimetre wrappers convert a PosControl leftover.
+//! [`force_stop_at_next_wp`](WpNav::force_stop_at_next_wp) clears the fast
+//! flag and records the scurve dest-speed / next-leg init leftover.
 //!
 //! # What this crate does not own
 //!
@@ -43,8 +52,9 @@
 pub mod wpnav;
 
 pub use wpnav::{
-    AdvanceWpTargetContext, AdvanceWpTargetLeftover, AttitudeJerkLimits, PosControlSpeedAccel,
-    SetWpDestinationContext, UpdateWpNavContext, UpdateWpNavLeftover, WpNav, WpNavFlags,
+    AdvanceWpTargetContext, AdvanceWpTargetLeftover, AttitudeJerkLimits, GetTerrainContext,
+    GetVectorNedContext, PosControlSpeedAccel, SetWpDestinationContext, TerrainSource,
+    UpdateTrackLimitsLeftover, UpdateWpNavContext, UpdateWpNavLeftover, WpNav, WpNavFlags,
     WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT,
     WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN,
     WP_SPD_UP_DEFAULT,
