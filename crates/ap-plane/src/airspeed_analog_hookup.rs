@@ -40,6 +40,8 @@ pub struct AirspeedAnalogPublish {
     pub devid: i32,
     /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
     pub options: u32,
+    /// Max |airspeed-groundspeed| (m/s), upstream `ARSPD_WIND_MAX`.
+    pub wind_max: f32,
 }
 
 impl AirspeedAnalogHookup {
@@ -112,6 +114,13 @@ impl AirspeedAnalogHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_WIND_MAX` (m/s).
+    pub fn set_wind_max(&mut self, wind_max: f32) {
+        let mut params = self.params;
+        params.wind_max = wind_max;
+        self.apply_airspeed_params(params);
+    }
+
     /// Drive the mock analog source to a ratiometric voltage.
     pub fn set_voltage(&mut self, volts: f32) {
         let mut source = MockAnalogSource::new();
@@ -142,6 +151,7 @@ impl AirspeedAnalogHookup {
             bus: self.params.primary_bus(),
             devid: self.params.primary_devid(),
             options: self.params.options,
+            wind_max: self.params.wind_max,
         }
     }
 }

@@ -105,6 +105,7 @@ use ap_airspeed::sitl::{
 use ap_airspeed::bus::ARSPD_BUS_DEFAULT;
 use ap_airspeed::devid::ARSPD_DEVID_DEFAULT;
 use ap_airspeed::options::ARSPD_OPTIONS_DEFAULT;
+use ap_airspeed::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use ap_airspeed::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -284,6 +285,10 @@ pub struct PlaneMainLoop {
     pub airspeed_devid: i32,
     /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
     pub airspeed_options: u32,
+    /// Max |airspeed-groundspeed| (m/s), upstream `ARSPD_WIND_MAX`.
+    pub airspeed_wind_max: f32,
+    /// True when the enabled WIND_MAX check fails.
+    pub airspeed_wind_max_exceeded: bool,
     /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
     pub airspeed_type: u8,
     /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
@@ -730,6 +735,8 @@ impl Default for PlaneMainLoop {
             airspeed_bus: ARSPD_BUS_DEFAULT,
             airspeed_devid: ARSPD_DEVID_DEFAULT,
             airspeed_options: ARSPD_OPTIONS_DEFAULT,
+            airspeed_wind_max: ARSPD_WIND_MAX_DEFAULT,
+            airspeed_wind_max_exceeded: false,
             airspeed_type: ARSPD_TYPE_SITL,
             configured_airspeed_backend: AirspeedBackendKind::Sitl,
             active_airspeed_backend: AirspeedBackendKind::Sitl,
@@ -1218,6 +1225,8 @@ impl PlaneMainLoop {
             self.airspeed_bus = airspeed.airspeed_params().primary_bus();
             self.airspeed_devid = airspeed.airspeed_params().primary_devid();
             self.airspeed_options = airspeed.airspeed_params().options;
+            self.airspeed_wind_max = airspeed.airspeed_params().wind_max;
+            self.airspeed_wind_max_exceeded = out.wind_max_exceeded;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
@@ -1241,6 +1250,7 @@ impl PlaneMainLoop {
             self.airspeed_bus = out.bus;
             self.airspeed_devid = out.devid;
             self.airspeed_options = out.options;
+            self.airspeed_wind_max = out.wind_max;
         }
         let sensor_type = self
             .sitl_airspeed

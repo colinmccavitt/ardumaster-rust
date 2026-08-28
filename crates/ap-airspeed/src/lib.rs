@@ -14,6 +14,7 @@ pub mod options;
 pub mod params;
 pub mod sitl;
 pub mod tube_order;
+pub mod wind_max;
 
 pub use sitl::{
     apply_autocal_ratio, apply_pitot_ratio, apply_temp_compensation, eas_from_tas,
@@ -57,4 +58,7 @@ pub use options::{
     ARSPD_OPTION_DISABLE_VOLTAGE_CORRECTION, ARSPD_OPTION_ON_FAILURE_AHRS_WIND_MAX_DO_DISABLE,
     ARSPD_OPTION_ON_FAILURE_AHRS_WIND_MAX_RECOVERY_DO_REENABLE, ARSPD_OPTION_REPORT_OFFSET,
     ARSPD_OPTION_USE_EKF_CONSISTENCY,
+};
+pub use wind_max::{
+    airspeed_groundspeed_delta, wind_max_enabled, wind_max_exceeded, ARSPD_WIND_MAX_DEFAULT,
 };

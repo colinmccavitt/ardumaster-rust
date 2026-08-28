@@ -25,6 +25,8 @@ pub struct AirspeedHealthSchedulerOutput {
     pub use_airspeed: bool,
     /// Whether TAS is published to TECS (healthy and ARSPD_USE).
     pub use_for_tecs: bool,
+    /// True when the enabled `ARSPD_WIND_MAX` check fails.
+    pub wind_max_exceeded: bool,
 }
 
 /// Run timer tick, primary selection, and health refresh.
@@ -42,6 +44,7 @@ pub fn airspeed_health_scheduler_tick(
         primary_switched: published.health.primary != prev_primary,
         use_airspeed: published.use_airspeed,
         use_for_tecs: published.use_for_tecs,
+        wind_max_exceeded: published.wind_max_exceeded,
     }
 }
 

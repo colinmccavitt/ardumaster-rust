@@ -1,5 +1,6 @@
 use ap_airspeed::backend::{ARSPD_TYPE_DEFAULT, ARSPD_TYPE_SITL};
 use ap_airspeed::options::ARSPD_OPTIONS_DEFAULT;
+use ap_airspeed::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use ap_airspeed::params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };
@@ -40,6 +41,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.primary_devid(), 0);
     assert_eq!(params.options, ARSPD_OPTIONS_DEFAULT);
     assert_eq!(params.options(), 11);
+    assert!((params.wind_max - ARSPD_WIND_MAX_DEFAULT).abs() < 1e-6);
+    assert_eq!(params.wind_max(), 0.0);
 }
 
 #[test]

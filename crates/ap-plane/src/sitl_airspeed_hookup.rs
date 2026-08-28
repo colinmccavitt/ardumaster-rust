@@ -5,6 +5,7 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
 use ap_airspeed::params::AirspeedParams;
+use ap_airspeed::wind_max::wind_max_exceeded;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
     ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_SKIP_CAL_DEFAULT, ARSPD_TEMP_REF_C,
@@ -74,6 +75,10 @@ pub struct SitlAirspeedPublish {
     pub devid: i32,
     /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
     pub options: u32,
+    /// Max |airspeed-groundspeed| (m/s), upstream `ARSPD_WIND_MAX`.
+    pub wind_max: f32,
+    /// True when the enabled WIND_MAX check fails.
+    pub wind_max_exceeded: bool,
 }
 
 impl SitlAirspeedHookup {
@@ -198,6 +203,13 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_WIND_MAX` (m/s).
+    pub fn set_wind_max(&mut self, wind_max: f32) {
+        let mut params = self.params;
+        params.wind_max = wind_max;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -257,6 +269,12 @@ impl SitlAirspeedHookup {
             bus: self.params.primary_bus(),
             devid: self.params.primary_devid(),
             options: self.params.options,
+            wind_max: self.params.wind_max,
+            wind_max_exceeded: wind_max_exceeded(
+                sample.eas_mps,
+                self.gps_groundspeed_mps,
+                self.params.wind_max,
+            ),
         }
     }
 }

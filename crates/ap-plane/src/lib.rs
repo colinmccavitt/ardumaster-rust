@@ -31,6 +31,7 @@ pub mod airspeed_tube_order_hookup;
 pub mod airspeed_bus_hookup;
 pub mod airspeed_devid_hookup;
 pub mod airspeed_options_hookup;
+pub mod airspeed_wind_max_hookup;
 pub mod airspeed_tecs_health_hookup;
 pub mod compass_health_scheduler_hookup;
 pub mod compass_offset_calibration_hookup;

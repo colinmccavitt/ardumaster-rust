@@ -5,6 +5,7 @@ use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::devid::ARSPD_DEVID_DEFAULT;
 use crate::options::ARSPD_OPTIONS_DEFAULT;
+use crate::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use crate::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
@@ -98,6 +99,8 @@ pub struct AirspeedParams {
     pub primary: u8,
     /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
     pub options: u32,
+    /// Max |airspeed-groundspeed| (m/s), upstream `ARSPD_WIND_MAX`.
+    pub wind_max: f32,
 }
 
 impl Default for AirspeedParams {
@@ -107,6 +110,7 @@ impl Default for AirspeedParams {
             airspeed2: AirspeedInstanceParams::default(),
             primary: 0,
             options: ARSPD_OPTIONS_DEFAULT,
+            wind_max: ARSPD_WIND_MAX_DEFAULT,
         }
     }
 }
@@ -254,5 +258,11 @@ impl AirspeedParams {
     #[must_use]
     pub fn options(&self) -> u32 {
         self.options
+    }
+
+    /// Vehicle-level `ARSPD_WIND_MAX` (m/s). Zero disables the check.
+    #[must_use]
+    pub fn wind_max(&self) -> f32 {
+        self.wind_max
     }
 }
