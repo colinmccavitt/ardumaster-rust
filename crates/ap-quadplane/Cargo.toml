@@ -1,0 +1,10 @@
+[package]
+name = "ap-quadplane"
+description = "Port of ArduPilot ArduPlane/quadplane: QuadPlane / VTOL support first (Plane-4.7.0). Tracked as VT-001."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
