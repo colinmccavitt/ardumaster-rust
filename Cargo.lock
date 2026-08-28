@@ -27,6 +27,9 @@ version = "0.1.0"
 [[package]]
 name = "ap-autotune"
 version = "0.1.0"
+dependencies = [
+ "ap-filter",
+]
 
 [[package]]
 name = "ap-baro"

@@ -6,7 +6,7 @@
 //! Roll uses the smaller of FF or P; pitch/yaw use
 //! `max(P * AUTOTUNE_I_RATIO, FF / TRIM_TCONST)`. IMAX is clamped to
 //! `[AUTOTUNE_MIN_IMAX, AUTOTUNE_MAX_IMAX]` at `start`. The FF
-//! single-event estimate and `ff_filter` stay later slices.
+//! single-event estimate and `ff_filter` live in [`crate::ff_estimate`].
 
 use crate::gains::AtGains;
 use crate::state::{AtType, AutoTune};

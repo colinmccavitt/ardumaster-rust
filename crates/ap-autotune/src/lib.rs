@@ -13,13 +13,16 @@
 //! (`has_option` FLTD/FLTT gates) and the `AUTOTUNE_AXES` single-axis
 //! start mask live in [`options`]. I-term / FF coupling
 //! (`AUTOTUNE_INCREASE_FF_STEP` / `DECREASE_FF_STEP`, roll `min(FF, P)`,
-//! IMAX clamp) lives in [`ff`].
+//! IMAX clamp) lives in [`ff`]. The single-event FF estimate
+//! (`FF_single`, `ff_filter.apply`, `ff_count` 1/4 gates) lives in
+//! [`ff_estimate`].
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
 #![no_std]
 
 pub mod ff;
+pub mod ff_estimate;
 pub mod gains;
 pub mod level;
 pub mod options;
@@ -30,6 +33,11 @@ pub use ff::{
     apply_ff_i, constrain_ff_step, constrain_imax, couple_ff_i, couple_i,
     AUTOTUNE_DECREASE_FF_STEP, AUTOTUNE_INCREASE_FF_STEP, AUTOTUNE_I_RATIO, AUTOTUNE_MAX_IMAX,
     AUTOTUNE_MIN_IMAX, TRIM_TCONST,
+};
+pub use ff_estimate::{
+    apply_ff_count_gains, apply_ff_count_gate, ff_estimate_pending, ff_estimate_ready, ff_single,
+    FfEstimate, AUTOTUNE_MIN_D, AUTOTUNE_MIN_P, FF_COUNT_FIRST, FF_COUNT_READY,
+    FF_FILTER_RETURN_ELEMENT, FF_READY_P_SCALE,
 };
 pub use gains::{apply_stop_gains, should_save_on_stop, snapshot_gains, AtGains};
 pub use level::{
