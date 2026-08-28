@@ -5,21 +5,26 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::air_mode_active`] (`Q_OPTIONS` air-mode
-//! bit + [`air_mode::AirMode`]) and the QuadPlane-side transition FSM
-//! hooks ([`QuadPlane::update`], [`QuadPlane::in_frwd_transition`],
-//! [`QuadPlane::handle_do_vtol_transition`]). The FSM itself is VT-003.
+//! This slice: [`QuadPlane::mode_enter`] resets poscontrol / lean-angle
+//! when Plane changes mode, and [`Self::setup`] constructs the
+//! attitude_control / pos_control stubs (COP controllers live in
+//! `ap-control`). [`QuadPlane::init_throttle_wait`] is the QHover /
+//! QLoiter enter hook.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
 //! - `setup()` returns `true` if already `initialised`; returns `false`
-//!   when `enable` is zero; otherwise allocates motors and ends with
-//!   `initialised = true`.
+//!   when `enable` is zero; otherwise allocates motors and the COP
+//!   controllers and ends with `initialised = true`.
 //! - `available()` is `return initialised`.
+//! - `mode_enter()` is called on every mode change; when available it
+//!   sets `pos_control->set_lean_angle_max_cd(0)` and always returns
+//!   poscontrol to `QPOS_NONE`.
 
 #![no_std]
 
 pub mod air_mode;
+pub mod poscontrol;
 pub mod tailsitter;
 pub mod transition;
 pub mod vtol_mode;
@@ -40,6 +45,26 @@ pub struct QuadPlane {
     /// (`AP_MotorsMatrix` / `AP_MotorsTri` / `AP_MotorsTailsitter`) is a
     /// later slice; this flag is the non-null pointer after motors-init.
     motors_inited: bool,
+    /// Attitude-control object constructed by [`Self::setup`].
+    ///
+    /// Upstream `AC_AttitudeControl_Multi *attitude_control`. The
+    /// controller lives in COP; this flag is the non-null pointer.
+    attitude_control_inited: bool,
+    /// Position-control object constructed by [`Self::setup`].
+    ///
+    /// Upstream `AC_PosControl *pos_control`. The controller lives in
+    /// COP; this flag is the non-null pointer.
+    pos_control_inited: bool,
+    /// Last `pos_control->set_lean_angle_max_cd` this stub recorded.
+    lean_angle_max_cd: i32,
+    /// Upstream `PosControlState poscontrol`.
+    poscontrol: poscontrol::PosControlState,
+    /// Upstream `bool throttle_wait`.
+    throttle_wait: bool,
+    /// Upstream `bool guided_wait_takeoff`.
+    guided_wait_takeoff: bool,
+    /// Upstream `bool guided_wait_takeoff_on_mode_enter`.
+    guided_wait_takeoff_on_mode_enter: bool,
     /// `Q_OPTIONS`, upstream `AP_Int32 options`.
     options: i32,
     /// Air-mode latch, upstream `AirMode air_mode`.
@@ -56,6 +81,13 @@ impl QuadPlane {
             enable: Q_ENABLE_DEFAULT,
             initialised: false,
             motors_inited: false,
+            attitude_control_inited: false,
+            pos_control_inited: false,
+            lean_angle_max_cd: 0,
+            poscontrol: poscontrol::PosControlState::new(),
+            throttle_wait: false,
+            guided_wait_takeoff: false,
+            guided_wait_takeoff_on_mode_enter: false,
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
@@ -72,6 +104,13 @@ impl QuadPlane {
             enable,
             initialised: false,
             motors_inited: false,
+            attitude_control_inited: false,
+            pos_control_inited: false,
+            lean_angle_max_cd: 0,
+            poscontrol: poscontrol::PosControlState::new(),
+            throttle_wait: false,
+            guided_wait_takeoff: false,
+            guided_wait_takeoff_on_mode_enter: false,
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
@@ -115,8 +154,9 @@ impl QuadPlane {
     /// Upstream `QuadPlane::setup`.
     ///
     /// When already initialised, returns `true`. When `Q_ENABLE == 0`,
-    /// returns `false` and leaves motors unallocated. Otherwise runs
-    /// the motors-init stub and sets `initialised`.
+    /// returns `false` and leaves motors and the COP controllers
+    /// unallocated. Otherwise runs the motors-init stub, constructs
+    /// the attitude_control / pos_control stubs, and sets `initialised`.
     ///
     /// Soft-armed rejection, the memory check, and frame-class
     /// construction are later slices.
@@ -130,6 +170,11 @@ impl QuadPlane {
         // Upstream `motors = NEW_NOTHROW AP_MotorsMatrix(rc_speed)` (default
         // frame class). A null allocation is `allocation_error("motors")`.
         self.motors_inited = true;
+        // Upstream `attitude_control = NEW_NOTHROW AC_AttitudeControl_TS(...)`
+        // then `pos_control = NEW_NOTHROW AC_PosControl(...)`. The objects
+        // live in COP; these flags are the non-null pointers.
+        self.attitude_control_inited = true;
+        self.pos_control_inited = true;
         self.initialised = true;
         true
     }
