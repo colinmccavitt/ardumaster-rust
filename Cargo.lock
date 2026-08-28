@@ -163,12 +163,17 @@ dependencies = [
  "ap-math",
  "ap-nav",
  "ap-pid",
+ "ap-rc",
  "ap-replay",
  "ap-scheduler",
  "ap-servo",
  "ap-sim",
  "ap-tecs",
 ]
+
+[[package]]
+name = "ap-rc"
+version = "0.1.0"
 
 [[package]]
 name = "ap-replay"
