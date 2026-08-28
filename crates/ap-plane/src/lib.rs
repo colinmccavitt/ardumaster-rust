@@ -109,6 +109,8 @@ pub mod guided_mode_hookup;
 pub mod takeoff_mode_hookup;
 pub mod autoland_mode_hookup;
 pub mod avoid_adsb_mode_hookup;
+pub mod rtl_autoland_hookup;
+pub mod autonav_completeness;
 pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;
