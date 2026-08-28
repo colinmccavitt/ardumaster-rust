@@ -18,6 +18,9 @@
 //! owns track-time / offset-velocity shaping and the reached-destination
 //! flag; S-curve / spline target advance stays in `ap-math`. Bearing is
 //! [`get_wp_bearing_to_destination_rad`](WpNav::get_wp_bearing_to_destination_rad).
+//! A spline dest is [`set_spline_destination_ned_m`](WpNav::set_spline_destination_ned_m):
+//! same re-init and terrain-frame rules as the straight dest setter, then
+//! leftover origin / destination velocity vectors for `SplineCurve`.
 //!
 //! # What this crate does not own
 //!

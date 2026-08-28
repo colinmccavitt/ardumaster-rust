@@ -1,4 +1,4 @@
-//! Constructor, destination set, `update_wpnav`, and `advance_wp_target_along_track` leftover.
+//! Constructor, destination set, `update_wpnav`, `advance_wp_target_along_track`, and `set_spline_destination_NED_m` leftover.
 
 use ap_math::control::{shape_vel_accel, update_vel_accel};
 use ap_math::location::{get_bearing_cd, get_bearing_rad};
@@ -279,6 +279,9 @@ pub struct WpNav {
     scurve_this_leg_calculated: bool,
     pos_terrain_d_m: f32,
     last_arc_rad: f32,
+    spline_this_leg_set: bool,
+    spline_origin_vel_ned_ms: Vector3f,
+    spline_destination_vel_ned_ms: Vector3f,
 }
 
 impl Default for WpNav {
@@ -335,6 +338,9 @@ impl WpNav {
             scurve_this_leg_calculated: false,
             pos_terrain_d_m: 0.0,
             last_arc_rad: 0.0,
+            spline_this_leg_set: false,
+            spline_origin_vel_ned_ms: Vector3f::zero(),
+            spline_destination_vel_ned_ms: Vector3f::zero(),
         }
     }
 
@@ -452,6 +458,26 @@ impl WpNav {
     #[must_use]
     pub fn last_arc_rad(&self) -> f32 {
         self.last_arc_rad
+    }
+
+    /// True after `set_spline_destination_NED_m` asked for a new this-leg
+    /// `SplineCurve::set_origin_and_destination`. The curve object stays
+    /// in `ap-math`.
+    #[must_use]
+    pub fn spline_this_leg_set(&self) -> bool {
+        self.spline_this_leg_set
+    }
+
+    /// Origin velocity leftover forwarded to `SplineCurve`, NED m/s.
+    #[must_use]
+    pub fn spline_origin_vel_ned_ms(&self) -> Vector3f {
+        self.spline_origin_vel_ned_ms
+    }
+
+    /// Destination velocity leftover forwarded to `SplineCurve`, NED m/s.
+    #[must_use]
+    pub fn spline_destination_vel_ned_ms(&self) -> Vector3f {
+        self.spline_destination_vel_ned_ms
     }
 
     /// True if the preloaded next leg is a spline.
@@ -656,6 +682,9 @@ impl WpNav {
         self.scurve_this_leg_calculated = false;
         self.pos_terrain_d_m = 0.0;
         self.last_arc_rad = 0.0;
+        self.spline_this_leg_set = false;
+        self.spline_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_destination_vel_ned_ms = Vector3f::zero();
 
         self.offset_vel_ms = self.wp_desired_speed_ne_ms;
         self.offset_accel_mss = 0.0;
@@ -738,7 +767,94 @@ impl WpNav {
         self.this_leg_is_spline = false;
         self.next_leg_is_spline = false;
         self.next_destination_ned_m = Vector3f::zero();
+        self.spline_this_leg_set = false;
+        self.spline_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_destination_vel_ned_ms = Vector3f::zero();
         self.flags.fast_waypoint = false;
+        self.flags.reached_destination = false;
+
+        true
+    }
+
+    /// Sets the current spline waypoint from NED metre vectors.
+    ///
+    /// Upstream `AC_WPNav::set_spline_destination_NED_m`. Re-inits when
+    /// the previous destination was interrupted. Previous destination
+    /// becomes the new origin. Terrain frame changes need
+    /// `ctx.terrain_d_m`; missing terrain returns false.
+    /// `SplineCurve::set_speed_accel` / `set_origin_and_destination`
+    /// stay in `ap-math` (COP-003) — this slice records the origin and
+    /// destination velocity vectors that leftover would consume.
+    pub fn set_spline_destination_ned_m(
+        &mut self,
+        destination_ned_m: Vector3f,
+        is_terrain_alt: bool,
+        next_destination_ned_m: Vector3f,
+        next_is_terrain_alt: bool,
+        next_is_spline: bool,
+        ctx: SetWpDestinationContext,
+    ) -> bool {
+        // re-initialise path state if previous destination was not
+        // completed or controller inactive
+        if !self.is_active(ctx.now_ms) || !self.flags.reached_destination {
+            self.wp_and_spline_init_m(
+                self.wp_desired_speed_ne_ms,
+                ctx.stopping_point_ned_m,
+                ctx.now_ms,
+                ctx.attitude,
+            );
+        }
+
+        // `_spline_this_leg.set_speed_accel` — object stays in ap-math.
+
+        // calculate origin and origin velocity vector
+        let mut origin_vector_ned_m = Vector3f::zero();
+        if is_terrain_alt == self.is_terrain_alt {
+            if self.flags.fast_waypoint {
+                if self.this_leg_is_spline {
+                    // leftover of `_spline_this_leg.get_destination_vel`
+                    origin_vector_ned_m = self.spline_destination_vel_ned_ms;
+                } else {
+                    origin_vector_ned_m = self.destination_ned_m - self.origin_ned_m;
+                }
+            }
+            self.origin_ned_m = self.destination_ned_m;
+        } else {
+            self.origin_ned_m = self.destination_ned_m;
+            let Some(terrain_d_m) = ctx.terrain_d_m else {
+                return false;
+            };
+            if is_terrain_alt {
+                self.origin_ned_m.z -= terrain_d_m;
+                self.pos_terrain_d_m = terrain_d_m;
+            } else {
+                self.origin_ned_m.z += terrain_d_m;
+                self.pos_terrain_d_m = 0.0;
+            }
+        }
+
+        self.destination_ned_m = destination_ned_m;
+        self.is_terrain_alt = is_terrain_alt;
+
+        // calculate destination velocity vector
+        let mut destination_vector_ned_m = Vector3f::zero();
+        if is_terrain_alt == next_is_terrain_alt {
+            if next_is_spline {
+                destination_vector_ned_m = next_destination_ned_m - self.origin_ned_m;
+            } else {
+                destination_vector_ned_m = next_destination_ned_m - self.destination_ned_m;
+            }
+        }
+
+        self.flags.fast_waypoint = !destination_vector_ned_m.is_zero();
+        self.next_destination_ned_m = next_destination_ned_m;
+        self.spline_origin_vel_ned_ms = origin_vector_ned_m;
+        self.spline_destination_vel_ned_ms = destination_vector_ned_m;
+        self.spline_this_leg_set = true;
+        self.scurve_this_leg_calculated = false;
+        self.last_arc_rad = 0.0;
+        self.this_leg_is_spline = true;
+        self.next_leg_is_spline = false;
         self.flags.reached_destination = false;
 
         true
