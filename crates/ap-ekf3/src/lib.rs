@@ -6,7 +6,8 @@
 //! fusion-horizon FIFO lives in [`measurements`]. Filter-mode control
 //! (`setInhibitGPS`, `inFlight` / `onGround`, `controlFilterModes`)
 //! lives in [`control`]. Gyro-bias reset / constrain / inactive-IMU
-//! learn lives in [`gyro_bias`]. Mag-fusion enable / yaw-reset
+//! learn lives in [`gyro_bias`]. Accel-bias reset / constrain /
+//! inactive-IMU learn lives in [`accel_bias`]. Mag-fusion enable / yaw-reset
 //! (`SelectMagFusion`, `magFieldEarth`) lives in [`mag_fusion`].
 //! Pos/vel fusion enable (`SelectVelPosFusion`, GPS inhibit / quality)
 //! lives in [`pos_vel_fusion`]. Air-data / TAS fusion enable
@@ -17,7 +18,8 @@
 //! gates) lives in [`rng_flow_fusion`]. Covariance prediction
 //! (process-noise inject + `P` symmetry) lives in [`covariance`].
 //! Output getters (`getPosNE`, `getVelNED`, `getEulerAngles`) live
-//! in [`output_observer`].
+//! in [`output_observer`]. Accel-bias reset / constrain / inactive-learn
+//! lives in [`accel_bias`].
 //! The 3-axis Kalman mag update is not here.
 //!
 //! # Twenty-four states, one vector
@@ -42,6 +44,7 @@
 //! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
 //! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
 //! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
+//! accel bias is [`accel_bias`];
 //! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
 //! enable is [`pos_vel_fusion`]; TAS / air-data enable is
 //! [`air_data_fusion`]; height / baro enable is [`height_fusion`];
@@ -51,6 +54,7 @@
 
 #![no_std]
 
+pub mod accel_bias;
 pub mod air_data_fusion;
 pub mod control;
 pub mod covariance;
@@ -69,6 +73,7 @@ pub use covariance::{
     MAGB_P_NSE_DEFAULT, MAGE_P_NSE_DEFAULT, POS_VAR_GROWTH_LIMIT, PROCESS_NOISE_LEN,
     WIND_P_NSE_DEFAULT,
 };
+pub use accel_bias::{AccelBias, ACCEL_BIAS_LIM_SCALER, ACCEL_BIAS_LIMIT_MPS2};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use height_fusion::{
     HeightFuseSel, HeightFusion, HeightSource, HGT_INNOV_GATE_DEFAULT, HGT_RETRY_TIME_MODE12_MS,
@@ -208,6 +213,8 @@ pub struct NavEkf3Core {
     control: FilterControl,
     /// Body-axis gyro bias, upstream `AP_NavEKF3_GyroBias.cpp`.
     gyro_bias: GyroBias,
+    /// Body-axis accel bias, upstream AccelBias / `ConstrainStates` 13..15.
+    accel_bias: AccelBias,
     /// Mag-fusion enable / yaw-reset, upstream `AP_NavEKF3_MagFusion.cpp`.
     mag_fusion: MagFusion,
     /// Pos/vel fusion enable, upstream `AP_NavEKF3_PosVelFusion.cpp`.
@@ -240,6 +247,7 @@ impl NavEkf3Core {
             frames_since_predict: 0,
             control: FilterControl::new(),
             gyro_bias: GyroBias::new(),
+            accel_bias: AccelBias::new(),
             mag_fusion: MagFusion::new(),
             pos_vel: PosVelFusion::new(),
             air_data: AirDataFusion::new(),
@@ -291,6 +299,8 @@ impl NavEkf3Core {
         self.control.reset();
         self.gyro_bias.reset();
         self.gyro_bias.write_into_states(&mut self.states);
+        self.accel_bias.reset();
+        self.accel_bias.write_into_states(&mut self.states);
         self.mag_fusion.reset();
         self.mag_fusion.write_earth_into_states(&mut self.states);
         self.pos_vel.reset();
@@ -400,6 +410,30 @@ impl NavEkf3Core {
         self.gyro_bias.read_from_states(&self.states);
         self.gyro_bias.constrain();
         self.gyro_bias.write_into_states(&mut self.states);
+    }
+
+    /// Accel-bias helper, upstream `stateStruct.accel_bias`.
+    #[must_use]
+    pub const fn accel_bias(&self) -> &AccelBias {
+        &self.accel_bias
+    }
+
+    /// Mutable accel-bias so tests can poke a learned offset.
+    pub fn accel_bias_mut(&mut self) -> &mut AccelBias {
+        &mut self.accel_bias
+    }
+
+    /// Internal accel-bias reset (CovarianceInit / variance-collapse path).
+    pub fn reset_accel_bias(&mut self) {
+        self.accel_bias.reset();
+        self.accel_bias.write_into_states(&mut self.states);
+    }
+
+    /// Accel-bias half of upstream `ConstrainStates`.
+    pub fn constrain_accel_bias(&mut self) {
+        self.accel_bias.read_from_states(&self.states);
+        self.accel_bias.constrain();
+        self.accel_bias.write_into_states(&mut self.states);
     }
 
     /// Mag-fusion helper, upstream `SelectMagFusion` / `earth_magfield`.
@@ -702,6 +736,18 @@ impl NavEkf3 {
         }
     }
 
+    /// Walk every live core and reset accel bias (internal CovarianceInit path).
+    ///
+    /// No-ops when no cores exist, matching [`Self::reset_gyro_bias`].
+    pub fn reset_accel_bias(&mut self) {
+        if self.num_cores == 0 {
+            return;
+        }
+        for core in self.cores.iter_mut().take(self.num_cores as usize) {
+            core.reset_accel_bias();
+        }
+    }
+
     /// Core at `index`, if that slot was instantiated (mutable).
     pub fn core_mut(&mut self, index: usize) -> Option<&mut NavEkf3Core> {
         if index < self.num_cores as usize {
@@ -865,6 +911,22 @@ mod tests {
         assert_eq!(core.state(StateIndex::GyroBiasY), 0.0 as Ftype);
         assert_eq!(core.state(StateIndex::GyroBiasZ), 0.0 as Ftype);
         let expected = core.gyro_bias().variance().x;
+        assert!(expected > 0.0 as Ftype);
+    }
+
+    #[test]
+    fn frontend_reset_accel_bias_is_noop_then_walks_cores() {
+        let mut ekf = NavEkf3::new();
+        ekf.reset_accel_bias();
+        assert_eq!(ekf.num_cores(), 0);
+
+        assert!(ekf.initialise_filter());
+        ekf.reset_accel_bias();
+        let core = ekf.core(0).expect("primary");
+        assert_eq!(core.state(StateIndex::AccelBiasX), 0.0 as Ftype);
+        assert_eq!(core.state(StateIndex::AccelBiasY), 0.0 as Ftype);
+        assert_eq!(core.state(StateIndex::AccelBiasZ), 0.0 as Ftype);
+        let expected = core.accel_bias().variance().x;
         assert!(expected > 0.0 as Ftype);
     }
 
