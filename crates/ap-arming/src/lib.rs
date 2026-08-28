@@ -13,6 +13,7 @@
 #![no_std]
 
 pub mod check_bitmask;
+pub mod rudder_arming;
 
 /// Default `ARMING_REQUIRE` on Plane, upstream `Required::YES_MIN_PWM`.
 pub const ARMING_REQUIRE_DEFAULT: Required = Required::YesMinPwm;
