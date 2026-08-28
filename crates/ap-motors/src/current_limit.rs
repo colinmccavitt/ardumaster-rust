@@ -48,8 +48,22 @@ pub struct BatteryState {
     /// means no limiting — a resistance of zero would make the ohmic headroom
     /// infinite rather than merely large.
     pub resistance: f32,
-    /// Pack voltage.
+    /// Pack voltage — upstream's raw, instantaneous `AP_BattMonitor::voltage()`,
+    /// sag included. This is the field `get_current_limit_max_throttle` reads
+    /// (`AP_MotorsMulticopter.cpp:409`): it is computing an ohmic margin
+    /// against sag, so it needs the sag to be visible.
+    ///
+    /// Distinct from `voltage_resting_estimate` below — see COP-006's
+    /// `thrust_linearization` module docs for why the two must not be
+    /// conflated.
     pub voltage: f32,
+    /// Upstream's sag-removed `AP_BattMonitor::voltage_resting_estimate()`
+    /// — actual voltage with sag backed out based on current draw and
+    /// estimated pack resistance. Upstream's `Thrust_Linearization::
+    /// update_lift_max_from_batt_voltage` reads this by default (the
+    /// non-`BATT_RAW_VOLTAGE` path), precisely so a hard current pulse is
+    /// not read back out moments later as a drop in lift capacity.
+    pub voltage_resting_estimate: f32,
 }
 
 /// The lowest the ceiling may fall to.

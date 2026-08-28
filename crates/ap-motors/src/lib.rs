@@ -38,6 +38,7 @@ mod frames;
 pub mod output;
 pub mod spool;
 pub mod throttle;
+pub mod thrust_linearization;
 
 /// Motors a frame may have, upstream `AP_MOTORS_MAX_NUM_MOTORS`.
 ///

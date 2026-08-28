@@ -41,6 +41,9 @@ fn healthy(current: f32) -> BatteryState {
         current_amps: Some(current),
         resistance: 0.02,
         voltage: 15.4,
+        // Not exercised by these current-limiting tests (COP-004); COP-006's
+        // thrust_linearization tests cover this field.
+        voltage_resting_estimate: 15.4,
     }
 }
 
