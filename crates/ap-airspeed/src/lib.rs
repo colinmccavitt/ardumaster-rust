@@ -12,6 +12,7 @@ pub mod bus;
 pub mod devid;
 pub mod options;
 pub mod params;
+pub mod primary;
 pub mod sitl;
 pub mod tube_order;
 pub mod wind_max;
@@ -39,6 +40,9 @@ pub use backend::{
 };
 pub use params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
+};
+pub use primary::{
+    clamp_primary, select_primary, ARSPD_PRIMARY_DEFAULT,
 };
 pub use tube_order::{
     airspeed_from_pressure, last_pressure_pa, PitotTubeOrder, ARSPD_TUBE_ORDER_AUTO,

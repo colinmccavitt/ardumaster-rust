@@ -423,6 +423,19 @@ impl SitlAirspeedCluster {
         }
     }
 
+    /// Select the live primary from `ARSPD_PRIMARY`, falling back to the first healthy instance.
+    pub fn select_primary_param(&mut self, configured: u8) {
+        let mut healthy = [false; SITL_AIRSPEED_MAX_INSTANCES];
+        for i in 0..self.instance_count as usize {
+            healthy[i] = self.backends[i].healthy() && self.backends[i].state().have_sample;
+        }
+        self.primary = crate::primary::select_primary(
+            configured,
+            &healthy[..self.instance_count as usize],
+            self.instance_count,
+        );
+    }
+
     #[must_use]
     pub fn backend(&self, index: u8) -> Option<&SitlAirspeedBackend> {
         (index < self.instance_count).then(|| &self.backends[index as usize])

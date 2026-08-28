@@ -222,6 +222,13 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_PRIMARY`.
+    pub fn set_primary(&mut self, primary: u8) {
+        let mut params = self.params;
+        params.primary = primary;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -242,7 +249,7 @@ impl SitlAirspeedHookup {
     #[must_use]
     pub fn publish(&mut self, eas2tas: f32) -> SitlAirspeedPublish {
         self.cluster.timer_tick_all(self.truth.airspeed_bf, eas2tas, self.truth.now_ms);
-        self.cluster.select_primary_healthy();
+        self.cluster.select_primary_param(self.params.primary);
         self.cluster.update_autocal_all(self.gps_groundspeed_mps);
         let health = self.cluster.health_flags();
         let sample = self

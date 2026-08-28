@@ -1,6 +1,7 @@
 //! Airspeed parameter table stub, upstream AP_Airspeed var_info. FW-010.
 
 use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
+use crate::primary::{clamp_primary, ARSPD_PRIMARY_DEFAULT};
 use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::devid::ARSPD_DEVID_DEFAULT;
@@ -10,7 +11,6 @@ use crate::wind_warn::ARSPD_WIND_WARN_DEFAULT;
 use crate::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
-    SITL_AIRSPEED_MAX_INSTANCES,
 };
 
 /// Upstream `ARSPD_RATIO` / `ARSPD2_RATIO` default.
@@ -111,7 +111,7 @@ impl Default for AirspeedParams {
         Self {
             airspeed1: AirspeedInstanceParams::default(),
             airspeed2: AirspeedInstanceParams::default(),
-            primary: 0,
+            primary: ARSPD_PRIMARY_DEFAULT,
             options: ARSPD_OPTIONS_DEFAULT,
             wind_max: ARSPD_WIND_MAX_DEFAULT,
             wind_warn: ARSPD_WIND_WARN_DEFAULT,
@@ -130,7 +130,7 @@ impl AirspeedParams {
     }
 
     pub fn apply_to_cluster(&self, cluster: &mut SitlAirspeedCluster) {
-        cluster.set_primary(self.primary.min((SITL_AIRSPEED_MAX_INSTANCES - 1) as u8));
+        cluster.set_primary(clamp_primary(self.primary, cluster.instance_count()));
         for i in 0..cluster.instance_count() {
             if let Some(backend) = cluster.backend_mut(i) {
                 self.apply_instance(i, backend);
@@ -256,6 +256,12 @@ impl AirspeedParams {
         } else {
             self.airspeed2.devid
         }
+    }
+
+    /// Vehicle-level `ARSPD_PRIMARY` preferred instance.
+    #[must_use]
+    pub fn primary(&self) -> u8 {
+        self.primary
     }
 
     /// Vehicle-level `ARSPD_OPTIONS`.
