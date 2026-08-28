@@ -11,12 +11,15 @@
 //! when the class is disabled or no log is open. [`file`] is
 //! `AP_Logger_File`: StartWrite / EndWrite open and close a named
 //! log-file session (`_write_filename`) into a buffer mock.
+//! [`transfer`] is MAVLink log-transfer listing: `LOG_REQUEST_LIST`
+//! (msgid 117) answered with `LOG_ENTRY` (msgid 118), using log count
+//! and last-log id from the file-backend mock.
 //!
 //! # What this crate does not include yet
 //!
 //! The DataFlash page map, log rotation, rate limiting, MAVLink
-//! log-transfer (`LOG_REQUEST_LIST` / `LOG_REQUEST_DATA`), and the
-//! `AP_Logger` front-end. Those land in later FW-030 slices.
+//! `LOG_REQUEST_DATA` / `LOG_DATA` replay, and the `AP_Logger`
+//! front-end. Those land in later FW-030 slices.
 
 #![no_std]
 
@@ -24,6 +27,7 @@ pub mod backend;
 pub mod file;
 pub mod gate;
 pub mod structure;
+pub mod transfer;
 pub mod write;
 
 pub use backend::{LogBackend, MemoryBackend};
@@ -39,6 +43,10 @@ pub use structure::{
     fill_format, LogFormat, LogPacketHeader, LogStructure, FMT_FORMAT_LEN, FMT_LABELS_LEN,
     FMT_NAME_LEN, HEAD_BYTE1, HEAD_BYTE2, LOG_FORMAT_LEN, LOG_FORMAT_MSG, LOG_PACKET_HEADER_LEN,
     LS_FORMAT_SIZE, LS_LABELS_SIZE, LS_NAME_SIZE,
+};
+pub use transfer::{
+    log_id_from_path, LogEntry, LogRequestList, LogTransfer, LOG_ENTRY_LEN, LOG_REQUEST_LIST_LEN,
+    MAX_LOGS, MSG_ID_LOG_ENTRY, MSG_ID_LOG_REQUEST_LIST,
 };
 pub use write::{
     calc_msg_len, field_size, pack_message, write_message, LogValue, LOG_PACKET_MAX_LEN,
