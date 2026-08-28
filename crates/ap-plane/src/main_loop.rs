@@ -133,6 +133,7 @@ use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
 use crate::takeoff_mode_hookup::{takeoff_mode_nav_tick, TakeoffModeNavInputs};
+use crate::autoland_mode_hookup::{autoland_mode_nav_tick, AutolandModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -470,6 +471,40 @@ pub struct PlaneMainLoop {
     pub takeoff_loiter_radius_m: u16,
     /// WP_LOITER_RAD < 0 selects counterclockwise takeoff loiter.
     pub takeoff_loiter_ccw: bool,
+    /// Upstream plane.is_flying() — ModeAutoLand::_enter requires it.
+    pub is_flying: bool,
+    /// Upstream 	akeoff_state.initial_direction.initialized.
+    pub takeoff_direction_initialized: bool,
+    /// Upstream AUTOLAND_WP_ALT, metres.
+    pub autoland_wp_alt_m: u16,
+    /// Upstream AUTOLAND_WP_DIST, metres.
+    pub autoland_wp_dist_m: u16,
+    /// Upstream AUTOLAND_CLIMB (terrain_alt_min), metres.
+    pub autoland_terrain_alt_min_m: u16,
+    /// True when climb-above-terrain is still required.
+    pub autoland_need_climb: bool,
+    /// Landing type is deepstall (skips loiter-to-alt).
+    pub autoland_landing_is_deepstall: bool,
+    /// Current AutoLandStage (0 climb, 1 loiter, 2 landing).
+    pub autoland_stage: u8,
+    /// Climb stage finished this tick.
+    pub autoland_climb_complete: bool,
+    /// verify_loiter_to_alt completed this tick.
+    pub autoland_loiter_to_alt_complete: bool,
+    /// Whether AUTOLAND enter/navigate glue ran this tick.
+    pub autoland_mode_nav_applied: bool,
+    /// Whether ModeAutoLand::_enter succeeded this tick.
+    pub autoland_mode_started: bool,
+    /// Whether ModeAutoLand::_enter refused this tick.
+    pub autoland_mode_refused: bool,
+    /// Whether AUTOLAND navigate may call update_loiter this tick.
+    pub autoland_mode_loiter_allowed: bool,
+    /// Whether AUTOLAND navigate verifies NAV_LAND this tick.
+    pub autoland_mode_land_allowed: bool,
+    /// update() applies LEVEL_ROLL_LIMIT during CLIMB.
+    pub autoland_apply_level_roll: bool,
+    /// _enter / climb-complete set next_wp_crosstrack.
+    pub autoland_next_wp_crosstrack: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -876,6 +911,23 @@ impl Default for PlaneMainLoop {
             takeoff_mode_loiter_allowed: false,
             takeoff_loiter_radius_m: 0,
             takeoff_loiter_ccw: false,
+            is_flying: false,
+            takeoff_direction_initialized: false,
+            autoland_wp_alt_m: crate::autoland_mode_hookup::AUTOLAND_WP_ALT_DEFAULT_M,
+            autoland_wp_dist_m: crate::autoland_mode_hookup::AUTOLAND_WP_DIST_DEFAULT_M,
+            autoland_terrain_alt_min_m: 0,
+            autoland_need_climb: false,
+            autoland_landing_is_deepstall: false,
+            autoland_stage: crate::autoland_mode_hookup::STAGE_LOITER,
+            autoland_climb_complete: false,
+            autoland_loiter_to_alt_complete: false,
+            autoland_mode_nav_applied: false,
+            autoland_mode_started: false,
+            autoland_mode_refused: false,
+            autoland_mode_loiter_allowed: false,
+            autoland_mode_land_allowed: false,
+            autoland_apply_level_roll: false,
+            autoland_next_wp_crosstrack: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1424,6 +1476,37 @@ impl PlaneMainLoop {
             self.takeoff_target_dist_m = takeoff_nav.target_dist_m;
             if takeoff_nav.direction_set {
                 self.takeoff_loiter_ccw = takeoff_nav.loiter_ccw;
+            }
+        }
+
+        let autoland_nav = autoland_mode_nav_tick(&AutolandModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            is_flying: self.is_flying,
+            takeoff_direction_initialized: self.takeoff_direction_initialized,
+            quadplane_available: self.quadplane_available,
+            landing_is_deepstall: self.autoland_landing_is_deepstall,
+            terrain_alt_min_m: self.autoland_terrain_alt_min_m,
+            need_climb: self.autoland_need_climb,
+            current_stage: self.autoland_stage,
+            climb_complete: self.autoland_climb_complete,
+            loiter_to_alt_complete: self.autoland_loiter_to_alt_complete,
+            wp_alt_m: self.autoland_wp_alt_m,
+            wp_dist_m: self.autoland_wp_dist_m,
+        });
+        self.autoland_mode_nav_applied = autoland_nav.applied;
+        self.autoland_mode_started = autoland_nav.started;
+        self.autoland_mode_refused = autoland_nav.refused;
+        self.autoland_mode_loiter_allowed = autoland_nav.allow_loiter;
+        self.autoland_mode_land_allowed = autoland_nav.allow_land;
+        self.autoland_apply_level_roll = autoland_nav.apply_level_roll;
+        self.autoland_next_wp_crosstrack = autoland_nav.next_wp_crosstrack;
+        if autoland_nav.applied {
+            self.autoland_stage = autoland_nav.stage;
+            if !autoland_nav.refused {
+                self.autoland_wp_alt_m = autoland_nav.wp_alt_m;
+                self.autoland_wp_dist_m = autoland_nav.wp_dist_m;
             }
         }
 

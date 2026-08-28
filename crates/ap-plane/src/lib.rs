@@ -94,6 +94,7 @@ pub mod rtl_mode_hookup;
 pub mod loiter_mode_hookup;
 pub mod guided_mode_hookup;
 pub mod takeoff_mode_hookup;
+pub mod autoland_mode_hookup;
 pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;
