@@ -25,12 +25,14 @@
 //! drops the oldest row when a new StartWrite would overflow.
 //! [`streaming`] is `WriteStreaming`: a rate-limited periodic write
 //! gate that only emits when `1000 / rate_hz` milliseconds have
-//! elapsed since the last send of that msgid.
+//! elapsed since the last send of that msgid. [`registry`] is the
+//! FMT / `LogStructure` table: register rows, then look up `type`
+//! and `length` by message name (`msg_fmt_for_name`).
 //!
 //! # What this crate does not include yet
 //!
-//! The DataFlash page map, FMT registry lookup, and the `AP_Logger`
-//! front-end. Those land in later FW-030 slices.
+//! The DataFlash page map and the `AP_Logger` front-end. Those land
+//! in later FW-030 slices.
 
 #![no_std]
 
@@ -39,6 +41,7 @@ pub mod dropped;
 pub mod erase;
 pub mod file;
 pub mod gate;
+pub mod registry;
 pub mod replay;
 pub mod rotate;
 pub mod streaming;
@@ -57,6 +60,7 @@ pub use gate::{
     MASK_LOG_NTUN, MASK_LOG_PM, MASK_LOG_RC, MASK_LOG_SONAR, MASK_LOG_TECS,
     MASK_LOG_VIDEO_STABILISATION,
 };
+pub use registry::{FmtRegistry, MAX_FMT_ROWS};
 pub use replay::{
     LogData, LogReplay, LogRequestData, LOG_DATA_CHUNK_LEN, LOG_DATA_LEN, LOG_REQUEST_DATA_LEN,
     MSG_ID_LOG_DATA, MSG_ID_LOG_REQUEST_DATA,
