@@ -1,6 +1,8 @@
-//! Constructor, destination set, and `update_wpnav` leftover, upstream `AC_WPNav`.
+//! Constructor, destination set, `update_wpnav`, and `advance_wp_target_along_track` leftover.
 
-use ap_math::scalar::{is_equal, is_positive, is_zero, GRAVITY_MSS};
+use ap_math::control::{shape_vel_accel, update_vel_accel};
+use ap_math::location::{get_bearing_cd, get_bearing_rad};
+use ap_math::scalar::{constrain_value, is_equal, is_positive, is_zero, GRAVITY_MSS};
 use ap_math::vector3::Vector3f;
 
 /// Default horizontal acceleration, m/s². Upstream `WPNAV_ACCELERATION_MS`.
@@ -143,6 +145,82 @@ pub struct UpdateWpNavLeftover {
     pub advance_ok: bool,
     /// dt forwarded to the advance leftover.
     pub dt_s: f32,
+}
+
+/// Caller-supplied inputs `advance_wp_target_along_track` reads from
+/// PosControl. ADR-0004 forbids those singletons. S-curve / spline
+/// `advance_target_along_track` stays in `ap-math` (COP-002 / COP-003);
+/// the caller reports whether that leftover finished the path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdvanceWpTargetContext {
+    /// `_pos_control.get_dt_s()`.
+    pub dt_s: f32,
+    /// Terrain D offset, metres. Required when the dest is terrain-relative.
+    pub terrain_d_m: Option<f32>,
+    /// Leftover of `PosControl::terrain_scaler_D_m`. 1.0 when unused.
+    pub terrain_scaler: f32,
+    /// `PosControl::get_pos_estimate_NED_m`.
+    pub pos_estimate_ned_m: Vector3f,
+    /// `PosControl::get_pos_offset_NED_m`.
+    pub pos_offset_ned_m: Vector3f,
+    /// `PosControl::get_vel_desired_NED_ms`.
+    pub vel_desired_ned_ms: Vector3f,
+    /// `PosControl::get_vel_offset_D_ms`.
+    pub vel_offset_d_ms: f32,
+    /// `PosControl::get_pos_error_NED_m`.
+    pub pos_error_ned_m: Vector3f,
+    /// `PosControl::get_vel_estimate_NED_ms`.
+    pub vel_estimate_ned_ms: Vector3f,
+    /// `PosControl::NE_get_pos_p().kP()`.
+    pub pos_p_kp: f32,
+    /// `PosControl::get_shaping_jerk_NE_msss`.
+    pub shaping_jerk_ne_msss: f32,
+    /// Leftover of SCurve / SplineCurve `advance_target_along_track`.
+    pub path_finished: bool,
+}
+
+impl Default for AdvanceWpTargetContext {
+    fn default() -> Self {
+        Self {
+            dt_s: 0.01,
+            terrain_d_m: None,
+            terrain_scaler: 1.0,
+            pos_estimate_ned_m: Vector3f::zero(),
+            pos_offset_ned_m: Vector3f::zero(),
+            vel_desired_ned_ms: Vector3f::zero(),
+            vel_offset_d_ms: 0.0,
+            pos_error_ned_m: Vector3f::zero(),
+            vel_estimate_ned_ms: Vector3f::zero(),
+            pos_p_kp: 1.0,
+            shaping_jerk_ne_msss: 5.0,
+            path_finished: false,
+        }
+    }
+}
+
+/// Leftover of one `advance_wp_target_along_track` tick. Track-time
+/// shaping and the reached-destination flag live here. S-curve / spline
+/// `advance_target_along_track` and `PosControl::set_pos_vel_accel_NED_m`
+/// stay later slices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdvanceWpTargetLeftover {
+    /// C++ return: false only when terrain-alt dest has no terrain offset.
+    pub ok: bool,
+    /// Always true on success: `set_pos_terrain_target_D_m`.
+    pub need_set_pos_terrain_target: bool,
+    /// True on success when the current leg is not a spline.
+    pub need_scurve_advance: bool,
+    /// True on success when the current leg is a spline.
+    pub need_spline_advance: bool,
+    /// Always true on success: `set_pos_vel_accel_NED_m`.
+    pub need_set_pos_vel_accel: bool,
+    /// Raw (unfiltered) track-progress scalar, constrained to `[0, 1]`.
+    pub raw_track_dt_scalar: f32,
+    /// `offset_vel_ms / wp_desired_speed_ne_ms`, or 1 when speed is zero.
+    pub vel_dt_scalar: f32,
+    /// Filtered `_track_dt_scalar * vel_dt_scalar * dt` forwarded to the
+    /// path leftover.
+    pub dt_along_track_s: f32,
 }
 
 /// The three `wpnav_flags` bits `wp_and_spline_init_m` writes.
@@ -348,6 +426,13 @@ impl WpNav {
     #[must_use]
     pub fn reached_wp_destination(&self) -> bool {
         self.flags.reached_destination
+    }
+
+    /// True if the horizontal (NE) distance is inside the waypoint radius.
+    /// Upstream `AC_WPNav::reached_wp_destination_NE`. Z is ignored.
+    #[must_use]
+    pub fn reached_wp_destination_ne(&self, pos_estimate_ned_m: Vector3f) -> bool {
+        self.get_wp_distance_to_destination_m(pos_estimate_ned_m) < self.wp_radius_m
     }
 
     /// True after `set_wp_destination_NED_m` asked for a new this-leg
@@ -683,6 +768,20 @@ impl WpNav {
         self.get_wp_distance_to_destination_m(pos_estimate_ned_m) * 100.0
     }
 
+    /// Bearing to the destination, radians clockwise from North.
+    /// Upstream `AC_WPNav::get_wp_bearing_to_destination_rad`.
+    #[must_use]
+    pub fn get_wp_bearing_to_destination_rad(&self, pos_estimate_ned_m: Vector3f) -> f32 {
+        get_bearing_rad(pos_estimate_ned_m.xy(), self.destination_ned_m.xy())
+    }
+
+    /// Bearing to the destination, centidegrees clockwise from North.
+    /// Upstream `AC_WPNav::get_wp_bearing_to_destination_cd`.
+    #[must_use]
+    pub fn get_wp_bearing_to_destination_cd(&self, pos_estimate_ned_m: Vector3f) -> i32 {
+        get_bearing_cd(pos_estimate_ned_m.xy(), self.destination_ned_m.xy()) as i32
+    }
+
     /// Sets the target horizontal speed during waypoint navigation.
     /// Upstream `AC_WPNav::set_speed_NE_ms`. Scales `_offset_vel_ms` so
     /// terrain-margin shaping keeps its current ratio, then records the
@@ -708,6 +807,23 @@ impl WpNav {
     /// Sets the descent speed. Upstream `AC_WPNav::set_speed_down_ms`.
     pub fn set_speed_down_ms(&mut self, speed_down_ms: f32) {
         self.pos_speed_accel.speed_down_ms = speed_down_ms;
+    }
+
+    /// Pause waypoint progression. Upstream `AC_WPNav::set_pause`.
+    pub fn set_pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Resume waypoint progression. Upstream `AC_WPNav::set_resume`.
+    pub fn set_resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Marks the current dest as a fast waypoint. Upstream this bit is
+    /// written by `set_wp_destination_next_NED_m` when the next dest is
+    /// preloaded; that setter is a later slice.
+    pub fn set_fast_waypoint(&mut self, fast: bool) {
+        self.flags.fast_waypoint = fast;
     }
 
     /// Runs one waypoint-navigation tick.
@@ -766,6 +882,136 @@ impl WpNav {
         self.wp_last_update_ms = ctx.now_ms;
 
         leftover
+    }
+
+    /// Advances the intermediate target along the current track.
+    ///
+    /// Upstream `AC_WPNav::advance_wp_target_along_track`. Terrain fail,
+    /// track-time / offset-velocity shaping, and the reached-destination
+    /// flag live here. `SCurve::advance_target_along_track` /
+    /// `SplineCurve::advance_target_along_track` stay in `ap-math`; the
+    /// caller supplies [`AdvanceWpTargetContext::path_finished`].
+    /// `PosControl::set_pos_vel_accel_NED_m` is recorded as leftover.
+    pub fn advance_wp_target_along_track(
+        &mut self,
+        ctx: AdvanceWpTargetContext,
+    ) -> AdvanceWpTargetLeftover {
+        let fail = AdvanceWpTargetLeftover {
+            ok: false,
+            need_set_pos_terrain_target: false,
+            need_scurve_advance: false,
+            need_spline_advance: false,
+            need_set_pos_vel_accel: false,
+            raw_track_dt_scalar: 1.0,
+            vel_dt_scalar: 1.0,
+            dt_along_track_s: 0.0,
+        };
+
+        // calculate terrain offset if using alt-above-terrain frame
+        let terr_offset_d_m = if self.is_terrain_alt {
+            let Some(terrain_d_m) = ctx.terrain_d_m else {
+                return fail;
+            };
+            terrain_d_m
+        } else {
+            0.0
+        };
+
+        // calculate terrain-based velocity scaling factor
+        let offset_d_scalar = ctx.terrain_scaler;
+
+        // input shape the terrain offset — leftover `set_pos_terrain_target_D_m`.
+
+        // compute current position in NED frame, adjusted to destination frame
+        let mut curr_pos_ned_m = ctx.pos_estimate_ned_m - ctx.pos_offset_ned_m;
+        curr_pos_ned_m.z -= terr_offset_d_m;
+
+        // get desired velocity and remove offset
+        let mut curr_target_vel_ned_ms = ctx.vel_desired_ned_ms;
+        curr_target_vel_ned_ms.z -= ctx.vel_offset_d_ms;
+
+        // scale progression time based on aircraft speed alignment with path
+        let mut raw_track_dt_scalar = 1.0;
+        if is_positive(curr_target_vel_ned_ms.length_squared()) {
+            let track_direction = curr_target_vel_ned_ms.normalized_or_zero();
+            let track_error_ned_m = ctx.pos_error_ned_m.dot(track_direction);
+            let track_velocity_ned_ms = ctx.vel_estimate_ned_ms.dot(track_direction);
+            raw_track_dt_scalar = constrain_value(
+                0.05 + (track_velocity_ned_ms - ctx.pos_p_kp * track_error_ned_m)
+                    / curr_target_vel_ned_ms.length(),
+                0.0,
+                1.0,
+            );
+        }
+
+        // compute velocity scaling and apply jerk-limited velocity shaping
+        let mut vel_dt_scalar = 1.0;
+        if is_positive(self.wp_desired_speed_ne_ms) {
+            update_vel_accel(
+                &mut self.offset_vel_ms,
+                self.offset_accel_mss,
+                ctx.dt_s,
+                0.0,
+                0.0,
+            );
+            let vel_input_ms = if !self.paused {
+                self.wp_desired_speed_ne_ms * offset_d_scalar
+            } else {
+                0.0
+            };
+            let accel_min = -self.wp_acceleration_mss();
+            let accel_max = self.wp_acceleration_mss();
+            let _ = shape_vel_accel(
+                vel_input_ms,
+                0.0,
+                self.offset_vel_ms,
+                &mut self.offset_accel_mss,
+                accel_min,
+                accel_max,
+                ctx.shaping_jerk_ne_msss,
+                ctx.dt_s,
+                true,
+            );
+            vel_dt_scalar = self.offset_vel_ms / self.wp_desired_speed_ne_ms;
+        }
+
+        // apply exponential filter to track_dt_scalar using jerk-based tc
+        let mut track_dt_scalar_tc = 1.0;
+        if !is_zero(self.wp_jerk_msss) {
+            track_dt_scalar_tc = self.wp_acceleration_mss() / self.wp_jerk_msss;
+        }
+        self.track_dt_scalar +=
+            (raw_track_dt_scalar - self.track_dt_scalar) * (ctx.dt_s / track_dt_scalar_tc);
+
+        let dt_along_track_s = self.track_dt_scalar * vel_dt_scalar * ctx.dt_s;
+
+        // SCurve / SplineCurve advance_target_along_track — leftover.
+
+        // check if waypoint has been reached based on mode and radius
+        if !self.flags.reached_destination && ctx.path_finished {
+            // "fast" waypoints are complete once the intermediate point
+            // reaches the destination
+            if self.flags.fast_waypoint {
+                self.flags.reached_destination = true;
+            } else {
+                // regular waypoints also require the copter inside the radius
+                let dist_to_dest_m = curr_pos_ned_m - self.destination_ned_m;
+                if dist_to_dest_m.length_squared() <= self.wp_radius_m * self.wp_radius_m {
+                    self.flags.reached_destination = true;
+                }
+            }
+        }
+
+        AdvanceWpTargetLeftover {
+            ok: true,
+            need_set_pos_terrain_target: true,
+            need_scurve_advance: !self.this_leg_is_spline,
+            need_spline_advance: self.this_leg_is_spline,
+            need_set_pos_vel_accel: true,
+            raw_track_dt_scalar,
+            vel_dt_scalar,
+            dt_along_track_s,
+        }
     }
 
     /// Jerk and snap from attitude capability. Upstream

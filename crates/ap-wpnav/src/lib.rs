@@ -14,6 +14,10 @@
 //! (and the climb / descent setters), then record the leftover of
 //! `advance_wp_target_along_track` and `NE_update_controller`. Horizontal
 //! distance to the dest is [`get_wp_distance_to_destination_m`](WpNav::get_wp_distance_to_destination_m).
+//! [`advance_wp_target_along_track`](WpNav::advance_wp_target_along_track)
+//! owns track-time / offset-velocity shaping and the reached-destination
+//! flag; S-curve / spline target advance stays in `ap-math`. Bearing is
+//! [`get_wp_bearing_to_destination_rad`](WpNav::get_wp_bearing_to_destination_rad).
 //!
 //! # What this crate does not own
 //!
@@ -31,8 +35,9 @@
 pub mod wpnav;
 
 pub use wpnav::{
-    AttitudeJerkLimits, PosControlSpeedAccel, SetWpDestinationContext, UpdateWpNavContext,
-    UpdateWpNavLeftover, WpNav, WpNavFlags, WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS,
-    WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT, WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT,
-    WP_SPD_DOWN_DEFAULT, WP_SPD_MIN, WP_SPD_UP_DEFAULT,
+    AdvanceWpTargetContext, AdvanceWpTargetLeftover, AttitudeJerkLimits, PosControlSpeedAccel,
+    SetWpDestinationContext, UpdateWpNavContext, UpdateWpNavLeftover, WpNav, WpNavFlags,
+    WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT,
+    WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN,
+    WP_SPD_UP_DEFAULT,
 };
