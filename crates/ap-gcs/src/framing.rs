@@ -102,13 +102,15 @@ pub fn crc16(bytes: &[u8], extra: Option<u8>) -> u16 {
     crc
 }
 
-/// CRC extra for HEARTBEAT (0) and STATUSTEXT (253).
+/// CRC extra for HEARTBEAT (0), COMMAND_INT (75), COMMAND_LONG (76), and STATUSTEXT (253).
 ///
 /// Unknown ids return `None` — this slice does not carry the dialect table.
 #[must_use]
 pub const fn crc_extra(msgid: u32) -> Option<u8> {
     match msgid {
         0 => Some(50),
+        75 => Some(158),
+        76 => Some(152),
         253 => Some(83),
         _ => None,
     }

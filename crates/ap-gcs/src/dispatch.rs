@@ -1,9 +1,15 @@
 //! Msgid dispatch stub, upstream `GCS_MAVLINK::handle_message`.
 //!
-//! Only HEARTBEAT is wired on receive. `handle_heartbeat` records
-//! `sysid_mygcs_seen` when the sender is `MAV_GCS_SYSID`. Send path is
+//! HEARTBEAT is wired on receive. `handle_heartbeat` records
+//! `sysid_mygcs_seen` when the sender is `MAV_GCS_SYSID`. COMMAND_LONG
+//! and COMMAND_INT are classified against the Plane table
+//! (ARM/DISARM, DO_SET_MODE, NAV_TAKEOFF). Send path is
 //! `GCS_MAVLINK::send_heartbeat` and `send_text`.
 
+use crate::command::{
+    classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
+    MSG_ID_COMMAND_LONG,
+};
 use crate::framing::{decode_v2, encode_v2, DecodeError, Frame};
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
 use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
@@ -27,14 +33,23 @@ pub enum Dispatch {
         /// `true` when `msg.sysid` matched `MAV_GCS_SYSID` (`sysid_is_gcs`).
         from_gcs: bool,
     },
-    /// Any other msgid. Later slices fill this table.
+    /// Msgid 76 / 75 — COMMAND_LONG / COMMAND_INT against the Plane table.
+    Command {
+        /// Which command message carried the id.
+        via: CommandVia,
+        /// Raw `MAV_CMD`.
+        command: u16,
+        /// `Some` when the id is ARM/DISARM, DO_SET_MODE, or NAV_TAKEOFF.
+        kind: Option<PlaneCommand>,
+    },
+    /// Any other msgid, or a command not addressed to this vehicle.
     Unknown {
         /// Unrecognised message id.
         msgid: u32,
     },
 }
 
-/// One GCS channel: HEARTBEAT send and msgid-0 receive.
+/// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -126,13 +141,45 @@ impl GcsMavlink {
 
     /// Dispatch one already-framed message, upstream `handle_message`.
     pub fn handle_message(&mut self, frame: &Frame, now_ms: u32) -> Dispatch {
-        if frame.msgid != MSG_ID_HEARTBEAT {
-            return Dispatch::Unknown { msgid: frame.msgid };
+        match frame.msgid {
+            MSG_ID_HEARTBEAT => self.handle_heartbeat_frame(frame, now_ms),
+            MSG_ID_COMMAND_LONG => match CommandLong::from_frame(frame) {
+                Some(cmd) if self.addressed_to_us(cmd.target_system) => Dispatch::Command {
+                    via: CommandVia::Long,
+                    command: cmd.command,
+                    kind: classify(cmd.command),
+                },
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_COMMAND_LONG,
+                },
+            },
+            MSG_ID_COMMAND_INT => match CommandInt::from_frame(frame) {
+                Some(cmd) if self.addressed_to_us(cmd.target_system) => Dispatch::Command {
+                    via: CommandVia::Int,
+                    command: cmd.command,
+                    kind: classify(cmd.command),
+                },
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_COMMAND_INT,
+                },
+            },
+            msgid => Dispatch::Unknown { msgid },
         }
+    }
+
+    /// Decode a raw buffer then [`Self::handle_message`].
+    pub fn handle_bytes(&mut self, buf: &[u8], now_ms: u32) -> Result<Dispatch, DecodeError> {
+        let frame = decode_v2(buf)?;
+        Ok(self.handle_message(&frame, now_ms))
+    }
+
+    fn handle_heartbeat_frame(&mut self, frame: &Frame, now_ms: u32) -> Dispatch {
         let heartbeat = match Heartbeat::from_frame(frame) {
             Some(hb) => hb,
             None => {
-                return Dispatch::Unknown { msgid: frame.msgid };
+                return Dispatch::Unknown {
+                    msgid: MSG_ID_HEARTBEAT,
+                };
             }
         };
         let from_gcs = frame.sysid == self.gcs_sysid;
@@ -146,9 +193,9 @@ impl GcsMavlink {
         }
     }
 
-    /// Decode a raw buffer then [`Self::handle_message`].
-    pub fn handle_bytes(&mut self, buf: &[u8], now_ms: u32) -> Result<Dispatch, DecodeError> {
-        let frame = decode_v2(buf)?;
-        Ok(self.handle_message(&frame, now_ms))
+    /// Broadcast (`target_system` 0) or our `MAV_SYSID`.
+    #[must_use]
+    const fn addressed_to_us(&self, target_system: u8) -> bool {
+        target_system == 0 || target_system == self.sysid
     }
 }
