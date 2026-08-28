@@ -6,7 +6,8 @@
 //! (ARM/DISARM, DO_SET_MODE, NAV_TAKEOFF). PARAM_REQUEST_LIST starts a
 //! queued `PARAM_VALUE` walk; PARAM_SET writes a named scalar in the
 //! in-memory table. Send path is `GCS_MAVLINK::send_heartbeat`,
-//! `send_text`, `queued_param_send`, and `send_parameter_value`.
+//! `send_text`, `queued_param_send`, `send_parameter_value`,
+//! `send_attitude`, and `send_global_position_int`.
 
 use crate::command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
@@ -17,6 +18,10 @@ use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
 use crate::param::{
     ParamRequestList, ParamSet, ParamTable, ParamValue, MSG_ID_PARAM_REQUEST_LIST,
     MSG_ID_PARAM_SET, PARAM_VALUE_LEN,
+};
+use crate::pose::{
+    PoseSnapshot, ATTITUDE_LEN, GLOBAL_POSITION_INT_LEN, MSG_ID_ATTITUDE,
+    MSG_ID_GLOBAL_POSITION_INT,
 };
 use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
 
@@ -66,7 +71,8 @@ pub enum Dispatch {
 }
 
 /// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub,
-/// and PARAM_REQUEST_LIST / PARAM_SET against an in-memory table.
+/// PARAM_REQUEST_LIST / PARAM_SET against an in-memory table, and
+/// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -187,6 +193,45 @@ impl GcsMavlink {
         let (index, _) = self.params.find(&id)?;
         let value = self.params.value_at(index)?;
         self.encode_param_value(out, &value)
+    }
+
+    /// Encode one outgoing ATTITUDE, upstream `GCS_MAVLINK::send_attitude`.
+    ///
+    /// Packs roll / pitch / yaw and gyro rates from `pose` and frames them
+    /// for Write. Stream-rate gating (`MSG_ATTITUDE`) is later.
+    #[must_use]
+    pub fn send_attitude(&mut self, out: &mut [u8], pose: &PoseSnapshot) -> Option<usize> {
+        let att = pose.attitude();
+        let mut payload = [0u8; ATTITUDE_LEN];
+        att.encode(&mut payload)?;
+        let frame = Frame::new(self.seq, self.sysid, self.compid, MSG_ID_ATTITUDE, &payload)?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing GLOBAL_POSITION_INT, upstream
+    /// `GCS_MAVLINK::send_global_position_int`.
+    ///
+    /// Packs lat / lon / alt / NED velocity / heading from `pose` and frames
+    /// them for Write. Stream-rate gating (`MSG_LOCATION`) is later.
+    #[must_use]
+    pub fn send_global_position_int(
+        &mut self,
+        out: &mut [u8],
+        pose: &PoseSnapshot,
+    ) -> Option<usize> {
+        let gpi = pose.global_position_int();
+        let mut payload = [0u8; GLOBAL_POSITION_INT_LEN];
+        gpi.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_GLOBAL_POSITION_INT,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
     }
 
     /// Dispatch one already-framed message, upstream `handle_message`.

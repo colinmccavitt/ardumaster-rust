@@ -103,7 +103,8 @@ pub fn crc16(bytes: &[u8], extra: Option<u8>) -> u16 {
 }
 
 /// CRC extra for HEARTBEAT (0), PARAM_REQUEST_LIST (21), PARAM_VALUE (22),
-/// PARAM_SET (23), COMMAND_INT (75), COMMAND_LONG (76), and STATUSTEXT (253).
+/// PARAM_SET (23), ATTITUDE (30), GLOBAL_POSITION_INT (33), COMMAND_INT (75),
+/// COMMAND_LONG (76), and STATUSTEXT (253).
 ///
 /// Unknown ids return `None` — this slice does not carry the dialect table.
 #[must_use]
@@ -113,6 +114,8 @@ pub const fn crc_extra(msgid: u32) -> Option<u8> {
         21 => Some(159),
         22 => Some(220),
         23 => Some(168),
+        30 => Some(39),
+        33 => Some(104),
         75 => Some(158),
         76 => Some(152),
         253 => Some(83),

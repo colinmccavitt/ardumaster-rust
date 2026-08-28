@@ -1,6 +1,6 @@
 [package]
 name = "ap-gcs"
-description = "Port of ArduPilot libraries/GCS_MAVLink: framing, HEARTBEAT, STATUSTEXT send, COMMAND_LONG/INT Plane table, and PARAM_REQUEST_LIST/PARAM_SET stub (Plane-4.7.0). Tracked as FW-028."
+description = "Port of ArduPilot libraries/GCS_MAVLink: framing, HEARTBEAT, STATUSTEXT, COMMAND_LONG/INT, PARAM_REQUEST_LIST/PARAM_SET, and ATTITUDE/GLOBAL_POSITION_INT stream send (Plane-4.7.0). Tracked as FW-028."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

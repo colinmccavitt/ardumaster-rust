@@ -8,16 +8,18 @@
 //! (msgid 76 / 75) through the Plane command table (ARM/DISARM,
 //! DO_SET_MODE, NAV_TAKEOFF), and walks a small in-memory table for
 //! [`param::ParamRequestList`] / [`param::ParamSet`] (msgid 21 / 23),
-//! emitting [`param::ParamValue`] (msgid 22). The rest of `modules/mavlink`
-//! stays ungenerated until later slices.
+//! emitting [`param::ParamValue`] (msgid 22), and sends
+//! [`pose::Attitude`] / [`pose::GlobalPositionInt`] (msgid 30 / 33) from a
+//! [`pose::PoseSnapshot`]. The rest of `modules/mavlink` stays ungenerated
+//! until later slices.
 //!
 //! # What this slice does not include
 //!
-//! The full common/ardupilotmega XML dialect, stream rates, STATUSTEXT
-//! receive / chunked queueing, signing, routing, COMMAND_ACK, PARAM_REQUEST_READ,
-//! and the `GCS_MAVLINK_Plane` vehicle-side handlers. Those land in later
-//! FW-028 slices. GCS failsafe (`FS_GCS_ENABL`) already lives in
-//! `ap-plane` and is not rewritten here.
+//! The full common/ardupilotmega XML dialect, stream-rate scheduling,
+//! STATUSTEXT receive / chunked queueing, signing, routing, COMMAND_ACK,
+//! PARAM_REQUEST_READ, and the `GCS_MAVLINK_Plane` vehicle-side handlers.
+//! Those land in later FW-028 slices. GCS failsafe (`FS_GCS_ENABL`) already
+//! lives in `ap-plane` and is not rewritten here.
 
 #![no_std]
 
@@ -26,6 +28,7 @@ pub mod dispatch;
 pub mod framing;
 pub mod heartbeat;
 pub mod param;
+pub mod pose;
 pub mod statustext;
 
 pub use command::{
@@ -43,6 +46,10 @@ pub use param::{
     MAV_PARAM_TYPE_REAL32, MAX_PARAMS, MSG_ID_PARAM_REQUEST_LIST, MSG_ID_PARAM_SET,
     MSG_ID_PARAM_VALUE, PARAM_ID_LEN, PARAM_REQUEST_LIST_CRC, PARAM_REQUEST_LIST_LEN,
     PARAM_SET_CRC, PARAM_SET_LEN, PARAM_VALUE_CRC, PARAM_VALUE_LEN,
+};
+pub use pose::{
+    Attitude, GlobalPositionInt, PoseSnapshot, ATTITUDE_CRC, ATTITUDE_LEN, GLOBAL_POSITION_INT_CRC,
+    GLOBAL_POSITION_INT_LEN, MSG_ID_ATTITUDE, MSG_ID_GLOBAL_POSITION_INT,
 };
 pub use statustext::{
     StatusText, MAV_SEVERITY_DEBUG, MAV_SEVERITY_EMERGENCY, MAV_SEVERITY_ERROR, MAV_SEVERITY_INFO,
