@@ -42,6 +42,9 @@ use crate::pose::{
     PoseSnapshot, ATTITUDE_LEN, GLOBAL_POSITION_INT_LEN, MSG_ID_ATTITUDE,
     MSG_ID_GLOBAL_POSITION_INT,
 };
+use crate::rates::{
+    RateTable, RequestDataStream, MAV_CMD_SET_MESSAGE_INTERVAL, MSG_ID_REQUEST_DATA_STREAM,
+};
 use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
 
 /// Default vehicle sysid, upstream `MAV_SYSID` / `g.sysid_this_mav` default.
@@ -96,6 +99,24 @@ pub enum Dispatch {
         /// `true` when that seq is in the table.
         found: bool,
     },
+    /// Msgid 66 — REQUEST_DATA_STREAM wrote stream msgid intervals.
+    RequestDataStream {
+        /// `MAV_DATA_STREAM` id.
+        stream_id: u8,
+        /// Requested rate, Hz (`0` when `start_stop` is stop).
+        rate_hz: u16,
+        /// How many known stream msgids were written into the rate table.
+        written: usize,
+    },
+    /// COMMAND_LONG / COMMAND_INT `MAV_CMD_SET_MESSAGE_INTERVAL` (511).
+    SetMessageInterval {
+        /// Target MAVLink msgid (`param1`).
+        msgid: u32,
+        /// Stored period, milliseconds (`0` = stop).
+        interval_ms: u16,
+        /// `true` when the table accepted the interval.
+        applied: bool,
+    },
     /// Any other msgid, or a command/param/mission not addressed to this vehicle.
     Unknown {
         /// Unrecognised message id.
@@ -120,6 +141,7 @@ pub struct GcsMavlink {
     last_gcs_heartbeat_ms: u32,
     params: ParamTable,
     mission: MissionTable,
+    rates: RateTable,
 }
 
 impl Default for GcsMavlink {
@@ -132,6 +154,7 @@ impl Default for GcsMavlink {
             last_gcs_heartbeat_ms: 0,
             params: ParamTable::plane_stub(),
             mission: MissionTable::new(),
+            rates: RateTable::new(),
         }
     }
 }
@@ -173,6 +196,12 @@ impl GcsMavlink {
     #[must_use]
     pub const fn mission_count(&self) -> u16 {
         self.mission.count()
+    }
+
+    /// Stored stream interval for `msgid`, if the rate table has a slot.
+    #[must_use]
+    pub fn stream_interval_ms(&self, msgid: u32) -> Option<u16> {
+        self.rates.interval_ms(msgid)
     }
 
     /// Look up a stored mission item by sequence number.
@@ -395,6 +424,26 @@ impl GcsMavlink {
         encode_v2(&frame, out)
     }
 
+    /// Encode VFR_HUD only when the stored period has elapsed.
+    ///
+    /// Upstream deferred send skips the msgid while
+    /// `now - last_sent < interval_ms`. `None` when the table has no
+    /// non-zero interval, the period has not elapsed, or `out` is too small.
+    #[must_use]
+    pub fn send_vfr_hud_if_due(
+        &mut self,
+        out: &mut [u8],
+        hud: &HudSnapshot,
+        now_ms: u32,
+    ) -> Option<usize> {
+        if !self.rates.should_send(MSG_ID_VFR_HUD, now_ms) {
+            return None;
+        }
+        let n = self.send_vfr_hud(out, hud)?;
+        self.rates.mark_sent(MSG_ID_VFR_HUD, now_ms);
+        Some(n)
+    }
+
     /// Encode one outgoing NAV_CONTROLLER_OUTPUT, upstream
     /// `GCS_MAVLINK_Plane::send_nav_controller_output`.
     ///
@@ -445,21 +494,33 @@ impl GcsMavlink {
         match frame.msgid {
             MSG_ID_HEARTBEAT => self.handle_heartbeat_frame(frame, now_ms),
             MSG_ID_COMMAND_LONG => match CommandLong::from_frame(frame) {
-                Some(cmd) if self.addressed_to_us(cmd.target_system) => Dispatch::Command {
-                    via: CommandVia::Long,
-                    command: cmd.command,
-                    kind: classify(cmd.command),
-                },
+                Some(cmd) if self.addressed_to_us(cmd.target_system) => {
+                    if cmd.command == MAV_CMD_SET_MESSAGE_INTERVAL {
+                        self.handle_set_message_interval(cmd.param1, cmd.param2, cmd.param3)
+                    } else {
+                        Dispatch::Command {
+                            via: CommandVia::Long,
+                            command: cmd.command,
+                            kind: classify(cmd.command),
+                        }
+                    }
+                }
                 _ => Dispatch::Unknown {
                     msgid: MSG_ID_COMMAND_LONG,
                 },
             },
             MSG_ID_COMMAND_INT => match CommandInt::from_frame(frame) {
-                Some(cmd) if self.addressed_to_us(cmd.target_system) => Dispatch::Command {
-                    via: CommandVia::Int,
-                    command: cmd.command,
-                    kind: classify(cmd.command),
-                },
+                Some(cmd) if self.addressed_to_us(cmd.target_system) => {
+                    if cmd.command == MAV_CMD_SET_MESSAGE_INTERVAL {
+                        self.handle_set_message_interval(cmd.param1, cmd.param2, cmd.param3)
+                    } else {
+                        Dispatch::Command {
+                            via: CommandVia::Int,
+                            command: cmd.command,
+                            kind: classify(cmd.command),
+                        }
+                    }
+                }
                 _ => Dispatch::Unknown {
                     msgid: MSG_ID_COMMAND_INT,
                 },
@@ -504,6 +565,24 @@ impl GcsMavlink {
                 }
                 _ => Dispatch::Unknown {
                     msgid: MSG_ID_MISSION_REQUEST_INT,
+                },
+            },
+            MSG_ID_REQUEST_DATA_STREAM => match RequestDataStream::from_frame(frame) {
+                Some(req) if self.addressed_to_us(req.target_system) => {
+                    let written = self.rates.apply_request_data_stream(&req);
+                    let rate_hz = if req.start_stop == 1 {
+                        req.req_message_rate
+                    } else {
+                        0
+                    };
+                    Dispatch::RequestDataStream {
+                        stream_id: req.req_stream_id,
+                        rate_hz,
+                        written,
+                    }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_REQUEST_DATA_STREAM,
                 },
             },
             msgid => Dispatch::Unknown { msgid },
@@ -554,5 +633,31 @@ impl GcsMavlink {
     #[must_use]
     const fn addressed_to_us(&self, target_system: u8) -> bool {
         target_system == 0 || target_system == self.sysid
+    }
+
+    fn handle_set_message_interval(&mut self, param1: f32, param2: f32, param3: f32) -> Dispatch {
+        let msgid = param1 as u32;
+        // Upstream denies when param3 is non-zero. Compare bits so clippy
+        // `float_cmp` stays quiet and -0.0 counts as zero.
+        if param3.to_bits() != 0 && param3.to_bits() != (-0.0_f32).to_bits() {
+            return Dispatch::SetMessageInterval {
+                msgid,
+                interval_ms: 0,
+                applied: false,
+            };
+        }
+        let interval_us = param2 as i32;
+        match self.rates.set_message_interval(msgid, interval_us) {
+            Some(interval_ms) => Dispatch::SetMessageInterval {
+                msgid,
+                interval_ms,
+                applied: true,
+            },
+            None => Dispatch::SetMessageInterval {
+                msgid,
+                interval_ms: 0,
+                applied: false,
+            },
+        }
     }
 }

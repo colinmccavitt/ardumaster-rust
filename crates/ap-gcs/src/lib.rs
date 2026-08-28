@@ -18,14 +18,17 @@
 //! [`channels::ServoOutputRaw`] (msgid 65 / 36) from a
 //! [`channels::ChannelSnapshot`], and sends [`hud::VfrHud`] /
 //! [`hud::NavControllerOutput`] (msgid 74 / 62) from a
-//! [`hud::HudSnapshot`]. The rest of
+//! [`hud::HudSnapshot`], and stores msgid → interval in
+//! [`rates::RateTable`] from [`rates::RequestDataStream`] (msgid 66) /
+//! `MAV_CMD_SET_MESSAGE_INTERVAL` (511), skipping a stream send when the
+//! period has not elapsed. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
 //!
-//! The full common/ardupilotmega XML dialect, stream-rate scheduling,
-//! STATUSTEXT receive / chunked queueing, signing, routing, COMMAND_ACK,
-//! PARAM_REQUEST_READ, MISSION_COUNT / MISSION_ACK, and the
+//! The full common/ardupilotmega XML dialect, STATUSTEXT receive /
+//! chunked queueing, signing, routing, COMMAND_ACK, PARAM_REQUEST_READ,
+//! MISSION_COUNT / MISSION_ACK, MANUAL_CONTROL / RC_OVERRIDE, and the
 //! `GCS_MAVLINK_Plane` vehicle-side handlers. Those land in later FW-028
 //! slices. GCS failsafe (`FS_GCS_ENABL`) already lives in `ap-plane` and
 //! is not rewritten here.
@@ -42,6 +45,7 @@ pub mod hud;
 pub mod mission;
 pub mod param;
 pub mod pose;
+pub mod rates;
 pub mod statustext;
 
 pub use channels::{
@@ -85,6 +89,13 @@ pub use param::{
 pub use pose::{
     Attitude, GlobalPositionInt, PoseSnapshot, ATTITUDE_CRC, ATTITUDE_LEN, GLOBAL_POSITION_INT_CRC,
     GLOBAL_POSITION_INT_LEN, MSG_ID_ATTITUDE, MSG_ID_GLOBAL_POSITION_INT,
+};
+pub use rates::{
+    hz_to_interval_ms, interval_us_to_ms, RateTable, RequestDataStream,
+    MAV_CMD_SET_MESSAGE_INTERVAL, MAV_DATA_STREAM_ALL, MAV_DATA_STREAM_EXTENDED_STATUS,
+    MAV_DATA_STREAM_EXTRA1, MAV_DATA_STREAM_EXTRA2, MAV_DATA_STREAM_EXTRA3,
+    MAV_DATA_STREAM_POSITION, MAV_DATA_STREAM_RC_CHANNELS, MAX_INTERVAL_MS, MAX_RATES,
+    MSG_ID_REQUEST_DATA_STREAM, REQUEST_DATA_STREAM_CRC, REQUEST_DATA_STREAM_LEN,
 };
 pub use statustext::{
     StatusText, MAV_SEVERITY_DEBUG, MAV_SEVERITY_EMERGENCY, MAV_SEVERITY_ERROR, MAV_SEVERITY_INFO,

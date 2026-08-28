@@ -105,8 +105,9 @@ pub fn crc16(bytes: &[u8], extra: Option<u8>) -> u16 {
 /// CRC extra for HEARTBEAT (0), SYS_STATUS (1), PARAM_REQUEST_LIST (21),
 /// PARAM_VALUE (22), PARAM_SET (23), ATTITUDE (30), GLOBAL_POSITION_INT (33),
 /// SERVO_OUTPUT_RAW (36), MISSION_REQUEST_INT (51), NAV_CONTROLLER_OUTPUT (62),
-/// RC_CHANNELS (65), MISSION_ITEM_INT (73), VFR_HUD (74), COMMAND_INT (75),
-/// COMMAND_LONG (76), BATTERY_STATUS (147), and STATUSTEXT (253).
+/// RC_CHANNELS (65), REQUEST_DATA_STREAM (66), MISSION_ITEM_INT (73),
+/// VFR_HUD (74), COMMAND_INT (75), COMMAND_LONG (76), BATTERY_STATUS (147),
+/// and STATUSTEXT (253).
 ///
 /// Unknown ids return `None` — this slice does not carry the dialect table.
 #[must_use]
@@ -123,6 +124,7 @@ pub const fn crc_extra(msgid: u32) -> Option<u8> {
         51 => Some(196),
         62 => Some(183),
         65 => Some(118),
+        66 => Some(148),
         73 => Some(38),
         74 => Some(20),
         75 => Some(158),
