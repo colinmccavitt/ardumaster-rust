@@ -2,11 +2,11 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover `Q_OPTIONS` bits
-//! (`leftover_option_is_set` / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL
-//! / FS_RTL / DELAY_ARMING / THR_LANDING_CONTROL). [`PortStatus::Remaining`]
-//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
-//! (assisted-flight latch extras, land-sequence predicates, motors/hold,
+//! be redone. [`PortStatus::ThisSlice`] is leftover assisted-flight
+//! latch extras (`force_fw_control_recovery` / `in_spin_recovery` QTUN
+//! bits, `leftover_show_vtol_view` / `leftover_use_multicopter_control`).
+//! [`PortStatus::Remaining`] are leftover `quadplane.cpp` / `.h`
+//! surfaces not yet stubbed (land-sequence predicates, motors/hold,
 //! guided/QRTL, thrust-loss, TECS leftovers, position controllers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
@@ -92,13 +92,13 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "leftover Q_OPTIONS bits",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "leftover_option_is_set / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL / FS_RTL / DELAY_ARMING / THR_LANDING_CONTROL",
     },
     QuadPlanePortItem {
         name: "assisted-flight latch extras",
-        status: PortStatus::Remaining,
-        note: "force_fw_control_recovery / in_spin_recovery QTUN bits (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "force_fw_control_recovery / in_spin_recovery QTUN bits / leftover_show_vtol_view / leftover_use_multicopter_control",
     },
     QuadPlanePortItem {
         name: "logging",
@@ -297,6 +297,80 @@ impl QuadPlane {
             LeftoverFailsafeMode::Qland
         }
     }
+
+    /// Upstream `bool force_fw_control_recovery`.
+    #[must_use]
+    pub const fn leftover_force_fw_control_recovery(&self) -> bool {
+        self.force_fw_control_recovery
+    }
+
+    /// Upstream `bool in_spin_recovery`.
+    #[must_use]
+    pub const fn leftover_in_spin_recovery(&self) -> bool {
+        self.in_spin_recovery
+    }
+
+    /// Latch leftover `force_fw_control_recovery`.
+    pub fn leftover_set_force_fw_control_recovery(&mut self, force_fw_control_recovery: bool) {
+        self.force_fw_control_recovery = force_fw_control_recovery;
+    }
+
+    /// Latch leftover `in_spin_recovery`.
+    pub fn leftover_set_in_spin_recovery(&mut self, in_spin_recovery: bool) {
+        self.in_spin_recovery = in_spin_recovery;
+    }
+
+    /// `mode_enter` leftover: both recovery latches clear.
+    ///
+    /// Upstream `QuadPlane::mode_enter` writes
+    /// `force_fw_control_recovery = false; in_spin_recovery = false`.
+    /// [`QuadPlane::mode_enter`] itself stays on the poscontrol slice.
+    pub fn leftover_clear_recovery_latches(&mut self) {
+        self.force_fw_control_recovery = false;
+        self.in_spin_recovery = false;
+    }
+
+    /// QTUN `assist` bits 5/6 from the leftover latches.
+    ///
+    /// Upstream `Log_Write_QControl_Tuning` ORs `fw_force` /
+    /// `spin_recovery` from these members. The logging slice still
+    /// packs the same bits from [`crate::logging::QTunView`].
+    #[must_use]
+    pub const fn leftover_qtun_assist_latch_flags(&self) -> u8 {
+        leftover_qtun_assist_latch_flags(
+            self.force_fw_control_recovery,
+            self.in_spin_recovery,
+        )
+    }
+
+    /// Upstream `QuadPlane::show_vtol_view` leftover recovery gate.
+    ///
+    /// `available() && transition->show_vtol_view() &&
+    /// !force_fw_control_recovery`. The transition half is a later
+    /// leftover; pass it in.
+    #[must_use]
+    pub const fn leftover_show_vtol_view(&self, transition_show: bool) -> bool {
+        self.available() && transition_show && !self.force_fw_control_recovery
+    }
+
+    /// `multicopter_attitude_rate_update` leftover recovery gate.
+    ///
+    /// Upstream `in_vtol_mode() && !tailsitter.in_vtol_transition() &&
+    /// !force_fw_control_recovery`.
+    #[must_use]
+    pub const fn leftover_use_multicopter_control(
+        &self,
+        in_vtol_mode: bool,
+        tailsitter_in_vtol_transition: bool,
+    ) -> bool {
+        in_vtol_mode && !tailsitter_in_vtol_transition && !self.force_fw_control_recovery
+    }
+}
+
+/// Pack leftover QTUN `fw_force` / `spin_recovery` bits.
+#[must_use]
+pub const fn leftover_qtun_assist_latch_flags(force_fw: bool, spin_recovery: bool) -> u8 {
+    qtun_assist_flags(false, false, false, false, false, force_fw, spin_recovery)
 }
 
 /// `Q_RTL_MODE` / `QuadPlane::RTL_MODE`.
@@ -541,9 +615,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 11);
+        assert_eq!(on_main, 12);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 7);
+        assert_eq!(remaining, 6);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -555,13 +629,17 @@ mod tests {
         assert!(completeness_has("completeness table", PortStatus::OnMain));
         assert!(completeness_has(
             "leftover Q_OPTIONS bits",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "assisted-flight latch extras",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 11);
+        assert_eq!(on_main_items().count(), 12);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 7);
+        assert_eq!(remaining_items().count(), 6);
     }
 
     #[test]
@@ -633,6 +711,37 @@ mod tests {
             &["TimeUS", "State", "Dist", "TSpd", "TAcc", "OShoot"]
         );
         assert_eq!(QTUN_FIELDS.len(), 12);
+    }
+
+    #[test]
+    fn leftover_assist_latch_extras_pack_and_gate() {
+        let mut qp = crate::QuadPlane::with_enable(1);
+        assert!(qp.setup());
+        assert!(!qp.leftover_force_fw_control_recovery());
+        assert!(!qp.leftover_in_spin_recovery());
+        assert_eq!(qp.leftover_qtun_assist_latch_flags(), 0);
+        assert_eq!(leftover_qtun_assist_latch_flags(false, false), 0);
+        assert_eq!(
+            leftover_qtun_assist_latch_flags(true, true),
+            QTUN_ASSIST_FW_FORCE | QTUN_ASSIST_SPIN_RECOVERY
+        );
+        qp.leftover_set_force_fw_control_recovery(true);
+        qp.leftover_set_in_spin_recovery(true);
+        assert!(qp.leftover_force_fw_control_recovery());
+        assert!(qp.leftover_in_spin_recovery());
+        assert_eq!(
+            qp.leftover_qtun_assist_latch_flags(),
+            QTUN_ASSIST_FW_FORCE | QTUN_ASSIST_SPIN_RECOVERY
+        );
+        assert!(qp.leftover_show_vtol_view(true) == false);
+        assert!(qp.leftover_use_multicopter_control(true, false) == false);
+        qp.leftover_clear_recovery_latches();
+        assert!(!qp.leftover_force_fw_control_recovery());
+        assert!(!qp.leftover_in_spin_recovery());
+        assert!(qp.leftover_show_vtol_view(true));
+        assert!(qp.leftover_use_multicopter_control(true, false));
+        assert!(!qp.leftover_use_multicopter_control(true, true));
+        assert!(!qp.leftover_show_vtol_view(false));
     }
 
     #[test]

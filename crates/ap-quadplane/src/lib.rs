@@ -5,11 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! AUTO mission VTOL and leftover logging already landed. This slice:
-//! leftover `Q_OPTIONS` bits on [`QuadPlane`] (`leftover_option_is_set`
-//! / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL / FS_RTL / DELAY_ARMING /
-//! THR_LANDING_CONTROL). It does not rewrite setup, air-mode, landing,
-//! auto_vtol, logging, motor-test, tailsitter completeness, or the
+//! Leftover `Q_OPTIONS` bits already landed. This slice:
+//! leftover assisted-flight latch extras on [`QuadPlane`]
+//! (`force_fw_control_recovery` / `in_spin_recovery` QTUN bits,
+//! `leftover_show_vtol_view` / `leftover_use_multicopter_control`).
+//! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
+//! leftover Q_OPTIONS, motor-test, tailsitter completeness, or the
 //! leftover catalog helpers for remaining rows.
 //!
 //! Upstream:
@@ -221,6 +222,10 @@ pub struct QuadPlane {
     air_mode: air_mode::AirMode,
     /// Upstream `bool assisted_flight`.
     assisted_flight: bool,
+    /// Upstream `bool force_fw_control_recovery`.
+    force_fw_control_recovery: bool,
+    /// Upstream `bool in_spin_recovery`.
+    in_spin_recovery: bool,
     /// Weathervane object constructed by [`Self::setup`].
     ///
     /// Upstream `AC_WeatherVane *weathervane`.
@@ -268,6 +273,8 @@ impl QuadPlane {
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
+            force_fw_control_recovery: false,
+            in_spin_recovery: false,
             weathervane_inited: false,
             weathervane: weathervane::WeatherVane::new(),
             motor_test: motor_test::MotorTest::new(),
@@ -306,6 +313,8 @@ impl QuadPlane {
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
+            force_fw_control_recovery: false,
+            in_spin_recovery: false,
             weathervane_inited: false,
             weathervane: weathervane::WeatherVane::new(),
             motor_test: motor_test::MotorTest::new(),
