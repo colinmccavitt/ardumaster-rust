@@ -22,6 +22,13 @@ use ap_math::location::{AltFrame, Location};
 mod verify_nav_wp;
 pub use verify_nav_wp::{verify_nav_wp, VerifyNavWpInputs, WP_RADIUS_DEFAULT_M};
 
+mod loiter_unlimited;
+pub use loiter_unlimited::{
+    do_loiter_unlimited, is_nav_loiter_unlim, loiter_unlimited_cmd, verify_loiter_unlim,
+    DoLoiterUnlimitedInputs, DoLoiterUnlimitedOutput, VerifyLoiterUnlimInputs,
+    VerifyLoiterUnlimOutput, MAV_CMD_NAV_LOITER_UNLIM,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
