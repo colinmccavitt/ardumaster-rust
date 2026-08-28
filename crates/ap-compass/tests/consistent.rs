@@ -1,8 +1,8 @@
 //! Compass consistency stub: `Compass::consistent()`.
 
 use ap_compass::consistent::{
-    consistent, instance_pair_consistent, CompassInstanceField, AP_COMPASS_MAX_XYZ_ANG_DIFF,
-    AP_COMPASS_MAX_XY_ANG_DIFF,
+    consistent, instance_pair_consistent, use_for_yaw_if_consistent, CompassInstanceField,
+    AP_COMPASS_MAX_XYZ_ANG_DIFF, AP_COMPASS_MAX_XY_ANG_DIFF,
 };
 use ap_math::vector3::Vector3f;
 
@@ -41,4 +41,25 @@ fn unused_secondary_does_not_fail_check() {
             },
         ],
     ));
+}
+
+#[test]
+fn inconsistent_pair_disables_use_for_yaw() {
+    let primary = Vector3f::new(400.0, 0.0, 100.0);
+    let yawed = Vector3f::new(0.0, 400.0, 100.0);
+    let ok = consistent(
+        primary,
+        &[
+            CompassInstanceField {
+                field: primary,
+                use_for_yaw: true,
+            },
+            CompassInstanceField {
+                field: yawed,
+                use_for_yaw: true,
+            },
+        ],
+    );
+    assert!(!ok);
+    assert!(!use_for_yaw_if_consistent(true, ok));
 }

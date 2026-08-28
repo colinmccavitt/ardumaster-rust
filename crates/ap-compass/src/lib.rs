@@ -25,7 +25,7 @@ pub use sitl::{
     SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES, SITL_COMPASS_UPDATE_MS,
 };
 
-pub use consistent::{consistent, CompassInstanceField};
+pub use consistent::{consistent, use_for_yaw_if_consistent, CompassInstanceField};
 pub use learn::LearnType;
 pub use motor_comp::{
     apply_motor_compensation, learn_motor_compensation, motor_comp_enabled, motor_offset,

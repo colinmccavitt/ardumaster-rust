@@ -42,6 +42,15 @@ pub fn instance_pair_consistent(primary: Vector3f, other: Vector3f) -> bool {
     (primary_xy - other_xy).length() <= AP_COMPASS_MAX_XY_LENGTH_DIFF
 }
 
+/// Runtime `use_for_yaw` after `Compass::consistent()`.
+///
+/// `COMPASS_USE` stays as configured. AHRS/EKF drop mag-for-yaw when
+/// instances fail the consistency check (`!compass.consistent()`).
+#[must_use]
+pub fn use_for_yaw_if_consistent(configured: bool, instances_consistent: bool) -> bool {
+    configured && instances_consistent
+}
+
 /// Upstream `Compass::consistent()`.
 ///
 /// `primary` is `get_field()` (first usable). Each `use_for_yaw` instance
@@ -134,5 +143,13 @@ mod tests {
         let primary = Vector3f::new(400.0, 0.0, 100.0);
         let stretched = Vector3f::new(700.0, 0.0, 100.0);
         assert!(!instance_pair_consistent(primary, stretched));
+    }
+
+    #[test]
+    fn inconsistent_disables_use_for_yaw() {
+        assert!(use_for_yaw_if_consistent(true, true));
+        assert!(!use_for_yaw_if_consistent(true, false));
+        assert!(!use_for_yaw_if_consistent(false, true));
+        assert!(!use_for_yaw_if_consistent(false, false));
     }
 }
