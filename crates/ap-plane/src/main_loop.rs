@@ -120,6 +120,7 @@ use crate::fbwb_mode_hookup::{fbwb_mode_nav_tick, FbwbModeNavInputs};
 use crate::cruise_mode_hookup::{cruise_mode_nav_tick, CruiseModeNavInputs};
 use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs};
 use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
+use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -470,6 +471,10 @@ pub struct PlaneMainLoop {
     pub autotune_mode_nav_applied: bool,
     /// Whether CIRCLE loiter-assisted nav roll ran this tick.
     pub circle_mode_nav_applied: bool,
+    /// Whether THERMAL soaring-assisted nav roll ran this tick.
+    pub thermal_mode_nav_applied: bool,
+    /// Upstream `SOAR_THML_BANK`, degrees.
+    pub thermal_bank_deg: f32,
     /// Upstream `ModeCruise::locked_heading`.
     pub cruise_locked_heading: bool,
     /// Upstream `training_manual_roll`.
@@ -789,6 +794,8 @@ impl Default for PlaneMainLoop {
             cruise_mode_nav_applied: false,
             autotune_mode_nav_applied: false,
             circle_mode_nav_applied: false,
+            thermal_mode_nav_applied: false,
+            thermal_bank_deg: crate::thermal_mode_hookup::SOAR_THML_BANK_DEFAULT_DEG,
             cruise_locked_heading: false,
             training_manual_roll: false,
             training_manual_pitch: false,
@@ -1366,6 +1373,17 @@ impl PlaneMainLoop {
         self.circle_mode_nav_applied = circle_nav.applied;
         if circle_nav.applied {
             self.nav_tecs.nav_roll_cd = circle_nav.nav_roll_cd;
+        }
+
+        let thermal_nav = thermal_mode_nav_tick(&ThermalModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            thermal_bank_deg: self.thermal_bank_deg,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+        });
+        self.thermal_mode_nav_applied = thermal_nav.applied;
+        if thermal_nav.applied {
+            self.nav_tecs.nav_roll_cd = thermal_nav.nav_roll_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {

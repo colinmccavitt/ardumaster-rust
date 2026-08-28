@@ -76,6 +76,7 @@ pub mod fbwb_mode_hookup;
 pub mod cruise_mode_hookup;
 pub mod autotune_mode_hookup;
 pub mod circle_mode_hookup;
+pub mod thermal_mode_hookup;
 pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;

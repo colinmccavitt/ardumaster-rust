@@ -45,3 +45,39 @@ pub fn dispatch_stabilize_from_mode(
         },
     }
 }
+
+/// Pilot-in-the-loop / assisted modes owned by FW-022.
+///
+/// Autonomous navigation and quadplane modes are excluded so a new
+/// `ModeNumber` variant must be classified here instead of silently no-op'ing.
+#[must_use]
+pub fn is_assisted_or_manual_mode(mode: ModeNumber) -> bool {
+    match mode {
+        ModeNumber::Manual
+        | ModeNumber::Circle
+        | ModeNumber::Stabilize
+        | ModeNumber::Training
+        | ModeNumber::Acro
+        | ModeNumber::FlyByWireA
+        | ModeNumber::FlyByWireB
+        | ModeNumber::Cruise
+        | ModeNumber::Autotune
+        | ModeNumber::Thermal => true,
+        ModeNumber::Auto
+        | ModeNumber::Rtl
+        | ModeNumber::Loiter
+        | ModeNumber::Takeoff
+        | ModeNumber::AvoidAdsb
+        | ModeNumber::Guided
+        | ModeNumber::Initialising
+        | ModeNumber::QStabilize
+        | ModeNumber::QHover
+        | ModeNumber::QLoiter
+        | ModeNumber::QLand
+        | ModeNumber::QRtl
+        | ModeNumber::QAutotune
+        | ModeNumber::QAcro
+        | ModeNumber::LoiterAltQLand
+        | ModeNumber::Autoland => false,
+    }
+}
