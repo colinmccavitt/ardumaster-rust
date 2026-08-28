@@ -12,7 +12,9 @@
 //! lives in [`pos_vel_fusion`]. Air-data / TAS fusion enable
 //! (`SelectTasFusion`, innovation gate) lives in [`air_data_fusion`].
 //! Height / baro fusion enable (`selectHeightForFusion`, `FuseBaro`,
-//! baro offset) lives in [`height_fusion`]. Covariance prediction and
+//! baro offset) lives in [`height_fusion`]. Range-finder / optical-flow
+//! fusion enable (`SelectFlowFusion`, `EstimateTerrainOffset` quality
+//! gates) lives in [`rng_flow_fusion`]. Covariance prediction and
 //! the 3-axis Kalman mag update are not here.
 //!
 //! # Twenty-four states, one vector
@@ -39,7 +41,8 @@
 //! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
 //! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
 //! enable is [`pos_vel_fusion`]; TAS / air-data enable is
-//! [`air_data_fusion`]; height / baro enable is [`height_fusion`].
+//! [`air_data_fusion`]; height / baro enable is [`height_fusion`];
+//! range-finder / optical-flow enable is [`rng_flow_fusion`].
 
 #![no_std]
 
@@ -50,6 +53,7 @@ pub mod height_fusion;
 pub mod mag_fusion;
 pub mod measurements;
 pub mod pos_vel_fusion;
+pub mod rng_flow_fusion;
 
 pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
 pub use control::{AidingMode, FilterControl};
@@ -63,6 +67,10 @@ pub use measurements::{
     IMU_BUFFER_CAPACITY,
 };
 pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
+pub use rng_flow_fusion::{
+    FlowFuseSel, FlowUse, RngFlowFusion, RngFuseSel, DCM33_FLOW_MIN, FLOW_INNOV_GATE_DEFAULT,
+    FLOW_USE_DEFAULT, MAX_FLOW_RATE_DEFAULT, RNG_INNOV_GATE_DEFAULT,
+};
 
 use ap_math::Ftype;
 
@@ -193,6 +201,8 @@ pub struct NavEkf3Core {
     air_data: AirDataFusion,
     /// Height / baro fusion enable, upstream `selectHeightForFusion`.
     height: HeightFusion,
+    /// Range-finder / optical-flow fusion enable, upstream `SelectFlowFusion`.
+    rng_flow: RngFlowFusion,
 }
 
 impl Default for NavEkf3Core {
@@ -215,6 +225,7 @@ impl NavEkf3Core {
             pos_vel: PosVelFusion::new(),
             air_data: AirDataFusion::new(),
             height: HeightFusion::new(),
+            rng_flow: RngFlowFusion::new(),
         }
     }
 
@@ -264,6 +275,7 @@ impl NavEkf3Core {
         self.pos_vel.reset();
         self.air_data.reset();
         self.height.reset();
+        self.rng_flow.reset();
         true
     }
 
@@ -295,6 +307,10 @@ impl NavEkf3Core {
         self.pos_vel.select_vel_pos_fusion();
         // Upstream `SelectVelPosFusion` calls `selectHeightForFusion`.
         self.height.select_height_fusion(self.states_initialised);
+        // Upstream `UpdateFilter` runs `SelectFlowFusion` before TAS.
+        self.rng_flow
+            .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
+        self.rng_flow.select_rng_flow_fusion(self.states_initialised);
         // Upstream `UpdateFilter` runs `SelectTasFusion` after pos/vel.
         self.air_data
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
@@ -430,6 +446,24 @@ impl NavEkf3Core {
     /// Upstream `NavEKF3_core::selectHeightForFusion`.
     pub fn select_height_fusion(&mut self) {
         self.height.select_height_fusion(self.states_initialised);
+    }
+
+    /// Range-finder / optical-flow helper, upstream `SelectFlowFusion`.
+    #[must_use]
+    pub const fn rng_flow(&self) -> &RngFlowFusion {
+        &self.rng_flow
+    }
+
+    /// Mutable rng/flow latch so tests can poke sample / tilt / quality flags.
+    pub fn rng_flow_mut(&mut self) -> &mut RngFlowFusion {
+        &mut self.rng_flow
+    }
+
+    /// Upstream `NavEKF3_core::SelectFlowFusion`.
+    pub fn select_rng_flow_fusion(&mut self) {
+        self.rng_flow
+            .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
+        self.rng_flow.select_rng_flow_fusion(self.states_initialised);
     }
 }
 
@@ -812,5 +846,36 @@ mod tests {
         assert_eq!(fallback.height().active_hgt_source(), HeightSource::Baro);
         assert_eq!(fallback.height().fuse_sel(), HeightFuseSel::FuseBaro);
         assert!(fallback.height().fuse_performed());
+    }
+
+    #[test]
+    fn core_rng_flow_gate_needs_sample_tilt_and_nav_source() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.select_rng_flow_fusion();
+        assert_eq!(core.rng_flow().rng_fuse_sel(), RngFuseSel::NotFusing);
+        assert_eq!(core.rng_flow().flow_fuse_sel(), FlowFuseSel::NotFusing);
+
+        core.rng_flow_mut().set_range_data(true, 3.0 as Ftype);
+        core.rng_flow_mut().set_rng_innov(0.0 as Ftype, 1.0 as Ftype);
+        core.rng_flow_mut().set_tilt_ok(true);
+        core.select_rng_flow_fusion();
+        assert_eq!(core.rng_flow().rng_fuse_sel(), RngFuseSel::FuseRng);
+        assert!(core.rng_flow().rng_fuse_performed());
+
+        // Plane FLOW_USE default is TERRAIN: main-filter flow stays closed
+        // until NAV + OPTFLOW XY are selected.
+        let mut flow = NavEkf3Core::new();
+        assert!(flow.initialise_filter_bootstrap());
+        flow.rng_flow_mut().set_flow_use(FlowUse::Nav);
+        flow.rng_flow_mut().set_use_optflow_xy(true);
+        flow.rng_flow_mut()
+            .set_flow_data(true, 0.2 as Ftype, 0.1 as Ftype);
+        flow.rng_flow_mut().set_flow_innov(0.0 as Ftype, 1.0 as Ftype);
+        flow.rng_flow_mut().set_tilt_ok(true);
+        flow.rng_flow_mut().set_takeoff_detected(true);
+        flow.select_rng_flow_fusion();
+        assert_eq!(flow.rng_flow().flow_fuse_sel(), FlowFuseSel::FuseFlow);
+        assert!(flow.rng_flow().flow_fuse_performed());
     }
 }
