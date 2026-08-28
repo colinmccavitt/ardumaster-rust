@@ -5,12 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! AUTO mission VTOL already landed. This slice:
-//! [`logging`] stubs leftover QTUN / QPOS / AttRate
-//! (`Log_Write_QControl_Tuning` / `log_QPOS` / `Log_Write_AttRate`
-//! plus the `update()` 25 Hz gate). It does not rewrite setup,
-//! air-mode, landing, auto_vtol, motor-test, tailsitter completeness,
-//! or the leftover catalog.
+//! AUTO mission VTOL and leftover logging already landed. This slice:
+//! leftover `Q_OPTIONS` bits on [`QuadPlane`] (`leftover_option_is_set`
+//! / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL / FS_RTL / DELAY_ARMING /
+//! THR_LANDING_CONTROL). It does not rewrite setup, air-mode, landing,
+//! auto_vtol, logging, motor-test, tailsitter completeness, or the
+//! leftover catalog helpers for remaining rows.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).

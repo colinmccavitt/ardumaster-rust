@@ -2,12 +2,12 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover logging (`Log_Write_QControl_Tuning`
-//! / `log_QPOS` / `Log_Write_AttRate`). [`PortStatus::Remaining`] are leftover
-//! `quadplane.cpp` / `.h` surfaces not yet stubbed (`Q_OPTIONS` bits
-//! beyond the two in [`crate::air_mode::QOption`], assisted-flight
-//! latch extras, land-sequence predicates, motors/hold, guided/QRTL,
-//! thrust-loss, TECS leftovers, position controllers).
+//! be redone. [`PortStatus::ThisSlice`] is leftover `Q_OPTIONS` bits
+//! (`leftover_option_is_set` / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL
+//! / FS_RTL / DELAY_ARMING / THR_LANDING_CONTROL). [`PortStatus::Remaining`]
+//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
+//! (assisted-flight latch extras, land-sequence predicates, motors/hold,
+//! guided/QRTL, thrust-loss, TECS leftovers, position controllers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
 //! [`crate::landing`], [`crate::logging`],
@@ -92,8 +92,8 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "leftover Q_OPTIONS bits",
-        status: PortStatus::Remaining,
-        note: "LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL / FS_RTL / DELAY_ARMING / THR_LANDING_CONTROL (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "leftover_option_is_set / LEVEL_TRANSITION / ALLOW_FW_* / FS_QRTL / FS_RTL / DELAY_ARMING / THR_LANDING_CONTROL",
     },
     QuadPlanePortItem {
         name: "assisted-flight latch extras",
@@ -102,7 +102,7 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "logging",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "logging.rs Log_Write_QControl_Tuning / log_QPOS / Log_Write_AttRate",
     },
     QuadPlanePortItem {
@@ -196,6 +196,107 @@ impl LeftoverQOption {
 #[must_use]
 pub const fn leftover_option_is_set(options: i32, option: LeftoverQOption) -> bool {
     (options & option.as_i32()) != 0
+}
+
+/// Leftover `Q_OPTIONS` FS_RTL / FS_QRTL pick after a Q-mode RC failsafe.
+///
+/// Upstream `events.cpp` `rc_failsafe_*_on_event`: `FS_RTL` wins over
+/// `FS_QRTL`; neither bit falls through to QLAND.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeftoverFailsafeMode {
+    /// Neither bit — QLAND.
+    Qland,
+    /// `FS_QRTL` without `FS_RTL`.
+    Qrtl,
+    /// `FS_RTL` (wins when both bits are set).
+    Rtl,
+}
+
+use crate::QuadPlane;
+
+impl QuadPlane {
+    /// Upstream `QuadPlane::option_is_set` for leftover `Q_OPTIONS` bits.
+    ///
+    /// Bits 9 and 13 stay on [`crate::air_mode::QOption`]. This is the
+    /// leftover table: LEVEL_TRANSITION, ALLOW_FW_*, FS_QRTL / FS_RTL,
+    /// DELAY_ARMING, THR_LANDING_CONTROL, and the rest of
+    /// [`LeftoverQOption`].
+    #[must_use]
+    pub const fn leftover_option_is_set(&self, option: LeftoverQOption) -> bool {
+        leftover_option_is_set(self.options, option)
+    }
+
+    /// `Q_OPTIONS` `LEVEL_TRANSITION`.
+    #[must_use]
+    pub const fn leftover_level_transition(&self) -> bool {
+        self.leftover_option_is_set(LeftoverQOption::LevelTransition)
+    }
+
+    /// SLT airspeed-wait climb clamp: `LEVEL_TRANSITION` and not tiltrotor.
+    ///
+    /// Upstream `MIN(assist_climb_rate_cms(), 0)` in
+    /// `SLT_Transition::update`. `hold_hover` is a later leftover row.
+    #[must_use]
+    pub const fn leftover_level_transition_limits_climb(&self, tiltrotor_enabled: bool) -> bool {
+        self.leftover_level_transition() && !tiltrotor_enabled
+    }
+
+    /// `SLT_Transition::set_FW_roll_limit` — assist + AIRSPEED_WAIT/TIMER
+    /// + `LEVEL_TRANSITION`.
+    #[must_use]
+    pub const fn leftover_level_transition_limits_roll(
+        &self,
+        assisted_flight: bool,
+        in_airspeed_or_timer: bool,
+    ) -> bool {
+        assisted_flight && in_airspeed_or_timer && self.leftover_level_transition()
+    }
+
+    /// `Q_OPTIONS` `ALLOW_FW_TAKEOFF`.
+    #[must_use]
+    pub const fn leftover_allow_fw_takeoff(&self) -> bool {
+        self.leftover_option_is_set(LeftoverQOption::AllowFwTakeoff)
+    }
+
+    /// `Q_OPTIONS` `ALLOW_FW_LAND`.
+    #[must_use]
+    pub const fn leftover_allow_fw_land(&self) -> bool {
+        self.leftover_option_is_set(LeftoverQOption::AllowFwLand)
+    }
+
+    /// `Q_OPTIONS` `THR_LANDING_CONTROL`.
+    ///
+    /// `landing_descent_rate_ms` throttle scaling is a later leftover.
+    #[must_use]
+    pub const fn leftover_thr_landing_control(&self) -> bool {
+        self.leftover_option_is_set(LeftoverQOption::ThrLandingControl)
+    }
+
+    /// `motors_output` arming-delay gate.
+    ///
+    /// `DELAY_ARMING` or `DISARMED_TILT` plus `arming.get_delay_arming()`
+    /// keeps the spool at `SHUT_DOWN`. `motors_output` itself is a later
+    /// leftover row.
+    #[must_use]
+    pub const fn leftover_motors_delay_arming(&self, arming_delay_active: bool) -> bool {
+        arming_delay_active
+            && (self.leftover_option_is_set(LeftoverQOption::DelayArming)
+                || self.leftover_option_is_set(LeftoverQOption::DisarmedTilt))
+    }
+
+    /// Leftover `Q_OPTIONS` FS_RTL / FS_QRTL pick.
+    ///
+    /// `FS_RTL` wins over `FS_QRTL`.
+    #[must_use]
+    pub const fn leftover_q_failsafe_mode(&self) -> LeftoverFailsafeMode {
+        if self.leftover_option_is_set(LeftoverQOption::FsRtl) {
+            LeftoverFailsafeMode::Rtl
+        } else if self.leftover_option_is_set(LeftoverQOption::FsQrtl) {
+            LeftoverFailsafeMode::Qrtl
+        } else {
+            LeftoverFailsafeMode::Qland
+        }
+    }
 }
 
 /// `Q_RTL_MODE` / `QuadPlane::RTL_MODE`.
@@ -440,9 +541,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 10);
+        assert_eq!(on_main, 11);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 8);
+        assert_eq!(remaining, 7);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -454,13 +555,13 @@ mod tests {
         assert!(completeness_has("completeness table", PortStatus::OnMain));
         assert!(completeness_has(
             "leftover Q_OPTIONS bits",
-            PortStatus::Remaining
+            PortStatus::ThisSlice
         ));
-        assert!(completeness_has("logging", PortStatus::ThisSlice));
+        assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 10);
+        assert_eq!(on_main_items().count(), 11);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 8);
+        assert_eq!(remaining_items().count(), 7);
     }
 
     #[test]

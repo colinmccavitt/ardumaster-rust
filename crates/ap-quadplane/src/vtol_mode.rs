@@ -10,10 +10,12 @@
 //! objects, so the caller passes a [`VtolModeView`].
 //!
 //! Land-sequence / `poscontrol` state (`QPOS_APPROACH` / `AIRBRAKE`)
-//! and `Q_OPTIONS` `ALLOW_FW_TAKEOFF` / `ALLOW_FW_LAND` are later
-//! slices. Unset options mean `NAV_TAKEOFF` / `NAV_LAND` count as VTOL
-//! when the QuadPlane is available, matching the upstream default.
+//! is a later leftover. `ALLOW_FW_TAKEOFF` / `ALLOW_FW_LAND` live on
+//! [`crate::quadplane_completeness::LeftoverQOption`]. Unset options
+//! mean `NAV_TAKEOFF` / `NAV_LAND` count as VTOL when the QuadPlane is
+//! available, matching the upstream default.
 
+use crate::quadplane_completeness::LeftoverQOption;
 use crate::QuadPlane;
 
 /// `MAV_CMD_NAV_LOITER_UNLIM`.
@@ -130,27 +132,31 @@ impl QuadPlane {
     /// Upstream `QuadPlane::is_vtol_takeoff`.
     ///
     /// `NAV_VTOL_TAKEOFF` is always a VTOL takeoff. `NAV_TAKEOFF` is
-    /// treated as VTOL when the QuadPlane is available (`Q_OPTIONS`
-    /// `ALLOW_FW_TAKEOFF` is a later slice; the default bit is unset).
+    /// treated as VTOL when the QuadPlane is available and
+    /// `ALLOW_FW_TAKEOFF` is unset (the default).
     #[must_use]
     pub const fn is_vtol_takeoff(&self, id: u16) -> bool {
         if id == MAV_CMD_NAV_VTOL_TAKEOFF {
             return true;
         }
-        id == MAV_CMD_NAV_TAKEOFF && self.available()
+        id == MAV_CMD_NAV_TAKEOFF
+            && self.available()
+            && !self.leftover_option_is_set(LeftoverQOption::AllowFwTakeoff)
     }
 
     /// Upstream `QuadPlane::is_vtol_land`.
     ///
     /// `NAV_VTOL_LAND` / `NAV_PAYLOAD_PLACE` are VTOL landings. `NAV_LAND`
-    /// is treated as VTOL when available (`ALLOW_FW_LAND` and the
-    /// spiral-approach stage are later slices).
+    /// is treated as VTOL when available and `ALLOW_FW_LAND` is unset
+    /// (the default). The spiral-approach stage is a later leftover.
     #[must_use]
     pub const fn is_vtol_land(&self, id: u16) -> bool {
         if id == MAV_CMD_NAV_VTOL_LAND || id == MAV_CMD_NAV_PAYLOAD_PLACE {
             return true;
         }
-        id == MAV_CMD_NAV_LAND && self.available()
+        id == MAV_CMD_NAV_LAND
+            && self.available()
+            && !self.leftover_option_is_set(LeftoverQOption::AllowFwLand)
     }
 
     /// Upstream `QuadPlane::in_vtol_auto`.
