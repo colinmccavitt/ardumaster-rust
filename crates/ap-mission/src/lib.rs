@@ -85,6 +85,13 @@ pub use do_change_speed::{
     SPEED_TYPE_CLIMB_SPEED, SPEED_TYPE_DESCENT_SPEED, SPEED_TYPE_GROUNDSPEED,
 };
 
+mod do_set_home;
+pub use do_set_home::{
+    do_set_home, do_set_home_cmd, home_content, is_do_set_home, set_home_location_valid,
+    set_home_use_current, DoSetHomeInputs, DoSetHomeOutput, HomeCommand, MAV_CMD_DO_SET_HOME,
+    SET_HOME_USE_CURRENT,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
