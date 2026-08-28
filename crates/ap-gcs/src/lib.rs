@@ -25,6 +25,10 @@
 //! [`rc_override::RcChannelsOverride`] / [`rc_override::ManualControl`]
 //! (msgid 70 / 69) in [`rc_override::OverrideStore`]. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
+//! [`completeness`] is the closer catalog: framing, heartbeat,
+//! STATUSTEXT, commands, params, pose, mission, health, channels, HUD,
+//! rates, and override are on main; leftover full-dialect generation /
+//! COMMAND_ACK / GCS_MAVLINK_Plane / sitl-diff stay documented-deferred.
 //!
 //! # What this slice does not include
 //!
@@ -38,6 +42,7 @@
 
 pub mod channels;
 pub mod command;
+pub mod completeness;
 pub mod dispatch;
 pub mod framing;
 pub mod health;
@@ -61,6 +66,7 @@ pub use command::{
     COMMAND_LONG_LEN, MAV_CMD_COMPONENT_ARM_DISARM, MAV_CMD_DO_SET_MODE, MAV_CMD_NAV_TAKEOFF,
     MAV_FRAME_GLOBAL_RELATIVE_ALT, MSG_ID_COMMAND_INT, MSG_ID_COMMAND_LONG,
 };
+pub use completeness::{GcsPortItem, PortStatus, GCS_COMPLETENESS, PINNED_MSGIDS};
 pub use dispatch::{Dispatch, GcsMavlink};
 pub use framing::{decode_v2, encode_v2, DecodeError, Frame};
 pub use health::{
