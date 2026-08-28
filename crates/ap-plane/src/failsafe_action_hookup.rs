@@ -6,7 +6,8 @@
 //!
 //! This stub maps a mode plus the parameter to the mode change the vehicle
 //! would ask for. Landing-sequence / emergency-landing / takeoff-pending
-//! gates and Q_OPTIONS RTL/QRTL overrides are left for a later slice.
+//! gates are left to their own modules. Q_OPTIONS RTL/QRTL is
+//! [`crate::q_options_failsafe_hookup`].
 
 use crate::mode_table::ModeNumber;
 

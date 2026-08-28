@@ -33,11 +33,12 @@ const ON_MAIN: &[&str] = &[
     "CIRCLE/TAKEOFF/RTL no-short-action",
     "emergency-landing override",
     "completeness table",
+    "FENCE_ACTION 8 AUTOLAND-or-RTL",
 ];
 
-const THIS_SLICE: &[&str] = &["FENCE_ACTION 8 AUTOLAND-or-RTL"];
+const THIS_SLICE: &[&str] = &["Q_OPTIONS FS_RTL / FS_QRTL"];
 
-const REMAINING: &[&str] = &["Q_OPTIONS FS_RTL / FS_QRTL"];
+const REMAINING: &[&str] = &[];
 
 #[test]
 fn completeness_table_matches_main_versus_remaining() {
@@ -161,26 +162,26 @@ fn emergency_landing_overrides_stick_short_and_stick_or_hold_long() {
             true
         ),
         FailsafeActionResult::Switch(ModeNumber::QLand),
-        "Q_OPTIONS RTL/QRTL is remaining — Q modes still default QLAND"
+        "emergency-landing wrapper does not consult Q_OPTIONS"
     );
 }
 
 #[test]
-fn remaining_q_options_still_stub_and_fence_action_8_is_this_slice() {
+fn q_options_is_this_slice_and_fence_action_8_is_on_main() {
     assert_eq!(Q_OPTIONS_FS_QRTL, 1 << 5);
     assert_eq!(Q_OPTIONS_FS_RTL, 1 << 20);
     assert_eq!(FENCE_ACTION_AUTOLAND_OR_RTL, 8);
     assert_eq!(
         FenceAction::from_param(FENCE_ACTION_AUTOLAND_OR_RTL),
         Some(FenceAction::AutolandOrRtl),
-        "FENCE_ACTION 8 AUTOLAND-or-RTL is this slice"
+        "FENCE_ACTION 8 AUTOLAND-or-RTL is already on main"
     );
     assert!(completeness_has(
         "Q_OPTIONS FS_RTL / FS_QRTL",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     assert!(completeness_has(
         "FENCE_ACTION 8 AUTOLAND-or-RTL",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
 }

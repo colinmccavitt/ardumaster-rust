@@ -3,9 +3,9 @@
 //!
 //! Catalogs the Plane failsafe port. Items marked [`PortStatus::OnMain`]
 //! landed in earlier slices and must not be redone. [`PortStatus::ThisSlice`]
-//! is the FENCE_ACTION 8 AUTOLAND-or-RTL stub. [`PortStatus::Remaining`]
-//! are still-open `events.cpp` / `failsafe.cpp` gaps (Q_OPTIONS RTL/QRTL).
-//! This slice adds `FENCE_ACTION` 8 AUTOLAND-or-RTL.
+//! is the Q_OPTIONS FS_RTL / FS_QRTL override. [`PortStatus::Remaining`]
+//! is empty — this is the last `events.cpp` / `failsafe.cpp` gap.
+//! This slice adds `Q_OPTIONS` FS_RTL / FS_QRTL.
 //!
 //! The emergency-landing gate wraps [`crate::failsafe_action_hookup`] the same
 //! way [`crate::failsafe_in_landing_sequence_hookup`] wraps the landing
@@ -17,10 +17,8 @@ use crate::failsafe_action_hookup::{
 };
 use crate::mode_table::ModeNumber;
 
-/// `Q_OPTIONS` bit 5, `QuadPlane::Option::FS_QRTL` — still remaining.
-pub const Q_OPTIONS_FS_QRTL: u32 = 1 << 5;
-/// `Q_OPTIONS` bit 20, `QuadPlane::Option::FS_RTL` — still remaining.
-pub const Q_OPTIONS_FS_RTL: u32 = 1 << 20;
+pub use crate::q_options_failsafe_hookup::{Q_OPTIONS_FS_QRTL, Q_OPTIONS_FS_RTL};
+
 /// Plane `FENCE_ACTION` / `AC_Fence::Action::AUTOLAND_OR_RTL`.
 pub const FENCE_ACTION_AUTOLAND_OR_RTL: u8 = 8;
 
@@ -29,7 +27,7 @@ pub const FENCE_ACTION_AUTOLAND_OR_RTL: u8 = 8;
 pub enum PortStatus {
     /// Present on `main` before this closing slice.
     OnMain,
-    /// Added by this FW-027 slice (`FENCE_ACTION` 8 AUTOLAND-or-RTL).
+    /// Added by this FW-027 slice (`Q_OPTIONS` FS_RTL / FS_QRTL).
     ThisSlice,
     /// Still deferred (`events.cpp` / `failsafe.cpp` leftover).
     Remaining,
@@ -130,12 +128,12 @@ pub const FAILSAFE_DISPATCHER_COMPLETENESS: &[FailsafePortItem] = &[
     },
     FailsafePortItem {
         name: "Q_OPTIONS FS_RTL / FS_QRTL",
-        status: PortStatus::Remaining,
-        note: "QuadPlane::Option bits 20 / 5; Q modes still default QLAND",
+        status: PortStatus::ThisSlice,
+        note: "q_options_failsafe_hookup QuadPlane::Option bits 20 / 5 RTL / QRTL / QLAND",
     },
     FailsafePortItem {
         name: "FENCE_ACTION 8 AUTOLAND-or-RTL",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "AC_Fence::Action::AUTOLAND_OR_RTL; Autoland if available else RTL",
     },
 ];
@@ -156,7 +154,7 @@ pub fn this_slice_items() -> impl Iterator<Item = &'static FailsafePortItem> {
         .filter(|item| item.status == PortStatus::ThisSlice)
 }
 
-/// Rows left for Q_OPTIONS FS_RTL / FS_QRTL (not blocking this closer).
+/// Rows left for later work (none — last events.cpp gap is this slice).
 #[must_use]
 pub fn remaining_items() -> impl Iterator<Item = &'static FailsafePortItem> {
     FAILSAFE_DISPATCHER_COMPLETENESS
@@ -287,9 +285,9 @@ mod tests {
     fn table_covers_main_hookups_and_remaining_gaps() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 16);
+        assert_eq!(on_main, 17);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 1);
+        assert_eq!(remaining, 0);
         assert!(completeness_has(
             "FS_SHORT_ACTN / FS_LONG_ACTN",
             PortStatus::OnMain
@@ -302,21 +300,18 @@ mod tests {
             "emergency-landing override",
             PortStatus::OnMain
         ));
+        assert!(completeness_has("completeness table", PortStatus::OnMain));
         assert!(completeness_has(
-            "completeness table",
+            "FENCE_ACTION 8 AUTOLAND-or-RTL",
             PortStatus::OnMain
         ));
         assert!(completeness_has(
             "Q_OPTIONS FS_RTL / FS_QRTL",
-            PortStatus::Remaining
-        ));
-        assert!(completeness_has(
-            "FENCE_ACTION 8 AUTOLAND-or-RTL",
             PortStatus::ThisSlice
         ));
-        assert_eq!(on_main_items().count(), 16);
+        assert_eq!(on_main_items().count(), 17);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 1);
+        assert_eq!(remaining_items().count(), 0);
         assert_eq!(Q_OPTIONS_FS_QRTL, 1 << 5);
         assert_eq!(Q_OPTIONS_FS_RTL, 1 << 20);
         assert_eq!(FENCE_ACTION_AUTOLAND_OR_RTL, 8);
