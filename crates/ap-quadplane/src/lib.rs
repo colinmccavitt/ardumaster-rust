@@ -6,11 +6,10 @@
 //! VTOL nav command.
 //!
 //! Landing-detect / user-takeoff already landed. This slice:
-//! [`completeness`] starts the leftover `quadplane.cpp` / `.h` catalog
-//! (`Q_OPTIONS` bits, assisted-flight latch extras, logging,
-//! land-sequence predicates, AUTO mission VTOL, motors/hold, guided/QRTL).
-//! It does not rewrite setup, air-mode, landing, motor-test, or the
-//! other on-main modules.
+//! [`auto_vtol`] stubs AUTO mission VTOL (`control_auto` /
+//! `do_vtol_takeoff` / `do_vtol_land` / `verify_*` /
+//! `poscontrol_init_approach`). It does not rewrite setup, air-mode,
+//! landing, motor-test, tailsitter completeness, or the leftover catalog.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -25,14 +24,15 @@
 #![no_std]
 
 pub mod air_mode;
+pub mod auto_vtol;
 pub mod completeness;
-pub mod quadplane_completeness;
 pub mod landing;
 pub mod mode_q;
 pub mod mode_qland;
 pub mod mode_qrtl;
 pub mod motor_test;
 pub mod poscontrol;
+pub mod quadplane_completeness;
 pub mod tailsitter;
 pub mod throttle;
 pub mod transition;
@@ -235,6 +235,8 @@ pub struct QuadPlane {
     last_land_final_agl_m: f32,
     /// Upstream `bool guided_takeoff`.
     guided_takeoff: bool,
+    /// AUTO mission VTOL leftover (`do_vtol_*` / `verify_*` / `control_auto`).
+    auto_vtol: auto_vtol::AutoVtol,
 }
 
 impl QuadPlane {
@@ -268,6 +270,7 @@ impl QuadPlane {
             land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
+            auto_vtol: auto_vtol::AutoVtol::new(),
         }
     }
 
@@ -304,6 +307,7 @@ impl QuadPlane {
             land_final_alt_m: landing::Q_LAND_FINAL_ALT_DEFAULT_M,
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
+            auto_vtol: auto_vtol::AutoVtol::new(),
         }
     }
 

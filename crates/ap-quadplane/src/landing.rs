@@ -271,6 +271,12 @@ impl LandingDetect {
     pub fn set_detect_alt_change_m(&mut self, detect_alt_change_m: f32) {
         self.detect_alt_change_m = detect_alt_change_m;
     }
+
+    /// Zero land / lower-limit timers (`do_vtol_land` / `QPOS_LAND_FINAL`).
+    pub fn clear_land_timers(&mut self) {
+        self.lower_limit_start_ms = 0;
+        self.land_start_ms = 0;
+    }
 }
 
 impl Default for LandingDetect {
@@ -365,7 +371,11 @@ impl QuadPlane {
             self.landing_detect.land_start_ms = 0;
             return false;
         }
-        if view.relax.now_ms.wrapping_sub(self.landing_detect.land_start_ms) < timeout_ms
+        if view
+            .relax
+            .now_ms
+            .wrapping_sub(self.landing_detect.land_start_ms)
+            < timeout_ms
             || view
                 .relax
                 .now_ms
@@ -418,8 +428,7 @@ impl QuadPlane {
     pub fn check_land_final(&mut self, view: LandFinalView) -> bool {
         let height_above_ground_m = view.height_above_ground_m;
         if height_above_ground_m < self.land_final_alt_m
-            && abs_f32(height_above_ground_m - self.last_land_final_agl_m)
-                < LAND_FINAL_MAX_CHANGE_M
+            && abs_f32(height_above_ground_m - self.last_land_final_agl_m) < LAND_FINAL_MAX_CHANGE_M
         {
             return true;
         }
