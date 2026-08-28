@@ -18,8 +18,12 @@
 //! `throttle_wait` leftover;
 //! [`qacro_run`] -> [`QManualRunAction::AcroRates`] (body-frame
 //! rates + pilot throttle) or the same leftover. Tailsitter FW
-//! pull-up is [`QManualRunAction::FwControllers`]. `update()`
-//! (nav_roll / nav_pitch from sticks) is a later slice.
+//! pull-up is [`QManualRunAction::FwControllers`]. `update()` is
+//! the nav leftover: QStabilize / QHover scale stick
+//! `control_in / range` into `nav_roll_cd` / `nav_pitch_cd`
+//! (tailsitter / FW-limited / Q_ANGLE_MAX). QAcro copies the
+//! attitude-controller euler target. The three `.cpp` files are
+//! leftover-complete after that (`MODE_Q_CPP_SURFACES`).
 
 use crate::transition_fsm::SltTransition;
 use crate::QuadPlane;
@@ -475,4 +479,313 @@ pub const fn qacro_run(qp: &QuadPlane, view: &QManualRunView) -> QManualRun {
         return QManualRun::throttle_wait(false);
     }
     QManualRun::acro_rates(qacro_rate_demand(view))
+}
+
+/// `Q_OPTIONS` bit 14, upstream `Option::INGORE_FW_ANGLE_LIMITS_IN_Q_MODES`
+/// (the misspelling is upstream).
+pub const Q_OPTIONS_IGNORE_FW_ANGLE_LIMITS: i32 = 1 << 14;
+
+/// Default `Q_A_ANGLE_MAX` lean limit (cd) used by the update view.
+pub const Q_ANGLE_MAX_DEFAULT_CD: i16 = 3000;
+/// Default `ROLL_LIMIT_DEG` in centidegrees.
+pub const ROLL_LIMIT_DEFAULT_CD: i16 = 4500;
+/// Default `PTCH_LIM_MAX_DEG` in centidegrees.
+pub const PITCH_LIMIT_MAX_DEFAULT_CD: i16 = 2000;
+/// Default `PTCH_LIM_MIN_DEG` in centidegrees (negative).
+pub const PITCH_LIMIT_MIN_DEFAULT_CD: i16 = -2500;
+
+/// Which `update()` path wrote `nav_roll_cd` / `nav_pitch_cd`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QManualUpdatePath {
+    /// `tailsitter.active()` → `set_tailsitter_roll_pitch`.
+    Tailsitter,
+    /// Default: `set_limited_roll_pitch` (FW LIM_* + Q_ANGLE_MAX).
+    LimitedFw,
+    /// `Q_OPTIONS` bit 14 set: both axes use `lean_angle_max_cd`.
+    AngleMax,
+    /// QAcro: `get_att_target_euler_cd()` x/y.
+    AcroAttTarget,
+}
+
+/// Outcome of one Q-manual `update()` tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QManualUpdate {
+    /// `plane.nav_roll_cd`.
+    pub nav_roll_cd: i32,
+    /// `plane.nav_pitch_cd`.
+    pub nav_pitch_cd: i32,
+    /// Which branch wrote the demands.
+    pub path: QManualUpdatePath,
+    /// `transition->set_VTOL_roll_pitch_limit` ran (tailsitter only).
+    pub vtol_roll_pitch_limit: bool,
+}
+
+/// Stick / limit view QStabilize / QHover `update()` reads.
+///
+/// `roll_input` / `pitch_input` are already
+/// `get_control_in() / get_range()` (not `norm_input()` — tailsitter
+/// `check_input` rewrites `control_in` only).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QManualUpdateView {
+    /// Normalized roll stick, `[-1, 1]`.
+    pub roll_input: f32,
+    /// Normalized pitch stick, `[-1, 1]`.
+    pub pitch_input: f32,
+    /// `quadplane.tailsitter.active()`.
+    pub tailsitter_active: bool,
+    /// `Q_TAILSIT_MAX_ROLL` (deg). `<= 0` uses `lean_angle_max_cd`.
+    pub tailsitter_max_roll_angle_deg: f32,
+    /// `option_is_set(INGORE_FW_ANGLE_LIMITS_IN_Q_MODES)`.
+    pub ignore_fw_angle_limits: bool,
+    /// `attitude_control->lean_angle_max_cd()`.
+    pub lean_angle_max_cd: i16,
+    /// `plane.roll_limit_cd`.
+    pub roll_limit_cd: i16,
+    /// `plane.aparm.pitch_limit_max * 100`.
+    pub pitch_limit_max_cd: i16,
+    /// `plane.pitch_limit_min * 100` (negative).
+    pub pitch_limit_min_cd: i16,
+}
+
+impl QManualUpdateView {
+    /// Level-ish sticks, conventional airframe, FW angle limits on.
+    #[must_use]
+    pub const fn flying() -> Self {
+        Self {
+            roll_input: 0.0,
+            pitch_input: 0.0,
+            tailsitter_active: false,
+            tailsitter_max_roll_angle_deg: 0.0,
+            ignore_fw_angle_limits: false,
+            lean_angle_max_cd: Q_ANGLE_MAX_DEFAULT_CD,
+            roll_limit_cd: ROLL_LIMIT_DEFAULT_CD,
+            pitch_limit_max_cd: PITCH_LIMIT_MAX_DEFAULT_CD,
+            pitch_limit_min_cd: PITCH_LIMIT_MIN_DEFAULT_CD,
+        }
+    }
+}
+
+/// Attitude-controller target QAcro `update()` copies into nav.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QAcroUpdateView {
+    /// `get_att_target_euler_cd().x`.
+    pub att_target_roll_cd: f32,
+    /// `get_att_target_euler_cd().y`.
+    pub att_target_pitch_cd: f32,
+}
+
+impl QAcroUpdateView {
+    /// Zeroed attitude target.
+    #[must_use]
+    pub const fn level() -> Self {
+        Self {
+            att_target_roll_cd: 0.0,
+            att_target_pitch_cd: 0.0,
+        }
+    }
+}
+
+/// `control_in / range` — the normalize `ModeQStabilize::update` uses.
+///
+/// Must use `get_control_in()`, not `norm_input()`, because
+/// `tailsitter_check_input` rewrites `control_in` only.
+#[must_use]
+pub const fn q_stick_norm(control_in: i16, range: i16) -> f32 {
+    if range == 0 {
+        0.0
+    } else {
+        control_in as f32 / range as f32
+    }
+}
+
+const fn min_i16(a: i16, b: i16) -> i16 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+/// Upstream `ModeQStabilize::set_tailsitter_roll_pitch`.
+#[must_use]
+pub const fn set_tailsitter_roll_pitch(view: &QManualUpdateView) -> QManualUpdate {
+    let angle_max = view.lean_angle_max_cd as f32;
+    let nav_roll_cd = if view.tailsitter_max_roll_angle_deg > 0.0 {
+        (view.tailsitter_max_roll_angle_deg * 100.0 * view.roll_input) as i32
+    } else {
+        (view.roll_input * angle_max) as i32
+    };
+    let nav_pitch_cd = (view.pitch_input * angle_max) as i32;
+    QManualUpdate {
+        nav_roll_cd,
+        nav_pitch_cd,
+        path: QManualUpdatePath::Tailsitter,
+        vtol_roll_pitch_limit: true,
+    }
+}
+
+/// Upstream `ModeQStabilize::set_limited_roll_pitch`.
+#[must_use]
+pub const fn set_limited_roll_pitch(view: &QManualUpdateView) -> QManualUpdate {
+    let angle_max = view.lean_angle_max_cd;
+    let nav_roll_cd = (view.roll_input * min_i16(view.roll_limit_cd, angle_max) as f32) as i32;
+    let nav_pitch_cd = if view.pitch_input > 0.0 {
+        (view.pitch_input * min_i16(view.pitch_limit_max_cd, angle_max) as f32) as i32
+    } else {
+        (view.pitch_input * min_i16(-view.pitch_limit_min_cd, angle_max) as f32) as i32
+    };
+    QManualUpdate {
+        nav_roll_cd,
+        nav_pitch_cd,
+        path: QManualUpdatePath::LimitedFw,
+        vtol_roll_pitch_limit: false,
+    }
+}
+
+/// Upstream `ModeQStabilize::update`.
+///
+/// Stick-normalized roll / pitch become `nav_roll_cd` / `nav_pitch_cd`.
+/// Tailsitter takes `set_tailsitter_roll_pitch` and always calls
+/// `set_VTOL_roll_pitch_limit`. Otherwise bit 14 picks Q_ANGLE_MAX
+/// on both axes vs `set_limited_roll_pitch`.
+#[must_use]
+pub const fn qstabilize_update(view: &QManualUpdateView) -> QManualUpdate {
+    if view.tailsitter_active {
+        return set_tailsitter_roll_pitch(view);
+    }
+    if view.ignore_fw_angle_limits {
+        let angle_max = view.lean_angle_max_cd as f32;
+        return QManualUpdate {
+            nav_roll_cd: (view.roll_input * angle_max) as i32,
+            nav_pitch_cd: (view.pitch_input * angle_max) as i32,
+            path: QManualUpdatePath::AngleMax,
+            vtol_roll_pitch_limit: false,
+        };
+    }
+    set_limited_roll_pitch(view)
+}
+
+/// Upstream `ModeQHover::update` — `plane.mode_qstabilize.update()`.
+#[must_use]
+pub const fn qhover_update(view: &QManualUpdateView) -> QManualUpdate {
+    qstabilize_update(view)
+}
+
+/// Upstream `ModeQAcro::update`.
+///
+/// Copies the multicopter attitude-controller euler target into
+/// `nav_roll_cd` / `nav_pitch_cd` (`att_target.x` / `.y`).
+#[must_use]
+pub const fn qacro_update(view: &QAcroUpdateView) -> QManualUpdate {
+    QManualUpdate {
+        nav_roll_cd: view.att_target_roll_cd as i32,
+        nav_pitch_cd: view.att_target_pitch_cd as i32,
+        path: QManualUpdatePath::AcroAttTarget,
+        vtol_roll_pitch_limit: false,
+    }
+}
+
+/// Whether a catalog row is already hooked up or left for later work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeQPortStatus {
+    /// Present on `main` before this closing slice.
+    OnMain,
+    /// Added by this slice (`update()` + helpers).
+    ThisSlice,
+}
+
+/// One `mode_qstabilize` / `mode_qhover` / `mode_qacro.cpp` surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeQSurface {
+    /// Upstream `.cpp` file.
+    pub file: &'static str,
+    /// Function name.
+    pub name: &'static str,
+    /// Hooked up on main or this slice.
+    pub status: ModeQPortStatus,
+    /// Short note (Rust symbol).
+    pub note: &'static str,
+}
+
+/// Completeness closer: every function in the three VT-004 cpp files.
+pub const MODE_Q_CPP_SURFACES: &[ModeQSurface] = &[
+    ModeQSurface {
+        file: "mode_qstabilize.cpp",
+        name: "_enter",
+        status: ModeQPortStatus::OnMain,
+        note: "qstabilize_enter / throttle_wait = false",
+    },
+    ModeQSurface {
+        file: "mode_qstabilize.cpp",
+        name: "update",
+        status: ModeQPortStatus::ThisSlice,
+        note: "qstabilize_update / nav_roll nav_pitch from sticks",
+    },
+    ModeQSurface {
+        file: "mode_qstabilize.cpp",
+        name: "run",
+        status: ModeQPortStatus::OnMain,
+        note: "qstabilize_run / hold_stabilize",
+    },
+    ModeQSurface {
+        file: "mode_qstabilize.cpp",
+        name: "set_tailsitter_roll_pitch",
+        status: ModeQPortStatus::ThisSlice,
+        note: "set_tailsitter_roll_pitch + set_VTOL_roll_pitch_limit",
+    },
+    ModeQSurface {
+        file: "mode_qstabilize.cpp",
+        name: "set_limited_roll_pitch",
+        status: ModeQPortStatus::ThisSlice,
+        note: "set_limited_roll_pitch / FW LIM_* + Q_ANGLE_MAX",
+    },
+    ModeQSurface {
+        file: "mode_qhover.cpp",
+        name: "_enter",
+        status: ModeQPortStatus::OnMain,
+        note: "qhover_enter / init_throttle_wait",
+    },
+    ModeQSurface {
+        file: "mode_qhover.cpp",
+        name: "update",
+        status: ModeQPortStatus::ThisSlice,
+        note: "qhover_update delegates to qstabilize_update",
+    },
+    ModeQSurface {
+        file: "mode_qhover.cpp",
+        name: "run",
+        status: ModeQPortStatus::OnMain,
+        note: "qhover_run / hold_hover vs throttle_wait",
+    },
+    ModeQSurface {
+        file: "mode_qacro.cpp",
+        name: "_enter",
+        status: ModeQPortStatus::OnMain,
+        note: "qacro_enter / force_transition_complete",
+    },
+    ModeQSurface {
+        file: "mode_qacro.cpp",
+        name: "update",
+        status: ModeQPortStatus::ThisSlice,
+        note: "qacro_update / att_target euler x/y",
+    },
+    ModeQSurface {
+        file: "mode_qacro.cpp",
+        name: "run",
+        status: ModeQPortStatus::OnMain,
+        note: "qacro_run / acro rates vs throttle_wait",
+    },
+];
+
+/// True when every listed surface is `OnMain` or `ThisSlice` (no leftover).
+#[must_use]
+pub const fn mode_q_surfaces_complete() -> bool {
+    let mut i = 0;
+    while i < MODE_Q_CPP_SURFACES.len() {
+        match MODE_Q_CPP_SURFACES[i].status {
+            ModeQPortStatus::OnMain | ModeQPortStatus::ThisSlice => {}
+        }
+        i += 1;
+    }
+    MODE_Q_CPP_SURFACES.len() == 11
 }

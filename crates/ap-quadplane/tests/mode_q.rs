@@ -1,11 +1,15 @@
-//! QSTABILIZE / QHOVER / QACRO `_enter` + `run()` — upstream
-//! `mode_qstabilize.cpp` / `mode_qhover.cpp` / `mode_qacro.cpp`.
+//! QSTABILIZE / QHOVER / QACRO `_enter` + `run()` + `update()` —
+//! upstream `mode_qstabilize.cpp` / `mode_qhover.cpp` / `mode_qacro.cpp`.
 
 use ap_quadplane::mode_q::{
-    qacro_enter, qacro_run, qhover_enter, qhover_run, qstabilize_enter, qstabilize_run,
-    QAcroEnterState, QHoverEnterState, QHoverEnterView, QManualMode, QManualRunAction, QManualRunView,
-    QManualSpool, MODE_QACRO, MODE_QHOVER, MODE_QSTABILIZE, Q_ACRO_PITCH_RATE_DEFAULT,
-    Q_ACRO_ROLL_RATE_DEFAULT, Q_ACRO_YAW_RATE_DEFAULT,
+    mode_q_surfaces_complete, q_stick_norm, qacro_enter, qacro_run, qacro_update, qhover_enter,
+    qhover_run, qhover_update, qstabilize_enter, qstabilize_run, qstabilize_update,
+    ModeQPortStatus, QAcroEnterState, QAcroUpdateView, QHoverEnterState, QHoverEnterView,
+    QManualMode, QManualRunAction, QManualRunView, QManualSpool, QManualUpdatePath,
+    QManualUpdateView, MODE_QACRO, MODE_QHOVER, MODE_QSTABILIZE, MODE_Q_CPP_SURFACES,
+    PITCH_LIMIT_MAX_DEFAULT_CD, PITCH_LIMIT_MIN_DEFAULT_CD, Q_ACRO_PITCH_RATE_DEFAULT,
+    Q_ACRO_ROLL_RATE_DEFAULT, Q_ACRO_YAW_RATE_DEFAULT, Q_ANGLE_MAX_DEFAULT_CD,
+    Q_OPTIONS_IGNORE_FW_ANGLE_LIMITS, ROLL_LIMIT_DEFAULT_CD,
 };
 use ap_quadplane::poscontrol::{PositionControlState, THROTTLE_WAIT_INPUT_MIN};
 use ap_quadplane::transition_fsm::{SltTransition, TransitionState};
@@ -247,4 +251,123 @@ fn qacro_run_tailsitter_swaps_roll_yaw() {
     assert_eq!(rates.pitch_cds, 0.25 * Q_ACRO_PITCH_RATE_DEFAULT * 100.0);
     assert_eq!(rates.yaw_cds, -0.5 * Q_ACRO_ROLL_RATE_DEFAULT * 100.0);
     assert!(rates.locking);
+}
+
+
+#[test]
+fn q_stick_norm_uses_control_in_over_range() {
+    assert_eq!(q_stick_norm(4500, 4500), 1.0);
+    assert_eq!(q_stick_norm(-2250, 4500), -0.5);
+    assert_eq!(q_stick_norm(0, 4500), 0.0);
+    assert_eq!(q_stick_norm(100, 0), 0.0);
+}
+
+#[test]
+fn qstabilize_update_limited_fw_scales_sticks() {
+    let mut view = QManualUpdateView::flying();
+    view.roll_input = 0.5;
+    view.pitch_input = 0.5;
+    let out = qstabilize_update(&view);
+    assert_eq!(out.path, QManualUpdatePath::LimitedFw);
+    assert!(!out.vtol_roll_pitch_limit);
+    // roll: 0.5 * min(4500, 3000) = 1500
+    assert_eq!(out.nav_roll_cd, 1500);
+    // pitch up: 0.5 * min(2000, 3000) = 1000
+    assert_eq!(out.nav_pitch_cd, 1000);
+
+    view.pitch_input = -0.5;
+    let down = qstabilize_update(&view);
+    // pitch down: -0.5 * min(2500, 3000) = -1250
+    assert_eq!(down.nav_pitch_cd, -1250);
+    assert_eq!(down.nav_roll_cd, 1500);
+}
+
+#[test]
+fn qstabilize_update_ignore_fw_uses_angle_max() {
+    assert_eq!(Q_OPTIONS_IGNORE_FW_ANGLE_LIMITS, 1 << 14);
+    let mut view = QManualUpdateView::flying();
+    view.ignore_fw_angle_limits = true;
+    view.roll_input = 0.5;
+    view.pitch_input = -1.0;
+    let out = qstabilize_update(&view);
+    assert_eq!(out.path, QManualUpdatePath::AngleMax);
+    assert_eq!(out.nav_roll_cd, 1500);
+    assert_eq!(out.nav_pitch_cd, -3000);
+    assert!(!out.vtol_roll_pitch_limit);
+}
+
+#[test]
+fn qstabilize_update_tailsitter_and_qhover_delegate() {
+    let mut view = QManualUpdateView::flying();
+    view.tailsitter_active = true;
+    view.roll_input = 0.5;
+    view.pitch_input = -0.25;
+    let ts = qstabilize_update(&view);
+    assert_eq!(ts.path, QManualUpdatePath::Tailsitter);
+    assert!(ts.vtol_roll_pitch_limit);
+    assert_eq!(ts.nav_roll_cd, 1500);
+    assert_eq!(ts.nav_pitch_cd, -750);
+
+    view.tailsitter_max_roll_angle_deg = 15.0;
+    let capped = qstabilize_update(&view);
+    assert_eq!(capped.nav_roll_cd, 750);
+    assert_eq!(capped.nav_pitch_cd, -750);
+
+    view.tailsitter_active = false;
+    view.roll_input = q_stick_norm(2250, 4500);
+    view.pitch_input = q_stick_norm(-2250, 4500);
+    let hover = qhover_update(&view);
+    let stab = qstabilize_update(&view);
+    assert_eq!(hover, stab);
+    assert_eq!(hover.path, QManualUpdatePath::LimitedFw);
+    assert_eq!(hover.nav_roll_cd, 1500);
+    assert_eq!(hover.nav_pitch_cd, -1250);
+}
+
+#[test]
+fn qacro_update_copies_att_target_euler() {
+    let view = QAcroUpdateView {
+        att_target_roll_cd: 1234.0,
+        att_target_pitch_cd: -567.0,
+    };
+    let out = qacro_update(&view);
+    assert_eq!(out.path, QManualUpdatePath::AcroAttTarget);
+    assert_eq!(out.nav_roll_cd, 1234);
+    assert_eq!(out.nav_pitch_cd, -567);
+    assert!(!out.vtol_roll_pitch_limit);
+    let _ = QAcroUpdateView::level();
+    let _ = Q_ANGLE_MAX_DEFAULT_CD;
+    let _ = ROLL_LIMIT_DEFAULT_CD;
+    let _ = PITCH_LIMIT_MAX_DEFAULT_CD;
+    let _ = PITCH_LIMIT_MIN_DEFAULT_CD;
+}
+
+#[test]
+fn mode_q_cpp_surfaces_are_complete() {
+    assert!(mode_q_surfaces_complete());
+    assert_eq!(MODE_Q_CPP_SURFACES.len(), 11);
+    let names: [&str; 11] = [
+        "_enter",
+        "update",
+        "run",
+        "set_tailsitter_roll_pitch",
+        "set_limited_roll_pitch",
+        "_enter",
+        "update",
+        "run",
+        "_enter",
+        "update",
+        "run",
+    ];
+    for (i, row) in MODE_Q_CPP_SURFACES.iter().enumerate() {
+        assert_eq!(row.name, names[i]);
+        assert!(
+            row.status == ModeQPortStatus::OnMain || row.status == ModeQPortStatus::ThisSlice
+        );
+    }
+    assert_eq!(MODE_Q_CPP_SURFACES[1].file, "mode_qstabilize.cpp");
+    assert_eq!(MODE_Q_CPP_SURFACES[1].status, ModeQPortStatus::ThisSlice);
+    assert_eq!(MODE_Q_CPP_SURFACES[6].file, "mode_qhover.cpp");
+    assert_eq!(MODE_Q_CPP_SURFACES[9].file, "mode_qacro.cpp");
+    assert_eq!(MODE_Q_CPP_SURFACES[9].status, ModeQPortStatus::ThisSlice);
 }
