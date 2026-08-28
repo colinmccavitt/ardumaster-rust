@@ -19,6 +19,7 @@ ap-ins = { workspace = true }
 ap-landing = { workspace = true }
 ap-math = { workspace = true }
 ap-pid = { workspace = true }
+ap-rc = { workspace = true }
 ap-scheduler = { workspace = true }
 ap-tecs = { workspace = true }
 ap-servo = { workspace = true }

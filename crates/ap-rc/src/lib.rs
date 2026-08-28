@@ -1,0 +1,175 @@
+//! RC channel PWM scaling and deadzone, upstream `libraries/RC_Channel`. FW-019.
+//!
+//! A receiver reports pulse widths. The vehicle flies on a signed stick in
+//! `[-1, 1]`. The conversion is not a single linear map: each channel has its
+//! own min/trim/max, an optional reverse, and a deadzone around trim so a
+//! resting stick is zero rather than a few counts of noise.
+//!
+//! This crate is the first dedicated `RC_Channel` slice. The HAL owns the raw
+//! PWM microsecond I/O; Plane's failsafe hookup already reads those pulses.
+//! Scaling belongs here so later aux-function and radio.cpp work can share
+//! one conversion.
+
+#![no_std]
+
+/// Upstream `RC_CHAN_MIN_DEFAULT` / `RC_Channel::radio_min` default.
+pub const RC_CHAN_MIN_DEFAULT: u16 = 1100;
+/// Upstream `RC_CHAN_TRIM_DEFAULT` / `RC_Channel::radio_trim` default.
+pub const RC_CHAN_TRIM_DEFAULT: u16 = 1500;
+/// Upstream `RC_CHAN_MAX_DEFAULT` / `RC_Channel::radio_max` default.
+pub const RC_CHAN_MAX_DEFAULT: u16 = 1900;
+/// Plane stick default, upstream `channel_*->set_default_dead_zone(30)`.
+pub const RC_CHAN_DEADZONE_DEFAULT: u16 = 30;
+
+/// Per-channel calibration, upstream `RC_Channel` radio_min/trim/max/dead_zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RcChannel {
+    /// Upstream `radio_min` (PWM microseconds).
+    pub radio_min: u16,
+    /// Upstream `radio_trim` (PWM microseconds).
+    pub radio_trim: u16,
+    /// Upstream `radio_max` (PWM microseconds).
+    pub radio_max: u16,
+    /// Upstream `dead_zone` (PWM microseconds around trim).
+    pub deadzone: u16,
+    /// Upstream `reversed`.
+    pub reversed: bool,
+}
+
+impl Default for RcChannel {
+    fn default() -> Self {
+        Self {
+            radio_min: RC_CHAN_MIN_DEFAULT,
+            radio_trim: RC_CHAN_TRIM_DEFAULT,
+            radio_max: RC_CHAN_MAX_DEFAULT,
+            deadzone: RC_CHAN_DEADZONE_DEFAULT,
+            reversed: false,
+        }
+    }
+}
+
+fn constrain_norm(value: f32) -> f32 {
+    if value < -1.0 {
+        -1.0
+    } else if value > 1.0 {
+        1.0
+    } else {
+        value
+    }
+}
+
+/// Signed stick without deadzone, upstream `RC_Channel::norm_input`.
+///
+/// Below trim the span is `[radio_min, radio_trim]`; above trim it is
+/// `[radio_trim, radio_max]`. A collapsed side (min ≥ trim, or max ≤ trim)
+/// returns 0 on that side, matching upstream rather than dividing by zero.
+#[must_use]
+pub fn norm_input(pwm: u16, ch: &RcChannel) -> f32 {
+    let reverse_mul = if ch.reversed { -1.0 } else { 1.0 };
+    let ret = if pwm < ch.radio_trim {
+        if ch.radio_min >= ch.radio_trim {
+            return 0.0;
+        }
+        reverse_mul * (f32::from(pwm) - f32::from(ch.radio_trim))
+            / (f32::from(ch.radio_trim) - f32::from(ch.radio_min))
+    } else {
+        if ch.radio_max <= ch.radio_trim {
+            return 0.0;
+        }
+        reverse_mul * (f32::from(pwm) - f32::from(ch.radio_trim))
+            / (f32::from(ch.radio_max) - f32::from(ch.radio_trim))
+    };
+    constrain_norm(ret)
+}
+
+/// Signed stick with deadzone, upstream `RC_Channel::norm_input_dz`.
+///
+/// The deadzone is a PWM window `[trim − dz, trim + dz]`. Inside it the
+/// result is 0. Outside it the span is from the deadzone edge to min or max,
+/// so a stick that just leaves the window starts from zero rather than jumping.
+#[must_use]
+pub fn norm_input_dz(pwm: u16, ch: &RcChannel) -> f32 {
+    let reverse_mul = if ch.reversed { -1.0 } else { 1.0 };
+    let dz_min = ch.radio_trim.saturating_sub(ch.deadzone);
+    let dz_max = ch.radio_trim.saturating_add(ch.deadzone);
+    let ret = if pwm < dz_min && dz_min > ch.radio_min {
+        reverse_mul * (f32::from(pwm) - f32::from(dz_min))
+            / (f32::from(dz_min) - f32::from(ch.radio_min))
+    } else if pwm > dz_max && dz_max < ch.radio_max {
+        reverse_mul * (f32::from(pwm) - f32::from(dz_max))
+            / (f32::from(ch.radio_max) - f32::from(dz_max))
+    } else {
+        0.0
+    };
+    constrain_norm(ret)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_upstream_radio() {
+        let ch = RcChannel::default();
+        assert_eq!(ch.radio_min, RC_CHAN_MIN_DEFAULT);
+        assert_eq!(ch.radio_trim, RC_CHAN_TRIM_DEFAULT);
+        assert_eq!(ch.radio_max, RC_CHAN_MAX_DEFAULT);
+        assert_eq!(ch.deadzone, RC_CHAN_DEADZONE_DEFAULT);
+        assert!(!ch.reversed);
+    }
+
+    #[test]
+    fn norm_input_is_neutral_at_trim() {
+        let ch = RcChannel::default();
+        assert!((norm_input(1500, &ch) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn norm_input_reaches_extremes_at_limits() {
+        let ch = RcChannel::default();
+        assert!((norm_input(1100, &ch) + 1.0).abs() < 1e-6);
+        assert!((norm_input(1900, &ch) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn norm_input_dz_swallows_pwm_inside_deadzone() {
+        let ch = RcChannel::default();
+        assert!((norm_input_dz(1500, &ch) - 0.0).abs() < 1e-6);
+        assert!((norm_input_dz(1470, &ch) - 0.0).abs() < 1e-6);
+        assert!((norm_input_dz(1530, &ch) - 0.0).abs() < 1e-6);
+        assert!((norm_input_dz(1469, &ch) - 0.0).abs() > 1e-4);
+        assert!((norm_input_dz(1531, &ch) - 0.0).abs() > 1e-4);
+    }
+
+    #[test]
+    fn norm_input_dz_reaches_extremes_at_limits() {
+        let ch = RcChannel::default();
+        assert!((norm_input_dz(1100, &ch) + 1.0).abs() < 1e-6);
+        assert!((norm_input_dz(1900, &ch) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reversed_flips_signed_stick() {
+        let ch = RcChannel {
+            reversed: true,
+            ..RcChannel::default()
+        };
+        assert!((norm_input(1100, &ch) - 1.0).abs() < 1e-6);
+        assert!((norm_input(1900, &ch) + 1.0).abs() < 1e-6);
+        assert!((norm_input_dz(1100, &ch) - 1.0).abs() < 1e-6);
+        assert!((norm_input_dz(1900, &ch) + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn collapsed_range_is_zero_not_nan() {
+        let ch = RcChannel {
+            radio_min: 1500,
+            radio_trim: 1500,
+            radio_max: 1500,
+            deadzone: 30,
+            reversed: false,
+        };
+        assert!((norm_input(1500, &ch) - 0.0).abs() < 1e-6);
+        assert!((norm_input_dz(1400, &ch) - 0.0).abs() < 1e-6);
+    }
+}

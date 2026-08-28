@@ -22,6 +22,7 @@ ap-filter = { path = "crates/ap-filter" }
 ap-pid = { path = "crates/ap-pid" }
 ap-control = { path = "crates/ap-control" }
 ap-param = { path = "crates/ap-param" }
+ap-rc = { path = "crates/ap-rc" }
 ap-nav = { path = "crates/ap-nav" }
 ap-plane = { path = "crates/ap-plane" }
 ap-servo = { path = "crates/ap-servo" }
