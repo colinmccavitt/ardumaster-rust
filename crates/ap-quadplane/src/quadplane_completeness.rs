@@ -2,14 +2,15 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is this table plus leftover-API
-//! contract helpers. [`PortStatus::Remaining`] are leftover
+//! be redone. [`PortStatus::ThisSlice`] is leftover logging (`Log_Write_QControl_Tuning`
+//! / `log_QPOS` / `Log_Write_AttRate`). [`PortStatus::Remaining`] are leftover
 //! `quadplane.cpp` / `.h` surfaces not yet stubbed (`Q_OPTIONS` bits
 //! beyond the two in [`crate::air_mode::QOption`], assisted-flight
-//! latch extras, logging, land-sequence predicates, AUTO mission VTOL,
-//! motors/hold, guided/QRTL, thrust-loss, TECS leftovers).
+//! latch extras, land-sequence predicates, motors/hold, guided/QRTL,
+//! thrust-loss, TECS leftovers, position controllers).
 //!
-//! This module does not rewrite [`crate::air_mode`], [`crate::landing`],
+//! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
+//! [`crate::landing`], [`crate::logging`],
 //! [`crate::mode_q`], [`crate::motor_test`], [`crate::poscontrol`],
 //! [`crate::tailsitter`], [`crate::throttle`], [`crate::transition`],
 //! [`crate::transition_fsm`], [`crate::vtol_mode`], or
@@ -86,7 +87,7 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "completeness table",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "this catalog + leftover API contract helpers",
     },
     QuadPlanePortItem {
@@ -101,8 +102,8 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "logging",
-        status: PortStatus::Remaining,
-        note: "Log_Write_QControl_Tuning / log_QPOS / Log_Write_AttRate (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "logging.rs Log_Write_QControl_Tuning / log_QPOS / Log_Write_AttRate",
     },
     QuadPlanePortItem {
         name: "position / takeoff / waypoint controllers",
@@ -116,8 +117,8 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "AUTO mission VTOL",
-        status: PortStatus::Remaining,
-        note: "do_vtol_takeoff / do_vtol_land / verify_* / control_auto (not stubbed)",
+        status: PortStatus::OnMain,
+        note: "auto_vtol.rs do_vtol_takeoff / do_vtol_land / verify_* / control_auto",
     },
     QuadPlanePortItem {
         name: "motors_output / hold / set_armed",
@@ -439,9 +440,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 8);
+        assert_eq!(on_main, 10);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 10);
+        assert_eq!(remaining, 8);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -450,18 +451,16 @@ mod tests {
             "landing-detect / do_user_takeoff",
             PortStatus::OnMain
         ));
-        assert!(completeness_has(
-            "completeness table",
-            PortStatus::ThisSlice
-        ));
+        assert!(completeness_has("completeness table", PortStatus::OnMain));
         assert!(completeness_has(
             "leftover Q_OPTIONS bits",
             PortStatus::Remaining
         ));
-        assert!(completeness_has("logging", PortStatus::Remaining));
-        assert_eq!(on_main_items().count(), 8);
+        assert!(completeness_has("logging", PortStatus::ThisSlice));
+        assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
+        assert_eq!(on_main_items().count(), 10);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 10);
+        assert_eq!(remaining_items().count(), 8);
     }
 
     #[test]

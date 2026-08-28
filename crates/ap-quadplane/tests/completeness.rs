@@ -1,5 +1,6 @@
 //! VT-001 completeness: QuadPlane surfaces already on main vs leftover API.
 
+use ap_quadplane::poscontrol::PositionControlState;
 use ap_quadplane::quadplane_completeness::{
     airbrake_state, completeness_counts, completeness_has, completeness_unique_names,
     land_approach_state, land_descent_state, land_final_state, land_poscontrol_state,
@@ -9,7 +10,6 @@ use ap_quadplane::quadplane_completeness::{
     QTUN_ASSIST_IN_ASSISTED_FLIGHT, QTUN_ASSIST_SPIN_RECOVERY, QTUN_FIELDS, QTUN_PERIOD_MS,
     QUADPLANE_COMPLETENESS,
 };
-use ap_quadplane::poscontrol::PositionControlState;
 use ap_quadplane::QuadPlane;
 
 /// Surfaces already on main — do not redo these slices.
@@ -22,18 +22,18 @@ const ON_MAIN: &[&str] = &[
     "throttle mix / tilt-wait",
     "motor_test",
     "landing-detect / do_user_takeoff",
+    "completeness table",
+    "AUTO mission VTOL",
 ];
 
-const THIS_SLICE: &[&str] = &["completeness table"];
+const THIS_SLICE: &[&str] = &["logging"];
 
 /// Leftover `quadplane.cpp` / `.h` surfaces not yet stubbed.
 const REMAINING: &[&str] = &[
     "leftover Q_OPTIONS bits",
     "assisted-flight latch extras",
-    "logging",
     "position / takeoff / waypoint controllers",
     "land-sequence predicates",
-    "AUTO mission VTOL",
     "motors_output / hold / set_armed",
     "guided / QRTL / RTL_MODE",
     "thrust-loss / ESC-cal / takeoff-failure",
@@ -77,25 +77,24 @@ fn completeness_table_matches_main_versus_leftover_api() {
 #[test]
 fn leftover_api_rows_name_upstream_surfaces() {
     let leftover: Vec<&QuadPlanePortItem> = remaining_items().collect();
-    assert_eq!(leftover.len(), 10);
+    assert_eq!(leftover.len(), 8);
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("LEVEL_TRANSITION") && item.note.contains("FS_QRTL")));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("force_fw_control_recovery")));
-    assert!(leftover
+    assert!(completeness_has("logging", PortStatus::ThisSlice));
+    assert!(QUADPLANE_COMPLETENESS
         .iter()
-        .any(|item| item.note.contains("Log_Write_QControl_Tuning")));
+        .any(|item| item.name == "logging" && item.note.contains("Log_Write_QControl_Tuning")));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("vtol_position_controller")));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("in_vtol_land_approach")));
-    assert!(leftover
-        .iter()
-        .any(|item| item.note.contains("do_vtol_takeoff")));
+    assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("motors_output")));

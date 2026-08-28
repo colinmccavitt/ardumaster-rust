@@ -5,11 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Landing-detect / user-takeoff already landed. This slice:
-//! [`auto_vtol`] stubs AUTO mission VTOL (`control_auto` /
-//! `do_vtol_takeoff` / `do_vtol_land` / `verify_*` /
-//! `poscontrol_init_approach`). It does not rewrite setup, air-mode,
-//! landing, motor-test, tailsitter completeness, or the leftover catalog.
+//! AUTO mission VTOL already landed. This slice:
+//! [`logging`] stubs leftover QTUN / QPOS / AttRate
+//! (`Log_Write_QControl_Tuning` / `log_QPOS` / `Log_Write_AttRate`
+//! plus the `update()` 25 Hz gate). It does not rewrite setup,
+//! air-mode, landing, auto_vtol, motor-test, tailsitter completeness,
+//! or the leftover catalog.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -27,6 +28,7 @@ pub mod air_mode;
 pub mod auto_vtol;
 pub mod completeness;
 pub mod landing;
+pub mod logging;
 pub mod mode_q;
 pub mod mode_qland;
 pub mod mode_qrtl;
@@ -237,6 +239,8 @@ pub struct QuadPlane {
     guided_takeoff: bool,
     /// AUTO mission VTOL leftover (`do_vtol_*` / `verify_*` / `control_auto`).
     auto_vtol: auto_vtol::AutoVtol,
+    /// Leftover QTUN / QPOS / AttRate logger block.
+    logging: logging::QLogging,
 }
 
 impl QuadPlane {
@@ -271,6 +275,7 @@ impl QuadPlane {
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
+            logging: logging::QLogging::new(),
         }
     }
 
@@ -308,6 +313,7 @@ impl QuadPlane {
             last_land_final_agl_m: 0.0,
             guided_takeoff: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
+            logging: logging::QLogging::new(),
         }
     }
 
