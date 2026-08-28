@@ -26,6 +26,7 @@ pub mod land;
 pub mod land_horizontal;
 pub mod mode_acro;
 pub mod mode_althold;
+pub mod mode_auto;
 pub mod mode_brake;
 pub mod mode_entry;
 pub mod mode_stabilize;
