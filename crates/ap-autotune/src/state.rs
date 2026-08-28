@@ -6,6 +6,7 @@
 //! returns to `IDLE` when the rate falls back through a lower threshold.
 
 use crate::gains::{apply_stop_gains, snapshot_gains, AtGains};
+use crate::start::floor_start_ff;
 
 /// Fraction of `min(att_limit/tau, rmax_pos)` that starts a demand event.
 ///
@@ -185,6 +186,11 @@ pub struct AutoTune {
     pub p_limit: f32,
     /// Highest accepted D this session, upstream `D_limit`.
     pub d_limit: f32,
+    /// Live feed-forward, upstream `ATGains::FF` / `rpid.ff()`.
+    ///
+    /// Not stored on [`AtGains`] (see [`crate::ff`]); [`AutoTune::start`]
+    /// floors values below [`crate::start::AUTOTUNE_MIN_FF`].
+    pub ff: f32,
 }
 
 impl AutoTune {
@@ -207,6 +213,7 @@ impl AutoTune {
             last_save: AtGains::ZERO,
             p_limit: 0.0,
             d_limit: 0.0,
+            ff: 0.0,
         }
     }
 
@@ -228,8 +235,9 @@ impl AutoTune {
 
     /// Upstream `AP_AutoTune::start` — enter AUTOTUNE on this axis.
     ///
-    /// Sets `running`, forces `IDLE`, and snapshots `current` into
-    /// `restore` / `last_save`.
+    /// Sets `running`, forces `IDLE`, snapshots `current` into
+    /// `restore` / `last_save`, then floors FF below 0.01 so the tuner
+    /// never starts at zero feed-forward.
     pub fn start(&mut self) {
         self.running = true;
         self.state = AtState::Idle;
@@ -238,6 +246,7 @@ impl AutoTune {
         self.last_save = last_save;
         self.p_limit = 0.0;
         self.d_limit = 0.0;
+        self.ff = floor_start_ff(self.ff);
     }
 
     /// Upstream `AP_AutoTune::stop` — leave AUTOTUNE on this axis.

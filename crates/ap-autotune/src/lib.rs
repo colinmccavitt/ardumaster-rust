@@ -15,7 +15,8 @@
 //! (`AUTOTUNE_INCREASE_FF_STEP` / `DECREASE_FF_STEP`, roll `min(FF, P)`,
 //! IMAX clamp) lives in [`ff`]. The single-event FF estimate
 //! (`FF_single`, `ff_filter.apply`, `ff_count` 1/4 gates) lives in
-//! [`ff_estimate`].
+//! [`ff_estimate`]. The `start` zero-FF floor (`current.FF < 0.01`
+//! becomes `0.01`) lives in [`start`].
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
@@ -26,6 +27,7 @@ pub mod ff_estimate;
 pub mod gains;
 pub mod level;
 pub mod options;
+pub mod start;
 pub mod state;
 pub mod update;
 
@@ -50,6 +52,7 @@ pub use options::{
     AUTOTUNE_AXIS_YAW, AUTOTUNE_OPTIONS_DEFAULT, AUTOTUNE_OPTION_DISABLE_FLTD_UPDATE,
     AUTOTUNE_OPTION_DISABLE_FLTT_UPDATE,
 };
+pub use start::{floor_start_ff, AUTOTUNE_MIN_FF};
 pub use state::{
     in_att_demand, next_demand_state, rate_threshold1, rate_threshold2, AtState, AtType, AutoTune,
     ATT_DEMAND_FRAC, RATE_THRESHOLD1_FRAC, RATE_THRESHOLD2_FRAC,
