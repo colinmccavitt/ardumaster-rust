@@ -1,17 +1,20 @@
 //! QuadPlane / VTOL support, upstream `ArduPlane/quadplane.*` (Plane-4.7.0).
 //!
-//! Tracked as **VT-001**. This first slice is the `Q_ENABLE` gate that
-//! decides whether the QuadPlane object is live.
+//! Tracked as **VT-001** / **VT-007**. Sibling slices land as modules
+//! beside [`tailsitter`]. Keep every `mod` declaration in this file so
+//! parallel workers do not drop each other's surfaces.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
 //! - `available()` is `return initialised` (set true at the end of
 //!   `QuadPlane::setup()`).
 //!
-//! `setup()` is the next slice. Until then a non-zero `Q_ENABLE` is the
+//! `setup()` is the next VT-001 slice. Until then a non-zero `Q_ENABLE` is the
 //! live-object check, so `available()` agrees with `enabled()`.
 
 #![no_std]
+
+pub mod tailsitter;
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
 pub const Q_ENABLE_DEFAULT: i8 = 0;
