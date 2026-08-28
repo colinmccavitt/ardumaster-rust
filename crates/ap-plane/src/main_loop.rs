@@ -131,7 +131,10 @@ use crate::cruise_mode_hookup::{cruise_mode_nav_tick, CruiseModeNavInputs};
 use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs};
 use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
-use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
+use crate::auto_mode_hookup::{
+    auto_mode_complete_tick, auto_mode_mission_tick, AutoModeCompleteInputs,
+    AutoModeMissionInputs,
+};
 use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
@@ -427,6 +430,14 @@ pub struct PlaneMainLoop {
     pub auto_mode_mission_started: bool,
     /// Whether AUTO navigate allowed a mission item advance this tick.
     pub auto_mode_mission_advanced: bool,
+    /// Whether AUTO mission-complete / landing handoff glue ran this tick.
+    pub auto_mode_complete_applied: bool,
+    /// Whether exit_mission_callback / AUTO-without-mission would switch to RTL.
+    pub auto_mode_switch_to_rtl: bool,
+    /// Whether ModeAuto hands the current NAV_LAND command to landing.
+    pub auto_mode_land_handoff: bool,
+    /// Upstream current nav command is MAV_CMD_NAV_LAND.
+    pub auto_current_nav_is_land: bool,
     /// Upstream RTL_RADIUS, metres. Negative is CCW; zero uses WP_LOITER_RAD.
     pub rtl_radius_m: i16,
     /// Whether RTL enter/navigate glue ran this tick.
@@ -911,6 +922,10 @@ impl Default for PlaneMainLoop {
             auto_mode_mission_applied: false,
             auto_mode_mission_started: false,
             auto_mode_mission_advanced: false,
+            auto_mode_complete_applied: false,
+            auto_mode_switch_to_rtl: false,
+            auto_mode_land_handoff: false,
+            auto_current_nav_is_land: false,
             rtl_radius_m: 0,
             rtl_mode_nav_applied: false,
             rtl_mode_started: false,
@@ -1438,6 +1453,17 @@ impl PlaneMainLoop {
         if mission_out.ran {
             self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
         }
+
+        let auto_complete = auto_mode_complete_tick(&AutoModeCompleteInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mission_running: self.mission.running,
+            mission_complete: self.mission.complete,
+            current_nav_is_land: self.auto_current_nav_is_land,
+        });
+        self.auto_mode_complete_applied = auto_complete.applied;
+        self.auto_mode_switch_to_rtl = auto_complete.switch_to_rtl;
+        self.auto_mode_land_handoff = auto_complete.allow_land;
 
         let rtl_nav = rtl_mode_nav_tick(&RtlModeNavInputs {
             control_mode: self.mode.control_mode,
