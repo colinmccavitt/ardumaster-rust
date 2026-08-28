@@ -1,6 +1,6 @@
 [package]
 name = "ap-rc"
-description = "Port of ArduPilot libraries/RC_Channel: PWM scale, deadzone, aux-function switch latch, 2-pos vs 3-pos option-switch PWM ranges, FS_THR_VALUE failsafe floor, RCMAP channel map and RCn_TRIM persist, RC_OVERRIDE_TIME GCS override timeout, FLTMODE_CH six-position flight-mode switch decode, FLTMODE1-6 slot mapping, INITIAL_MODE / boot-mode-from-switch, RC_OPTIONS bitfield, and RC_SPEED PWM update-rate (Plane-4.7.0). Tracked as FW-019."
+description = "Port of ArduPilot libraries/RC_Channel: PWM scale, deadzone, aux-function switch latch, 2-pos vs 3-pos option-switch PWM ranges, FS_THR_VALUE failsafe floor, RCMAP channel map and RCn_TRIM persist, RC_OVERRIDE_TIME GCS override timeout, FLTMODE_CH six-position flight-mode switch decode, FLTMODE1-6 slot mapping, INITIAL_MODE / boot-mode-from-switch, RC_OPTIONS bitfield, RC_SPEED PWM update-rate, and RCn_REVERSED per-channel reverse (Plane-4.7.0). Tracked as FW-019."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
