@@ -5,11 +5,10 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::mode_enter`] resets poscontrol / lean-angle
-//! when Plane changes mode, and [`Self::setup`] constructs the
-//! attitude_control / pos_control stubs (COP controllers live in
-//! `ap-control`). [`QuadPlane::init_throttle_wait`] is the QHover /
-//! QLoiter enter hook.
+//! This slice: [`QuadPlane::get_weathervane_yaw_rate_cds`] /
+//! [`QuadPlane::apply_assist_handoff`]. `setup()` also constructs the
+//! `Q_WVANE_*` object. Mode-enter / poscontrol init and air-mode live
+//! in their own modules.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -29,6 +28,7 @@ pub mod tailsitter;
 pub mod transition;
 pub mod transition_fsm;
 pub mod vtol_mode;
+pub mod weathervane;
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
 pub const Q_ENABLE_DEFAULT: i8 = 0;
@@ -72,6 +72,12 @@ pub struct QuadPlane {
     air_mode: air_mode::AirMode,
     /// Upstream `bool assisted_flight`.
     assisted_flight: bool,
+    /// Weathervane object constructed by [`Self::setup`].
+    ///
+    /// Upstream `AC_WeatherVane *weathervane`.
+    weathervane_inited: bool,
+    /// Upstream `AC_WeatherVane *weathervane` (embedded, not a heap pointer).
+    weathervane: weathervane::WeatherVane,
 }
 
 impl QuadPlane {
@@ -92,6 +98,8 @@ impl QuadPlane {
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
+            weathervane_inited: false,
+            weathervane: weathervane::WeatherVane::new(),
         }
     }
 
@@ -115,6 +123,8 @@ impl QuadPlane {
             options: air_mode::Q_OPTIONS_DEFAULT,
             air_mode: air_mode::AirMode::Off,
             assisted_flight: false,
+            weathervane_inited: false,
+            weathervane: weathervane::WeatherVane::new(),
         }
     }
 
@@ -157,7 +167,8 @@ impl QuadPlane {
     /// When already initialised, returns `true`. When `Q_ENABLE == 0`,
     /// returns `false` and leaves motors and the COP controllers
     /// unallocated. Otherwise runs the motors-init stub, constructs
-    /// the attitude_control / pos_control stubs, and sets `initialised`.
+    /// the attitude_control / pos_control / weathervane stubs, and
+    /// sets `initialised`.
     ///
     /// Soft-armed rejection, the memory check, and frame-class
     /// construction are later slices.
@@ -176,6 +187,8 @@ impl QuadPlane {
         // live in COP; these flags are the non-null pointers.
         self.attitude_control_inited = true;
         self.pos_control_inited = true;
+        // Upstream `weathervane = NEW_NOTHROW AC_WeatherVane()`.
+        self.weathervane_inited = true;
         self.initialised = true;
         true
     }
