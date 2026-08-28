@@ -41,6 +41,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 pub mod analog;
 pub mod binary_semaphore;
+pub mod can_iface;
 pub mod completeness;
 pub mod context;
 pub mod device;
