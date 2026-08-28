@@ -7,13 +7,15 @@
 //!
 //! Scaling, the aux-function switch latch, the 2-pos vs 3-pos option-switch PWM
 //! ranges, the FS_THR_VALUE / THR_FS_VALUE PWM floor, the RCMAP_* channel map
-//! plus RCn_TRIM persist, and the RC_OVERRIDE_TIME GCS override timeout live
-//! here so radio.cpp work can share one conversion. The HAL owns the raw PWM
-//! microsecond I/O; Plane's failsafe hookup already reads those pulses.
+//! plus RCn_TRIM persist, the RC_OVERRIDE_TIME GCS override timeout, and the
+//! FLTMODE_CH six-position flight-mode switch decode live here so radio.cpp
+//! work can share one conversion. The HAL owns the raw PWM microsecond I/O;
+//! Plane's failsafe hookup already reads those pulses.
 
 #![no_std]
 
 pub mod aux_switch;
+pub mod fltmode;
 pub mod fs_thr;
 pub mod option_switch;
 pub mod override_timeout;
@@ -23,6 +25,12 @@ pub use aux_switch::{
     get_aux_switch_pos, init_position_on_first_radio_read, read_3pos_switch, AuxFunc,
     AuxSwitchLatch, AuxSwitchPos, AUX_SWITCH_PWM_TRIGGER_HIGH, AUX_SWITCH_PWM_TRIGGER_LOW,
     RC_MAX_LIMIT_PWM, RC_MIN_LIMIT_PWM, SWITCH_DEBOUNCE_TIME_MS,
+};
+pub use fltmode::{
+    decode_fltmode_ch, decode_fltmode_switch, flight_mode_channel_index, flight_mode_channel_pwm,
+    fltmode_ch_valid, read_6pos_switch, FLTMODE_CH_DEFAULT, FLTMODE_CH_DISABLED,
+    FLTMODE_POS0_MAX_PWM, FLTMODE_POS1_MAX_PWM, FLTMODE_POS2_MAX_PWM, FLTMODE_POS3_MAX_PWM,
+    FLTMODE_POS4_MAX_PWM, NUM_RC_CHANNELS,
 };
 pub use fs_thr::{
     throttle_below_fs_thr_value, throttle_pwm_in_failsafe, ThrFailsafe, FS_THR_VALUE_DEFAULT,
