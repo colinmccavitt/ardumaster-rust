@@ -5,18 +5,23 @@
 //! (`aspeed < Q_ASSIST_SPEED` or height AGL `< Q_ASSIST_ALT`, after the
 //! enable / check gate is open) lives in [`speed_alt`]. Force-assist
 //! and the `Q_OPTIONS` bits that latch it (`Q_ASSIST_FORCE_ENABLE`,
-//! spin-while-armed) live in [`force`]. A small [`VtolAssist`] object,
-//! not QuadPlane.
+//! spin-while-armed) live in [`force`]. The angle-error trigger
+//! (outside the flight envelope *and* attitude error `>= Q_ASSIST_ANGLE`)
+//! lives in [`angle`]. A small [`VtolAssist`] object, not QuadPlane.
 //!
-//! Angle-error hysteresis, spin recovery, and the rest of
-//! `should_assist` are not here.
+//! Hysteresis, spin recovery, and the rest of `should_assist` are not
+//! here.
 
 #![no_std]
 
+pub mod angle;
 pub mod assist;
 pub mod force;
 pub mod speed_alt;
 
+pub use angle::{
+    angle_check_enabled, evaluate_angle, AngleDecision, AngleSample, ALLOWED_ENVELOPE_ERROR_DEG,
+};
 pub use assist::{
     q_assist_force_enable_set, AssistOption, AssistState, AuxSwitchPos, VtolAssist,
     ASSIST_ALT_DEFAULT, ASSIST_ANGLE_DEFAULT, ASSIST_DELAY_DEFAULT, ASSIST_OPTIONS_DEFAULT,
