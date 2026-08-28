@@ -38,6 +38,13 @@ pub use loiter_turns::{
     MAV_CMD_NAV_LOITER_TURNS,
 };
 
+mod loiter_time;
+pub use loiter_time::{
+    do_loiter_time, is_nav_loiter_time, loiter_time_cmd, loiter_time_max_ms, verify_loiter_time,
+    DoLoiterTimeInputs, DoLoiterTimeOutput, VerifyLoiterTimeInputs, VerifyLoiterTimeOutput,
+    MAV_CMD_NAV_LOITER_TIME,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
