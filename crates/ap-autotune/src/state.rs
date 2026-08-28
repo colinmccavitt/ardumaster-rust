@@ -5,6 +5,8 @@
 //! target rate and attitude error both look like a stick demand, and
 //! returns to `IDLE` when the rate falls back through a lower threshold.
 
+use crate::gains::{apply_stop_gains, snapshot_gains, AtGains};
+
 /// Fraction of `min(att_limit/tau, rmax_pos)` that starts a demand event.
 ///
 /// Upstream `0.4 * MIN(att_limit_deg / current.tau, current.rmax_pos)`.
@@ -165,7 +167,7 @@ pub fn next_demand_state(
 /// `start` / `stop` match the mode-enter / mode-leave calls. Demand
 /// transitions are applied with [`AutoTune::update_demand`] so tests can
 /// drive the `switch (state)` without the PID/filter body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AutoTune {
     /// Upstream `AP_AutoTune::running`.
     pub running: bool,
@@ -173,6 +175,16 @@ pub struct AutoTune {
     pub state: AtState,
     /// Which axis this session tunes.
     pub axis: AtType,
+    /// Live axis gains, upstream `AP_AutoTune::current`.
+    pub current: AtGains,
+    /// Snapshot restored on abort, upstream `AP_AutoTune::restore`.
+    pub restore: AtGains,
+    /// Last persisted snapshot, upstream `AP_AutoTune::last_save`.
+    pub last_save: AtGains,
+    /// Highest accepted P this session, upstream `P_limit`.
+    pub p_limit: f32,
+    /// Highest accepted D this session, upstream `D_limit`.
+    pub d_limit: f32,
 }
 
 impl AutoTune {
@@ -180,29 +192,70 @@ impl AutoTune {
     /// leaving `running` false and `state` at its default (`IDLE` = 0).
     #[must_use]
     pub const fn new(axis: AtType) -> Self {
+        Self::with_gains(axis, AtGains::ZERO)
+    }
+
+    /// Construct a stopped tuner holding `current` as the live gains.
+    #[must_use]
+    pub const fn with_gains(axis: AtType, current: AtGains) -> Self {
         Self {
             running: false,
             state: AtState::Idle,
             axis,
+            current,
+            restore: AtGains::ZERO,
+            last_save: AtGains::ZERO,
+            p_limit: 0.0,
+            d_limit: 0.0,
         }
+    }
+
+    /// Live gains, upstream `AP_AutoTune::get_gains` without the PID merge.
+    #[must_use]
+    pub const fn get_gains(&self) -> AtGains {
+        self.current
+    }
+
+    /// Persist `current` into `last_save`, upstream `save_gains`.
+    pub fn save_gains(&mut self) {
+        self.last_save = self.get_gains();
+    }
+
+    /// Put the start-of-session snapshot back, upstream `restore_gains`.
+    pub fn restore_gains(&mut self) {
+        self.current = self.restore;
     }
 
     /// Upstream `AP_AutoTune::start` — enter AUTOTUNE on this axis.
     ///
-    /// Sets `running` and forces `IDLE`. Snapshot of current gains into
-    /// `restore` / `last_save` is a later slice.
+    /// Sets `running`, forces `IDLE`, and snapshots `current` into
+    /// `restore` / `last_save`.
     pub fn start(&mut self) {
         self.running = true;
         self.state = AtState::Idle;
+        let (restore, last_save) = snapshot_gains(self.get_gains());
+        self.restore = restore;
+        self.last_save = last_save;
+        self.p_limit = 0.0;
+        self.d_limit = 0.0;
     }
 
     /// Upstream `AP_AutoTune::stop` — leave AUTOTUNE on this axis.
     ///
-    /// Clears `running`. Save-vs-restore of the tuned gains is a later
-    /// slice; this only ends the session.
+    /// Saves when both P and D limits are positive; otherwise restores
+    /// the start-of-session snapshot.
     pub fn stop(&mut self) {
         if self.running {
             self.running = false;
+            let (current, last_save) = apply_stop_gains(
+                self.current,
+                self.restore,
+                self.last_save,
+                self.p_limit,
+                self.d_limit,
+            );
+            self.current = current;
+            self.last_save = last_save;
         }
     }
 
