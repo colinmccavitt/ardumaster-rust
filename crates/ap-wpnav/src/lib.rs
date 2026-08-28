@@ -1,0 +1,29 @@
+//! Waypoint navigator, upstream `libraries/AC_WPNav/AC_WPNav`.
+//! Tracked as **COP-010**.
+//!
+//! Copter-4.7 has no separate `enable()` or `init()`. Those older names
+//! collapsed into [`WpNav::wp_and_spline_init_m`]: clamp the speed and
+//! radius floors, compute S-curve jerk/snap from the attitude controller,
+//! clear the path legs, and seat origin and destination on the stopping
+//! point. That is the first real surface.
+//!
+//! # What this crate does not own
+//!
+//! The S-curve and spline objects live in `ap-math` (COP-002 / COP-003).
+//! The position controller lives in `ap-control` (COP-009). This slice
+//! does not rewrite either. ADR-0004 forbids the AHRS / PosControl /
+//! millis singletons, so the caller supplies the stopping point, the
+//! attitude limits used for jerk, and `now_ms`. The speed and
+//! acceleration [`wp_and_spline_init_m`](WpNav::wp_and_spline_init_m)
+//! would write into `AC_PosControl` are recorded on the navigator for a
+//! later slice to apply.
+
+#![no_std]
+
+pub mod wpnav;
+
+pub use wpnav::{
+    AttitudeJerkLimits, PosControlSpeedAccel, WpNav, WpNavFlags, WPNAV_ACCELERATION_MS,
+    WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT, WP_RADIUS_M_DEFAULT,
+    WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN, WP_SPD_UP_DEFAULT,
+};

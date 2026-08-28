@@ -256,6 +256,14 @@ name = "ap-vtol-assist"
 version = "0.1.0"
 
 [[package]]
+name = "ap-wpnav"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "libm",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
