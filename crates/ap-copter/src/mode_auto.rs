@@ -7,7 +7,10 @@
 //! leftover switch that picks a `do_*` from `cmd.id`. [`auto_run`] is
 //! the 100 Hz leftover: start-or-update the mission, call the current
 //! submode body, and drop `auto_RTL` when the landing sequence is over.
-//! The `do_*` bodies and `*_run` controllers are later slices.
+//! [`auto_takeoff_start`] is the first command-handler body:
+//! `ModeAuto::takeoff_start`, which `do_takeoff` calls. The other
+//! `do_*` bodies, `wp_start` / `land_start`, and the `*_run`
+//! controllers are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -56,6 +59,21 @@
 //! still gets `mission.update()`. `auto_RTL` expires the moment the
 //! mission is no longer in a landing sequence, a return path, or
 //! complete.
+//!
+//! # takeoff_start picks an altitude, then parks in TAKEOFF
+//!
+//! `current_loc` must already be initialised — the mission does not
+//! start until the AHRS origin exists, so a missing current_loc is a
+//! flow-of-control error and nothing else runs. Terrain-frame dests
+//! with a terrain offset convert the vehicle altitude to
+//! alt-above-terrain and pass `dest.alt` centimetres as metres.
+//! Otherwise the leftover asks for alt-above-origin; a conversion
+//! failure (terrain dest, no terrain data) logs
+//! `MISSING_TERRAIN_DATA` and falls back to current plus
+//! `dest.alt * 0.01`. The target is then floored at current altitude,
+//! plus one metre when landed, so a grounded copter always climbs.
+//! Success always HOLDs yaw, resets the D controller, starts
+//! `auto_takeoff`, and sets `_mode = TAKEOFF`.
 
 /// `Mode::Number::AUTO`.
 pub const MODE_NUMBER_AUTO: u8 = 3;
@@ -741,5 +759,161 @@ pub const fn auto_run(view: &AutoRunView) -> AutoRun {
         body,
         auto_rtl,
         log_auto_rtl_exit,
+    }
+}
+
+/// Vehicle view [`auto_takeoff_start`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoTakeoffStartView {
+    /// `copter.current_loc.initialised()`.
+    pub current_loc_initialised: bool,
+    /// `dest_loc.get_alt_frame() == Location::AltFrame::ABOVE_TERRAIN`.
+    pub dest_alt_frame_terrain: bool,
+    /// `wp_nav->get_terrain_U_m` — `None` when the lookup failed.
+    pub terrain_u_m: Option<f32>,
+    /// `pos_control->get_pos_estimate_U_m()`. Alt above EKF origin.
+    pub current_alt_m: f32,
+    /// `dest_loc.alt`, centimetres in the dest's own frame.
+    pub dest_alt_cm: i32,
+    /// `dest.get_alt_m(ABOVE_ORIGIN)` after lat/lng are copied from
+    /// `current_loc`. Unused on the terrain-success path.
+    pub origin_alt_m: Option<f32>,
+    /// `copter.ap.land_complete`.
+    pub land_complete: bool,
+}
+
+impl AutoTakeoffStartView {
+    /// Airborne, origin-frame dest whose conversion succeeded.
+    #[must_use]
+    pub const fn origin_airborne() -> Self {
+        Self {
+            current_loc_initialised: true,
+            dest_alt_frame_terrain: false,
+            terrain_u_m: None,
+            current_alt_m: 2.0,
+            dest_alt_cm: 1_000,
+            origin_alt_m: Some(10.0),
+            land_complete: false,
+        }
+    }
+
+    /// Origin not yet set — the flow-of-control refuse.
+    #[must_use]
+    pub const fn uninitialised() -> Self {
+        let mut view = Self::origin_airborne();
+        view.current_loc_initialised = false;
+        view
+    }
+
+    /// On the ground. The leftover floors the target at current + 1 m.
+    #[must_use]
+    pub const fn landed() -> Self {
+        let mut view = Self::origin_airborne();
+        view.land_complete = true;
+        view.current_alt_m = 0.0;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::takeoff_start` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoTakeoffStart {
+    /// The leftover ran past the current_loc gate.
+    pub ok: bool,
+    /// `INTERNAL_ERROR(flow_of_control)` — current_loc was not initialised.
+    pub flow_of_control_error: bool,
+    /// `LOGGER_WRITE_ERROR(TERRAIN, MISSING_TERRAIN_DATA)`.
+    pub missing_terrain_data: bool,
+    /// Altitude handed to `auto_takeoff.start_m`. Zero on refuse.
+    pub alt_target_m: f32,
+    /// Second argument to `auto_takeoff.start_m`.
+    pub alt_target_terrain: bool,
+    /// `auto_yaw.set_mode(HOLD)` ran.
+    pub yaw_hold: bool,
+    /// `pos_control->D_init_controller()` ran.
+    pub d_init_controller: bool,
+    /// `auto_takeoff.start_m` ran.
+    pub auto_takeoff_start: bool,
+    /// `_mode` after a successful start. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+}
+
+impl AutoTakeoffStart {
+    /// Shared refuse leftover: current_loc was missing; nothing else ran.
+    #[must_use]
+    const fn refused() -> Self {
+        Self {
+            ok: false,
+            flow_of_control_error: true,
+            missing_terrain_data: false,
+            alt_target_m: 0.0,
+            alt_target_terrain: false,
+            yaw_hold: false,
+            d_init_controller: false,
+            auto_takeoff_start: false,
+            submode: None,
+        }
+    }
+}
+
+/// Centimetres in a `Location::alt` to metres. Upstream `dest.alt * 0.01`.
+#[must_use]
+const fn loc_alt_cm_to_m(alt_cm: i32) -> f32 {
+    alt_cm as f32 * 0.01
+}
+
+/// Upstream `ModeAuto::takeoff_start`.
+///
+/// `do_takeoff` is a one-line caller of this leftover. A missing
+/// `current_loc` is a flow-of-control error: the mission does not start
+/// until the AHRS origin exists. Terrain dests with a terrain offset
+/// convert the vehicle to alt-above-terrain; every other dest asks for
+/// alt-above-origin and falls back to current plus `dest.alt * 0.01`
+/// when that conversion fails. The target is floored at current
+/// altitude, plus one metre when landed.
+#[must_use]
+pub const fn auto_takeoff_start(view: &AutoTakeoffStartView) -> AutoTakeoffStart {
+    if !view.current_loc_initialised {
+        return AutoTakeoffStart::refused();
+    }
+
+    let mut current_alt_m = view.current_alt_m;
+    let mut alt_target_m;
+    let mut alt_target_terrain = false;
+    let mut missing_terrain_data = false;
+
+    // `ABOVE_TERRAIN && get_terrain_U_m` — both must succeed.
+    let terrain_offset = if view.dest_alt_frame_terrain {
+        view.terrain_u_m
+    } else {
+        None
+    };
+
+    if let Some(terrain_u_m) = terrain_offset {
+        current_alt_m -= terrain_u_m;
+        alt_target_m = loc_alt_cm_to_m(view.dest_alt_cm);
+        alt_target_terrain = true;
+    } else if let Some(origin) = view.origin_alt_m {
+        alt_target_m = origin;
+    } else {
+        missing_terrain_data = true;
+        alt_target_m = current_alt_m + loc_alt_cm_to_m(view.dest_alt_cm);
+    }
+
+    let alt_target_min_m = current_alt_m + if view.land_complete { 1.0 } else { 0.0 };
+    if alt_target_m < alt_target_min_m {
+        alt_target_m = alt_target_min_m;
+    }
+
+    AutoTakeoffStart {
+        ok: true,
+        flow_of_control_error: false,
+        missing_terrain_data,
+        alt_target_m,
+        alt_target_terrain,
+        yaw_hold: true,
+        d_init_controller: true,
+        auto_takeoff_start: true,
+        submode: Some(AutoSubMode::Takeoff),
     }
 }
