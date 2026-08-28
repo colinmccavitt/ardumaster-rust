@@ -2,7 +2,9 @@
 //!
 //! This slice is the skeleton: the state index map, a 24-element state vector,
 //! and the frontend `InitialiseFilter` / `UpdateFilter` dispatch that walks
-//! the cores. The covariance prediction, fusion, and IMU buffer are not here.
+//! the cores. The IMU sample ring that downsamples gyro/accel into the
+//! fusion-horizon FIFO lives in [`measurements`]. Covariance prediction
+//! and fusion are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -22,11 +24,18 @@
 //!
 //! # What this slice does not include
 //!
-//! Strapdown prediction, covariance growth, GPS/baro/mag fusion, the IMU
-//! sample buffer, and the AHRS `ekf3_loop` DCM fallback. That loop stays in
-//! `ap-ahrs`; this crate is the estimator, not the AHRS glue.
+//! Strapdown prediction, covariance growth, GPS/baro/mag fusion, and the
+//! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
+//! is the estimator, not the AHRS glue. The IMU ring is [`measurements`].
 
 #![no_std]
+
+pub mod measurements;
+
+pub use measurements::{
+    ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
+    IMU_BUFFER_CAPACITY,
+};
 
 use ap_math::Ftype;
 
