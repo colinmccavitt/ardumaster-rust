@@ -70,6 +70,7 @@ pub mod stabilize_mode_hookup;
 pub mod acro_mode_hookup;
 pub mod training_mode_hookup;
 pub mod fbwb_mode_hookup;
+pub mod cruise_mode_hookup;
 pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;

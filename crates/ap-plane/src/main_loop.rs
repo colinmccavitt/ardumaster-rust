@@ -115,6 +115,7 @@ use crate::stabilize_mode_hookup::{stabilize_mode_nav_tick, StabilizeModeNavInpu
 use crate::acro_mode_hookup::{acro_mode_nav_tick, AcroModeNavInputs};
 use crate::training_mode_hookup::{training_mode_nav_tick, TrainingModeNavInputs};
 use crate::fbwb_mode_hookup::{fbwb_mode_nav_tick, FbwbModeNavInputs};
+use crate::cruise_mode_hookup::{cruise_mode_nav_tick, CruiseModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -449,6 +450,10 @@ pub struct PlaneMainLoop {
     pub training_mode_nav_applied: bool,
     /// Whether FBWB cruise-assisted nav roll mapping ran this tick.
     pub fbwb_mode_nav_applied: bool,
+    /// Whether CRUISE heading-lock nav roll mapping ran this tick.
+    pub cruise_mode_nav_applied: bool,
+    /// Upstream `ModeCruise::locked_heading`.
+    pub cruise_locked_heading: bool,
     /// Upstream `training_manual_roll`.
     pub training_manual_roll: bool,
     /// Upstream `training_manual_pitch`.
@@ -758,6 +763,8 @@ impl Default for PlaneMainLoop {
             acro_mode_nav_applied: false,
             training_mode_nav_applied: false,
             fbwb_mode_nav_applied: false,
+            cruise_mode_nav_applied: false,
+            cruise_locked_heading: false,
             training_manual_roll: false,
             training_manual_pitch: false,
             acro_locked_roll: false,
@@ -1282,6 +1289,22 @@ impl PlaneMainLoop {
         self.fbwb_mode_nav_applied = fbwb_nav.applied;
         if fbwb_nav.applied {
             self.nav_tecs.nav_roll_cd = fbwb_nav.nav_roll_cd;
+        }
+
+        let cruise_nav = cruise_mode_nav_tick(&CruiseModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_norm: self.rc_sticks.roll_norm_dz,
+            rudder_norm: self.rc_sticks.yaw_norm_dz,
+            locked_heading: self.cruise_locked_heading,
+            nav_scripting_active: self.nav_scripting_active,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+            commanded_roll_cd: self.nav_tecs.nav_roll_cd,
+        });
+        self.cruise_mode_nav_applied = cruise_nav.applied;
+        if cruise_nav.applied {
+            self.nav_tecs.nav_roll_cd = cruise_nav.nav_roll_cd;
+            self.cruise_locked_heading = cruise_nav.locked_heading;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
