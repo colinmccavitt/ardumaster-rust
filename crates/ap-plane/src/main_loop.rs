@@ -108,6 +108,7 @@ use crate::manual_mode_hookup::{
 };
 use crate::stabilize_mode_hookup::{stabilize_mode_nav_tick, StabilizeModeNavInputs};
 use crate::acro_mode_hookup::{acro_mode_nav_tick, AcroModeNavInputs};
+use crate::training_mode_hookup::{training_mode_nav_tick, TrainingModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -424,6 +425,12 @@ pub struct PlaneMainLoop {
     pub stabilize_mode_nav_applied: bool,
     /// Whether Acro nav lock/mirror ran this tick.
     pub acro_mode_nav_applied: bool,
+    /// Whether Training envelope-limit nav ran this tick.
+    pub training_mode_nav_applied: bool,
+    /// Upstream `training_manual_roll`.
+    pub training_manual_roll: bool,
+    /// Upstream `training_manual_pitch`.
+    pub training_manual_pitch: bool,
     /// Upstream `acro_state.locked_roll`.
     pub acro_locked_roll: bool,
     /// Upstream `acro_state.locked_pitch`.
@@ -720,6 +727,9 @@ impl Default for PlaneMainLoop {
             fbwa_mode_nav_applied: false,
             stabilize_mode_nav_applied: false,
             acro_mode_nav_applied: false,
+            training_mode_nav_applied: false,
+            training_manual_roll: false,
+            training_manual_pitch: false,
             acro_locked_roll: false,
             acro_locked_pitch: false,
             acro_locked_roll_err: 0.0,
@@ -1180,6 +1190,23 @@ impl PlaneMainLoop {
         if acro_nav.applied {
             self.nav_tecs.nav_roll_cd = acro_nav.nav_roll_cd;
             self.navigation_scheduler_inputs.commanded_pitch_cd = acro_nav.nav_pitch_cd;
+        }
+
+        let training_nav = training_mode_nav_tick(&TrainingModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_sensor_cd: self.attitude.roll_sensor_cd,
+            pitch_sensor_cd: self.attitude.pitch_sensor_cd,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+            pitch_limit_min_cd: self.stabilize_demands.pitch_limit_min_cd,
+            pitch_limit_max_cd: self.stabilize_demands.pitch_limit_max_cd,
+        });
+        self.training_mode_nav_applied = training_nav.applied;
+        self.training_manual_roll = training_nav.training_manual_roll;
+        self.training_manual_pitch = training_nav.training_manual_pitch;
+        if training_nav.applied {
+            self.nav_tecs.nav_roll_cd = training_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = training_nav.nav_pitch_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
