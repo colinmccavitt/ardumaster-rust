@@ -49,6 +49,7 @@ pub mod device_manager;
 pub mod dsp;
 pub mod flash;
 pub mod gpio;
+pub mod optical_flow;
 pub mod internal_error;
 pub mod rc;
 pub mod semaphore;
