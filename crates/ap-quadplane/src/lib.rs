@@ -1,9 +1,14 @@
 //! QuadPlane / VTOL support, upstream `ArduPlane/quadplane.*` (Plane-4.7.0).
 //!
 //! Tracked as **VT-001**. `setup` / `available` live on [`QuadPlane`].
-//! [`QuadPlane::in_vtol_mode`] / [`QuadPlane::in_vtol_auto`] (this
-//! slice) are true when the current flight mode is a Q* VTOL mode, or
-//! AUTO is flying a VTOL nav command.
+//! [`QuadPlane::in_vtol_mode`] / [`QuadPlane::in_vtol_auto`] are true
+//! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
+//! VTOL nav command.
+//!
+//! This slice: [`QuadPlane::air_mode_active`] (`Q_OPTIONS` air-mode
+//! bit + [`air_mode::AirMode`]) and the QuadPlane-side transition FSM
+//! hooks ([`QuadPlane::update`], [`QuadPlane::in_frwd_transition`],
+//! [`QuadPlane::handle_do_vtol_transition`]). The FSM itself is VT-003.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -14,6 +19,7 @@
 
 #![no_std]
 
+pub mod air_mode;
 pub mod tailsitter;
 pub mod transition;
 pub mod vtol_mode;
@@ -34,6 +40,12 @@ pub struct QuadPlane {
     /// (`AP_MotorsMatrix` / `AP_MotorsTri` / `AP_MotorsTailsitter`) is a
     /// later slice; this flag is the non-null pointer after motors-init.
     motors_inited: bool,
+    /// `Q_OPTIONS`, upstream `AP_Int32 options`.
+    options: i32,
+    /// Air-mode latch, upstream `AirMode air_mode`.
+    air_mode: air_mode::AirMode,
+    /// Upstream `bool assisted_flight`.
+    assisted_flight: bool,
 }
 
 impl QuadPlane {
@@ -44,6 +56,9 @@ impl QuadPlane {
             enable: Q_ENABLE_DEFAULT,
             initialised: false,
             motors_inited: false,
+            options: air_mode::Q_OPTIONS_DEFAULT,
+            air_mode: air_mode::AirMode::Off,
+            assisted_flight: false,
         }
     }
 
@@ -57,6 +72,9 @@ impl QuadPlane {
             enable,
             initialised: false,
             motors_inited: false,
+            options: air_mode::Q_OPTIONS_DEFAULT,
+            air_mode: air_mode::AirMode::Off,
+            assisted_flight: false,
         }
     }
 
