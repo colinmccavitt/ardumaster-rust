@@ -1,11 +1,12 @@
 //! Msgid dispatch stub, upstream `GCS_MAVLINK::handle_message`.
 //!
-//! Only HEARTBEAT is wired. `handle_heartbeat` records `sysid_mygcs_seen`
-//! when the sender is `MAV_GCS_SYSID`. Send path is
-//! `GCS_MAVLINK::send_heartbeat`.
+//! Only HEARTBEAT is wired on receive. `handle_heartbeat` records
+//! `sysid_mygcs_seen` when the sender is `MAV_GCS_SYSID`. Send path is
+//! `GCS_MAVLINK::send_heartbeat` and `send_text`.
 
 use crate::framing::{decode_v2, encode_v2, DecodeError, Frame};
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
+use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
 
 /// Default vehicle sysid, upstream `MAV_SYSID` / `g.sysid_this_mav` default.
 pub const DEFAULT_SYSID: u8 = 1;
@@ -92,7 +93,33 @@ impl GcsMavlink {
         let hb = Heartbeat::plane(frame_type, base_mode, custom_mode, system_status);
         let mut payload = [0u8; 9];
         hb.encode(&mut payload)?;
-        let frame = Frame::new(self.seq, self.sysid, self.compid, MSG_ID_HEARTBEAT, &payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_HEARTBEAT,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing STATUSTEXT, upstream `GCS_MAVLINK::send_text`.
+    ///
+    /// Packs severity + the 50-byte text field (truncated, zero-filled)
+    /// and frames it for Write. Queueing / printf / multi-chunk is later.
+    #[must_use]
+    pub fn send_text(&mut self, out: &mut [u8], severity: u8, text: &str) -> Option<usize> {
+        let st = StatusText::new(severity, text);
+        let mut payload = [0u8; STATUSTEXT_LEN];
+        st.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_STATUSTEXT,
+            &payload,
+        )?;
         self.seq = self.seq.wrapping_add(1);
         encode_v2(&frame, out)
     }

@@ -102,13 +102,14 @@ pub fn crc16(bytes: &[u8], extra: Option<u8>) -> u16 {
     crc
 }
 
-/// CRC extra for msgid 0 (HEARTBEAT), upstream `MAVLINK_MSG_ID_HEARTBEAT_CRC`.
+/// CRC extra for HEARTBEAT (0) and STATUSTEXT (253).
 ///
 /// Unknown ids return `None` — this slice does not carry the dialect table.
 #[must_use]
 pub const fn crc_extra(msgid: u32) -> Option<u8> {
     match msgid {
         0 => Some(50),
+        253 => Some(83),
         _ => None,
     }
 }
@@ -173,7 +174,9 @@ pub fn decode_v2(buf: &[u8]) -> Result<Frame, DecodeError> {
     let total = payload_end
         .checked_add(CRC_LEN)
         .ok_or(DecodeError::Truncated)?;
-    let payload = buf.get(HEADER_LEN_V2..payload_end).ok_or(DecodeError::Truncated)?;
+    let payload = buf
+        .get(HEADER_LEN_V2..payload_end)
+        .ok_or(DecodeError::Truncated)?;
     let crc_bytes = buf.get(payload_end..total).ok_or(DecodeError::Truncated)?;
     let mut crc_le = [0u8; 2];
     crc_le.copy_from_slice(crc_bytes);
