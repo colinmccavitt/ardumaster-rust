@@ -46,6 +46,7 @@ pub mod compass_use_for_yaw_hookup;
 pub mod compass_primary_hookup;
 pub mod compass_calibration_hookup;
 pub mod compass_auto_rot_hookup;
+pub mod compass_field_hookup;
 pub mod baro_arm_calibration_hookup;
 pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;

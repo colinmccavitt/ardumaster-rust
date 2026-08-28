@@ -10,6 +10,7 @@ pub mod auto_rot;
 pub mod calibrate;
 pub mod consistent;
 pub mod declination;
+pub mod field;
 pub mod learn;
 pub mod motor_comp;
 pub mod offset;
@@ -22,6 +23,11 @@ pub mod sitl;
 pub mod soft_iron;
 
 pub use declination::{CompassDeclinationState, GpsDeclinationFix};
+pub use field::{
+    expected_earth_field_ga, expected_earth_field_mgauss, expected_field_ok, field_ok,
+    field_length_ok, field_strength_ok, gauss_to_mgauss, COMPASS_MAGFIELD_ERROR_THRESHOLD,
+    COMPASS_MAGFIELD_EXPECTED, COMPASS_MAGFIELD_MAX, COMPASS_MAGFIELD_MIN,
+};
 
 pub use sitl::{
     mag_field_body_ned, CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
