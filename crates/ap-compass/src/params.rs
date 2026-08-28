@@ -5,6 +5,7 @@ use ap_math::vector3::Vector3f;
 use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::orientation::{COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT};
+use crate::scale::COMPASS_SCALE_DEFAULT;
 use crate::sitl::{
     SitlCompassBackend, SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
 };
@@ -27,6 +28,8 @@ pub struct CompassInstanceParams {
     pub orientation: u8,
     /// External mount, upstream `COMPASS_EXTERNAL` / `EXTERN2`.
     pub external: bool,
+    /// Scale factor, upstream `COMPASS_SCALE` / `SCALE2`.
+    pub scale: f32,
 }
 
 impl Default for CompassInstanceParams {
@@ -38,6 +41,7 @@ impl Default for CompassInstanceParams {
             motor_compensation: Vector3f::zero(),
             orientation: COMPASS_ORIENT_DEFAULT,
             external: COMPASS_EXTERNAL_DEFAULT,
+            scale: COMPASS_SCALE_DEFAULT,
         }
     }
 }
@@ -50,6 +54,7 @@ impl CompassInstanceParams {
             motor_compensation: self.motor_compensation,
             orientation: self.orientation,
             external: self.external,
+            scale: self.scale,
             ..SitlCompassConfig::default()
         }
     }
@@ -105,6 +110,7 @@ impl CompassParams {
         cfg.orientation = inst.orientation;
         cfg.external = inst.external;
         cfg.board_orientation = self.board_orientation;
+        cfg.scale = inst.scale;
         backend.set_config(cfg);
     }
 

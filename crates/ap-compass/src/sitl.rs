@@ -2,9 +2,10 @@
 //!
 //! Rotates the WMM earth-frame field into body frame using true attitude.
 //! Applies `COMPASS_ORIENT` / board orientation (`rotate_field`), then
-//! `COMPASS_OFS` (`mag += offsets`) then `COMPASS_MOT * thr_or_curr`
-//! when `COMPASS_MOTCT` is current or throttle. Optional SITL hard-iron bias is
-//! added before offsets so learn-offsets can cancel metal in the frame.
+//! `COMPASS_OFS` (`mag += offsets`) then `COMPASS_SCALE` (`mag *= scale`
+//! when in range) then `COMPASS_MOT * thr_or_curr` when `COMPASS_MOTCT`
+//! is current or throttle. Optional SITL hard-iron bias is added before
+//! offsets so learn-offsets can cancel metal in the frame.
 //! No noise or delay ring in this slice.
 
 use ap_declination::get_mag_field_ef;
@@ -15,6 +16,7 @@ use ap_math::vector3::Vector3f;
 use crate::motor_comp::apply_motor_compensation;
 use crate::offset::{apply_offsets, learn_offsets, offsets_within_max};
 use crate::orientation::rotate_field;
+use crate::scale::apply_scale;
 
 /// Minimum interval between compass updates, upstream `_timer` at 100 Hz.
 pub const SITL_COMPASS_UPDATE_MS: u32 = 10;
@@ -49,6 +51,8 @@ pub struct SitlCompassConfig {
     pub external: bool,
     /// AHRS board orientation applied when the compass is internal.
     pub board_orientation: u8,
+    /// Scale factor, upstream `COMPASS_SCALE`.
+    pub scale: f32,
 }
 
 impl Default for SitlCompassConfig {
@@ -62,6 +66,7 @@ impl Default for SitlCompassConfig {
             orientation: 0,
             external: false,
             board_orientation: 0,
+            scale: 0.0,
         }
     }
 }
@@ -224,6 +229,7 @@ impl SitlCompassBackend {
             self.config.board_orientation,
         );
         let mag_body = apply_offsets(self.raw_mag_body, self.config.offset);
+        let mag_body = apply_scale(mag_body, self.config.scale);
         let mag_body = apply_motor_compensation(
             mag_body,
             self.config.motor_compensation,
