@@ -6,8 +6,9 @@
 //! fusion-horizon FIFO lives in [`measurements`]. Filter-mode control
 //! (`setInhibitGPS`, `inFlight` / `onGround`, `controlFilterModes`)
 //! lives in [`control`]. Gyro-bias reset / constrain / inactive-IMU
-//! learn lives in [`gyro_bias`]. Covariance prediction and fusion are
-//! not here.
+//! learn lives in [`gyro_bias`]. Mag-fusion enable / yaw-reset
+//! (`SelectMagFusion`, `magFieldEarth`) lives in [`mag_fusion`].
+//! Covariance prediction and the 3-axis Kalman mag update are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -30,16 +31,19 @@
 //! Strapdown prediction, covariance growth, GPS/baro/mag fusion, and the
 //! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
 //! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
-//! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`].
+//! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
+//! mag-fusion enable / yaw-reset is [`mag_fusion`].
 
 #![no_std]
 
 pub mod control;
 pub mod gyro_bias;
+pub mod mag_fusion;
 pub mod measurements;
 
 pub use control::{AidingMode, FilterControl};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
+pub use mag_fusion::{MagFuseSel, MagFusion};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
@@ -166,6 +170,8 @@ pub struct NavEkf3Core {
     control: FilterControl,
     /// Body-axis gyro bias, upstream `AP_NavEKF3_GyroBias.cpp`.
     gyro_bias: GyroBias,
+    /// Mag-fusion enable / yaw-reset, upstream `AP_NavEKF3_MagFusion.cpp`.
+    mag_fusion: MagFusion,
 }
 
 impl Default for NavEkf3Core {
@@ -184,6 +190,7 @@ impl NavEkf3Core {
             frames_since_predict: 0,
             control: FilterControl::new(),
             gyro_bias: GyroBias::new(),
+            mag_fusion: MagFusion::new(),
         }
     }
 
@@ -228,6 +235,8 @@ impl NavEkf3Core {
         self.control.reset();
         self.gyro_bias.reset();
         self.gyro_bias.write_into_states(&mut self.states);
+        self.mag_fusion.reset();
+        self.mag_fusion.write_earth_into_states(&mut self.states);
         true
     }
 
@@ -241,13 +250,16 @@ impl NavEkf3Core {
         if !self.states_initialised {
             return;
         }
-        // Upstream `UpdateFilter` runs `controlFilterModes` before IMU read.
+        // Upstream `UpdateFilter` runs `controlFilterModes` before IMU read
+        // and `SelectMagFusion` after prediction.
         self.control.control_filter_modes();
         if predict {
             self.frames_since_predict = 0;
         } else {
             self.frames_since_predict = self.frames_since_predict.saturating_add(1);
         }
+        self.mag_fusion.select_mag_fusion(self.states_initialised);
+        self.mag_fusion.write_earth_into_states(&mut self.states);
     }
 
     /// Filter-mode latch, upstream `onGround` / `inFlight` / `gpsInhibit`.
@@ -305,6 +317,28 @@ impl NavEkf3Core {
         self.gyro_bias.read_from_states(&self.states);
         self.gyro_bias.constrain();
         self.gyro_bias.write_into_states(&mut self.states);
+    }
+
+    /// Mag-fusion helper, upstream `SelectMagFusion` / `earth_magfield`.
+    #[must_use]
+    pub const fn mag_fusion(&self) -> &MagFusion {
+        &self.mag_fusion
+    }
+
+    /// Mutable mag-fusion so tests can poke compass / sample flags.
+    pub fn mag_fusion_mut(&mut self) -> &mut MagFusion {
+        &mut self.mag_fusion
+    }
+
+    /// Upstream `NavEKF3_core::SelectMagFusion`.
+    pub fn select_mag_fusion(&mut self) {
+        self.mag_fusion.select_mag_fusion(self.states_initialised);
+        self.mag_fusion.write_earth_into_states(&mut self.states);
+    }
+
+    /// External yaw-reset request, upstream `magYawResetRequest`.
+    pub fn request_mag_yaw_reset(&mut self) {
+        self.mag_fusion.request_yaw_reset();
     }
 }
 
@@ -572,5 +606,25 @@ mod tests {
         assert_eq!(core.state(StateIndex::GyroBiasZ), 0.0 as Ftype);
         let expected = core.gyro_bias().variance().x;
         assert!(expected > 0.0 as Ftype);
+    }
+
+    #[test]
+    fn core_mag_yaw_reset_writes_earth_field_states() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.mag_fusion_mut().set_use_compass(true);
+        core.mag_fusion_mut().set_tilt_align_complete(true);
+        core.mag_fusion_mut().set_mag_data(
+            true,
+            ap_math::vector3::Vector3::new(0.22 as Ftype, 0.05 as Ftype, 0.41 as Ftype),
+        );
+        core.request_mag_yaw_reset();
+        core.select_mag_fusion();
+        assert!(core.mag_fusion().yaw_align_complete());
+        assert_eq!(core.mag_fusion().mag_fusion_sel(), MagFuseSel::FuseYaw);
+        let n = core.state(StateIndex::EarthMagN) - (0.22 as Ftype);
+        let e = core.state(StateIndex::EarthMagE) - (0.05 as Ftype);
+        let d = core.state(StateIndex::EarthMagD) - (0.41 as Ftype);
+        assert!(n * n + e * e + d * d < 1.0e-12 as Ftype);
     }
 }
