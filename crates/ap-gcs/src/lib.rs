@@ -21,17 +21,18 @@
 //! [`hud::HudSnapshot`], and stores msgid → interval in
 //! [`rates::RateTable`] from [`rates::RequestDataStream`] (msgid 66) /
 //! `MAV_CMD_SET_MESSAGE_INTERVAL` (511), skipping a stream send when the
-//! period has not elapsed. The rest of
+//! period has not elapsed, and stores channel overrides from
+//! [`rc_override::RcChannelsOverride`] / [`rc_override::ManualControl`]
+//! (msgid 70 / 69) in [`rc_override::OverrideStore`]. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
 //!
 //! The full common/ardupilotmega XML dialect, STATUSTEXT receive /
 //! chunked queueing, signing, routing, COMMAND_ACK, PARAM_REQUEST_READ,
-//! MISSION_COUNT / MISSION_ACK, MANUAL_CONTROL / RC_OVERRIDE, and the
-//! `GCS_MAVLINK_Plane` vehicle-side handlers. Those land in later FW-028
-//! slices. GCS failsafe (`FS_GCS_ENABL`) already lives in `ap-plane` and
-//! is not rewritten here.
+//! MISSION_COUNT / MISSION_ACK, and the `GCS_MAVLINK_Plane` vehicle-side
+//! handlers. Those land in later FW-028 slices. GCS failsafe
+//! (`FS_GCS_ENABL`) already lives in `ap-plane` and is not rewritten here.
 
 #![no_std]
 
@@ -46,6 +47,7 @@ pub mod mission;
 pub mod param;
 pub mod pose;
 pub mod rates;
+pub mod rc_override;
 pub mod statustext;
 
 pub use channels::{
@@ -96,6 +98,13 @@ pub use rates::{
     MAV_DATA_STREAM_EXTRA1, MAV_DATA_STREAM_EXTRA2, MAV_DATA_STREAM_EXTRA3,
     MAV_DATA_STREAM_POSITION, MAV_DATA_STREAM_RC_CHANNELS, MAX_INTERVAL_MS, MAX_RATES,
     MSG_ID_REQUEST_DATA_STREAM, REQUEST_DATA_STREAM_CRC, REQUEST_DATA_STREAM_LEN,
+};
+pub use rc_override::{
+    map_manual_axis, ManualControl, OverrideStore, RcChannelsOverride, MANUAL_AXIS_INVALID,
+    MANUAL_CONTROL_CRC, MANUAL_CONTROL_LEN, MANUAL_CONTROL_MIN_LEN, MANUAL_RADIO_MAX,
+    MANUAL_RADIO_MIN, MSG_ID_MANUAL_CONTROL, MSG_ID_RC_CHANNELS_OVERRIDE, OVERRIDE_CHANNEL_COUNT,
+    OVERRIDE_IGNORE, OVERRIDE_RELEASE_EXT, RC_CHANNELS_OVERRIDE_CRC, RC_CHANNELS_OVERRIDE_LEN,
+    RC_CHANNELS_OVERRIDE_MIN_LEN,
 };
 pub use statustext::{
     StatusText, MAV_SEVERITY_DEBUG, MAV_SEVERITY_EMERGENCY, MAV_SEVERITY_ERROR, MAV_SEVERITY_INFO,

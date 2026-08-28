@@ -11,7 +11,9 @@
 //! `send_attitude`, `send_global_position_int`, `send_mission_item_int`,
 //! `send_sys_status`, `send_battery_status`, `send_rc_channels`,
 //! `send_servo_output_raw`, `send_vfr_hud`, and
-//! `send_nav_controller_output`.
+//! `send_nav_controller_output`. REQUEST_DATA_STREAM and
+//! `MAV_CMD_SET_MESSAGE_INTERVAL` write the rate table.
+//! RC_CHANNELS_OVERRIDE / MANUAL_CONTROL store channel overrides.
 
 use crate::channels::{
     ChannelSnapshot, MSG_ID_RC_CHANNELS, MSG_ID_SERVO_OUTPUT_RAW, RC_CHANNELS_LEN,
@@ -44,6 +46,10 @@ use crate::pose::{
 };
 use crate::rates::{
     RateTable, RequestDataStream, MAV_CMD_SET_MESSAGE_INTERVAL, MSG_ID_REQUEST_DATA_STREAM,
+};
+use crate::rc_override::{
+    ManualControl, OverrideStore, RcChannelsOverride, MSG_ID_MANUAL_CONTROL,
+    MSG_ID_RC_CHANNELS_OVERRIDE,
 };
 use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
 
@@ -117,6 +123,16 @@ pub enum Dispatch {
         /// `true` when the table accepted the interval.
         applied: bool,
     },
+    /// Msgid 70 — RC_CHANNELS_OVERRIDE stored into the override table.
+    RcChannelsOverride {
+        /// How many channel slots were written (not ignored).
+        applied: usize,
+    },
+    /// Msgid 69 — MANUAL_CONTROL axes mapped onto roll/pitch/throttle/rudder.
+    ManualControl {
+        /// How many of the four Plane axes were written.
+        applied: usize,
+    },
     /// Any other msgid, or a command/param/mission not addressed to this vehicle.
     Unknown {
         /// Unrecognised message id.
@@ -129,7 +145,8 @@ pub enum Dispatch {
 /// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot,
 /// MISSION_ITEM_INT / MISSION_REQUEST_INT against an in-memory mission table,
 /// SYS_STATUS / BATTERY_STATUS stream send from a health snapshot,
-/// and RC_CHANNELS / SERVO_OUTPUT_RAW stream send from a channel snapshot.
+/// RC_CHANNELS / SERVO_OUTPUT_RAW stream send from a channel snapshot,
+/// and MANUAL_CONTROL / RC_CHANNELS_OVERRIDE ingest into an override table.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -142,6 +159,7 @@ pub struct GcsMavlink {
     params: ParamTable,
     mission: MissionTable,
     rates: RateTable,
+    overrides: OverrideStore,
 }
 
 impl Default for GcsMavlink {
@@ -155,6 +173,7 @@ impl Default for GcsMavlink {
             params: ParamTable::plane_stub(),
             mission: MissionTable::new(),
             rates: RateTable::new(),
+            overrides: OverrideStore::new(),
         }
     }
 }
@@ -202,6 +221,18 @@ impl GcsMavlink {
     #[must_use]
     pub fn stream_interval_ms(&self, msgid: u32) -> Option<u16> {
         self.rates.interval_ms(msgid)
+    }
+
+    /// Stored PWM override for channel `i` (0-based), if that slot is active.
+    #[must_use]
+    pub fn override_channel(&self, i: usize) -> Option<u16> {
+        self.overrides.get(i)
+    }
+
+    /// Timestamp of the last accepted override ingest.
+    #[must_use]
+    pub const fn last_override_ms(&self) -> u32 {
+        self.overrides.last_ms()
     }
 
     /// Look up a stored mission item by sequence number.
@@ -565,6 +596,30 @@ impl GcsMavlink {
                 }
                 _ => Dispatch::Unknown {
                     msgid: MSG_ID_MISSION_REQUEST_INT,
+                },
+            },
+            MSG_ID_RC_CHANNELS_OVERRIDE => match RcChannelsOverride::from_frame(frame) {
+                Some(pkt)
+                    if frame.sysid == self.gcs_sysid && self.addressed_to_us(pkt.target_system) =>
+                {
+                    let applied = self.overrides.apply_rc_channels_override(&pkt, now_ms);
+                    // Upstream `handle_rc_channels_override` → `sysid_mygcs_seen`.
+                    self.last_gcs_heartbeat_ms = now_ms;
+                    Dispatch::RcChannelsOverride { applied }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_RC_CHANNELS_OVERRIDE,
+                },
+            },
+            MSG_ID_MANUAL_CONTROL => match ManualControl::from_frame(frame) {
+                Some(pkt) if frame.sysid == self.gcs_sysid && pkt.target == self.sysid => {
+                    let applied = self.overrides.apply_manual_control(&pkt, now_ms);
+                    // Upstream `handle_manual_control` → `sysid_mygcs_seen`.
+                    self.last_gcs_heartbeat_ms = now_ms;
+                    Dispatch::ManualControl { applied }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_MANUAL_CONTROL,
                 },
             },
             MSG_ID_REQUEST_DATA_STREAM => match RequestDataStream::from_frame(frame) {
