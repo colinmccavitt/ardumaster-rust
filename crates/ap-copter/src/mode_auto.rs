@@ -10,9 +10,10 @@
 //! [`auto_takeoff_start`] is the first command-handler body:
 //! `ModeAuto::takeoff_start`, which `do_takeoff` calls.
 //! [`auto_wp_start`] is the next: `ModeAuto::wp_start`, which
-//! `do_nav_wp` and the fly-to-location arm of `do_land` call. The
-//! other `do_*` bodies, `land_start`, and the `*_run` controllers
-//! are later slices.
+//! `do_nav_wp` and the fly-to-location arm of `do_land` call.
+//! [`auto_land_start`] is the descending arm: `ModeAuto::land_start`,
+//! which `do_land` and `verify_land` call. The other `do_*` bodies,
+//! `rtl_start`, and the `*_run` controllers are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -1080,5 +1081,99 @@ pub const fn auto_wp_start(view: &AutoWpStartView) -> AutoWpStart {
         set_wp_destination: true,
         yaw_set_default: !skip_yaw,
         submode: Some(AutoSubMode::Wp),
+    }
+}
+
+/// Vehicle view [`auto_land_start`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLandStartView {
+    /// `pos_control->NE_is_active()`.
+    pub ne_is_active: bool,
+    /// `pos_control->D_is_active()`.
+    pub d_is_active: bool,
+    /// `wp_nav->get_default_speed_NE_ms()`.
+    pub speed_ne_ms: f32,
+    /// `wp_nav->get_wp_acceleration_mss()`.
+    pub wp_accel_mss: f32,
+    /// `wp_nav->get_default_speed_down_ms()`.
+    pub speed_down_ms: f32,
+    /// `wp_nav->get_default_speed_up_ms()`.
+    pub speed_up_ms: f32,
+    /// `wp_nav->get_accel_D_mss()`.
+    pub accel_d_mss: f32,
+    /// `AP_LANDINGGEAR_ENABLED` — the `#if` around `deploy_for_landing`.
+    pub landing_gear: bool,
+}
+
+impl AutoLandStartView {
+    /// Both controllers already running, landing gear compiled in.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            ne_is_active: true,
+            d_is_active: true,
+            speed_ne_ms: 5.0,
+            wp_accel_mss: 1.0,
+            speed_down_ms: 1.5,
+            speed_up_ms: 2.5,
+            accel_d_mss: 2.5,
+            landing_gear: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::land_start` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLandStart {
+    /// Horizontal max / correction speed handed to the NE controller.
+    pub ne_speed_ms: f32,
+    /// Horizontal max / correction accel, from `wp_nav`.
+    pub ne_accel_mss: f32,
+    /// `NE_init_controller` — only when NE was inactive.
+    pub init_ne: bool,
+    /// Vertical max / correction speed down.
+    pub d_speed_down_ms: f32,
+    /// Vertical max / correction speed up.
+    pub d_speed_up_ms: f32,
+    /// Vertical max / correction accel, from `wp_nav`.
+    pub d_accel_mss: f32,
+    /// `D_init_controller` — only when D was inactive.
+    pub init_d: bool,
+    /// `auto_yaw.set_mode(HOLD)` ran.
+    pub yaw_hold: bool,
+    /// `landinggear.deploy_for_landing` ran.
+    pub deploy_landing_gear: bool,
+    /// `copter.ap.land_repo_active` after the call. Always false.
+    pub land_repo_active: bool,
+    /// `copter.ap.prec_land_active` after the call. Always false.
+    pub prec_land_active: bool,
+    /// `_mode` after the call. Always [`AutoSubMode::Land`].
+    pub submode: AutoSubMode,
+}
+
+/// Upstream `ModeAuto::land_start`.
+///
+/// `do_land` calls this leftover on the descending arm (zero lat/lng).
+/// `verify_land` calls it again when FlyToLocation arrives. Unlike
+/// [`crate::mode_land::land_init`], NE is inited whenever it is idle —
+/// there is no `position_ok` gate — and there is no pause clock. Yaw
+/// is HOLD, repo/prec-land flags are cleared, and `_mode` becomes LAND.
+/// Landing-gear deploy is compiled out when `AP_LANDINGGEAR_ENABLED`
+/// is off.
+#[must_use]
+pub const fn auto_land_start(view: &AutoLandStartView) -> AutoLandStart {
+    AutoLandStart {
+        ne_speed_ms: view.speed_ne_ms,
+        ne_accel_mss: view.wp_accel_mss,
+        init_ne: !view.ne_is_active,
+        d_speed_down_ms: view.speed_down_ms,
+        d_speed_up_ms: view.speed_up_ms,
+        d_accel_mss: view.accel_d_mss,
+        init_d: !view.d_is_active,
+        yaw_hold: true,
+        deploy_landing_gear: view.landing_gear,
+        land_repo_active: false,
+        prec_land_active: false,
+        submode: AutoSubMode::Land,
     }
 }
