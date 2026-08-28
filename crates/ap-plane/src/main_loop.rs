@@ -116,6 +116,8 @@ use crate::acro_mode_hookup::{acro_mode_nav_tick, AcroModeNavInputs};
 use crate::training_mode_hookup::{training_mode_nav_tick, TrainingModeNavInputs};
 use crate::fbwb_mode_hookup::{fbwb_mode_nav_tick, FbwbModeNavInputs};
 use crate::cruise_mode_hookup::{cruise_mode_nav_tick, CruiseModeNavInputs};
+use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs};
+use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -452,6 +454,10 @@ pub struct PlaneMainLoop {
     pub fbwb_mode_nav_applied: bool,
     /// Whether CRUISE heading-lock nav roll mapping ran this tick.
     pub cruise_mode_nav_applied: bool,
+    /// Whether AUTOTUNE FBWA-delegated nav stick mapping ran this tick.
+    pub autotune_mode_nav_applied: bool,
+    /// Whether CIRCLE loiter-assisted nav roll ran this tick.
+    pub circle_mode_nav_applied: bool,
     /// Upstream `ModeCruise::locked_heading`.
     pub cruise_locked_heading: bool,
     /// Upstream `training_manual_roll`.
@@ -764,6 +770,8 @@ impl Default for PlaneMainLoop {
             training_mode_nav_applied: false,
             fbwb_mode_nav_applied: false,
             cruise_mode_nav_applied: false,
+            autotune_mode_nav_applied: false,
+            circle_mode_nav_applied: false,
             cruise_locked_heading: false,
             training_manual_roll: false,
             training_manual_pitch: false,
@@ -1305,6 +1313,32 @@ impl PlaneMainLoop {
         if cruise_nav.applied {
             self.nav_tecs.nav_roll_cd = cruise_nav.nav_roll_cd;
             self.cruise_locked_heading = cruise_nav.locked_heading;
+        }
+
+        let autotune_nav = autotune_mode_nav_tick(&AutotuneModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_norm: self.rc_sticks.roll_norm_dz,
+            pitch_norm: self.rc_sticks.pitch_norm_dz,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+            pitch_limit_min_cd: self.stabilize_demands.pitch_limit_min_cd,
+            pitch_limit_max_cd: self.stabilize_demands.pitch_limit_max_cd,
+            roll_sensor_cd: self.attitude.roll_sensor_cd,
+        });
+        self.autotune_mode_nav_applied = autotune_nav.applied;
+        if autotune_nav.applied {
+            self.nav_tecs.nav_roll_cd = autotune_nav.nav_roll_cd;
+            self.navigation_scheduler_inputs.commanded_pitch_cd = autotune_nav.nav_pitch_cd;
+        }
+
+        let circle_nav = circle_mode_nav_tick(&CircleModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            roll_limit_cd: self.stabilize_demands.roll_limit_cd,
+        });
+        self.circle_mode_nav_applied = circle_nav.applied;
+        if circle_nav.applied {
+            self.nav_tecs.nav_roll_cd = circle_nav.nav_roll_cd;
         }
 
         let throttle = if glue_out.throttle_zeroed_by_mode_entry {
