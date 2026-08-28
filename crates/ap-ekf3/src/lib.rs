@@ -3,8 +3,9 @@
 //! This slice is the skeleton: the state index map, a 24-element state vector,
 //! and the frontend `InitialiseFilter` / `UpdateFilter` dispatch that walks
 //! the cores. The IMU sample ring that downsamples gyro/accel into the
-//! fusion-horizon FIFO lives in [`measurements`]. Covariance prediction
-//! and fusion are not here.
+//! fusion-horizon FIFO lives in [`measurements`]. Filter-mode control
+//! (`setInhibitGPS`, `inFlight` / `onGround`, `controlFilterModes`)
+//! lives in [`control`]. Covariance prediction and fusion are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -26,12 +27,15 @@
 //!
 //! Strapdown prediction, covariance growth, GPS/baro/mag fusion, and the
 //! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
-//! is the estimator, not the AHRS glue. The IMU ring is [`measurements`].
+//! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
+//! the flight-mode latch is [`control`].
 
 #![no_std]
 
+pub mod control;
 pub mod measurements;
 
+pub use control::{AidingMode, FilterControl};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
@@ -154,6 +158,8 @@ pub struct NavEkf3Core {
     states_initialised: bool,
     /// IMU frames since the last prediction, upstream `_framesSincePredict`.
     frames_since_predict: u32,
+    /// Filter-mode latch, upstream `controlFilterModes` / `detectFlight`.
+    control: FilterControl,
 }
 
 impl Default for NavEkf3Core {
@@ -170,6 +176,7 @@ impl NavEkf3Core {
             states: [0.0 as Ftype; STATE_VECTOR_LEN],
             states_initialised: false,
             frames_since_predict: 0,
+            control: FilterControl::new(),
         }
     }
 
@@ -211,6 +218,7 @@ impl NavEkf3Core {
         self.states = [0.0 as Ftype; STATE_VECTOR_LEN];
         self.states_initialised = true;
         self.frames_since_predict = 0;
+        self.control.reset();
         true
     }
 
@@ -224,11 +232,46 @@ impl NavEkf3Core {
         if !self.states_initialised {
             return;
         }
+        // Upstream `UpdateFilter` runs `controlFilterModes` before IMU read.
+        self.control.control_filter_modes();
         if predict {
             self.frames_since_predict = 0;
         } else {
             self.frames_since_predict = self.frames_since_predict.saturating_add(1);
         }
+    }
+
+    /// Filter-mode latch, upstream `onGround` / `inFlight` / `gpsInhibit`.
+    #[must_use]
+    pub const fn control(&self) -> &FilterControl {
+        &self.control
+    }
+
+    /// Mutable latch so callers can poke arm / GPS cues before an update.
+    pub fn control_mut(&mut self) -> &mut FilterControl {
+        &mut self.control
+    }
+
+    /// High certainty we are not flying, upstream `onGround`.
+    #[must_use]
+    pub const fn on_ground(&self) -> bool {
+        self.control.on_ground()
+    }
+
+    /// High certainty we are flying, upstream `inFlight`.
+    #[must_use]
+    pub const fn in_flight(&self) -> bool {
+        self.control.in_flight()
+    }
+
+    /// Historical `NavEKF3_core::setInhibitGPS`. See [`FilterControl::set_inhibit_gps`].
+    pub fn set_inhibit_gps(&mut self) -> u8 {
+        self.control.set_inhibit_gps()
+    }
+
+    /// Upstream `controlFilterModes`.
+    pub fn control_filter_modes(&mut self) {
+        self.control.control_filter_modes()
     }
 }
 
@@ -347,6 +390,20 @@ impl NavEkf3 {
             core.update_filter(true);
         }
     }
+
+    /// Historical `NavEKF3::setInhibitGPS`.
+    ///
+    /// Returns 0 when no cores exist (upstream `if (!core) return 0`).
+    /// Otherwise forwards to the primary core (index 0).
+    pub fn set_inhibit_gps(&mut self) -> u8 {
+        if self.num_cores == 0 {
+            return 0;
+        }
+        match self.cores.get_mut(0) {
+            Some(core) => core.set_inhibit_gps(),
+            None => 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -442,5 +499,17 @@ mod tests {
         assert_eq!(core.frames_since_predict(), 1);
         core.update_filter(true);
         assert_eq!(core.frames_since_predict(), 0);
+    }
+
+    #[test]
+    fn frontend_set_inhibit_gps_needs_cores_then_latches() {
+        let mut ekf = NavEkf3::new();
+        assert_eq!(ekf.set_inhibit_gps(), 0);
+        assert!(ekf.initialise_filter());
+        assert_eq!(ekf.set_inhibit_gps(), 1);
+        let core = ekf.core(0).expect("primary");
+        assert!(core.control().gps_inhibit());
+        assert!(core.on_ground());
+        assert!(!core.in_flight());
     }
 }
