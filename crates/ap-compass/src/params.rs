@@ -2,6 +2,7 @@
 
 use ap_math::vector3::Vector3f;
 
+use crate::auto_rot::COMPASS_AUTO_ROT_DEFAULT;
 use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::orientation::{COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT};
@@ -86,6 +87,8 @@ pub struct CompassParams {
     pub motor_comp_type: u8,
     /// AHRS board orientation applied to internal compasses.
     pub board_orientation: u8,
+    /// Auto-orientation after MAG_CAL, upstream `COMPASS_AUTO_ROT`.
+    pub rotate_auto: u8,
 }
 
 impl Default for CompassParams {
@@ -100,6 +103,7 @@ impl Default for CompassParams {
             offsets_max: COMPASS_OFFSETS_MAX_DEFAULT,
             motor_comp_type: COMPASS_MOTCT_DEFAULT,
             board_orientation: COMPASS_ORIENT_DEFAULT,
+            rotate_auto: COMPASS_AUTO_ROT_DEFAULT,
         }
     }
 }

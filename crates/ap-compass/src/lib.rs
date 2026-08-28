@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod auto_rot;
 pub mod calibrate;
 pub mod consistent;
 pub mod declination;
@@ -27,6 +28,11 @@ pub use sitl::{
     SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES, SITL_COMPASS_UPDATE_MS,
 };
 
+pub use auto_rot::{
+    accept_detected_orientation, always_45_deg, check_enabled, fix_orientation, settings_for_start,
+    AutoRot, AutoRotSettings, COMPASS_AUTO_ROT_CHECK_AND_FIX, COMPASS_AUTO_ROT_CHECK_ONLY,
+    COMPASS_AUTO_ROT_DEFAULT, COMPASS_AUTO_ROT_DISABLED, COMPASS_AUTO_ROT_FIX_45,
+};
 pub use calibrate::{
     cancel_calibration_all, is_calibrating, start_calibration, start_calibration_all,
     CompassCalStatus, CompassCalibrator,
