@@ -36,6 +36,11 @@
 //! (`Q_TAILSIT_MOTMX` / `output_motor_mask`).
 //! Control-surface speed scaling is [`GainScaling`] (`Q_TAILSIT_GSCMSK`).
 //! Pitch-relax after a hover-gain vectored setup is [`Tailsitter::relax_pitch`].
+//! Post-transition pitch-forward / pitch-down rate-limit is [`PitchLimit`]
+//! (`set_VTOL_roll_pitch_limit` / the `fw_limit_*` leftover of
+//! `set_FW_roll_pitch`). [`in_vtol_transition`] is the 1 s
+//! `last_vtol_mode_ms` window used by that leftover and by
+//! [`PitchLimit::allow_stick_mixing`].
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -975,5 +980,223 @@ impl GainScaling {
     #[must_use]
     pub const fn scale_tilt(value: f32, throttle_scaler: f32) -> f32 {
         value * throttle_scaler
+    }
+}
+
+/// Milliseconds after leaving FW before `in_vtol_transition(now)`
+/// stops treating the airframe as “just came out of forward flight”.
+///
+/// Upstream `Tailsitter::in_vtol_transition`: `(now - last_vtol_mode_ms) > 1000`.
+pub const LAST_VTOL_MODE_MS: u32 = 1000;
+
+/// Upstream `Tailsitter::in_vtol_transition`.
+///
+/// False when the tailsitter is off or we are not in a Q* mode.
+/// True while `transition_state == ANGLE_WAIT_VTOL`. When `now_ms` is
+/// non-zero, also true if more than [`LAST_VTOL_MODE_MS`] has passed
+/// since `last_vtol_mode_ms` — we have only just come out of forward
+/// flight. `allow_stick_mixing` calls this with `now == 0`, so that
+/// window is skipped there.
+#[must_use]
+pub const fn in_vtol_transition(
+    enabled: bool,
+    in_vtol_mode: bool,
+    angle_wait_vtol: bool,
+    now_ms: u32,
+    last_vtol_mode_ms: u32,
+) -> bool {
+    if !enabled || !in_vtol_mode {
+        return false;
+    }
+    if angle_wait_vtol {
+        return true;
+    }
+    if now_ms != 0 && now_ms.wrapping_sub(last_vtol_mode_ms) > LAST_VTOL_MODE_MS {
+        return true;
+    }
+    false
+}
+
+/// Post-transition pitch rate-limit, upstream
+/// `Tailsitter_Transition::set_VTOL_roll_pitch_limit` and the
+/// `fw_limit_*` leftover of `set_FW_roll_pitch`.
+///
+/// After FW → VTOL completes, [`Self::start_vtol`] stamps
+/// `vtol_limit_start_ms` and pitch is not allowed to walk toward 0
+/// faster than `Q_TAILSIT_RAT_VT`. After VTOL → FW completes,
+/// [`Self::start_fw`] ramps pitch down from the completion attitude
+/// at `Q_TAILSIT_RAT_FW` and never limits past 0 or to a smaller
+/// (more nose-down) demand than the FW controller already asked for.
+///
+/// Stick mixing is blocked while [`in_vtol_transition`] is true
+/// (nose-up) or while the FW pitch-down leftover is still active.
+#[derive(Debug, Clone, Copy)]
+pub struct PitchLimit {
+    vtol_limit_start_ms: u32,
+    vtol_limit_initial_pitch: f32,
+    fw_limit_start_ms: u32,
+    fw_limit_initial_pitch: f32,
+    rate_vtol: f32,
+    rate_fw: f32,
+}
+
+impl Default for PitchLimit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PitchLimit {
+    /// Inactive limits at the default `Q_TAILSIT_RAT_VT` / `RAT_FW`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            vtol_limit_start_ms: 0,
+            vtol_limit_initial_pitch: 0.0,
+            fw_limit_start_ms: 0,
+            fw_limit_initial_pitch: 0.0,
+            rate_vtol: crate::transition::TRANSITION_RATE_VTOL_DEFAULT,
+            rate_fw: crate::transition::TRANSITION_RATE_FW_DEFAULT,
+        }
+    }
+
+    /// `vtol_limit_start_ms`. Zero means the VTOL leftover is idle.
+    #[must_use]
+    pub const fn vtol_limit_start_ms(&self) -> u32 {
+        self.vtol_limit_start_ms
+    }
+
+    /// `fw_limit_start_ms`. Zero means the FW leftover is idle.
+    #[must_use]
+    pub const fn fw_limit_start_ms(&self) -> u32 {
+        self.fw_limit_start_ms
+    }
+
+    /// `Q_TAILSIT_RAT_VT` (deg/s) used by the VTOL leftover.
+    #[must_use]
+    pub const fn rate_vtol(&self) -> f32 {
+        self.rate_vtol
+    }
+
+    /// `Q_TAILSIT_RAT_FW` (deg/s) used by the FW leftover.
+    #[must_use]
+    pub const fn rate_fw(&self) -> f32 {
+        self.rate_fw
+    }
+
+    /// Poke `Q_TAILSIT_RAT_VT`.
+    pub fn set_rate_vtol(&mut self, rate: f32) {
+        self.rate_vtol = rate;
+    }
+
+    /// Poke `Q_TAILSIT_RAT_FW`.
+    pub fn set_rate_fw(&mut self, rate: f32) {
+        self.rate_fw = rate;
+    }
+
+    /// Armed FW → VTOL complete: start the VTOL pitch-forward leftover.
+    ///
+    /// Upstream `VTOL_update` writes `vtol_limit_initial_pitch =
+    /// ahrs_view->pitch_sensor` with no clamp.
+    pub fn start_vtol(&mut self, now_ms: u32, initial_pitch_cd: f32) {
+        self.vtol_limit_start_ms = now_ms;
+        self.vtol_limit_initial_pitch = initial_pitch_cd;
+    }
+
+    /// Armed VTOL → FW complete: start the FW pitch-down leftover.
+    ///
+    /// Upstream `update` clamps the starting pitch to ±[`crate::transition::PITCH_CD_LIMIT`].
+    pub fn start_fw(&mut self, now_ms: u32, initial_pitch_cd: f32) {
+        self.fw_limit_start_ms = now_ms;
+        let limit = crate::transition::PITCH_CD_LIMIT as f32;
+        self.fw_limit_initial_pitch = constrain_f32(initial_pitch_cd, -limit, limit);
+    }
+
+    /// Upstream `Tailsitter_Transition::set_VTOL_roll_pitch_limit`.
+    ///
+    /// Returns `true` when the demand was limited (roll forced to 0,
+    /// pitch held at the leftover). Returns `false` and clears
+    /// `vtol_limit_start_ms` when the leftover has passed 0 or the
+    /// demanded pitch is already beyond the leftover (more toward 0
+    /// than the leftover still wants).
+    pub fn set_vtol_roll_pitch_limit(
+        &mut self,
+        nav_roll_cd: &mut i32,
+        nav_pitch_cd: &mut i32,
+        now_ms: u32,
+    ) -> bool {
+        if self.vtol_limit_start_ms == 0 {
+            return false;
+        }
+        let pitch_change_cd =
+            now_ms.wrapping_sub(self.vtol_limit_start_ms) as f32 * self.rate_vtol * 0.1;
+        if pitch_change_cd > self.vtol_limit_initial_pitch.abs() {
+            self.vtol_limit_start_ms = 0;
+            return false;
+        }
+        if self.vtol_limit_initial_pitch < 0.0 {
+            let pitch_limit = self.vtol_limit_initial_pitch + pitch_change_cd;
+            if (*nav_pitch_cd as f32) > pitch_limit {
+                *nav_pitch_cd = pitch_limit as i32;
+                *nav_roll_cd = 0;
+                return true;
+            }
+        } else {
+            let pitch_limit = self.vtol_limit_initial_pitch - pitch_change_cd;
+            if (*nav_pitch_cd as f32) < pitch_limit {
+                *nav_pitch_cd = pitch_limit as i32;
+                *nav_roll_cd = 0;
+                return true;
+            }
+        }
+        self.vtol_limit_start_ms = 0;
+        false
+    }
+
+    /// Upstream `set_FW_roll_pitch` leftover when `transition_state == DONE`.
+    ///
+    /// Returns `true` when the leftover still holds pitch. Clears
+    /// `fw_limit_start_ms` when the leftover has reached 0 or the
+    /// demanded pitch is already at or above the leftover (never
+    /// limit to a smaller pitch angle).
+    pub fn apply_fw_pitch_down_limit(
+        &mut self,
+        nav_roll_cd: &mut i32,
+        nav_pitch_cd: &mut i32,
+        now_ms: u32,
+    ) -> bool {
+        if self.fw_limit_start_ms == 0 {
+            return false;
+        }
+        let pitch_limit_cd = self.fw_limit_initial_pitch
+            - now_ms.wrapping_sub(self.fw_limit_start_ms) as f32 * self.rate_fw * 0.1;
+        if pitch_limit_cd <= 0.0 || (*nav_pitch_cd as f32) >= pitch_limit_cd {
+            self.fw_limit_start_ms = 0;
+            false
+        } else {
+            *nav_pitch_cd = pitch_limit_cd as i32;
+            *nav_roll_cd = 0;
+            true
+        }
+    }
+
+    /// Upstream `Tailsitter_Transition::allow_stick_mixing`.
+    ///
+    /// False while pitching up into VTOL (`in_vtol_transition()` with
+    /// the default `now == 0`) or while levelling off in FW
+    /// (`transition_state == DONE` and `fw_limit_start_ms != 0`).
+    #[must_use]
+    pub const fn allow_stick_mixing(
+        &self,
+        in_vtol_transition: bool,
+        transition_done: bool,
+    ) -> bool {
+        if in_vtol_transition {
+            return false;
+        }
+        if transition_done && self.fw_limit_start_ms != 0 {
+            return false;
+        }
+        true
     }
 }
