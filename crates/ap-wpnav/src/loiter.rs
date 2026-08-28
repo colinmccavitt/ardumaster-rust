@@ -19,9 +19,9 @@
 //!
 //! # What this module does not own
 //!
-//! Pilot-accel shaping (`set_pilot_desired_acceleration_rad`) and
-//! `AC_Circle` are later COP-011 slices. [`crate::wpnav`] is COP-010
-//! and is not rewritten here.
+//! Pilot-accel shaping (`set_pilot_desired_acceleration_rad`) is a later
+//! COP-011 slice. [`crate::circle`] owns AC_Circle init / update.
+//! [`crate::wpnav`] is COP-010 and is not rewritten here.
 
 use ap_math::control::{angle_rad_to_accel_mss, sqrt_controller};
 use ap_math::scalar::{

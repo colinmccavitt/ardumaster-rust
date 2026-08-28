@@ -39,6 +39,8 @@
 //! Horizontal loiter is [`loiter`] (**COP-011**):
 //! [`Loiter::init_target_m`] / [`Loiter::init_target`] then
 //! [`Loiter::update`].
+//! Horizontal circle is [`circle`] (**COP-011**):
+//! [`Circle::init`] / [`Circle::init_ned_m`] then [`Circle::update_ms`].
 //!
 //! # What this crate does not own
 //!
@@ -53,9 +55,15 @@
 
 #![no_std]
 
+pub mod circle;
 pub mod loiter;
 pub mod wpnav;
 
+pub use circle::{
+    Circle, CircleOption, InitCircleContext, InitCircleLeftover, UpdateCircleContext,
+    UpdateCircleLeftover, CIRCLE_ACTIVE_TIMEOUT_MS, CIRCLE_ANGULAR_ACCEL_MIN,
+    CIRCLE_DEFAULT_OPTIONS, CIRCLE_RADIUS_MAX_M, CIRCLE_RADIUS_M_DEFAULT, CIRCLE_RATE_DEFAULT,
+};
 pub use loiter::{
     InitTargetContext, InitTargetLeftover, Loiter, LoiterOption, UpdateLoiterContext,
     UpdateLoiterLeftover, LOITER_ACCEL_MAX_DEFAULT_MSS, LOITER_ACTIVE_TIMEOUT_MS,
