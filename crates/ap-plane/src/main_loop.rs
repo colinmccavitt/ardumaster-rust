@@ -126,6 +126,7 @@ use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
 use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
 use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
+use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -411,6 +412,22 @@ pub struct PlaneMainLoop {
     pub rtl_loiter_radius_m: u16,
     /// RTL_RADIUS < 0 selects counterclockwise loiter.
     pub rtl_loiter_ccw: bool,
+    /// Upstream WP_LOITER_RAD (aparm.loiter_radius), metres. Negative is CCW.
+    pub wp_loiter_rad_m: i16,
+    /// Upstream FlightOptions::ENABLE_LOITER_ALT_CONTROL.
+    pub loiter_alt_control_enabled: bool,
+    /// Whether LOITER enter/navigate glue ran this tick.
+    pub loiter_mode_nav_applied: bool,
+    /// Whether ModeLoiter::_enter armed do_loiter_at_location this tick.
+    pub loiter_mode_started: bool,
+    /// Whether LOITER navigate is allowed to call update_loiter this tick.
+    pub loiter_mode_loiter_allowed: bool,
+    /// abs(WP_LOITER_RAD) applied this tick.
+    pub loiter_radius_m: u16,
+    /// WP_LOITER_RAD < 0 selects counterclockwise loiter.
+    pub loiter_ccw: bool,
+    /// Stick mixing plus ENABLE_LOITER_ALT_CONTROL: FBWB-style altitude.
+    pub loiter_alt_control: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -791,6 +808,14 @@ impl Default for PlaneMainLoop {
             rtl_mode_loiter_allowed: false,
             rtl_loiter_radius_m: 0,
             rtl_loiter_ccw: false,
+            wp_loiter_rad_m: 0,
+            loiter_alt_control_enabled: false,
+            loiter_mode_nav_applied: false,
+            loiter_mode_started: false,
+            loiter_mode_loiter_allowed: false,
+            loiter_radius_m: 0,
+            loiter_ccw: false,
+            loiter_alt_control: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1266,6 +1291,25 @@ impl PlaneMainLoop {
             self.rtl_loiter_radius_m = rtl_nav.loiter_radius_m;
             if rtl_nav.direction_set {
                 self.rtl_loiter_ccw = rtl_nav.loiter_ccw;
+            }
+        }
+
+        let loiter_nav = loiter_mode_nav_tick(&LoiterModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            wp_loiter_rad_m: self.wp_loiter_rad_m,
+            stick_mixing_enabled: applies_fbw_stick_mixing(self.stick_mixing),
+            loiter_alt_control: self.loiter_alt_control_enabled,
+        });
+        self.loiter_mode_nav_applied = loiter_nav.applied;
+        self.loiter_mode_started = loiter_nav.started;
+        self.loiter_mode_loiter_allowed = loiter_nav.allow_loiter;
+        self.loiter_alt_control = loiter_nav.alt_control;
+        if loiter_nav.applied {
+            self.loiter_radius_m = loiter_nav.loiter_radius_m;
+            if loiter_nav.direction_set {
+                self.loiter_ccw = loiter_nav.loiter_ccw;
             }
         }
 
