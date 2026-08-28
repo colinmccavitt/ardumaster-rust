@@ -3,13 +3,18 @@
 
 use ap_quadplane::air_mode::QOption;
 use ap_quadplane::landing::{LandDetectView, LAND_COMPLETE_TIMEOUT_MS, LAND_RELAX_MS};
+use ap_quadplane::mode_q::{qstabilize_update, QManualUpdateView};
 use ap_quadplane::mode_qland::{
     already_in_a_loiter, landing_descent_rate_ms, linear_interpolate, loiter_alt_qland_enter,
-    pos_before_land_final, qland_enter, qland_run, qloiter_enter, switch_qland, GuidedAltFrame,
-    LoiterAltQLandAction, LoiterAltQLandEnterView, LoiterAltSeed, QLandEnterState, QLandEnterView,
-    QLandFamily, QLandRunAction, QLandRunView, QLoiterEnterState, QLoiterEnterView,
-    MODE_LOITER_ALT_QLAND, MODE_QLAND, MODE_QLOITER, MODE_REASON_LOITER_ALT_IN_VTOL,
-    MODE_REASON_LOITER_ALT_REACHED_QLAND, Q_LAND_FINAL_SPD_DEFAULT_MS, Q_RTL_ALT_DEFAULT_M,
+    loiter_alt_qland_navigate, loiter_target_stale, pos_before_land_final,
+    qland_completeness_counts, qland_completeness_has, qland_enter, qland_run,
+    qland_surfaces_unique_names, qland_update, qloiter_enter, qloiter_run, qloiter_update,
+    switch_qland, GuidedAltFrame, LoiterAltQLandAction, LoiterAltQLandEnterView,
+    LoiterAltQLandNavView, LoiterAltSeed, QLandEnterState, QLandEnterView, QLandFamily,
+    QLandPortStatus, QLandRunAction, QLandRunView, QLoiterClimb, QLoiterEnterState,
+    QLoiterEnterView, QLoiterRunAction, QLoiterRunView, LOITER_REINIT_MS, MODE_LOITER_ALT_QLAND,
+    MODE_QLAND, MODE_QLOITER, MODE_REASON_LOITER_ALT_IN_VTOL, MODE_REASON_LOITER_ALT_REACHED_QLAND,
+    PRECLAND_TIMEOUT_MS, QLAND_CPP_SURFACES, Q_LAND_FINAL_SPD_DEFAULT_MS, Q_RTL_ALT_DEFAULT_M,
     Q_WP_SPD_DN_DEFAULT_MS,
 };
 use ap_quadplane::poscontrol::{PositionControlState, THROTTLE_WAIT_INPUT_MIN};
@@ -375,4 +380,184 @@ fn landing_descent_rate_clamps_in_final_and_stops_on_reposition() {
     assert!(pos_before_land_final(PositionControlState::LandDescend));
     assert!(!pos_before_land_final(PositionControlState::LandFinal));
     assert!(!pos_before_land_final(PositionControlState::LandComplete));
+}
+
+#[test]
+fn loiter_target_stale_uses_wrapping_sub() {
+    assert!(!loiter_target_stale(1_000, 1_000));
+    assert!(!loiter_target_stale(1_500, 1_000));
+    assert!(loiter_target_stale(1_501, 1_000));
+    assert!(loiter_target_stale(0, u32::MAX - 600));
+    assert_eq!(LOITER_REINIT_MS, 500);
+    assert_eq!(PRECLAND_TIMEOUT_MS, 250);
+}
+
+#[test]
+fn qloiter_run_poshold_updates_last_loiter() {
+    let mut qp = available_qp();
+    let view = QLoiterRunView::flying();
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::PosHold);
+    assert!(!out.loiter_reinit);
+    assert!(!out.softened);
+    assert!(!out.unarmed_reenter);
+    assert!(!out.ne_inited);
+    assert_eq!(out.last_loiter_ms, 1_000);
+    assert_eq!(out.climb, QLoiterClimb::Pilot);
+    assert_eq!(mm(out.climb_rate_ms), 0);
+    assert!(out.enter.is_none());
+}
+
+#[test]
+fn qloiter_run_stale_loiter_reinits_and_inits_ne() {
+    let mut qp = available_qp();
+    let mut view = QLoiterRunView::flying();
+    view.last_loiter_ms = 400;
+    view.now_ms = 1_000;
+    view.ne_active = false;
+    view.should_relax = true;
+    view.pilot_climb_rate_cms = 150.0;
+
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::PosHold);
+    assert!(out.loiter_reinit);
+    assert!(out.softened);
+    assert!(out.ne_inited);
+    assert_eq!(out.last_loiter_ms, 1_000);
+    assert_eq!(out.climb, QLoiterClimb::Pilot);
+    assert_eq!(mm(out.climb_rate_ms), 1_500);
+}
+
+#[test]
+fn qloiter_run_unarmed_reenters_and_skips_same_tick_reinit() {
+    let mut qp = available_qp();
+    qp.set_throttle_wait(false);
+    let mut view = QLoiterRunView::flying();
+    view.motors_armed = false;
+    view.last_loiter_ms = 0;
+    view.now_ms = 2_000;
+    view.enter = QLoiterEnterView::new(0, true, 2_000);
+
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::PosHold);
+    assert!(out.unarmed_reenter);
+    assert!(!out.loiter_reinit);
+    assert_eq!(out.last_loiter_ms, 2_000);
+    assert!(!qp.throttle_wait());
+    let enter = out.enter.expect("unarmed re-enter latches _enter");
+    assert!(enter.loiter_target_inited);
+    assert_eq!(enter.last_loiter_ms, 2_000);
+}
+
+#[test]
+fn qloiter_run_guided_takeoff_holds_climb() {
+    let mut qp = available_qp();
+    let mut view = QLoiterRunView::flying();
+    view.in_guided = true;
+    view.guided_takeoff = true;
+    view.pilot_climb_rate_cms = 200.0;
+
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::PosHold);
+    assert_eq!(out.climb, QLoiterClimb::GuidedTakeoffHold);
+    assert_eq!(mm(out.climb_rate_ms), 0);
+}
+
+#[test]
+fn qloiter_run_early_outs_skip_poscontrol() {
+    let mut qp = available_qp();
+    let mut view = QLoiterRunView::flying();
+    view.vtol_recovery = true;
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::VtolRecovery);
+    assert_eq!(out.last_loiter_ms, view.last_loiter_ms);
+
+    view.vtol_recovery = false;
+    view.tailsitter_in_vtol_transition = true;
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::FwControllers);
+
+    view.tailsitter_in_vtol_transition = false;
+    qp.set_throttle_wait(true);
+    let out = qloiter_run(&mut qp, view);
+    assert_eq!(out.action, QLoiterRunAction::ThrottleWait);
+}
+
+#[test]
+fn loiter_alt_qland_navigate_hands_off_when_reached_below() {
+    let mut qp = available_qp();
+    dirty_for_mode_enter(&mut qp);
+
+    let stay = loiter_alt_qland_navigate(&mut qp, LoiterAltQLandNavView::fw_above());
+    assert_eq!(stay.action, LoiterAltQLandAction::StayLoiter);
+    assert!(stay.loiter_navigate);
+    assert!(stay.mode_reason.is_none());
+    assert!(stay.qland.is_none());
+
+    let handoff = loiter_alt_qland_navigate(&mut qp, LoiterAltQLandNavView::reached_below());
+    assert_eq!(handoff.action, LoiterAltQLandAction::HandoffReachedQland);
+    assert!(!handoff.loiter_navigate);
+    assert_eq!(
+        handoff.mode_reason,
+        Some(MODE_REASON_LOITER_ALT_REACHED_QLAND)
+    );
+    assert!(handoff.qland.is_some());
+    assert!(!qp.throttle_wait());
+    assert_eq!(qp.poscontrol().state(), PositionControlState::LandDescend);
+}
+
+#[test]
+fn qloiter_and_qland_update_delegate_to_qstabilize() {
+    let view = QManualUpdateView::flying();
+    let expected = qstabilize_update(&view);
+    let qloiter = qloiter_update(&view);
+    let qland = qland_update(&view);
+    assert_eq!(qloiter.nav_roll_cd, expected.nav_roll_cd);
+    assert_eq!(qloiter.nav_pitch_cd, expected.nav_pitch_cd);
+    assert_eq!(qloiter.path, expected.path);
+    assert_eq!(qland.nav_roll_cd, expected.nav_roll_cd);
+    assert_eq!(qland.path, expected.path);
+}
+
+#[test]
+fn qland_cpp_surfaces_closer_catalog() {
+    assert!(qland_surfaces_unique_names());
+    assert_eq!(QLAND_CPP_SURFACES.len(), 16);
+    let (on_main, this_slice, remaining) = qland_completeness_counts();
+    assert_eq!(on_main, 7);
+    assert_eq!(this_slice, 5);
+    assert_eq!(remaining, 4);
+    assert!(qland_completeness_has(
+        "QLoiter _enter",
+        QLandPortStatus::OnMain
+    ));
+    assert!(qland_completeness_has(
+        "QLoiter run QLAND leftover",
+        QLandPortStatus::OnMain
+    ));
+    assert!(qland_completeness_has("QLand run", QLandPortStatus::OnMain));
+    assert!(qland_completeness_has(
+        "LoiterAltQLand _enter",
+        QLandPortStatus::OnMain
+    ));
+    assert!(qland_completeness_has(
+        "QLoiter run poscontrol leftover",
+        QLandPortStatus::ThisSlice
+    ));
+    assert!(qland_completeness_has(
+        "LoiterAltQLand navigate",
+        QLandPortStatus::ThisSlice
+    ));
+    assert!(qland_completeness_has(
+        "completeness table",
+        QLandPortStatus::ThisSlice
+    ));
+    assert!(qland_completeness_has(
+        "QLoiter run precland override",
+        QLandPortStatus::Remaining
+    ));
+    assert!(qland_completeness_has(
+        "QLoiter run live COP writes",
+        QLandPortStatus::Remaining
+    ));
 }

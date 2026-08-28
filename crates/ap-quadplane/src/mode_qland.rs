@@ -1,11 +1,18 @@
-//! QLOITER / QLAND / LoiterAltQLand `_enter` plus QLAND `run()`,
+//! QLOITER / QLAND / LoiterAltQLand `_enter`, QLAND `run()`,
+//! QLOITER poscontrol leftover, and LoiterAltQLand `navigate` handoff,
 //! upstream `ArduPlane/mode_qloiter.cpp` / `mode_qland.cpp` /
 //! `mode_LoiterAltQLand.cpp` (Plane-4.7.0).
 //!
-//! Tracked as **VT-005**. This slice is [`qland_run`]:
+//! Tracked as **VT-005**. This slice is [`qloiter_run`] /
+//! [`loiter_alt_qland_navigate`] plus [`QLAND_CPP_SURFACES`].
 //! `ModeQLand::run` always calls `ModeQLoiter::run`, and the
 //! QLAND leftover inside that run is descent-rate, land-final,
-//! and [`QuadPlane::check_land_complete`]. `Mode::enter` always calls
+//! and [`QuadPlane::check_land_complete`]. The QLOITER leftover
+//! (not that QLAND block) re-inits a stale loiter target, softens
+//! when `should_relax`, re-enters when unarmed, inits NE
+//! poscontrol, and sets climb from pilot or guided-takeoff hold.
+//! `ModeLoiterAltQLand::navigate` calls [`switch_qland`] then
+//! `ModeLoiter::navigate`. `Mode::enter` always calls
 //! [`QuadPlane::mode_enter`] then the mode's `_enter`. QLoiter
 //! initialises loiter_nav, latches the D-axis speed / accel limits,
 //! calls [`QuadPlane::init_throttle_wait`], records
@@ -29,6 +36,7 @@ use crate::air_mode::QOption;
 use crate::landing::{
     LandCompleteResult, LandCompleteView, LandDetectView, LandFinalView, RelaxView,
 };
+use crate::mode_q::{qstabilize_update, QManualUpdate, QManualUpdateView};
 use crate::poscontrol::PositionControlState;
 use crate::QuadPlane;
 
@@ -728,4 +736,443 @@ pub fn qland_run(qp: &mut QuadPlane, view: QLandRunView) -> QLandRun {
         touchdown_expected,
         land_complete,
     }
+}
+
+/// Stale-loiter reinit, upstream `now - last_loiter_ms > 500`.
+pub const LOITER_REINIT_MS: u32 = 500;
+
+/// Precision-land / precision-loiter override window, upstream `250` ms.
+///
+/// Leftover: `AC_PRECLAND_ENABLED` last-pos / last-vel apply inside
+/// `ModeQLoiter::run` is not stubbed here.
+pub const PRECLAND_TIMEOUT_MS: u32 = 250;
+
+/// `get_pilot_desired_climb_rate_cms() * 0.01` — cm/s to m/s.
+pub const CMS_TO_MS: f32 = 0.01;
+
+/// Which path `ModeQLoiter::run` (poscontrol leftover) took this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QLoiterRunAction {
+    /// `assist.check_VTOL_recovery()` — QHover recovery.
+    VtolRecovery,
+    /// Tailsitter FW pull-up: `Mode::run()`.
+    FwControllers,
+    /// `quadplane.throttle_wait` leftover.
+    ThrottleWait,
+    /// Poscontrol leftover: loiter_nav / NE / climb-rate.
+    PosHold,
+}
+
+/// Which climb-rate source `ModeQLoiter::run` used (non-QLAND).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QLoiterClimb {
+    /// `set_climb_rate_ms(get_pilot_desired_climb_rate_cms() * 0.01)`.
+    Pilot,
+    /// GUIDED + `guided_takeoff`: `set_climb_rate_ms(0)`.
+    GuidedTakeoffHold,
+}
+
+/// Outcome of one [`qloiter_run`] tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QLoiterRun {
+    /// Recovery / FW / wait / pos-hold.
+    pub action: QLoiterRunAction,
+    /// `now - last_loiter_ms > 500` — loiter_nav target re-inited.
+    pub loiter_reinit: bool,
+    /// `should_relax()` — `loiter_nav->soften_for_landing()`.
+    pub softened: bool,
+    /// `!motors->armed()` — `ModeQLoiter::_enter()` ran again.
+    pub unarmed_reenter: bool,
+    /// `!pos_control->NE_is_active()` — `NE_init_controller()`.
+    pub ne_inited: bool,
+    /// `quadplane.last_loiter_ms` after this tick (`now` on PosHold).
+    pub last_loiter_ms: u32,
+    /// Climb-rate source (pilot vs guided-takeoff hold).
+    pub climb: QLoiterClimb,
+    /// `set_climb_rate_ms` argument (m/s).
+    pub climb_rate_ms: f32,
+    /// Nested `_enter` latch when [`Self::unarmed_reenter`] is set.
+    pub enter: Option<QLoiterEnterState>,
+}
+
+impl QLoiterRun {
+    const fn early(action: QLoiterRunAction, last_loiter_ms: u32) -> Self {
+        Self {
+            action,
+            loiter_reinit: false,
+            softened: false,
+            unarmed_reenter: false,
+            ne_inited: false,
+            last_loiter_ms,
+            climb: QLoiterClimb::Pilot,
+            climb_rate_ms: 0.0,
+            enter: None,
+        }
+    }
+}
+
+/// Plane / nav view [`qloiter_run`] reads for the poscontrol leftover.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QLoiterRunView {
+    /// `quadplane.assist.check_VTOL_recovery()`.
+    pub vtol_recovery: bool,
+    /// `tailsitter.in_vtol_transition(now)`.
+    pub tailsitter_in_vtol_transition: bool,
+    /// `AP_HAL::millis()`.
+    pub now_ms: u32,
+    /// `quadplane.last_loiter_ms` before this tick.
+    pub last_loiter_ms: u32,
+    /// `quadplane.motors->armed()`.
+    pub motors_armed: bool,
+    /// `quadplane.should_relax()` this tick.
+    pub should_relax: bool,
+    /// `pos_control->NE_is_active()`.
+    pub ne_active: bool,
+    /// `control_mode == mode_guided`.
+    pub in_guided: bool,
+    /// `quadplane.guided_takeoff`.
+    pub guided_takeoff: bool,
+    /// `get_pilot_desired_climb_rate_cms()`.
+    pub pilot_climb_rate_cms: f32,
+    /// Nested `_enter` view used only on the unarmed re-enter path.
+    pub enter: QLoiterEnterView,
+}
+
+impl QLoiterRunView {
+    /// Flying, armed, fresh loiter, NE already active, pilot climb 0.
+    #[must_use]
+    pub const fn flying() -> Self {
+        Self {
+            vtol_recovery: false,
+            tailsitter_in_vtol_transition: false,
+            now_ms: 1_000,
+            last_loiter_ms: 1_000,
+            motors_armed: true,
+            should_relax: false,
+            ne_active: true,
+            in_guided: false,
+            guided_takeoff: false,
+            pilot_climb_rate_cms: 0.0,
+            enter: QLoiterEnterView::new(0, true, 1_000),
+        }
+    }
+}
+
+/// Upstream `now - last_loiter_ms > 500` (uint32 wrap).
+#[must_use]
+pub const fn loiter_target_stale(now_ms: u32, last_loiter_ms: u32) -> bool {
+    now_ms.wrapping_sub(last_loiter_ms) > LOITER_REINIT_MS
+}
+
+/// Combined `ModeQLoiter::run` poscontrol leftover (not the QLAND block).
+///
+/// Recovery, tailsitter FW pull-up, and `throttle_wait` return before
+/// the leftover, matching the early-outs in `ModeQLoiter::run`. The
+/// QLAND descent / land-final / land-complete path stays in
+/// [`qland_run`] and is not rewritten here.
+pub fn qloiter_run(qp: &mut QuadPlane, view: QLoiterRunView) -> QLoiterRun {
+    if view.vtol_recovery {
+        return QLoiterRun::early(QLoiterRunAction::VtolRecovery, view.last_loiter_ms);
+    }
+    if view.tailsitter_in_vtol_transition {
+        return QLoiterRun::early(QLoiterRunAction::FwControllers, view.last_loiter_ms);
+    }
+    if qp.throttle_wait() {
+        return QLoiterRun::early(QLoiterRunAction::ThrottleWait, view.last_loiter_ms);
+    }
+
+    let mut last_loiter_ms = view.last_loiter_ms;
+    let mut unarmed_reenter = false;
+    let mut enter = None;
+    if !view.motors_armed {
+        let mut state = QLoiterEnterState::new();
+        qloiter_enter_body(qp, view.enter, &mut state);
+        last_loiter_ms = state.last_loiter_ms;
+        unarmed_reenter = true;
+        enter = Some(state);
+    }
+
+    let loiter_reinit = loiter_target_stale(view.now_ms, last_loiter_ms);
+    last_loiter_ms = view.now_ms;
+
+    let (climb, climb_rate_ms) = if view.in_guided && view.guided_takeoff {
+        (QLoiterClimb::GuidedTakeoffHold, 0.0)
+    } else {
+        (QLoiterClimb::Pilot, view.pilot_climb_rate_cms * CMS_TO_MS)
+    };
+
+    QLoiterRun {
+        action: QLoiterRunAction::PosHold,
+        loiter_reinit,
+        softened: view.should_relax,
+        unarmed_reenter,
+        ne_inited: !view.ne_active,
+        last_loiter_ms,
+        climb,
+        climb_rate_ms,
+        enter,
+    }
+}
+
+/// `ModeQLoiter::update` — `plane.mode_qstabilize.update()`.
+#[must_use]
+pub const fn qloiter_update(view: &QManualUpdateView) -> QManualUpdate {
+    qstabilize_update(view)
+}
+
+/// `ModeQLand::update` — `plane.mode_qstabilize.update()`.
+#[must_use]
+pub const fn qland_update(view: &QManualUpdateView) -> QManualUpdate {
+    qstabilize_update(view)
+}
+
+/// Plane / nav view [`loiter_alt_qland_navigate`] reads each tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoiterAltQLandNavView {
+    /// `current_loc.get_height_above(next_WP_loc, dist)`.
+    pub height_above_next_wp_m: Option<f32>,
+    /// `nav_controller->reached_loiter_target()`.
+    pub reached_loiter_target: bool,
+    /// Nested QLand `_enter` view if this tick hands off.
+    pub qland: QLandEnterView,
+}
+
+impl LoiterAltQLandNavView {
+    /// Still above `Q_RTL_ALT`, not yet at the loiter.
+    #[must_use]
+    pub const fn fw_above() -> Self {
+        Self {
+            height_above_next_wp_m: Some(20.0),
+            reached_loiter_target: false,
+            qland: QLandEnterView::parked_idle(),
+        }
+    }
+
+    /// Reached the loiter and at-or-below the QLand altitude.
+    #[must_use]
+    pub const fn reached_below() -> Self {
+        Self {
+            height_above_next_wp_m: Some(-0.5),
+            reached_loiter_target: true,
+            qland: QLandEnterView::parked_idle(),
+        }
+    }
+}
+
+/// Outcome of one [`loiter_alt_qland_navigate`] tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoiterAltQLandNav {
+    /// Reached-QLand handoff or stay in FW loiter.
+    pub action: LoiterAltQLandAction,
+    /// `ModeLoiter::navigate` ran (stay path only).
+    pub loiter_navigate: bool,
+    /// `ModeReason::LOITER_ALT_REACHED_QLAND` if `set_mode` ran.
+    pub mode_reason: Option<u8>,
+    /// Nested QLand `_enter` latch when a handoff ran.
+    pub qland: Option<QLandEnterState>,
+}
+
+/// Upstream `ModeLoiterAltQLand::navigate`.
+///
+/// `switch_qland` first; a true predicate is `set_mode(QLAND,
+/// LOITER_ALT_REACHED_QLAND)` (full [`qland_enter`]). Otherwise
+/// `ModeLoiter::navigate` runs. This is the run-time handoff — `_enter`
+/// already called [`switch_qland`] once.
+pub fn loiter_alt_qland_navigate(
+    qp: &mut QuadPlane,
+    view: LoiterAltQLandNavView,
+) -> LoiterAltQLandNav {
+    if switch_qland(view.height_above_next_wp_m, view.reached_loiter_target) {
+        let mut qland = QLandEnterState::new();
+        let _ok = qland_enter(qp, view.qland, &mut qland);
+        return LoiterAltQLandNav {
+            action: LoiterAltQLandAction::HandoffReachedQland,
+            loiter_navigate: false,
+            mode_reason: Some(MODE_REASON_LOITER_ALT_REACHED_QLAND),
+            qland: Some(qland),
+        };
+    }
+    LoiterAltQLandNav {
+        action: LoiterAltQLandAction::StayLoiter,
+        loiter_navigate: true,
+        mode_reason: None,
+        qland: None,
+    }
+}
+
+/// Whether a catalog row is already hooked up or left for later work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QLandPortStatus {
+    /// Present on `main` before this closing slice.
+    OnMain,
+    /// Added by this slice (poscontrol / navigate / update / table).
+    ThisSlice,
+    /// Leftover live COP / HAL write, not stubbed here.
+    Remaining,
+}
+
+/// One `mode_qloiter` / `mode_qland` / `mode_LoiterAltQLand.cpp` surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QLandSurface {
+    /// Upstream `.cpp` file.
+    pub file: &'static str,
+    /// Surface name (unique across the table).
+    pub name: &'static str,
+    /// Hooked up on main / this slice, or remaining.
+    pub status: QLandPortStatus,
+    /// Short note (Rust symbol or why remaining).
+    pub note: &'static str,
+}
+
+/// Completeness closer: `_enter` / `run` / `navigate` vs leftover live writes.
+///
+/// On-main rows are the earlier VT-005 slices. This-slice rows are
+/// [`qloiter_run`], [`loiter_alt_qland_navigate`], the `update()`
+/// delegates, and this table. Remaining rows are live COP / HAL
+/// writes inside those same `.cpp` files.
+pub const QLAND_CPP_SURFACES: &[QLandSurface] = &[
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter _enter",
+        status: QLandPortStatus::OnMain,
+        note: "qloiter_enter / init_throttle_wait / last_loiter_ms",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter update",
+        status: QLandPortStatus::ThisSlice,
+        note: "qloiter_update delegates to qstabilize_update",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter run poscontrol leftover",
+        status: QLandPortStatus::ThisSlice,
+        note: "qloiter_run last_loiter reinit / soften / NE / climb",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter run QLAND leftover",
+        status: QLandPortStatus::OnMain,
+        note: "qland_run descent / land-final / check_land_complete",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter run precland override",
+        status: QLandPortStatus::Remaining,
+        note: "AC_PRECLAND last_pos / last_vel 250 ms window (not stubbed)",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter run live COP writes",
+        status: QLandPortStatus::Remaining,
+        note: "loiter_nav / pos_control / attitude / stabilize / rudder (not stubbed)",
+    },
+    QLandSurface {
+        file: "mode_qland.cpp",
+        name: "QLand _enter",
+        status: QLandPortStatus::OnMain,
+        note: "qland_enter / QPOS_LAND_DESCEND / throttle_wait false",
+    },
+    QLandSurface {
+        file: "mode_qland.cpp",
+        name: "QLand update",
+        status: QLandPortStatus::ThisSlice,
+        note: "qland_update delegates to qstabilize_update",
+    },
+    QLandSurface {
+        file: "mode_qland.cpp",
+        name: "QLand run",
+        status: QLandPortStatus::OnMain,
+        note: "qland_run always calls mode_qloiter.run",
+    },
+    QLandSurface {
+        file: "mode_qland.cpp",
+        name: "QLand landing_gear live",
+        status: QLandPortStatus::Remaining,
+        note: "landing_gear.deploy_for_landing SRV write (flagged on enter)",
+    },
+    QLandSurface {
+        file: "mode_qloiter.cpp",
+        name: "QLoiter run ICE cut",
+        status: QLandPortStatus::Remaining,
+        note: "land_icengine_cut on LAND_FINAL (not stubbed)",
+    },
+    QLandSurface {
+        file: "mode_LoiterAltQLand.cpp",
+        name: "LoiterAltQLand _enter",
+        status: QLandPortStatus::OnMain,
+        note: "loiter_alt_qland_enter / VTOL handoff / guided retarget",
+    },
+    QLandSurface {
+        file: "mode_LoiterAltQLand.cpp",
+        name: "LoiterAltQLand navigate",
+        status: QLandPortStatus::ThisSlice,
+        note: "loiter_alt_qland_navigate / switch_qland then ModeLoiter::navigate",
+    },
+    QLandSurface {
+        file: "mode_LoiterAltQLand.cpp",
+        name: "LoiterAltQLand switch_qland",
+        status: QLandPortStatus::OnMain,
+        note: "switch_qland height-above + reached predicate",
+    },
+    QLandSurface {
+        file: "mode_LoiterAltQLand.cpp",
+        name: "LoiterAltQLand handle_guided_request",
+        status: QLandPortStatus::OnMain,
+        note: "Q_RTL_ALT + ABOVE_TERRAIN / ABOVE_HOME frame",
+    },
+    QLandSurface {
+        file: "mode_qland.rs",
+        name: "completeness table",
+        status: QLandPortStatus::ThisSlice,
+        note: "this catalog + leftover API contract helpers",
+    },
+];
+
+/// True when every catalog name is unique.
+#[must_use]
+pub fn qland_surfaces_unique_names() -> bool {
+    let mut i = 0;
+    while i < QLAND_CPP_SURFACES.len() {
+        let mut j = i + 1;
+        while j < QLAND_CPP_SURFACES.len() {
+            if QLAND_CPP_SURFACES[i].name == QLAND_CPP_SURFACES[j].name {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `(on_main, this_slice, remaining)` counts from [`QLAND_CPP_SURFACES`].
+#[must_use]
+pub fn qland_completeness_counts() -> (usize, usize, usize) {
+    let mut on_main = 0;
+    let mut this_slice = 0;
+    let mut remaining = 0;
+    let mut i = 0;
+    while i < QLAND_CPP_SURFACES.len() {
+        match QLAND_CPP_SURFACES[i].status {
+            QLandPortStatus::OnMain => on_main += 1,
+            QLandPortStatus::ThisSlice => this_slice += 1,
+            QLandPortStatus::Remaining => remaining += 1,
+        }
+        i += 1;
+    }
+    (on_main, this_slice, remaining)
+}
+
+/// Whether the table has `name` at `status`.
+#[must_use]
+pub fn qland_completeness_has(name: &str, status: QLandPortStatus) -> bool {
+    let mut i = 0;
+    while i < QLAND_CPP_SURFACES.len() {
+        if QLAND_CPP_SURFACES[i].name == name && QLAND_CPP_SURFACES[i].status == status {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
