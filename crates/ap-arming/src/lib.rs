@@ -13,6 +13,7 @@
 #![no_std]
 
 pub mod accel_threshold;
+pub mod arming_options;
 pub mod check_bitmask;
 pub mod mission_items;
 pub mod rudder_arming;
