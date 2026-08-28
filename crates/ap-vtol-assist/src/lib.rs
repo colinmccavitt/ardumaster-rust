@@ -8,6 +8,10 @@
 //! spin-while-armed) live in [`force`]. The angle-error trigger
 //! (outside the flight envelope *and* attitude error `>= Q_ASSIST_ANGLE`)
 //! lives in [`angle`]. A small [`VtolAssist`] object, not QuadPlane.
+//! [`completeness`] is the closer catalog: enable/check, speed/alt,
+//! force, and angle-error are on main; leftover state-update tick,
+//! assist-active latch, recovery, logging/GCS bits, and leftover
+//! option paths stay documented as remaining.
 //!
 //! Hysteresis, spin recovery, and the rest of `should_assist` are not
 //! here.
@@ -16,6 +20,7 @@
 
 pub mod angle;
 pub mod assist;
+pub mod completeness;
 pub mod force;
 pub mod speed_alt;
 
@@ -27,6 +32,7 @@ pub use assist::{
     ASSIST_ALT_DEFAULT, ASSIST_ANGLE_DEFAULT, ASSIST_DELAY_DEFAULT, ASSIST_OPTIONS_DEFAULT,
     ASSIST_SPEED_DEFAULT, DISABLE_SYNTHETIC_AIRSPEED_ASSIST, Q_ASSIST_FORCE_ENABLE,
 };
+pub use completeness::{AssistPortItem, PortStatus, ASSIST_COMPLETENESS};
 pub use force::{
     disable_synthetic_airspeed_assist_set, evaluate_force, force_assist_latched,
     requested_overriding_speed_alt, synthetic_airspeed_assist_allowed, ForceDecision, ForceSample,
