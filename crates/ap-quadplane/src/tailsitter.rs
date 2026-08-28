@@ -49,7 +49,14 @@
 //! pitch-angle half stays on [`crate::transition::TransitionRamp`].
 //! `update` / `VTOL_update` / `show_vtol_view` /
 //! `get_mav_vtol_state` / `restart` / `force_transition_complete`
-//! / [`Tailsitter::is_in_fw_flight`] are this slice.
+//! / [`Tailsitter::is_in_fw_flight`] are that slice.
+//!
+//! Copter-path surface mix is [`CopterOutputMix`] (`Q_TAILSIT_VT_R_P`
+//! / `VT_P_P` / `VT_Y_P`, then elevon / V-tail with pitch-priority
+//! headroom). Servo assignment leftover from `setup` is
+//! [`SurfaceAssign`]. [`Tailsitter::write_log`] emits the TSIT
+//! packet. `Q_TAILSIT_ENABLE == 2` leftover is
+//! [`Tailsitter::enable_always_setup`].
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -176,6 +183,86 @@ impl OutputContext {
     }
 }
 
+/// `Q_TAILSIT_ENABLE == 2` — force Qassist / no control surfaces.
+///
+/// Upstream `@Values: 0:Disable, 1:Enable, 2:Enable Always`.
+pub const TAILSIT_ENABLE_ALWAYS: i8 = 2;
+
+/// Upstream `QuadPlane::Option::ONLY_ARM_IN_QMODE_OR_AUTO` (`1<<18`).
+///
+/// `setup` ORs this into `Q_OPTIONS` when enable is
+/// [`TAILSIT_ENABLE_ALWAYS`].
+pub const Q_OPTIONS_ONLY_ARM_IN_QMODE_OR_AUTO: i32 = 1 << 18;
+
+/// Tailsitter `defaults_table` `MIXING_GAIN` (plane param default is 0.5).
+pub const TAILSITTER_MIXING_GAIN_DEFAULT: f32 = 1.0;
+
+/// Plane `MIXING_GAIN` `GSCALAR` default.
+pub const PLANE_MIXING_GAIN_DEFAULT: f32 = 0.5;
+
+/// Plane `MIXING_OFFSET` `GSCALAR` default.
+pub const MIXING_OFFSET_DEFAULT: i16 = 0;
+
+/// Default `Q_TAILSIT_VT_R_P`, upstream `AP_GROUPINFO("VT_R_P", ..., 1)`.
+pub const VTOL_ROLL_SCALE_DEFAULT: f32 = 1.0;
+
+/// Default `Q_TAILSIT_VT_P_P`, upstream `AP_GROUPINFO("VT_P_P", ..., 1)`.
+pub const VTOL_PITCH_SCALE_DEFAULT: f32 = 1.0;
+
+/// Default `Q_TAILSIT_VT_Y_P`, upstream `AP_GROUPINFO("VT_Y_P", ..., 1)`.
+pub const VTOL_YAW_SCALE_DEFAULT: f32 = 1.0;
+
+/// Tailsitter `defaults_table` `Q_TRANSITION_MS` (QuadPlane GROUPINFO is 5000).
+pub const TAILSITTER_TRANSITION_MS_DEFAULT: u32 = 2000;
+
+/// Servo function assignments leftover from `Tailsitter::setup`.
+///
+/// Upstream `_have_elevator` / `_have_aileron` / `_have_rudder` /
+/// `_have_elevon` / `_have_v_tail`. Used by [`CopterOutputMix`] to
+/// decide which saturation flags can trip `motors->limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceAssign {
+    /// `SRV_Channel::k_elevator` assigned.
+    pub elevator: bool,
+    /// `SRV_Channel::k_aileron` assigned.
+    pub aileron: bool,
+    /// `SRV_Channel::k_rudder` assigned.
+    pub rudder: bool,
+    /// `k_elevon_left` or `k_elevon_right` assigned.
+    pub elevon: bool,
+    /// `k_vtail_left` or `k_vtail_right` assigned.
+    pub v_tail: bool,
+}
+
+impl SurfaceAssign {
+    /// No flying surfaces assigned.
+    pub const NONE: Self = Self {
+        elevator: false,
+        aileron: false,
+        rudder: false,
+        elevon: false,
+        v_tail: false,
+    };
+
+    /// Elevator, aileron, and rudder assigned (no elevon / V-tail).
+    pub const CONVENTIONAL: Self = Self {
+        elevator: true,
+        aileron: true,
+        rudder: true,
+        elevon: false,
+        v_tail: false,
+    };
+
+    /// Elevons and V-tail assigned (no dedicated elevator / aileron / rudder).
+    pub const ELEVON_VTAIL: Self = Self {
+        elevator: false,
+        aileron: false,
+        rudder: false,
+        elevon: true,
+        v_tail: true,
+    };
+}
+
 /// What `Tailsitter::setup` reads off QuadPlane and the tailsitter params.
 #[derive(Debug, Clone, Copy)]
 pub struct TailsitterConfig {
@@ -195,6 +282,8 @@ pub struct TailsitterConfig {
     pub tilt_motor_right: bool,
     /// `Q_TAILSIT_INPUT`, upstream `AP_Int8 input_type`.
     pub input: i8,
+    /// Servo function assignments leftover from `Tailsitter::setup`.
+    pub surfaces: SurfaceAssign,
 }
 
 impl TailsitterConfig {
@@ -209,6 +298,7 @@ impl TailsitterConfig {
             tilt_motor_left: false,
             tilt_motor_right: false,
             input: TAILSIT_INPUT_DEFAULT,
+            surfaces: SurfaceAssign::NONE,
         }
     }
 
@@ -223,6 +313,7 @@ impl TailsitterConfig {
             tilt_motor_left: false,
             tilt_motor_right: false,
             input: TAILSIT_INPUT_DEFAULT,
+            surfaces: SurfaceAssign::NONE,
         }
     }
 }
@@ -244,6 +335,7 @@ pub struct Tailsitter {
     tilt_motor_left: bool,
     tilt_motor_right: bool,
     input: i8,
+    surfaces: SurfaceAssign,
 }
 
 impl Tailsitter {
@@ -269,6 +361,7 @@ impl Tailsitter {
             tilt_motor_left: cfg.tilt_motor_left,
             tilt_motor_right: cfg.tilt_motor_right,
             input: cfg.input,
+            surfaces: cfg.surfaces,
         }
     }
 
@@ -432,6 +525,53 @@ impl Tailsitter {
     #[must_use]
     pub fn relax_pitch(&self, vtol_limit_start_ms: u32) -> bool {
         !self.enabled() || !self.is_vectored() || vtol_limit_start_ms != 0
+    }
+
+    /// Servo function assignments leftover from `Tailsitter::setup`.
+    #[must_use]
+    pub const fn surface_assign(&self) -> SurfaceAssign {
+        self.surfaces
+    }
+
+    /// Upstream `Tailsitter::write_log`.
+    ///
+    /// Disabled tailsitters emit nothing. The three scalers are the
+    /// `log_data` fields `speed_scaling` recorded on the last cycle.
+    #[must_use]
+    pub const fn write_log(
+        &self,
+        time_us: u64,
+        throttle_scaler: f32,
+        speed_scaler: f32,
+        min_throttle: f32,
+    ) -> Option<TsitLog> {
+        if !self.enabled() {
+            return None;
+        }
+        Some(TsitLog {
+            time_us,
+            throttle_scaler,
+            speed_scaler,
+            min_throttle,
+        })
+    }
+
+    /// `Q_TAILSIT_ENABLE == 2` leftover from `Tailsitter::setup`.
+    ///
+    /// Forces Qassist, latches `AirMode::ASSISTED_FLIGHT_ONLY`, and
+    /// ORs `Q_OPTIONS` with [`Q_OPTIONS_ONLY_ARM_IN_QMODE_OR_AUTO`].
+    /// `None` when enable is not 2.
+    #[must_use]
+    pub const fn enable_always_setup(&self) -> Option<EnableAlwaysSetup> {
+        if self.enable == TAILSIT_ENABLE_ALWAYS && self.setup_complete {
+            Some(EnableAlwaysSetup {
+                force_assist: true,
+                air_mode: crate::air_mode::AirMode::AssistedFlightOnly,
+                only_arm_option: Q_OPTIONS_ONLY_ARM_IN_QMODE_OR_AUTO,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -1796,4 +1936,358 @@ fn vtol_timeout_ms(angle_vtol: i8, initial_pitch_cd: f32, rate_vtol: f32) -> f32
 
 fn elapsed_past_timeout(now_ms: u32, start_ms: u32, timeout_ms: f32) -> bool {
     now_ms.wrapping_sub(start_ms) as f32 > timeout_ms
+}
+
+/// Unconfigured `Q_TAILSIT_RAT_FW` leftover from `Tailsitter::setup`.
+///
+/// When `transition_rate_fw` was never written, setup saves
+/// `transition_angle_fw / (quadplane.transition_time_ms / 2000)`.
+/// Tailsitter `defaults_table` sets `Q_TRANSITION_MS` to
+/// [`TAILSITTER_TRANSITION_MS_DEFAULT`] (2000), so the default angle
+/// of 45 deg becomes 45 deg/s. The GROUPINFO default for `RAT_FW` is
+/// still [`crate::transition::TRANSITION_RATE_FW_DEFAULT`] (50) when
+/// the parameter *is* configured.
+#[must_use]
+pub const fn unconfigured_transition_rate_fw(angle_fw: i8, transition_time_ms: u32) -> f32 {
+    (angle_fw as f32) / (transition_time_ms as f32 / 2000.0)
+}
+
+/// TSIT log payload, upstream `log_tailsitter` without `LOG_PACKET_HEADER`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TsitLog {
+    /// `AP_HAL` microsecond timestamp.
+    pub time_us: u64,
+    /// Last `speed_scaling` hover/throttle scaler.
+    pub throttle_scaler: f32,
+    /// Last `speed_scaling` `spd_scaler` applied to flying surfaces.
+    pub speed_scaler: f32,
+    /// Last `disk_loading_min_throttle` pushed to `AP_MotorsTailsitter`.
+    pub min_throttle: f32,
+}
+
+/// `Q_TAILSIT_ENABLE == 2` side-effects from `Tailsitter::setup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnableAlwaysSetup {
+    /// `quadplane.assist.set_state(VTOL_Assist::STATE::FORCE_ENABLED)`.
+    pub force_assist: bool,
+    /// `quadplane.air_mode = AirMode::ASSISTED_FLIGHT_ONLY`.
+    pub air_mode: crate::air_mode::AirMode,
+    /// Bit ORed into `Q_OPTIONS`.
+    pub only_arm_option: i32,
+}
+
+/// Motors attitude that `Tailsitter::output` pulls onto flying surfaces.
+///
+/// Values are the AP_Motors `-1..1` outputs plus feedforward.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotorAttitude {
+    /// `motors->get_yaw()`.
+    pub yaw: f32,
+    /// `motors->get_yaw_ff()`.
+    pub yaw_ff: f32,
+    /// `motors->get_pitch()`.
+    pub pitch: f32,
+    /// `motors->get_pitch_ff()`.
+    pub pitch_ff: f32,
+    /// `motors->get_roll()`.
+    pub roll: f32,
+    /// `motors->get_roll_ff()`.
+    pub roll_ff: f32,
+}
+
+impl MotorAttitude {
+    /// Zero demand, no feedforward.
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            yaw: 0.0,
+            yaw_ff: 0.0,
+            pitch: 0.0,
+            pitch_ff: 0.0,
+            roll: 0.0,
+            roll_ff: 0.0,
+        }
+    }
+}
+
+/// Scaled aileron / elevator / rudder before elevon / V-tail mix.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopterSurfaces {
+    /// `k_aileron` — VTOL yaw, negated.
+    pub aileron: f32,
+    /// `k_elevator` — VTOL pitch.
+    pub elevator: f32,
+    /// `k_rudder` — VTOL roll.
+    pub rudder: f32,
+}
+
+/// Elevon / V-tail outputs after pitch-priority headroom.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElevonVtail {
+    /// `k_elevon_left` = elevator_mix - aileron_mix.
+    pub elevon_left: f32,
+    /// `k_elevon_right` = elevator_mix + aileron_mix.
+    pub elevon_right: f32,
+    /// `k_vtail_left` = elevator_mix + rudder_mix.
+    pub vtail_left: f32,
+    /// `k_vtail_right` = elevator_mix - rudder_mix.
+    pub vtail_right: f32,
+}
+
+/// `motors->limit` flags written at the end of `Tailsitter::output`.
+///
+/// Upstream only sets these `true`; it never clears a flag that
+/// `motors_output` already raised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MotorLimits {
+    /// `motors->limit.roll`.
+    pub roll: bool,
+    /// `motors->limit.pitch`.
+    pub pitch: bool,
+    /// `motors->limit.yaw`.
+    pub yaw: bool,
+}
+
+/// Combined copter-path mix result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopterOutput {
+    /// Aileron / elevator / rudder after `VTOL_*_scale`.
+    pub surfaces: CopterSurfaces,
+    /// Elevon / V-tail after pitch-priority headroom.
+    pub elevon_vtail: ElevonVtail,
+    /// Flags that would be written to `motors->limit`.
+    pub limits: MotorLimits,
+}
+
+/// Copter-path output mix, leftover `Tailsitter::output` after `motors_output`.
+///
+/// Tracked as **VT-007**. After the copter rate controller has run,
+/// tailsitter copies motors pitch / roll / yaw onto plane surfaces
+/// with an axis swap (`aileron = -(yaw+yaw_ff)*SERVO_MAX*VT_Y_P`,
+/// `elevator = (pitch+pitch_ff)*SERVO_MAX*VT_P_P`,
+/// `rudder = (roll+roll_ff)*SERVO_MAX*VT_R_P`), then mixes elevon
+/// and V-tail giving pitch full priority: any headroom left under
+/// [`SERVO_MAX`] is shared with aileron / rudder, otherwise those
+/// axes are zeroed. Saturation of a dedicated surface, a tilt motor
+/// on a vectored airframe, or a clipped elevon / V-tail sets
+/// `motors->limit`.
+///
+/// This is not a rewrite of ap-motors mixing or of [`VectoredYawMix`].
+#[derive(Debug, Clone, Copy)]
+pub struct CopterOutputMix {
+    roll_scale: f32,
+    pitch_scale: f32,
+    yaw_scale: f32,
+    mixing_gain: f32,
+    mixing_offset: i16,
+    surfaces: SurfaceAssign,
+}
+
+impl Default for CopterOutputMix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CopterOutputMix {
+    /// GROUPINFO / tailsitter-table defaults.
+    ///
+    /// `VT_*_P` are 1. `MIXING_GAIN` is the tailsitter table value
+    /// ([`TAILSITTER_MIXING_GAIN_DEFAULT`]), not the plane 0.5.
+    /// Surfaces start unassigned ([`SurfaceAssign::NONE`]).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            roll_scale: VTOL_ROLL_SCALE_DEFAULT,
+            pitch_scale: VTOL_PITCH_SCALE_DEFAULT,
+            yaw_scale: VTOL_YAW_SCALE_DEFAULT,
+            mixing_gain: TAILSITTER_MIXING_GAIN_DEFAULT,
+            mixing_offset: MIXING_OFFSET_DEFAULT,
+            surfaces: SurfaceAssign::NONE,
+        }
+    }
+
+    /// Conventional elevator / aileron / rudder assignment.
+    #[must_use]
+    pub const fn conventional() -> Self {
+        Self {
+            roll_scale: VTOL_ROLL_SCALE_DEFAULT,
+            pitch_scale: VTOL_PITCH_SCALE_DEFAULT,
+            yaw_scale: VTOL_YAW_SCALE_DEFAULT,
+            mixing_gain: TAILSITTER_MIXING_GAIN_DEFAULT,
+            mixing_offset: MIXING_OFFSET_DEFAULT,
+            surfaces: SurfaceAssign::CONVENTIONAL,
+        }
+    }
+
+    /// Elevon + V-tail assignment, no dedicated surfaces.
+    #[must_use]
+    pub const fn elevon_vtail() -> Self {
+        Self {
+            roll_scale: VTOL_ROLL_SCALE_DEFAULT,
+            pitch_scale: VTOL_PITCH_SCALE_DEFAULT,
+            yaw_scale: VTOL_YAW_SCALE_DEFAULT,
+            mixing_gain: TAILSITTER_MIXING_GAIN_DEFAULT,
+            mixing_offset: MIXING_OFFSET_DEFAULT,
+            surfaces: SurfaceAssign::ELEVON_VTAIL,
+        }
+    }
+
+    /// `Q_TAILSIT_VT_R_P`.
+    #[must_use]
+    pub const fn roll_scale(&self) -> f32 {
+        self.roll_scale
+    }
+
+    /// `Q_TAILSIT_VT_P_P`.
+    #[must_use]
+    pub const fn pitch_scale(&self) -> f32 {
+        self.pitch_scale
+    }
+
+    /// `Q_TAILSIT_VT_Y_P`.
+    #[must_use]
+    pub const fn yaw_scale(&self) -> f32 {
+        self.yaw_scale
+    }
+
+    /// `MIXING_GAIN` used by the elevon / V-tail mix.
+    #[must_use]
+    pub const fn mixing_gain(&self) -> f32 {
+        self.mixing_gain
+    }
+
+    /// `MIXING_OFFSET` used by the elevon / V-tail mix.
+    #[must_use]
+    pub const fn mixing_offset(&self) -> i16 {
+        self.mixing_offset
+    }
+
+    /// Servo assignment leftover.
+    #[must_use]
+    pub const fn surface_assign(&self) -> SurfaceAssign {
+        self.surfaces
+    }
+
+    /// Poke `Q_TAILSIT_VT_R_P`.
+    pub fn set_roll_scale(&mut self, scale: f32) {
+        self.roll_scale = scale;
+    }
+
+    /// Poke `Q_TAILSIT_VT_P_P`.
+    pub fn set_pitch_scale(&mut self, scale: f32) {
+        self.pitch_scale = scale;
+    }
+
+    /// Poke `Q_TAILSIT_VT_Y_P`.
+    pub fn set_yaw_scale(&mut self, scale: f32) {
+        self.yaw_scale = scale;
+    }
+
+    /// Poke `MIXING_GAIN`.
+    pub fn set_mixing_gain(&mut self, gain: f32) {
+        self.mixing_gain = gain;
+    }
+
+    /// Poke `MIXING_OFFSET`.
+    pub fn set_mixing_offset(&mut self, offset: i16) {
+        self.mixing_offset = offset;
+    }
+
+    /// Poke the setup leftover surface flags.
+    pub fn set_surface_assign(&mut self, surfaces: SurfaceAssign) {
+        self.surfaces = surfaces;
+    }
+
+    /// Pull copter outputs onto aileron / elevator / rudder.
+    ///
+    /// Upstream:
+    /// `aileron  = (yaw+yaw_ff) * -SERVO_MAX * VTOL_yaw_scale`
+    /// `elevator = (pitch+pitch_ff) * SERVO_MAX * VTOL_pitch_scale`
+    /// `rudder   = (roll+roll_ff) * SERVO_MAX * VTOL_roll_scale`
+    #[must_use]
+    pub fn surfaces(&self, att: MotorAttitude) -> CopterSurfaces {
+        CopterSurfaces {
+            aileron: (att.yaw + att.yaw_ff) * -SERVO_MAX * self.yaw_scale,
+            elevator: (att.pitch + att.pitch_ff) * SERVO_MAX * self.pitch_scale,
+            rudder: (att.roll + att.roll_ff) * SERVO_MAX * self.roll_scale,
+        }
+    }
+
+    /// Saturation of dedicated surfaces and vectored tilt motors.
+    ///
+    /// `tilt_lim` is only considered when the airframe is vectored.
+    /// A true tilt flag raises both pitch and yaw limits.
+    #[must_use]
+    pub fn surface_limits(
+        &self,
+        s: CopterSurfaces,
+        tilt_left: f32,
+        tilt_right: f32,
+        is_vectored: bool,
+    ) -> MotorLimits {
+        let tilt_lim =
+            is_vectored && (tilt_left.abs() >= SERVO_MAX || tilt_right.abs() >= SERVO_MAX);
+        let roll_lim = self.surfaces.rudder && s.rudder.abs() >= SERVO_MAX;
+        let pitch_lim = self.surfaces.elevator && s.elevator.abs() >= SERVO_MAX;
+        let yaw_lim = self.surfaces.aileron && s.aileron.abs() >= SERVO_MAX;
+        MotorLimits {
+            roll: roll_lim,
+            pitch: pitch_lim || tilt_lim,
+            yaw: yaw_lim || tilt_lim,
+        }
+    }
+
+    /// Elevon / V-tail mix with pitch-priority headroom.
+    ///
+    /// Updates `limits` the way the C++ function ORs
+    /// `_have_elevon` / `_have_v_tail` into yaw / pitch / roll.
+    pub fn mix_elevon_vtail(&self, s: CopterSurfaces, limits: &mut MotorLimits) -> ElevonVtail {
+        let offset = f32::from(self.mixing_offset);
+        let elevator_mix = s.elevator * (100.0 - offset) * 0.01 * self.mixing_gain;
+        let mut aileron_mix = s.aileron * (100.0 + offset) * 0.01 * self.mixing_gain;
+        let mut rudder_mix = s.rudder * (100.0 + offset) * 0.01 * self.mixing_gain;
+        let headroom = SERVO_MAX - elevator_mix.abs();
+        if is_positive(headroom) {
+            if aileron_mix.abs() > headroom {
+                aileron_mix *= headroom / aileron_mix.abs();
+                limits.yaw |= self.surfaces.elevon;
+            }
+            if rudder_mix.abs() > headroom {
+                rudder_mix *= headroom / rudder_mix.abs();
+                limits.roll |= self.surfaces.v_tail;
+            }
+        } else {
+            aileron_mix = 0.0;
+            rudder_mix = 0.0;
+            limits.yaw |= self.surfaces.elevon;
+            limits.pitch |= self.surfaces.elevon || self.surfaces.v_tail;
+            limits.roll |= self.surfaces.v_tail;
+        }
+        ElevonVtail {
+            elevon_left: elevator_mix - aileron_mix,
+            elevon_right: elevator_mix + aileron_mix,
+            vtail_left: elevator_mix + rudder_mix,
+            vtail_right: elevator_mix - rudder_mix,
+        }
+    }
+
+    /// Full leftover copter path: surfaces, elevon / V-tail, limits.
+    #[must_use]
+    pub fn mix(
+        &self,
+        att: MotorAttitude,
+        tilt_left: f32,
+        tilt_right: f32,
+        is_vectored: bool,
+    ) -> CopterOutput {
+        let surfaces = self.surfaces(att);
+        let mut limits = self.surface_limits(surfaces, tilt_left, tilt_right, is_vectored);
+        let elevon_vtail = self.mix_elevon_vtail(surfaces, &mut limits);
+        CopterOutput {
+            surfaces,
+            elevon_vtail,
+            limits,
+        }
+    }
 }
