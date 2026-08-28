@@ -23,6 +23,7 @@ pub mod crash_check;
 pub mod failsafe;
 pub mod ground;
 pub mod land;
+pub mod land_detector;
 pub mod land_horizontal;
 pub mod mode_acro;
 pub mod mode_althold;
