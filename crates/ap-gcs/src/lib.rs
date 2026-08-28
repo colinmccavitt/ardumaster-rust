@@ -10,9 +10,11 @@
 //! [`param::ParamRequestList`] / [`param::ParamSet`] (msgid 21 / 23),
 //! emitting [`param::ParamValue`] (msgid 22), sends
 //! [`pose::Attitude`] / [`pose::GlobalPositionInt`] (msgid 30 / 33) from a
-//! [`pose::PoseSnapshot`], and uploads / downloads one waypoint through
+//! [`pose::PoseSnapshot`], uploads / downloads one waypoint through
 //! [`mission::MissionItemInt`] / [`mission::MissionRequestInt`]
-//! (msgid 73 / 51) against a small in-memory mission table. The rest of
+//! (msgid 73 / 51) against a small in-memory mission table, and sends
+//! [`health::SysStatus`] / [`health::BatteryStatus`] (msgid 1 / 147) from a
+//! [`health::HealthSnapshot`]. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
@@ -29,6 +31,7 @@
 pub mod command;
 pub mod dispatch;
 pub mod framing;
+pub mod health;
 pub mod heartbeat;
 pub mod mission;
 pub mod param;
@@ -42,6 +45,12 @@ pub use command::{
 };
 pub use dispatch::{Dispatch, GcsMavlink};
 pub use framing::{decode_v2, encode_v2, DecodeError, Frame};
+pub use health::{
+    BatteryStatus, HealthSnapshot, SysStatus, BATTERY_STATUS_CRC, BATTERY_STATUS_LEN,
+    BATTERY_STATUS_MIN_LEN, BATTERY_TEMPERATURE_UNKNOWN, BATTERY_VOLTAGES_EXT_LEN,
+    BATTERY_VOLTAGES_LEN, MAV_BATTERY_FUNCTION_UNKNOWN, MAV_BATTERY_TYPE_UNKNOWN,
+    MSG_ID_BATTERY_STATUS, MSG_ID_SYS_STATUS, SYS_STATUS_CRC, SYS_STATUS_LEN, SYS_STATUS_MIN_LEN,
+};
 pub use heartbeat::{
     Heartbeat, MAV_AUTOPILOT_ARDUPILOTMEGA, MAV_TYPE_FIXED_WING, MSG_ID_HEARTBEAT,
 };

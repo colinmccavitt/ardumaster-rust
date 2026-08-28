@@ -8,13 +8,17 @@
 //! in-memory table. MISSION_ITEM_INT writes one waypoint; MISSION_REQUEST_INT
 //! looks it up for download. Send path is `GCS_MAVLINK::send_heartbeat`,
 //! `send_text`, `queued_param_send`, `send_parameter_value`,
-//! `send_attitude`, `send_global_position_int`, and `send_mission_item_int`.
+//! `send_attitude`, `send_global_position_int`, `send_mission_item_int`,
+//! `send_sys_status`, and `send_battery_status`.
 
 use crate::command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
     MSG_ID_COMMAND_LONG,
 };
 use crate::framing::{decode_v2, encode_v2, DecodeError, Frame};
+use crate::health::{
+    HealthSnapshot, BATTERY_STATUS_LEN, MSG_ID_BATTERY_STATUS, MSG_ID_SYS_STATUS, SYS_STATUS_LEN,
+};
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
 use crate::mission::{
     MissionItemInt, MissionRequestInt, MissionTable, MISSION_ITEM_INT_LEN, MSG_ID_MISSION_ITEM_INT,
@@ -91,8 +95,9 @@ pub enum Dispatch {
 
 /// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub,
 /// PARAM_REQUEST_LIST / PARAM_SET against an in-memory table,
-/// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot, and
-/// MISSION_ITEM_INT / MISSION_REQUEST_INT against an in-memory mission table.
+/// ATTITUDE / GLOBAL_POSITION_INT stream send from a pose snapshot,
+/// MISSION_ITEM_INT / MISSION_REQUEST_INT against an in-memory mission table,
+/// and SYS_STATUS / BATTERY_STATUS stream send from a health snapshot.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -262,6 +267,53 @@ impl GcsMavlink {
             self.sysid,
             self.compid,
             MSG_ID_GLOBAL_POSITION_INT,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing SYS_STATUS, upstream `GCS_MAVLINK::send_sys_status`.
+    ///
+    /// Packs sensor bitmaps, load, battery voltage / current / remaining, and
+    /// error counters from `health` and frames them for Write. Stream-rate
+    /// gating (`MSG_SYS_STATUS`) is later.
+    #[must_use]
+    pub fn send_sys_status(&mut self, out: &mut [u8], health: &HealthSnapshot) -> Option<usize> {
+        let sys = health.sys_status();
+        let mut payload = [0u8; SYS_STATUS_LEN];
+        sys.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_SYS_STATUS,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing BATTERY_STATUS, upstream
+    /// `GCS_MAVLINK::send_battery_status`.
+    ///
+    /// Packs instance id, cell voltages, current, consumed charge / energy,
+    /// and remaining time from `health` and frames them for Write.
+    /// Stream-rate gating (`MSG_BATTERY_STATUS`) is later.
+    #[must_use]
+    pub fn send_battery_status(
+        &mut self,
+        out: &mut [u8],
+        health: &HealthSnapshot,
+    ) -> Option<usize> {
+        let batt = health.battery_status();
+        let mut payload = [0u8; BATTERY_STATUS_LEN];
+        batt.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_BATTERY_STATUS,
             &payload,
         )?;
         self.seq = self.seq.wrapping_add(1);
