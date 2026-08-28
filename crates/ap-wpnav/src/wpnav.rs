@@ -1,6 +1,6 @@
-//! Constructor, `wp_and_spline_init_m`, and destination set/get, upstream `AC_WPNav`.
+//! Constructor, destination set, and `update_wpnav` leftover, upstream `AC_WPNav`.
 
-use ap_math::scalar::{is_positive, is_zero, GRAVITY_MSS};
+use ap_math::scalar::{is_equal, is_positive, is_zero, GRAVITY_MSS};
 use ap_math::vector3::Vector3f;
 
 /// Default horizontal acceleration, m/s². Upstream `WPNAV_ACCELERATION_MS`.
@@ -95,6 +95,54 @@ impl Default for SetWpDestinationContext {
             terrain_d_m: None,
         }
     }
+}
+
+/// Caller-supplied inputs `update_wpnav` reads from PosControl, HAL, and
+/// terrain. ADR-0004 forbids those singletons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateWpNavContext {
+    /// `AP_HAL::millis` stamped onto `_wp_last_update_ms`.
+    pub now_ms: u32,
+    /// `_pos_control.get_dt_s()`, forwarded to the advance leftover.
+    pub dt_s: f32,
+    /// Terrain D offset, metres. Required when the current dest is
+    /// terrain-relative; missing makes `advance_wp_target_along_track`
+    /// return false.
+    pub terrain_d_m: Option<f32>,
+}
+
+impl Default for UpdateWpNavContext {
+    fn default() -> Self {
+        Self {
+            now_ms: 0,
+            dt_s: 0.01,
+            terrain_d_m: None,
+        }
+    }
+}
+
+/// Leftover of one `update_wpnav` tick. Speed-param detection and the
+/// last-update stamp live here. `advance_wp_target_along_track` (S-curve
+/// / spline / `shape_vel_accel`) and `NE_update_controller` stay later
+/// slices; this records that they must run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateWpNavLeftover {
+    /// True when this tick applied `set_speed_NE_ms` after a `WP_SPD` change.
+    pub applied_speed_ne: bool,
+    /// True when this tick applied `set_speed_up_ms` after a `WP_SPD_UP` change.
+    pub applied_speed_up: bool,
+    /// True when this tick applied `set_speed_down_ms` after a `WP_SPD_DN` change.
+    pub applied_speed_down: bool,
+    /// True when any speed setter asked `update_track_with_speed_accel_limits`.
+    pub need_update_track_limits: bool,
+    /// Always true: `update_wpnav` always calls `advance_wp_target_along_track`.
+    pub need_advance_track: bool,
+    /// Always true: `NE_update_controller` runs even when advance fails.
+    pub need_ne_update_controller: bool,
+    /// C++ return: false only when terrain-alt dest has no terrain offset.
+    pub advance_ok: bool,
+    /// dt forwarded to the advance leftover.
+    pub dt_s: f32,
 }
 
 /// The three `wpnav_flags` bits `wp_and_spline_init_m` writes.
@@ -339,6 +387,24 @@ impl WpNav {
         self.check_wp_speed_change
     }
 
+    /// Last recorded `WP_SPD`, m/s. Used to detect in-flight changes.
+    #[must_use]
+    pub fn last_wp_speed_ms(&self) -> f32 {
+        self.last_wp_speed_ms
+    }
+
+    /// Last recorded `WP_SPD_UP`, m/s.
+    #[must_use]
+    pub fn last_wp_speed_up_ms(&self) -> f32 {
+        self.last_wp_speed_up_ms
+    }
+
+    /// Last recorded `WP_SPD_DN`, m/s.
+    #[must_use]
+    pub fn last_wp_speed_down_ms(&self) -> f32 {
+        self.last_wp_speed_down_ms
+    }
+
     /// The three waypoint flags.
     #[must_use]
     pub fn flags(&self) -> WpNavFlags {
@@ -430,6 +496,16 @@ impl WpNav {
     /// Override `WP_ACC` before init.
     pub fn set_wp_accel_mss(&mut self, accel_mss: f32) {
         self.wp_accel_mss = accel_mss;
+    }
+
+    /// Override `WP_SPD_UP` before a tick. Used by tests and later param load.
+    pub fn set_wp_speed_up_ms(&mut self, speed_up_ms: f32) {
+        self.wp_speed_up_ms = speed_up_ms;
+    }
+
+    /// Override `WP_SPD_DN` before a tick. Used by tests and later param load.
+    pub fn set_wp_speed_down_ms(&mut self, speed_down_ms: f32) {
+        self.wp_speed_down_ms = speed_down_ms;
     }
 
     /// Initialise waypoint and spline navigation.
@@ -588,6 +664,108 @@ impl WpNav {
     #[must_use]
     pub fn is_active(&self, now_ms: u32) -> bool {
         now_ms.wrapping_sub(self.wp_last_update_ms) < WPNAV_ACTIVE_TIMEOUT_MS
+    }
+
+    /// Horizontal ground distance to the destination, metres.
+    /// Upstream `AC_WPNav::get_wp_distance_to_destination_m`. Z is ignored.
+    #[must_use]
+    pub fn get_wp_distance_to_destination_m(&self, pos_estimate_ned_m: Vector3f) -> f32 {
+        libm::hypotf(
+            pos_estimate_ned_m.x - self.destination_ned_m.x,
+            pos_estimate_ned_m.y - self.destination_ned_m.y,
+        )
+    }
+
+    /// Horizontal ground distance to the destination, centimetres.
+    /// Upstream `AC_WPNav::get_wp_distance_to_destination_cm`.
+    #[must_use]
+    pub fn get_wp_distance_to_destination_cm(&self, pos_estimate_ned_m: Vector3f) -> f32 {
+        self.get_wp_distance_to_destination_m(pos_estimate_ned_m) * 100.0
+    }
+
+    /// Sets the target horizontal speed during waypoint navigation.
+    /// Upstream `AC_WPNav::set_speed_NE_ms`. Scales `_offset_vel_ms` so
+    /// terrain-margin shaping keeps its current ratio, then records the
+    /// PosControl NE limits. `update_track_with_speed_accel_limits` stays
+    /// a leftover — the caller sees it via the update leftover flag.
+    pub fn set_speed_ne_ms(&mut self, speed_ms: f32) -> bool {
+        if speed_ms >= WP_SPD_MIN && is_positive(self.wp_desired_speed_ne_ms) {
+            self.offset_vel_ms = speed_ms * self.offset_vel_ms / self.wp_desired_speed_ne_ms;
+            self.wp_desired_speed_ne_ms = speed_ms;
+            self.pos_speed_accel.ne_speed_ms = self.wp_desired_speed_ne_ms;
+            self.pos_speed_accel.ne_accel_mss = self.wp_acceleration_mss();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Sets the climb speed. Upstream `AC_WPNav::set_speed_up_ms`.
+    pub fn set_speed_up_ms(&mut self, speed_up_ms: f32) {
+        self.pos_speed_accel.speed_up_ms = speed_up_ms;
+    }
+
+    /// Sets the descent speed. Upstream `AC_WPNav::set_speed_down_ms`.
+    pub fn set_speed_down_ms(&mut self, speed_down_ms: f32) {
+        self.pos_speed_accel.speed_down_ms = speed_down_ms;
+    }
+
+    /// Runs one waypoint-navigation tick.
+    ///
+    /// Upstream `AC_WPNav::update_wpnav`. Watches `WP_SPD` / `WP_SPD_UP` /
+    /// `WP_SPD_DN` for in-flight changes, then records the leftover of
+    /// `advance_wp_target_along_track` and `NE_update_controller`. The
+    /// last-update stamp is written even when advance would fail, matching
+    /// the C++ order. The S-curve / spline advance itself stays later.
+    pub fn update_wpnav(&mut self, ctx: UpdateWpNavContext) -> UpdateWpNavLeftover {
+        let mut leftover = UpdateWpNavLeftover {
+            applied_speed_ne: false,
+            applied_speed_up: false,
+            applied_speed_down: false,
+            need_update_track_limits: false,
+            need_advance_track: true,
+            need_ne_update_controller: true,
+            advance_ok: true,
+            dt_s: ctx.dt_s,
+        };
+
+        // check for changes in WPNAV_SPEED parameter (horizontal speed target)
+        if self.check_wp_speed_change && !is_equal(self.wp_speed_ms, self.last_wp_speed_ms) {
+            leftover.applied_speed_ne = self.set_speed_ne_ms(self.default_speed_ne_ms());
+            self.last_wp_speed_ms = self.wp_speed_ms;
+            leftover.need_update_track_limits |= leftover.applied_speed_ne;
+        }
+
+        // check for climb and descent speed updates
+        if !is_equal(self.wp_speed_up_ms, self.last_wp_speed_up_ms) {
+            self.set_speed_up_ms(self.default_speed_up_ms());
+            self.last_wp_speed_up_ms = self.wp_speed_up_ms;
+            leftover.applied_speed_up = true;
+            leftover.need_update_track_limits = true;
+        }
+        if !is_equal(self.wp_speed_down_ms, self.last_wp_speed_down_ms) {
+            self.set_speed_down_ms(self.default_speed_down_ms());
+            self.last_wp_speed_down_ms = self.wp_speed_down_ms;
+            leftover.applied_speed_down = true;
+            leftover.need_update_track_limits = true;
+        }
+
+        // advance_wp_target_along_track fails only when terrain-alt dest
+        // has no terrain offset. The rest of that function is a later slice.
+        leftover.advance_ok = if self.is_terrain_alt {
+            ctx.terrain_d_m.is_some()
+        } else {
+            true
+        };
+
+        // run the horizontal position controller — leftover, always after
+        // advance, even when advance fails.
+        leftover.need_ne_update_controller = true;
+
+        // record update time for is_active()
+        self.wp_last_update_ms = ctx.now_ms;
+
+        leftover
     }
 
     /// Jerk and snap from attitude capability. Upstream

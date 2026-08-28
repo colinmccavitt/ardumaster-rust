@@ -8,7 +8,12 @@
 //! point. After that the next call is
 //! [`set_wp_destination_ned_m`](WpNav::set_wp_destination_ned_m) (or the
 //! centimetre NEU wrapper), which seats a real destination and clears
-//! `reached_destination`.
+//! `reached_destination`. After that the 100 Hz tick is
+//! [`update_wpnav`](WpNav::update_wpnav): watch `WP_SPD` / `WP_SPD_UP` /
+//! `WP_SPD_DN` for in-flight changes, apply [`set_speed_ne_ms`](WpNav::set_speed_ne_ms)
+//! (and the climb / descent setters), then record the leftover of
+//! `advance_wp_target_along_track` and `NE_update_controller`. Horizontal
+//! distance to the dest is [`get_wp_distance_to_destination_m`](WpNav::get_wp_distance_to_destination_m).
 //!
 //! # What this crate does not own
 //!
@@ -26,8 +31,8 @@
 pub mod wpnav;
 
 pub use wpnav::{
-    AttitudeJerkLimits, PosControlSpeedAccel, SetWpDestinationContext, WpNav, WpNavFlags,
-    WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT,
-    WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN,
-    WP_SPD_UP_DEFAULT,
+    AttitudeJerkLimits, PosControlSpeedAccel, SetWpDestinationContext, UpdateWpNavContext,
+    UpdateWpNavLeftover, WpNav, WpNavFlags, WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS,
+    WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT, WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT,
+    WP_SPD_DOWN_DEFAULT, WP_SPD_MIN, WP_SPD_UP_DEFAULT,
 };
