@@ -12,6 +12,8 @@
 
 #![no_std]
 
+pub mod check_bitmask;
+
 /// Default `ARMING_REQUIRE` on Plane, upstream `Required::YES_MIN_PWM`.
 pub const ARMING_REQUIRE_DEFAULT: Required = Required::YesMinPwm;
 
