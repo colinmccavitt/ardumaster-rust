@@ -1,18 +1,25 @@
-//! Dataflash logging backend, upstream `libraries/AP_Logger`. FW-030.
+//! Dataflash logging, upstream `libraries/AP_Logger`. FW-030.
 //!
-//! This slice is the write-path seam: a [`LogBackend`] that accepts a block
-//! of bytes (`WriteBlock`) and the page-write bookends (`StartWrite` /
-//! `EndWrite`). The in-memory backend records those bytes so later FMT and
-//! typed-message work can be tested without a DataFlash chip or filesystem.
+//! The write-path seam is a [`LogBackend`] that accepts a block of
+//! bytes (`WriteBlock`) and the page-write bookends (`StartWrite` /
+//! `EndWrite`). Message identity lives in [`structure`]: the three-byte
+//! packet header and the FMT table entry (`type`, `length`, `name`,
+//! `format`, `labels`) from upstream `LogStructure.h`.
 //!
-//! # What this slice does not include
+//! # What this crate does not include yet
 //!
-//! The DataFlash page map, log rotation, FMT emission, rate limiting, and
-//! the `AP_Logger` front-end. Those land in later FW-030 slices. This crate
-//! is the backend trait, not a logger.
+//! The DataFlash page map, log rotation, rate limiting, the Write()
+//! typed-message dispatcher, and the `AP_Logger` front-end. Those land
+//! in later FW-030 slices.
 
 #![no_std]
 
 pub mod backend;
+pub mod structure;
 
 pub use backend::{LogBackend, MemoryBackend};
+pub use structure::{
+    fill_format, LogFormat, LogPacketHeader, LogStructure, FMT_FORMAT_LEN, FMT_LABELS_LEN,
+    FMT_NAME_LEN, HEAD_BYTE1, HEAD_BYTE2, LOG_FORMAT_LEN, LOG_FORMAT_MSG, LOG_PACKET_HEADER_LEN,
+    LS_FORMAT_SIZE, LS_LABELS_SIZE, LS_NAME_SIZE,
+};
