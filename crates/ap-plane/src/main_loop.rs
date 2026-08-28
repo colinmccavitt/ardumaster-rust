@@ -139,7 +139,7 @@ use crate::auto_mode_hookup::{
 };
 use crate::rtl_mode_hookup::{rtl_mode_climb_tick, rtl_mode_nav_tick, RtlModeClimbInputs, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
-use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
+use crate::guided_mode_hookup::{guided_mode_nav_tick, guided_mode_update_tick, GuidedModeNavInputs, GuidedModeUpdateInputs};
 use crate::takeoff_mode_hookup::{takeoff_mode_nav_tick, TakeoffModeNavInputs};
 use crate::autoland_mode_hookup::{autoland_mode_nav_tick, AutolandModeNavInputs};
 use crate::avoid_adsb_mode_hookup::{avoid_adsb_mode_nav_tick, AvoidAdsbModeNavInputs};
@@ -532,6 +532,24 @@ pub struct PlaneMainLoop {
     pub guided_loiter_radius_m: u16,
     /// GUIDED loiter direction applied this tick.
     pub guided_loiter_ccw: bool,
+    /// GCS / companion sent a new GUIDED target location this tick.
+    pub guided_location_update: bool,
+    /// GCS sent DO_CHANGE_ALTITUDE / change-alt this tick.
+    pub guided_altitude_update: bool,
+    /// Incoming GUIDED location/alt request uses terrain altitude.
+    pub guided_update_terrain_alt: bool,
+    /// Whether GUIDED altitude/location remaining-leg glue ran this tick.
+    pub guided_mode_update_applied: bool,
+    /// handle_guided_request called set_guided_WP this tick.
+    pub guided_set_guided_wp: bool,
+    /// prev_WP = current, setup_alt_slope, setup_turn_angle this tick.
+    pub guided_setup_remaining_leg: bool,
+    /// Non-terrain request converted to ABSOLUTE this tick.
+    pub guided_convert_abs_alt: bool,
+    /// handle_change_alt_request copied altitude onto next_WP_loc.
+    pub guided_copy_next_wp_alt: bool,
+    /// reset_offset_altitude after an altitude-only change.
+    pub guided_reset_offset_altitude: bool,
     /// Whether AVOID_ADSB enter/navigate glue ran this tick.
     pub avoid_adsb_mode_nav_applied: bool,
     /// Whether ModeAvoidADSB::_enter armed ModeGuided::_enter this tick.
@@ -1026,6 +1044,15 @@ impl Default for PlaneMainLoop {
             guided_mode_loiter_allowed: false,
             guided_loiter_radius_m: 0,
             guided_loiter_ccw: false,
+            guided_location_update: false,
+            guided_altitude_update: false,
+            guided_update_terrain_alt: false,
+            guided_mode_update_applied: false,
+            guided_set_guided_wp: false,
+            guided_setup_remaining_leg: false,
+            guided_convert_abs_alt: false,
+            guided_copy_next_wp_alt: false,
+            guided_reset_offset_altitude: false,
             avoid_adsb_mode_nav_applied: false,
             avoid_adsb_mode_started: false,
             avoid_adsb_mode_loiter_allowed: false,
@@ -1659,6 +1686,26 @@ impl PlaneMainLoop {
             if guided_nav.clear_throttle_passthru {
                 self.guided_throttle_passthru = false;
             }
+        }
+
+        let guided_update = guided_mode_update_tick(&GuidedModeUpdateInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            location_update: self.guided_location_update,
+            altitude_update: self.guided_altitude_update,
+            terrain_alt: self.guided_update_terrain_alt,
+        });
+        self.guided_mode_update_applied = guided_update.applied;
+        self.guided_set_guided_wp = guided_update.set_guided_wp;
+        self.guided_setup_remaining_leg = guided_update.setup_remaining_leg;
+        self.guided_convert_abs_alt = guided_update.convert_abs_alt;
+        self.guided_copy_next_wp_alt = guided_update.copy_next_wp_alt;
+        self.guided_reset_offset_altitude = guided_update.reset_offset_altitude;
+        if guided_update.set_guided_wp {
+            self.guided_location_update = false;
+        }
+        if guided_update.copy_next_wp_alt {
+            self.guided_altitude_update = false;
         }
 
         let avoid_adsb_nav = avoid_adsb_mode_nav_tick(&AvoidAdsbModeNavInputs {
