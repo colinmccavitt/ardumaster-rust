@@ -12,9 +12,10 @@ const THIS_SLICE: &[&str] = &[
     "completeness table",
     "DeviceManager get_device factory",
     "BinarySemaphore",
+    "WSPIDevice",
 ];
 
-const REMAINING: &[&str] = &["WSPIDevice", "CANIface", "DSP", "Flash", "OpticalFlow"];
+const REMAINING: &[&str] = &["CANIface", "DSP", "Flash", "OpticalFlow"];
 
 #[test]
 fn completeness_table_lists_gpio_semaphore_util_device_done() {

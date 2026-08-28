@@ -53,3 +53,4 @@ pub mod serial;
 pub mod storage;
 pub mod time;
 pub mod util;
+pub mod wspi_device;
