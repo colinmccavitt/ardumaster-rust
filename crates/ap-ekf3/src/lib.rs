@@ -9,8 +9,9 @@
 //! learn lives in [`gyro_bias`]. Mag-fusion enable / yaw-reset
 //! (`SelectMagFusion`, `magFieldEarth`) lives in [`mag_fusion`].
 //! Pos/vel fusion enable (`SelectVelPosFusion`, GPS inhibit / quality)
-//! lives in [`pos_vel_fusion`]. Covariance prediction and the 3-axis
-//! Kalman mag update are not here.
+//! lives in [`pos_vel_fusion`]. Air-data / TAS fusion enable
+//! (`SelectTasFusion`, innovation gate) lives in [`air_data_fusion`].
+//! Covariance prediction and the 3-axis Kalman mag update are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -35,24 +36,27 @@
 //! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
 //! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
 //! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
-//! enable is [`pos_vel_fusion`].
+//! enable is [`pos_vel_fusion`]; TAS / air-data enable is
+//! [`air_data_fusion`].
 
 #![no_std]
 
+pub mod air_data_fusion;
 pub mod control;
 pub mod gyro_bias;
 pub mod mag_fusion;
 pub mod measurements;
 pub mod pos_vel_fusion;
 
+pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
 pub use control::{AidingMode, FilterControl};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use mag_fusion::{MagFuseSel, MagFusion};
-pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
 };
+pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
 
 use ap_math::Ftype;
 
@@ -179,6 +183,8 @@ pub struct NavEkf3Core {
     mag_fusion: MagFusion,
     /// Pos/vel fusion enable, upstream `AP_NavEKF3_PosVelFusion.cpp`.
     pos_vel: PosVelFusion,
+    /// TAS / air-data fusion enable, upstream `AP_NavEKF3_AirDataFusion.cpp`.
+    air_data: AirDataFusion,
 }
 
 impl Default for NavEkf3Core {
@@ -199,6 +205,7 @@ impl NavEkf3Core {
             gyro_bias: GyroBias::new(),
             mag_fusion: MagFusion::new(),
             pos_vel: PosVelFusion::new(),
+            air_data: AirDataFusion::new(),
         }
     }
 
@@ -246,6 +253,7 @@ impl NavEkf3Core {
         self.mag_fusion.reset();
         self.mag_fusion.write_earth_into_states(&mut self.states);
         self.pos_vel.reset();
+        self.air_data.reset();
         true
     }
 
@@ -275,6 +283,10 @@ impl NavEkf3Core {
         self.pos_vel
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
         self.pos_vel.select_vel_pos_fusion();
+        // Upstream `UpdateFilter` runs `SelectTasFusion` after pos/vel.
+        self.air_data
+            .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
+        self.air_data.select_tas_fusion(self.states_initialised);
     }
 
     /// Filter-mode latch, upstream `onGround` / `inFlight` / `gpsInhibit`.
@@ -372,6 +384,24 @@ impl NavEkf3Core {
         self.pos_vel.set_gps_inhibit(self.control.gps_inhibit());
         self.pos_vel.set_aiding_mode(self.control.aiding_mode());
         self.pos_vel.select_vel_pos_fusion();
+    }
+
+    /// TAS / air-data helper, upstream `SelectTasFusion`.
+    #[must_use]
+    pub const fn air_data(&self) -> &AirDataFusion {
+        &self.air_data
+    }
+
+    /// Mutable TAS latch so tests can poke sample / wind / quality flags.
+    pub fn air_data_mut(&mut self) -> &mut AirDataFusion {
+        &mut self.air_data
+    }
+
+    /// Upstream `NavEKF3_core::SelectTasFusion`.
+    pub fn select_tas_fusion(&mut self) {
+        self.air_data
+            .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
+        self.air_data.select_tas_fusion(self.states_initialised);
     }
 }
 
@@ -688,5 +718,34 @@ mod tests {
         inhibited.select_vel_pos_fusion();
         assert!(inhibited.control().gps_inhibit());
         assert_eq!(inhibited.pos_vel().fuse_sel(), PosVelFuseSel::NotFusing);
+    }
+
+    #[test]
+    fn core_tas_gate_needs_wind_and_airspeed() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.select_tas_fusion();
+        assert_eq!(core.air_data().fuse_sel(), TasFuseSel::NotFusing);
+
+        core.air_data_mut().set_inhibit_wind_states(false);
+        core.air_data_mut().set_tas_data(true, 20.0 as Ftype, true);
+        core.air_data_mut()
+            .set_velocity(20.0 as Ftype, 0.0 as Ftype, 0.0 as Ftype);
+        core.select_tas_fusion();
+        assert_eq!(core.air_data().fuse_sel(), TasFuseSel::FuseTas);
+        assert!(core.air_data().fuse_performed());
+
+        // Wind inhibit keeps SelectTasFusion closed even with a sample.
+        let mut inhibited = NavEkf3Core::new();
+        assert!(inhibited.initialise_filter_bootstrap());
+        inhibited
+            .air_data_mut()
+            .set_tas_data(true, 20.0 as Ftype, true);
+        inhibited
+            .air_data_mut()
+            .set_velocity(20.0 as Ftype, 0.0 as Ftype, 0.0 as Ftype);
+        inhibited.select_tas_fusion();
+        assert!(inhibited.air_data().inhibit_wind_states());
+        assert_eq!(inhibited.air_data().fuse_sel(), TasFuseSel::NotFusing);
     }
 }
