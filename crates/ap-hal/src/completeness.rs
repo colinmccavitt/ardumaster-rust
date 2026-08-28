@@ -72,8 +72,8 @@ pub const HAL_COMPLETENESS: &[HalPortItem] = &[
     },
     HalPortItem {
         name: "Flash",
-        status: PortStatus::Remaining,
-        note: "AP_HAL/Flash.h; no SITL consumer yet",
+        status: PortStatus::ThisSlice,
+        note: "AP_HAL/Flash.h erase/write/read, sector size",
     },
     HalPortItem {
         name: "OpticalFlow",
@@ -162,8 +162,8 @@ mod tests {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
         assert_eq!(on_main, 4);
-        assert_eq!(this_slice, 5);
-        assert_eq!(remaining, 3);
+        assert_eq!(this_slice, 6);
+        assert_eq!(remaining, 2);
         assert!(completeness_has("GPIO", PortStatus::OnMain));
         assert!(completeness_has("Semaphore", PortStatus::OnMain));
         assert!(completeness_has("Util", PortStatus::OnMain));
@@ -179,9 +179,10 @@ mod tests {
         ));
         assert!(completeness_has("BinarySemaphore", PortStatus::ThisSlice));
         assert!(completeness_has("WSPIDevice", PortStatus::ThisSlice));
+        assert!(completeness_has("Flash", PortStatus::ThisSlice));
         assert_eq!(on_main_items().count(), 4);
-        assert_eq!(this_slice_items().count(), 5);
-        assert_eq!(remaining_items().count(), 3);
+        assert_eq!(this_slice_items().count(), 6);
+        assert_eq!(remaining_items().count(), 2);
     }
 
     #[test]
