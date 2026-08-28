@@ -19,6 +19,9 @@
 
 use ap_math::location::{AltFrame, Location};
 
+pub mod completeness;
+pub use completeness::{MissionPortItem, PortStatus, MISSION_COMPLETENESS};
+
 mod verify_nav_wp;
 pub use verify_nav_wp::{verify_nav_wp, VerifyNavWpInputs, WP_RADIUS_DEFAULT_M};
 
