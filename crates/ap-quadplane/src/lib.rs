@@ -1,16 +1,16 @@
 //! QuadPlane / VTOL support, upstream `ArduPlane/quadplane.*` (Plane-4.7.0).
 //!
-//! Tracked as **VT-001** / **VT-007**. Sibling slices land as modules
-//! beside [`tailsitter`]. Keep every `mod` declaration in this file so
-//! parallel workers do not drop each other's surfaces.
+//! Tracked as **VT-001**. This slice is `QuadPlane::setup`: when
+//! `Q_ENABLE != 0` it initialises the lift-motor object and sets
+//! `initialised`. [`QuadPlane::available`] then returns that flag, not
+//! [`QuadPlane::enabled`].
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
-//! - `available()` is `return initialised` (set true at the end of
-//!   `QuadPlane::setup()`).
-//!
-//! `setup()` is the next VT-001 slice. Until then a non-zero `Q_ENABLE` is the
-//! live-object check, so `available()` agrees with `enabled()`.
+//! - `setup()` returns `true` if already `initialised`; returns `false`
+//!   when `enable` is zero; otherwise allocates motors and ends with
+//!   `initialised = true`.
+//! - `available()` is `return initialised`.
 
 #![no_std]
 
@@ -24,6 +24,14 @@ pub const Q_ENABLE_DEFAULT: i8 = 0;
 pub struct QuadPlane {
     /// `Q_ENABLE`, upstream `AP_Int8 enable`.
     enable: i8,
+    /// Upstream `bool initialised` — set true at the end of [`Self::setup`].
+    initialised: bool,
+    /// Lift-motor object constructed by [`Self::setup`].
+    ///
+    /// Upstream `AP_MotorsMulticopter *motors`. Frame-class allocation
+    /// (`AP_MotorsMatrix` / `AP_MotorsTri` / `AP_MotorsTailsitter`) is a
+    /// later slice; this flag is the non-null pointer after motors-init.
+    motors_inited: bool,
 }
 
 impl QuadPlane {
@@ -32,16 +40,28 @@ impl QuadPlane {
     pub const fn new() -> Self {
         Self {
             enable: Q_ENABLE_DEFAULT,
+            initialised: false,
+            motors_inited: false,
         }
     }
 
     /// Construct with an explicit `Q_ENABLE` value.
+    ///
+    /// Does not run [`Self::setup`]; [`Self::available`] stays false
+    /// until setup succeeds.
     #[must_use]
     pub const fn with_enable(enable: i8) -> Self {
-        Self { enable }
+        Self {
+            enable,
+            initialised: false,
+            motors_inited: false,
+        }
     }
 
     /// Write `Q_ENABLE`.
+    ///
+    /// Does not clear [`Self::initialised`]; upstream `available()` is
+    /// only that flag, not a re-check of `enable`.
     pub fn set_enable(&mut self, enable: i8) {
         self.enable = enable;
     }
@@ -58,13 +78,46 @@ impl QuadPlane {
         self.enable != 0
     }
 
-    /// Upstream `QuadPlane::available`.
+    /// Upstream `bool initialised`.
+    #[must_use]
+    pub const fn initialised(&self) -> bool {
+        self.initialised
+    }
+
+    /// Whether [`Self::setup`] constructed the lift-motor object.
     ///
-    /// Upstream returns `initialised`. This stub has no `setup()` yet, so
-    /// the object is live when `Q_ENABLE != 0` — the same gate as [`enabled`].
+    /// Upstream `motors != nullptr` after a successful setup.
+    #[must_use]
+    pub const fn motors_inited(&self) -> bool {
+        self.motors_inited
+    }
+
+    /// Upstream `QuadPlane::setup`.
+    ///
+    /// When already initialised, returns `true`. When `Q_ENABLE == 0`,
+    /// returns `false` and leaves motors unallocated. Otherwise runs
+    /// the motors-init stub and sets `initialised`.
+    ///
+    /// Soft-armed rejection, the memory check, and frame-class
+    /// construction are later slices.
+    pub fn setup(&mut self) -> bool {
+        if self.initialised {
+            return true;
+        }
+        if !self.enabled() {
+            return false;
+        }
+        // Upstream `motors = NEW_NOTHROW AP_MotorsMatrix(rc_speed)` (default
+        // frame class). A null allocation is `allocation_error("motors")`.
+        self.motors_inited = true;
+        self.initialised = true;
+        true
+    }
+
+    /// Upstream `QuadPlane::available` — `return initialised`.
     #[must_use]
     pub const fn available(&self) -> bool {
-        self.enabled()
+        self.initialised
     }
 }
 
