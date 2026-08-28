@@ -1,0 +1,12 @@
+[package]
+name = "ap-gcs"
+description = "Port of ArduPilot libraries/GCS_MAVLink: framing and HEARTBEAT first (Plane-4.7.0). Tracked as FW-028."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -37,6 +37,7 @@ ap-common = { path = "crates/ap-common" }
 ap-declination = { path = "crates/ap-declination" }
 ap-ekf3 = { path = "crates/ap-ekf3" }
 ap-gps = { path = "crates/ap-gps" }
+ap-gcs = { path = "crates/ap-gcs" }
 ap-landing = { path = "crates/ap-landing" }
 ap-logger = { path = "crates/ap-logger" }
 ap-ins = { path = "crates/ap-ins" }
