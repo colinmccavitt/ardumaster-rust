@@ -31,14 +31,13 @@ const ON_MAIN: &[&str] = &[
     "failsafe_check heartbeat",
     "ARSPD_FBW_MIN",
     "CIRCLE/TAKEOFF/RTL no-short-action",
+    "emergency-landing override",
+    "completeness table",
 ];
 
-const THIS_SLICE: &[&str] = &["emergency-landing override", "completeness table"];
+const THIS_SLICE: &[&str] = &["FENCE_ACTION 8 AUTOLAND-or-RTL"];
 
-const REMAINING: &[&str] = &[
-    "Q_OPTIONS FS_RTL / FS_QRTL",
-    "FENCE_ACTION 8 AUTOLAND-or-RTL",
-];
+const REMAINING: &[&str] = &["Q_OPTIONS FS_RTL / FS_QRTL"];
 
 #[test]
 fn completeness_table_matches_main_versus_remaining() {
@@ -167,14 +166,14 @@ fn emergency_landing_overrides_stick_short_and_stick_or_hold_long() {
 }
 
 #[test]
-fn remaining_q_options_and_fence_action_8_are_still_stubs() {
+fn remaining_q_options_still_stub_and_fence_action_8_is_this_slice() {
     assert_eq!(Q_OPTIONS_FS_QRTL, 1 << 5);
     assert_eq!(Q_OPTIONS_FS_RTL, 1 << 20);
     assert_eq!(FENCE_ACTION_AUTOLAND_OR_RTL, 8);
     assert_eq!(
         FenceAction::from_param(FENCE_ACTION_AUTOLAND_OR_RTL),
-        None,
-        "FENCE_ACTION 8 AUTOLAND-or-RTL is remaining — do not claim it this slice"
+        Some(FenceAction::AutolandOrRtl),
+        "FENCE_ACTION 8 AUTOLAND-or-RTL is this slice"
     );
     assert!(completeness_has(
         "Q_OPTIONS FS_RTL / FS_QRTL",
@@ -182,6 +181,6 @@ fn remaining_q_options_and_fence_action_8_are_still_stubs() {
     ));
     assert!(completeness_has(
         "FENCE_ACTION 8 AUTOLAND-or-RTL",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
 }

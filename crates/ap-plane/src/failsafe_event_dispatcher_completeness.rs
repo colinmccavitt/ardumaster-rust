@@ -3,9 +3,9 @@
 //!
 //! Catalogs the Plane failsafe port. Items marked [`PortStatus::OnMain`]
 //! landed in earlier slices and must not be redone. [`PortStatus::ThisSlice`]
-//! is this table plus the emergency-landing override. [`PortStatus::Remaining`]
-//! are still-open `events.cpp` / `failsafe.cpp` gaps (Q_OPTIONS RTL/QRTL,
-//! `FENCE_ACTION` 8 AUTOLAND-or-RTL).
+//! is the FENCE_ACTION 8 AUTOLAND-or-RTL stub. [`PortStatus::Remaining`]
+//! are still-open `events.cpp` / `failsafe.cpp` gaps (Q_OPTIONS RTL/QRTL).
+//! This slice adds `FENCE_ACTION` 8 AUTOLAND-or-RTL.
 //!
 //! The emergency-landing gate wraps [`crate::failsafe_action_hookup`] the same
 //! way [`crate::failsafe_in_landing_sequence_hookup`] wraps the landing
@@ -21,7 +21,7 @@ use crate::mode_table::ModeNumber;
 pub const Q_OPTIONS_FS_QRTL: u32 = 1 << 5;
 /// `Q_OPTIONS` bit 20, `QuadPlane::Option::FS_RTL` — still remaining.
 pub const Q_OPTIONS_FS_RTL: u32 = 1 << 20;
-/// Plane `FENCE_ACTION` / `AC_Fence::Action::AUTOLAND_OR_RTL` — still remaining.
+/// Plane `FENCE_ACTION` / `AC_Fence::Action::AUTOLAND_OR_RTL`.
 pub const FENCE_ACTION_AUTOLAND_OR_RTL: u8 = 8;
 
 /// Whether a catalog row is already hooked up or left for later work.
@@ -29,7 +29,7 @@ pub const FENCE_ACTION_AUTOLAND_OR_RTL: u8 = 8;
 pub enum PortStatus {
     /// Present on `main` before this closing slice.
     OnMain,
-    /// Added by the FW-027 dispatcher-closer slice (this table + emergency landing).
+    /// Added by this FW-027 slice (`FENCE_ACTION` 8 AUTOLAND-or-RTL).
     ThisSlice,
     /// Still deferred (`events.cpp` / `failsafe.cpp` leftover).
     Remaining,
@@ -120,13 +120,13 @@ pub const FAILSAFE_DISPATCHER_COMPLETENESS: &[FailsafePortItem] = &[
     },
     FailsafePortItem {
         name: "emergency-landing override",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "AUX_FUNC::EMERGENCY_LANDING_EN forces FBWA in stick / stick-or-hold",
     },
     FailsafePortItem {
         name: "completeness table",
-        status: PortStatus::ThisSlice,
-        note: "this catalog",
+        status: PortStatus::OnMain,
+        note: "failsafe_event_dispatcher_completeness catalog",
     },
     FailsafePortItem {
         name: "Q_OPTIONS FS_RTL / FS_QRTL",
@@ -135,8 +135,8 @@ pub const FAILSAFE_DISPATCHER_COMPLETENESS: &[FailsafePortItem] = &[
     },
     FailsafePortItem {
         name: "FENCE_ACTION 8 AUTOLAND-or-RTL",
-        status: PortStatus::Remaining,
-        note: "AC_Fence::Action::AUTOLAND_OR_RTL; from_param(8) still None",
+        status: PortStatus::ThisSlice,
+        note: "AC_Fence::Action::AUTOLAND_OR_RTL; Autoland if available else RTL",
     },
 ];
 
@@ -156,7 +156,7 @@ pub fn this_slice_items() -> impl Iterator<Item = &'static FailsafePortItem> {
         .filter(|item| item.status == PortStatus::ThisSlice)
 }
 
-/// Rows left for Q_OPTIONS / FENCE_ACTION 8 (not blocking this closer).
+/// Rows left for Q_OPTIONS FS_RTL / FS_QRTL (not blocking this closer).
 #[must_use]
 pub fn remaining_items() -> impl Iterator<Item = &'static FailsafePortItem> {
     FAILSAFE_DISPATCHER_COMPLETENESS
@@ -287,9 +287,9 @@ mod tests {
     fn table_covers_main_hookups_and_remaining_gaps() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 14);
-        assert_eq!(this_slice, 2);
-        assert_eq!(remaining, 2);
+        assert_eq!(on_main, 16);
+        assert_eq!(this_slice, 1);
+        assert_eq!(remaining, 1);
         assert!(completeness_has(
             "FS_SHORT_ACTN / FS_LONG_ACTN",
             PortStatus::OnMain
@@ -300,11 +300,11 @@ mod tests {
         ));
         assert!(completeness_has(
             "emergency-landing override",
-            PortStatus::ThisSlice
+            PortStatus::OnMain
         ));
         assert!(completeness_has(
             "completeness table",
-            PortStatus::ThisSlice
+            PortStatus::OnMain
         ));
         assert!(completeness_has(
             "Q_OPTIONS FS_RTL / FS_QRTL",
@@ -312,11 +312,11 @@ mod tests {
         ));
         assert!(completeness_has(
             "FENCE_ACTION 8 AUTOLAND-or-RTL",
-            PortStatus::Remaining
+            PortStatus::ThisSlice
         ));
-        assert_eq!(on_main_items().count(), 14);
-        assert_eq!(this_slice_items().count(), 2);
-        assert_eq!(remaining_items().count(), 2);
+        assert_eq!(on_main_items().count(), 16);
+        assert_eq!(this_slice_items().count(), 1);
+        assert_eq!(remaining_items().count(), 1);
         assert_eq!(Q_OPTIONS_FS_QRTL, 1 << 5);
         assert_eq!(Q_OPTIONS_FS_RTL, 1 << 20);
         assert_eq!(FENCE_ACTION_AUTOLAND_OR_RTL, 8);

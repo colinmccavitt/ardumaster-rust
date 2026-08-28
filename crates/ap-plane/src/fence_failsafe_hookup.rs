@@ -2,12 +2,13 @@
 //!
 //! Upstream `Plane::fence_check` in `ArduPlane/fence.cpp` and
 //! `AC_Fence::Action` in `libraries/AC_Fence/AC_Fence.h`. Plane 4.7
-//! `@Values{Plane}` is 0 Report Only, 1 RTL, 6 Guided, 7 GuidedThrottlePass
-//! (8 AUTOLAND or RTL is left for a later slice). Copter-only values 2–5
-//! are invalid on Plane and take no action.
+//! `@Values{Plane}` is 0 Report Only, 1 RTL, 6 Guided, 7 GuidedThrottlePass,
+//! 8 Autoland or RTL. Copter-only values 2–5 are invalid on Plane and take
+//! no action.
 //!
 //! This stub keeps the ticket's Report / RTL / Guided / GuidedThrottlePass
-//! / Terminate table. Terminate is the AFS-style hard action
+//! / Terminate table and adds value 8 (`AUTOLAND_OR_RTL`). Terminate is the
+//! AFS-style hard action
 //! (`afs.gcs_terminate` on a geofence trip) rather than a Plane 4.7
 //! `FENCE_ACTION` token — `fence.cpp` has no terminate case. Radio / GCS
 //! / battery / short-long timers / terrain are left to their own modules.
@@ -26,6 +27,8 @@ pub enum FenceAction {
     Guided,
     /// 7 — Guided, pilot keeps throttle (`GUIDED_THROTTLE_PASS`).
     GuidedThrottlePass,
+    /// 8 — Autoland if that mode can start, else RTL (`AUTOLAND_OR_RTL`).
+    AutolandOrRtl,
     /// AFS-style terminate / disarm. Not a Plane 4.7 `@Values{Plane}` token.
     Terminate,
 }
@@ -33,8 +36,9 @@ pub enum FenceAction {
 impl FenceAction {
     /// Decode Plane `FENCE_ACTION`. Unknown / Copter-only values are `None`.
     ///
-    /// Plane 4.7 numbers: 0 Report, 1 RTL, 6 Guided, 7 GuidedThrottlePass.
-    /// Terminate is not a `FENCE_ACTION` token; construct [`Self::Terminate`].
+    /// Plane 4.7 numbers: 0 Report, 1 RTL, 6 Guided, 7 GuidedThrottlePass,
+    /// 8 Autoland-or-RTL. Terminate is not a `FENCE_ACTION` token; construct
+    /// [`Self::Terminate`].
     #[must_use]
     pub const fn from_param(value: u8) -> Option<Self> {
         match value {
@@ -42,6 +46,7 @@ impl FenceAction {
             1 => Some(Self::Rtl),
             6 => Some(Self::Guided),
             7 => Some(Self::GuidedThrottlePass),
+            8 => Some(Self::AutolandOrRtl),
             _ => None,
         }
     }
@@ -72,6 +77,8 @@ pub enum FenceFailsafeResult {
     Guided,
     /// Guided plus `guided_throttle_passthru = true`.
     GuidedThrottlePass,
+    /// `set_mode(mode_autoland, ModeReason::FENCE_BREACHED)`.
+    Autoland,
     /// `afs.gcs_terminate` / disarm.
     Terminate,
 }
@@ -91,6 +98,8 @@ pub struct FenceFailsafeInputs {
     pub in_recovery: bool,
     /// `landing.is_expecting_impact()` — final landing stage suppresses.
     pub landing_impact: bool,
+    /// `MODE_AUTOLAND_ENABLED` and `set_mode(mode_autoland, ...)` can start.
+    pub autoland_available: bool,
 }
 
 impl Default for FenceFailsafeInputs {
@@ -102,6 +111,7 @@ impl Default for FenceFailsafeInputs {
             armed: false,
             in_recovery: false,
             landing_impact: false,
+            autoland_available: false,
         }
     }
 }
@@ -111,7 +121,7 @@ impl Default for FenceFailsafeInputs {
 /// Disabled / disarmed / landing-impact / already-in-recovery / no new
 /// breach all return [`FenceFailsafeResult::None`]. A live breach then
 /// maps [`FenceAction`] onto the Report / RTL / Guided /
-/// GuidedThrottlePass / Terminate table.
+/// GuidedThrottlePass / Terminate table, plus value 8 Autoland-or-RTL.
 #[must_use]
 pub fn fence_failsafe_action(inp: &FenceFailsafeInputs) -> FenceFailsafeResult {
     if !inp.enabled || !inp.armed || inp.landing_impact || inp.in_recovery || !inp.new_breach {
@@ -122,6 +132,13 @@ pub fn fence_failsafe_action(inp: &FenceFailsafeInputs) -> FenceFailsafeResult {
         FenceAction::Rtl => FenceFailsafeResult::Rtl,
         FenceAction::Guided => FenceFailsafeResult::Guided,
         FenceAction::GuidedThrottlePass => FenceFailsafeResult::GuidedThrottlePass,
+        FenceAction::AutolandOrRtl => {
+            if inp.autoland_available {
+                FenceFailsafeResult::Autoland
+            } else {
+                FenceFailsafeResult::Rtl
+            }
+        }
         FenceAction::Terminate => FenceFailsafeResult::Terminate,
     }
 }
@@ -143,10 +160,15 @@ mod tests {
         assert_eq!(FenceAction::from_param(3), None);
         assert_eq!(FenceAction::from_param(4), None);
         assert_eq!(FenceAction::from_param(5), None);
-        assert_eq!(FenceAction::from_param(8), None);
+        assert_eq!(
+            FenceAction::from_param(8),
+            Some(FenceAction::AutolandOrRtl)
+        );
+        assert_eq!(FenceAction::from_param(9), None);
         assert_eq!(FenceAction::default_param(), FenceAction::Rtl);
         assert!(!FenceAction::ReportOnly.changes_vehicle());
         assert!(FenceAction::Rtl.changes_vehicle());
+        assert!(FenceAction::AutolandOrRtl.changes_vehicle());
         assert!(FenceAction::Terminate.changes_vehicle());
     }
 }

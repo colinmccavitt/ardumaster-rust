@@ -1,8 +1,8 @@
 //! Geofence breach failsafe action, Plane `FENCE_ACTION` / `AC_Fence::Action`.
 //!
 //! Report / RTL / Guided / GuidedThrottlePass / Terminate when a fence
-//! is newly breached. Disabled, disarmed, landing-impact, and already-
-//! recovering vehicles take no action.
+//! is newly breached, plus `FENCE_ACTION` 8 Autoland-or-RTL. Disabled,
+//! disarmed, landing-impact, and already-recovering vehicles take no action.
 
 use ap_plane::fence_failsafe_hookup::{
     fence_failsafe_action, FenceAction, FenceFailsafeInputs, FenceFailsafeResult,
@@ -16,6 +16,7 @@ fn breached(action: FenceAction) -> FenceFailsafeInputs {
         armed: true,
         in_recovery: false,
         landing_impact: false,
+        autoland_available: false,
     }
 }
 
@@ -28,7 +29,11 @@ fn fence_action_values_match_upstream_plane() {
         FenceAction::from_param(7),
         Some(FenceAction::GuidedThrottlePass)
     );
-    for value in [2_u8, 3, 4, 5, 8, 9] {
+    assert_eq!(
+        FenceAction::from_param(8),
+        Some(FenceAction::AutolandOrRtl)
+    );
+    for value in [2_u8, 3, 4, 5, 9] {
         assert_eq!(
             FenceAction::from_param(value),
             None,
@@ -39,6 +44,7 @@ fn fence_action_values_match_upstream_plane() {
     assert!(!FenceAction::ReportOnly.changes_vehicle());
     assert!(FenceAction::Guided.changes_vehicle());
     assert!(FenceAction::GuidedThrottlePass.changes_vehicle());
+    assert!(FenceAction::AutolandOrRtl.changes_vehicle());
     assert!(FenceAction::Terminate.changes_vehicle());
 }
 
@@ -109,5 +115,33 @@ fn report_rtl_guided_throttle_pass_and_terminate_on_breach() {
     assert_eq!(
         fence_failsafe_action(&breached(FenceAction::Terminate)),
         FenceFailsafeResult::Terminate
+    );
+}
+
+#[test]
+fn fence_action_8_autoland_if_available_else_rtl() {
+    let without = FenceFailsafeInputs {
+        autoland_available: false,
+        ..breached(FenceAction::AutolandOrRtl)
+    };
+    assert_eq!(fence_failsafe_action(&without), FenceFailsafeResult::Rtl);
+
+    let with = FenceFailsafeInputs {
+        autoland_available: true,
+        ..breached(FenceAction::AutolandOrRtl)
+    };
+    assert_eq!(
+        fence_failsafe_action(&with),
+        FenceFailsafeResult::Autoland
+    );
+
+    let suppressed = FenceFailsafeInputs {
+        autoland_available: true,
+        in_recovery: true,
+        ..breached(FenceAction::AutolandOrRtl)
+    };
+    assert_eq!(
+        fence_failsafe_action(&suppressed),
+        FenceFailsafeResult::None
     );
 }
