@@ -115,16 +115,16 @@ fn rtl_mode_qrtl_always_and_vtol_landing() {
 #[test]
 fn catalog_marks_guided_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 17);
+    assert_eq!(on_main, 18);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 1);
+    assert_eq!(remaining, 0);
     assert!(completeness_has(
         "guided / QRTL / RTL_MODE",
         PortStatus::OnMain
     ));
     assert!(completeness_has(
         "thrust-loss / ESC-cal / takeoff-failure",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
     assert!(completeness_has(
         "motors_output / hold / set_armed",
@@ -132,11 +132,7 @@ fn catalog_marks_guided_this_slice_and_leaves_other_rows() {
     ));
     assert!(completeness_has(
         "TECS / stick-mix / stopping-distance leftovers",
-        PortStatus::Remaining
-    ));
-    assert!(completeness_has(
-        "TECS / stick-mix / stopping-distance leftovers",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     let mut qp = QuadPlane::with_enable(1);
     assert!(qp.setup());

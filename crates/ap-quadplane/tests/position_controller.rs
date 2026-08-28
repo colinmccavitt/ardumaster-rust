@@ -170,9 +170,9 @@ fn takeoff_and_waypoint_controller_gates() {
 #[test]
 fn catalog_marks_controllers_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 17);
+    assert_eq!(on_main, 18);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 1);
+    assert_eq!(remaining, 0);
     assert!(completeness_has(
         "position / takeoff / waypoint controllers",
         PortStatus::OnMain

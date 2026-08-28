@@ -5,13 +5,14 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover guided_start / guided_update / RTL_MODE already landed.
-//! This slice: leftover thrust_loss_check / run_esc_calibration /
-//! takeoff_failure_scalar on [`crate::thrust_loss`].
+//! Leftover thrust_loss_check / run_esc_calibration /
+//! takeoff_failure_scalar already landed.
+//! This slice: leftover should_disable_TECS / allow_stick_mixing /
+//! stopping_distance_m on [`crate::tecs`].
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
 //! leftover Q_OPTIONS, assist latches, position controllers,
-//! land-sequence, motors_output, guided, motor-test, tailsitter
-//! completeness, or the leftover TECS / stick-mix row.
+//! land-sequence, motors_output, guided, thrust_loss, motor-test,
+//! tailsitter completeness, or the leftover catalog helpers.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -42,6 +43,7 @@ pub mod poscontrol;
 pub mod position_controller;
 pub mod quadplane_completeness;
 pub mod tailsitter;
+pub mod tecs;
 pub mod throttle;
 pub mod thrust_loss;
 pub mod tiltrotor;
@@ -268,6 +270,8 @@ pub struct QuadPlane {
     thrust_loss: thrust_loss::ThrustLoss,
     /// Leftover `Q_ESC_CAL` + Notify latch.
     esc_calibration: thrust_loss::EscCalibration,
+    /// Leftover TECS / stick-mix / `Q_TRANS_DECEL` latches.
+    tecs: tecs::TecsState,
 }
 
 impl QuadPlane {
@@ -312,6 +316,7 @@ impl QuadPlane {
             motors_output_state: motors_output::MotorsOutputState::new(),
             thrust_loss: thrust_loss::ThrustLoss::new(),
             esc_calibration: thrust_loss::EscCalibration::new(),
+            tecs: tecs::TecsState::new(),
         }
     }
 
@@ -359,6 +364,7 @@ impl QuadPlane {
             motors_output_state: motors_output::MotorsOutputState::new(),
             thrust_loss: thrust_loss::ThrustLoss::new(),
             esc_calibration: thrust_loss::EscCalibration::new(),
+            tecs: tecs::TecsState::new(),
         }
     }
 

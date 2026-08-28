@@ -185,9 +185,9 @@ fn motors_output_gates_delay_disarmed_esc_tailsitter_then_latches_active() {
 #[test]
 fn catalog_marks_motors_output_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 17);
+    assert_eq!(on_main, 18);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 1);
+    assert_eq!(remaining, 0);
     assert!(completeness_has(
         "motors_output / hold / set_armed",
         PortStatus::OnMain
@@ -202,6 +202,10 @@ fn catalog_marks_motors_output_this_slice_and_leaves_other_rows() {
     ));
     assert!(completeness_has(
         "thrust-loss / ESC-cal / takeoff-failure",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "TECS / stick-mix / stopping-distance leftovers",
         PortStatus::ThisSlice
     ));
     let mut qp = QuadPlane::with_enable(1);

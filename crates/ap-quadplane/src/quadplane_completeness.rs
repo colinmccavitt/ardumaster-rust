@@ -2,15 +2,16 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover thrust_loss_check /
-//! run_esc_calibration / takeoff_failure_scalar. [`PortStatus::Remaining`]
-//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
-//! (TECS leftovers).
+//! be redone. [`PortStatus::ThisSlice`] is leftover should_disable_TECS /
+//! allow_stick_mixing / stopping_distance_m. [`PortStatus::Remaining`]
+//! is empty — this closer covers the leftover TECS / stick-mix /
+//! stopping-distance row.
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
 //! [`crate::landing`], [`crate::land_sequence`], [`crate::logging`],
 //! [`crate::mode_q`], [`crate::motor_test`], [`crate::poscontrol`],
-//! [`crate::tailsitter`], [`crate::throttle`], [`crate::transition`],
+//! [`crate::tailsitter`], [`crate::tecs`], [`crate::throttle`],
+//! [`crate::thrust_loss`], [`crate::transition`],
 //! [`crate::transition_fsm`], [`crate::vtol_mode`], or
 //! [`crate::weathervane`].
 
@@ -40,8 +41,9 @@ pub struct QuadPlanePortItem {
 
 /// Completeness table: ported QuadPlane stubs vs leftover `quadplane.cpp` / `.h`.
 ///
-/// On-main rows match the VT-001 slices already landed. Remaining rows
-/// are leftover behavioral surfaces — this ticket is not table-only.
+/// On-main rows match the VT-001 slices already landed. This closer's
+/// ThisSlice row is the leftover TECS / stick-mix / stopping-distance
+/// surface — Remaining is empty.
 pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     QuadPlanePortItem {
         name: "setup / Q_FRAME_CLASS",
@@ -130,13 +132,13 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "thrust-loss / ESC-cal / takeoff-failure",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "thrust_loss.rs thrust_loss_check / run_esc_calibration / takeoff_failure_scalar",
     },
     QuadPlanePortItem {
         name: "TECS / stick-mix / stopping-distance leftovers",
-        status: PortStatus::Remaining,
-        note: "should_disable_TECS / allow_stick_mixing / stopping_distance_m (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "tecs.rs should_disable_TECS / allow_stick_mixing / stopping_distance_m",
     },
 ];
 
@@ -779,6 +781,52 @@ pub const fn takeoff_failure_time_limit_ms(travel_time_s: f32, scalar: f32) -> u
     }
 }
 
+/// `1.5` times cruise stopping distance, upstream `transition_threshold_m`.
+pub const TRANSITION_THRESHOLD_SCALE: f32 = 1.5;
+
+/// `should_disable_TECS`: land descent, or GUIDED + `vtol_loiter`.
+#[must_use]
+pub const fn should_disable_tecs(in_vtol_land_descent: bool, guided_vtol_loiter: bool) -> bool {
+    in_vtol_land_descent || guided_vtol_loiter
+}
+
+/// `allow_stick_mixing`: unavailable QuadPlane always allows mix.
+#[must_use]
+pub const fn allow_stick_mixing(available: bool, transition_allows: bool) -> bool {
+    !available || transition_allows
+}
+
+/// `v^2 / (2 * Q_TRANS_DECEL)`, upstream `stopping_distance_m`.
+#[must_use]
+pub fn leftover_stopping_distance_m(ground_speed_squared_m: f32, transition_decel_mss: f32) -> f32 {
+    ground_speed_squared_m / (2.0 * transition_decel_mss)
+}
+
+/// `v^2 / (2 * MAX(1, stop_distance))`, upstream `accel_needed`.
+#[must_use]
+pub fn accel_needed(stop_distance: f32, ground_speed_squared: f32) -> f32 {
+    let dist = if stop_distance > 1.0 {
+        stop_distance
+    } else {
+        1.0
+    };
+    ground_speed_squared / (2.0 * dist)
+}
+
+/// `scale * stopping_distance_m(sq(airspeed_cruise))`.
+#[must_use]
+pub fn leftover_transition_threshold_m(
+    airspeed_cruise_ms: f32,
+    transition_decel_mss: f32,
+    scale: f32,
+) -> f32 {
+    scale
+        * leftover_stopping_distance_m(
+            airspeed_cruise_ms * airspeed_cruise_ms,
+            transition_decel_mss,
+        )
+}
+
 /// Rows already hooked up on `main` (must not be redone).
 #[must_use]
 pub fn on_main_items() -> impl Iterator<Item = &'static QuadPlanePortItem> {
@@ -848,9 +896,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 17);
+        assert_eq!(on_main, 18);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 1);
+        assert_eq!(remaining, 0);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -886,13 +934,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "thrust-loss / ESC-cal / takeoff-failure",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "TECS / stick-mix / stopping-distance leftovers",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 17);
+        assert_eq!(on_main_items().count(), 18);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 1);
+        assert_eq!(remaining_items().count(), 0);
     }
 
     #[test]
@@ -1045,6 +1097,24 @@ mod tests {
         assert_eq!(takeoff_failure_time_limit_ms(1.0, 0.0), 5000);
         assert!(takeoff_failure_timed_out(1.0, 5001, 5000));
         assert!(!takeoff_failure_timed_out(0.0, 5001, 5000));
+    }
+
+    #[test]
+    fn leftover_tecs_stick_mix_and_stopping_distance_helpers() {
+        assert!(!should_disable_tecs(false, false));
+        assert!(should_disable_tecs(true, false));
+        assert!(should_disable_tecs(false, true));
+        assert!(allow_stick_mixing(false, false));
+        assert!(allow_stick_mixing(true, true));
+        assert!(!allow_stick_mixing(true, false));
+        assert_eq!(leftover_stopping_distance_m(100.0, 2.0) as i32, 25);
+        assert_eq!(accel_needed(10.0, 100.0) as i32, 5);
+        assert_eq!(accel_needed(0.5, 100.0) as i32, 50);
+        assert_eq!(
+            leftover_transition_threshold_m(10.0, 2.0, TRANSITION_THRESHOLD_SCALE) as i32,
+            37
+        );
+        assert_eq!((TRANSITION_THRESHOLD_SCALE * 10.0) as i32, 15);
     }
 
     #[test]

@@ -31,12 +31,13 @@ const ON_MAIN: &[&str] = &[
     "land-sequence predicates",
     "motors_output / hold / set_armed",
     "guided / QRTL / RTL_MODE",
+    "thrust-loss / ESC-cal / takeoff-failure",
 ];
 
-const THIS_SLICE: &[&str] = &["thrust-loss / ESC-cal / takeoff-failure"];
+const THIS_SLICE: &[&str] = &["TECS / stick-mix / stopping-distance leftovers"];
 
-/// Leftover `quadplane.cpp` / `.h` surfaces not yet stubbed.
-const REMAINING: &[&str] = &["TECS / stick-mix / stopping-distance leftovers"];
+/// Leftover `quadplane.cpp` / `.h` surfaces — this closer emptied Remaining.
+const REMAINING: &[&str] = &[];
 
 #[test]
 fn completeness_table_matches_main_versus_leftover_api() {
@@ -75,7 +76,7 @@ fn completeness_table_matches_main_versus_leftover_api() {
 #[test]
 fn leftover_api_rows_name_upstream_surfaces() {
     let leftover: Vec<&QuadPlanePortItem> = remaining_items().collect();
-    assert_eq!(leftover.len(), 1);
+    assert_eq!(leftover.len(), 0);
     assert!(completeness_has(
         "leftover Q_OPTIONS bits",
         PortStatus::OnMain
@@ -102,6 +103,10 @@ fn leftover_api_rows_name_upstream_surfaces() {
     ));
     assert!(completeness_has(
         "thrust-loss / ESC-cal / takeoff-failure",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "TECS / stick-mix / stopping-distance leftovers",
         PortStatus::ThisSlice
     ));
     assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
@@ -141,9 +146,13 @@ fn leftover_api_rows_name_upstream_surfaces() {
             && item.note.contains("thrust_loss_check")
             && item.note.contains("run_esc_calibration")
     }));
-    assert!(leftover
-        .iter()
-        .any(|item| item.note.contains("should_disable_TECS")));
+    assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
+        item.name == "TECS / stick-mix / stopping-distance leftovers"
+            && item.note.contains("should_disable_TECS")
+            && item.note.contains("allow_stick_mixing")
+            && item.status == PortStatus::ThisSlice
+    }));
+    assert!(leftover.is_empty());
 }
 
 #[test]

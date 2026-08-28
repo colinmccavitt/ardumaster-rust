@@ -157,20 +157,20 @@ fn takeoff_failure_scalar_timeout_and_time_limit() {
 #[test]
 fn catalog_marks_thrust_loss_this_slice_and_leaves_tecs() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 17);
+    assert_eq!(on_main, 18);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 1);
+    assert_eq!(remaining, 0);
     assert!(completeness_has(
         "guided / QRTL / RTL_MODE",
         PortStatus::OnMain
     ));
     assert!(completeness_has(
         "thrust-loss / ESC-cal / takeoff-failure",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
     assert!(completeness_has(
         "TECS / stick-mix / stopping-distance leftovers",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     assert_eq!(THRUST_LOSS_TILT_LIMIT_DEG as i32, 15);
     assert_eq!(THRUST_LOSS_ANGLE_ERROR_DEG as i32, 30);
