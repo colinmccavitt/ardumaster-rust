@@ -18,17 +18,20 @@
 //! `LOG_DATA` (msgid 120) chunks of recorded bytes from the
 //! file-backend mock. [`dropped`] is the buffer-full counter:
 //! `_dropped` increments when `Write` is rejected by a full backend
-//! and `num_dropped()` exposes the count.
+//! and `num_dropped()` exposes the count. [`erase`] is MAVLink log
+//! erase: `LOG_ERASE` (msgid 121) calls `EraseAll()`, which clears the
+//! file-backend mock catalog, last-log id, and drop count.
 //!
 //! # What this crate does not include yet
 //!
-//! The DataFlash page map, log rotation, rate limiting, log erase,
-//! and the `AP_Logger` front-end. Those land in later FW-030 slices.
+//! The DataFlash page map, log rotation, rate limiting, and the
+//! `AP_Logger` front-end. Those land in later FW-030 slices.
 
 #![no_std]
 
 pub mod backend;
 pub mod dropped;
+pub mod erase;
 pub mod file;
 pub mod gate;
 pub mod replay;
@@ -38,6 +41,7 @@ pub mod write;
 
 pub use backend::{LogBackend, MemoryBackend};
 pub use dropped::DroppedMessages;
+pub use erase::{LogErase, LogEraseRequest, LOG_ERASE_LEN, MSG_ID_LOG_ERASE};
 pub use file::{FileBackend, LOG_FILE_PATH_MAX};
 pub use gate::{
     LogGate, DEFAULT_LOG_BITMASK, MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_FULLRATE,
