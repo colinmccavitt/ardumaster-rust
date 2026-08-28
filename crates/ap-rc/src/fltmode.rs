@@ -1,10 +1,10 @@
-//! Flight-mode switch / `FLTMODE_CH` decode, upstream `RC_Channel::read_6pos_switch`.
+//! Flight-mode switch / `FLTMODE_CH` decode and `FLTMODE1`–`FLTMODE6` mapping.
 //!
 //! `FLTMODE_CH` names the 1-based receiver channel that selects the flight
 //! mode. Zero disables the switch. The pulse on that channel is a six-
-//! position switch: PWM is sliced into positions 0–5 and Plane later maps
-//! those onto `FLTMODE1`–`FLTMODE6`. This module is the channel + PWM
-//! decode only; the six-parameter mapping is a later slice.
+//! position switch: PWM is sliced into positions 0–5, then those slots
+//! index `FLTMODE1`–`FLTMODE6`. PWM edges live in [`read_6pos_switch`];
+//! the parameter table is [`FltModeTable`].
 //!
 //! Invalid pulses (`<= RC_MIN_LIMIT_PWM` or `>= RC_MAX_LIMIT_PWM`) do not
 //! produce a position, matching `read_6pos_switch`'s error return. Reverse
@@ -18,6 +18,8 @@ pub const FLTMODE_CH_DEFAULT: i8 = 8;
 pub const FLTMODE_CH_DISABLED: i8 = 0;
 /// Upstream `NUM_RC_CHANNELS`. `FLTMODE_CH` uses this as an exclusive max.
 pub const NUM_RC_CHANNELS: i8 = 16;
+/// Upstream `Plane::num_flight_modes` — slots `FLTMODE1` through `FLTMODE6`.
+pub const NUM_FLIGHT_MODES: u8 = 6;
 
 /// Exclusive PWM upper bound for switch position 0 (`pulsewidth < 1231`).
 pub const FLTMODE_POS0_MAX_PWM: u16 = 1231;
@@ -29,6 +31,69 @@ pub const FLTMODE_POS2_MAX_PWM: u16 = 1491;
 pub const FLTMODE_POS3_MAX_PWM: u16 = 1621;
 /// Exclusive PWM upper bound for switch position 4 (`pulsewidth < 1750`).
 pub const FLTMODE_POS4_MAX_PWM: u16 = 1750;
+
+/// Upstream `Mode::Number::MANUAL`.
+pub const MODE_NUMBER_MANUAL: i8 = 0;
+/// Upstream `Mode::Number::FLY_BY_WIRE_A`.
+pub const MODE_NUMBER_FLY_BY_WIRE_A: i8 = 5;
+/// Upstream `Mode::Number::RTL`.
+pub const MODE_NUMBER_RTL: i8 = 11;
+
+/// Upstream `FLIGHT_MODE_1` / `FLTMODE1` default (`Mode::Number::RTL`).
+pub const FLTMODE1_DEFAULT: i8 = MODE_NUMBER_RTL;
+/// Upstream `FLIGHT_MODE_2` / `FLTMODE2` default (`Mode::Number::RTL`).
+pub const FLTMODE2_DEFAULT: i8 = MODE_NUMBER_RTL;
+/// Upstream `FLIGHT_MODE_3` / `FLTMODE3` default (`Mode::Number::FLY_BY_WIRE_A`).
+pub const FLTMODE3_DEFAULT: i8 = MODE_NUMBER_FLY_BY_WIRE_A;
+/// Upstream `FLIGHT_MODE_4` / `FLTMODE4` default (`Mode::Number::FLY_BY_WIRE_A`).
+pub const FLTMODE4_DEFAULT: i8 = MODE_NUMBER_FLY_BY_WIRE_A;
+/// Upstream `FLIGHT_MODE_5` / `FLTMODE5` default (`Mode::Number::MANUAL`).
+pub const FLTMODE5_DEFAULT: i8 = MODE_NUMBER_MANUAL;
+/// Upstream `FLIGHT_MODE_6` / `FLTMODE6` default (`Mode::Number::MANUAL`).
+pub const FLTMODE6_DEFAULT: i8 = MODE_NUMBER_MANUAL;
+
+/// Six `FLTMODE1`–`FLTMODE6` mode numbers, upstream `Plane::flight_modes`.
+///
+/// Slot 0 is `FLTMODE1` (lowest PWM), slot 5 is `FLTMODE6`. The PWM
+/// edges that pick the slot stay in [`read_6pos_switch`]; this table is
+/// the parameter mapping only. Values are `AP_Int8` mode numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FltModeTable {
+    /// Mode numbers for switch positions 0–5 (`FLTMODE1`–`FLTMODE6`).
+    pub modes: [i8; NUM_FLIGHT_MODES as usize],
+}
+
+impl Default for FltModeTable {
+    fn default() -> Self {
+        Self {
+            modes: [
+                FLTMODE1_DEFAULT,
+                FLTMODE2_DEFAULT,
+                FLTMODE3_DEFAULT,
+                FLTMODE4_DEFAULT,
+                FLTMODE5_DEFAULT,
+                FLTMODE6_DEFAULT,
+            ],
+        }
+    }
+}
+
+impl FltModeTable {
+    /// Build a table from the six `FLTMODE*` parameters.
+    #[must_use]
+    pub const fn from_params(
+        fltmode1: i8,
+        fltmode2: i8,
+        fltmode3: i8,
+        fltmode4: i8,
+        fltmode5: i8,
+        fltmode6: i8,
+    ) -> Self {
+        Self {
+            modes: [fltmode1, fltmode2, fltmode3, fltmode4, fltmode5, fltmode6],
+        }
+    }
+}
 
 /// True when `FLTMODE_CH` names a live receiver channel.
 ///
@@ -105,6 +170,35 @@ pub fn decode_fltmode_switch(channels: &[u16], fltmode_ch: i8) -> Option<u8> {
     read_6pos_switch(pwm)
 }
 
+/// `FLTMODE[n]` for a 0-based six-pos slot.
+///
+/// Upstream `plane.flight_modes[new_pos].get()`. Out of range is `None`,
+/// matching `mode_switch_changed` rejecting a bad position.
+#[must_use]
+pub fn fltmode_for_slot(table: &FltModeTable, slot: u8) -> Option<i8> {
+    table.modes.get(slot as usize).copied()
+}
+
+/// PWM → `FLTMODE[n]` mode number.
+///
+/// Slot decode reuses [`read_6pos_switch`]; invalid pulses stay `None`.
+#[must_use]
+pub fn decode_fltmode_number(table: &FltModeTable, pwm: u16) -> Option<i8> {
+    let slot = read_6pos_switch(pwm)?;
+    fltmode_for_slot(table, slot)
+}
+
+/// Pick `FLTMODE_CH` out of a frame and map it through `FLTMODE1`–`FLTMODE6`.
+#[must_use]
+pub fn decode_fltmode_from_channels(
+    channels: &[u16],
+    fltmode_ch: i8,
+    table: &FltModeTable,
+) -> Option<i8> {
+    let slot = decode_fltmode_switch(channels, fltmode_ch)?;
+    fltmode_for_slot(table, slot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +248,44 @@ mod tests {
         assert_eq!(read_6pos_switch(2200), None);
         assert_eq!(decode_fltmode_ch(FLTMODE_CH_DEFAULT, 800), None);
         assert_eq!(decode_fltmode_ch(FLTMODE_CH_DEFAULT, 2200), None);
+    }
+
+    #[test]
+    fn default_table_is_rtl_rtl_fbwa_fbwa_manual_manual() {
+        let table = FltModeTable::default();
+        assert_eq!(NUM_FLIGHT_MODES, 6);
+        assert_eq!(table.modes, [11, 11, 5, 5, 0, 0]);
+        assert_eq!(fltmode_for_slot(&table, 0), Some(MODE_NUMBER_RTL));
+        assert_eq!(fltmode_for_slot(&table, 1), Some(MODE_NUMBER_RTL));
+        assert_eq!(
+            fltmode_for_slot(&table, 2),
+            Some(MODE_NUMBER_FLY_BY_WIRE_A)
+        );
+        assert_eq!(
+            fltmode_for_slot(&table, 3),
+            Some(MODE_NUMBER_FLY_BY_WIRE_A)
+        );
+        assert_eq!(fltmode_for_slot(&table, 4), Some(MODE_NUMBER_MANUAL));
+        assert_eq!(fltmode_for_slot(&table, 5), Some(MODE_NUMBER_MANUAL));
+        assert_eq!(fltmode_for_slot(&table, 6), None);
+    }
+
+    #[test]
+    fn pwm_maps_through_slot_to_fltmoden() {
+        let table = FltModeTable::default();
+        // Mid-band PWM in each slot — edges stay in read_6pos_switch tests.
+        assert_eq!(decode_fltmode_number(&table, 1100), Some(MODE_NUMBER_RTL));
+        assert_eq!(decode_fltmode_number(&table, 1300), Some(MODE_NUMBER_RTL));
+        assert_eq!(
+            decode_fltmode_number(&table, 1400),
+            Some(MODE_NUMBER_FLY_BY_WIRE_A)
+        );
+        assert_eq!(
+            decode_fltmode_number(&table, 1550),
+            Some(MODE_NUMBER_FLY_BY_WIRE_A)
+        );
+        assert_eq!(decode_fltmode_number(&table, 1680), Some(MODE_NUMBER_MANUAL));
+        assert_eq!(decode_fltmode_number(&table, 1900), Some(MODE_NUMBER_MANUAL));
+        assert_eq!(decode_fltmode_number(&table, 800), None);
     }
 }
