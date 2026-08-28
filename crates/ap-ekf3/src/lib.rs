@@ -5,7 +5,9 @@
 //! the cores. The IMU sample ring that downsamples gyro/accel into the
 //! fusion-horizon FIFO lives in [`measurements`]. Filter-mode control
 //! (`setInhibitGPS`, `inFlight` / `onGround`, `controlFilterModes`)
-//! lives in [`control`]. Covariance prediction and fusion are not here.
+//! lives in [`control`]. Gyro-bias reset / constrain / inactive-IMU
+//! learn lives in [`gyro_bias`]. Covariance prediction and fusion are
+//! not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -28,14 +30,16 @@
 //! Strapdown prediction, covariance growth, GPS/baro/mag fusion, and the
 //! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
 //! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
-//! the flight-mode latch is [`control`].
+//! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`].
 
 #![no_std]
 
 pub mod control;
+pub mod gyro_bias;
 pub mod measurements;
 
 pub use control::{AidingMode, FilterControl};
+pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
@@ -160,6 +164,8 @@ pub struct NavEkf3Core {
     frames_since_predict: u32,
     /// Filter-mode latch, upstream `controlFilterModes` / `detectFlight`.
     control: FilterControl,
+    /// Body-axis gyro bias, upstream `AP_NavEKF3_GyroBias.cpp`.
+    gyro_bias: GyroBias,
 }
 
 impl Default for NavEkf3Core {
@@ -177,6 +183,7 @@ impl NavEkf3Core {
             states_initialised: false,
             frames_since_predict: 0,
             control: FilterControl::new(),
+            gyro_bias: GyroBias::new(),
         }
     }
 
@@ -219,6 +226,8 @@ impl NavEkf3Core {
         self.states_initialised = true;
         self.frames_since_predict = 0;
         self.control.reset();
+        self.gyro_bias.reset();
+        self.gyro_bias.write_into_states(&mut self.states);
         true
     }
 
@@ -272,6 +281,30 @@ impl NavEkf3Core {
     /// Upstream `controlFilterModes`.
     pub fn control_filter_modes(&mut self) {
         self.control.control_filter_modes()
+    }
+
+    /// Gyro-bias helper, upstream `stateStruct.gyro_bias` / `resetGyroBias`.
+    #[must_use]
+    pub const fn gyro_bias(&self) -> &GyroBias {
+        &self.gyro_bias
+    }
+
+    /// Mutable gyro-bias so tests can poke a learned offset.
+    pub fn gyro_bias_mut(&mut self) -> &mut GyroBias {
+        &mut self.gyro_bias
+    }
+
+    /// Upstream `NavEKF3_core::resetGyroBias`.
+    pub fn reset_gyro_bias(&mut self) {
+        self.gyro_bias.reset();
+        self.gyro_bias.write_into_states(&mut self.states);
+    }
+
+    /// Gyro-bias half of upstream `ConstrainStates`.
+    pub fn constrain_gyro_bias(&mut self) {
+        self.gyro_bias.read_from_states(&self.states);
+        self.gyro_bias.constrain();
+        self.gyro_bias.write_into_states(&mut self.states);
     }
 }
 
@@ -404,6 +437,18 @@ impl NavEkf3 {
             None => 0,
         }
     }
+
+    /// Upstream `NavEKF3::resetGyroBias`: walk every live core.
+    ///
+    /// No-ops when no cores exist (`if (!core) return`).
+    pub fn reset_gyro_bias(&mut self) {
+        if self.num_cores == 0 {
+            return;
+        }
+        for core in self.cores.iter_mut().take(self.num_cores as usize) {
+            core.reset_gyro_bias();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -511,5 +556,21 @@ mod tests {
         assert!(core.control().gps_inhibit());
         assert!(core.on_ground());
         assert!(!core.in_flight());
+    }
+
+    #[test]
+    fn frontend_reset_gyro_bias_is_noop_then_walks_cores() {
+        let mut ekf = NavEkf3::new();
+        ekf.reset_gyro_bias();
+        assert_eq!(ekf.num_cores(), 0);
+
+        assert!(ekf.initialise_filter());
+        ekf.reset_gyro_bias();
+        let core = ekf.core(0).expect("primary");
+        assert_eq!(core.state(StateIndex::GyroBiasX), 0.0 as Ftype);
+        assert_eq!(core.state(StateIndex::GyroBiasY), 0.0 as Ftype);
+        assert_eq!(core.state(StateIndex::GyroBiasZ), 0.0 as Ftype);
+        let expected = core.gyro_bias().variance().x;
+        assert!(expected > 0.0 as Ftype);
     }
 }
