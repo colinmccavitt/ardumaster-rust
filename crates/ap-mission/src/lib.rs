@@ -63,6 +63,13 @@ pub use continue_and_change_alt::{
     MAV_CMD_NAV_CONTINUE_AND_CHANGE_ALT,
 };
 
+mod land;
+pub use land::{
+    do_land, is_nav_land, land_abort_altitude_cm, land_cmd, land_verify_height_m, verify_land,
+    DoLandInputs, DoLandOutput, VerifyLandInputs, VerifyLandOutput, LAND_ABORT_ALT_DEFAULT_CM,
+    LAND_ABORT_PITCH_DEFAULT_CD, MAV_CMD_NAV_LAND,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
