@@ -15,9 +15,10 @@ const THIS_SLICE: &[&str] = &[
     "WSPIDevice",
     "CANIface",
     "Flash",
+    "DSP",
 ];
 
-const REMAINING: &[&str] = &["DSP", "OpticalFlow"];
+const REMAINING: &[&str] = &["OpticalFlow"];
 
 #[test]
 fn completeness_table_lists_gpio_semaphore_util_device_done() {

@@ -46,6 +46,7 @@ pub mod completeness;
 pub mod context;
 pub mod device;
 pub mod device_manager;
+pub mod dsp;
 pub mod flash;
 pub mod gpio;
 pub mod internal_error;

@@ -67,8 +67,8 @@ pub const HAL_COMPLETENESS: &[HalPortItem] = &[
     },
     HalPortItem {
         name: "DSP",
-        status: PortStatus::Remaining,
-        note: "AP_HAL/DSP.h; no SITL consumer yet",
+        status: PortStatus::ThisSlice,
+        note: "AP_HAL/DSP.h FFT init/start/analyse, vector max/mean/scale/add",
     },
     HalPortItem {
         name: "Flash",
@@ -162,8 +162,8 @@ mod tests {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
         assert_eq!(on_main, 4);
-        assert_eq!(this_slice, 6);
-        assert_eq!(remaining, 2);
+        assert_eq!(this_slice, 7);
+        assert_eq!(remaining, 1);
         assert!(completeness_has("GPIO", PortStatus::OnMain));
         assert!(completeness_has("Semaphore", PortStatus::OnMain));
         assert!(completeness_has("Util", PortStatus::OnMain));
@@ -180,9 +180,10 @@ mod tests {
         assert!(completeness_has("BinarySemaphore", PortStatus::ThisSlice));
         assert!(completeness_has("WSPIDevice", PortStatus::ThisSlice));
         assert!(completeness_has("Flash", PortStatus::ThisSlice));
+        assert!(completeness_has("DSP", PortStatus::ThisSlice));
         assert_eq!(on_main_items().count(), 4);
-        assert_eq!(this_slice_items().count(), 6);
-        assert_eq!(remaining_items().count(), 2);
+        assert_eq!(this_slice_items().count(), 7);
+        assert_eq!(remaining_items().count(), 1);
     }
 
     #[test]
