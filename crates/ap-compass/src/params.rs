@@ -4,6 +4,7 @@ use ap_math::vector3::Vector3f;
 
 use crate::auto_rot::COMPASS_AUTO_ROT_DEFAULT;
 use crate::disable_mask::{instance_disabled, COMPASS_DISBLMSK_DEFAULT};
+use crate::filter_range::COMPASS_FLTR_RNG_DEFAULT;
 use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::orientation::{COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT};
@@ -92,6 +93,8 @@ pub struct CompassParams {
     pub rotate_auto: u8,
     /// Driver-type disable mask, upstream `COMPASS_DISBLMSK`.
     pub disable_mask: u32,
+    /// Sample filter range percent, upstream `COMPASS_FLTR_RNG`.
+    pub filter_range: u8,
 }
 
 impl Default for CompassParams {
@@ -108,6 +111,7 @@ impl Default for CompassParams {
             board_orientation: COMPASS_ORIENT_DEFAULT,
             rotate_auto: COMPASS_AUTO_ROT_DEFAULT,
             disable_mask: COMPASS_DISBLMSK_DEFAULT,
+            filter_range: COMPASS_FLTR_RNG_DEFAULT,
         }
     }
 }
@@ -130,6 +134,7 @@ impl CompassParams {
         cfg.scale = inst.scale;
         cfg.diagonals = inst.diagonals;
         cfg.offdiagonals = inst.offdiagonals;
+        cfg.filter_range = self.filter_range;
         backend.set_config(cfg);
     }
 

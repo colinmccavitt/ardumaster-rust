@@ -14,6 +14,7 @@ use ap_math::matrix3::Matrix3f;
 use ap_math::scalar::{radians, Real};
 use ap_math::vector3::Vector3f;
 
+use crate::filter_range::FilterRangeState;
 use crate::motor_comp::apply_motor_compensation;
 use crate::offset::{apply_offsets, learn_offsets, offsets_within_max};
 use crate::orientation::rotate_field;
@@ -59,6 +60,8 @@ pub struct SitlCompassConfig {
     pub diagonals: Vector3f,
     /// Soft-iron off-diagonal, upstream `COMPASS_ODI`.
     pub offdiagonals: Vector3f,
+    /// Sample filter range percent, upstream `COMPASS_FLTR_RNG`.
+    pub filter_range: u8,
 }
 
 impl Default for SitlCompassConfig {
@@ -75,6 +78,7 @@ impl Default for SitlCompassConfig {
             scale: 0.0,
             diagonals: Vector3f::new(1.0, 1.0, 1.0),
             offdiagonals: Vector3f::zero(),
+            filter_range: 0,
         }
     }
 }
@@ -121,6 +125,7 @@ pub struct SitlCompassBackend {
     last_latitude_deg: f32,
     last_longitude_deg: f32,
     last_attitude: Matrix3f,
+    filter: FilterRangeState,
 }
 
 impl Default for SitlCompassBackend {
@@ -135,6 +140,7 @@ impl Default for SitlCompassBackend {
             last_latitude_deg: 0.0,
             last_longitude_deg: 0.0,
             last_attitude: Matrix3f::identity(),
+            filter: FilterRangeState::default(),
         }
     }
 }
@@ -172,6 +178,12 @@ impl SitlCompassBackend {
 
     pub fn set_config(&mut self, config: SitlCompassConfig) {
         self.config = config;
+    }
+
+    /// Running mean-length filter, upstream `_mean_field_length`.
+    #[must_use]
+    pub const fn filter_state(&self) -> FilterRangeState {
+        self.filter
     }
 
     /// Throttle `0..1` or battery current in amps, upstream `_thr` / battery.
@@ -245,6 +257,9 @@ impl SitlCompassBackend {
             self.config.motor_comp_type,
             self.thr_or_curr,
         );
+        if !self.filter.sample_ok(mag_body, self.config.filter_range) {
+            return false;
+        }
         self.pending = MagSampleState {
             mag_body,
             declination_rad,

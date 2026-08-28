@@ -12,6 +12,7 @@ pub mod consistent;
 pub mod declination;
 pub mod disable_mask;
 pub mod field;
+pub mod filter_range;
 pub mod learn;
 pub mod motor_comp;
 pub mod offset;
@@ -31,6 +32,9 @@ pub use field::{
     expected_earth_field_ga, expected_earth_field_mgauss, expected_field_ok, field_length_ok,
     field_ok, field_strength_ok, gauss_to_mgauss, COMPASS_MAGFIELD_ERROR_THRESHOLD,
     COMPASS_MAGFIELD_EXPECTED, COMPASS_MAGFIELD_MAX, COMPASS_MAGFIELD_MIN,
+};
+pub use filter_range::{
+    filter_enabled, FilterRangeState, COMPASS_FLTR_RNG_DEFAULT, FILTER_KOEF,
 };
 
 pub use sitl::{
