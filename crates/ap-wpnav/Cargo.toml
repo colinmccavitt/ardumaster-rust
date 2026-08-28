@@ -1,6 +1,6 @@
 [package]
 name = "ap-wpnav"
-description = "Port of ArduPilot libraries/AC_WPNav waypoint navigation (Copter-4.7.0). Tracked as COP-010."
+description = "Port of ArduPilot libraries/AC_WPNav (Copter-4.7.0). COP-010 WpNav, COP-011 Loiter/Circle."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

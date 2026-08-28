@@ -36,6 +36,10 @@
 //! [`force_stop_at_next_wp`](WpNav::force_stop_at_next_wp) clears the fast
 //! flag and records the scurve dest-speed / next-leg init leftover.
 //!
+//! Horizontal loiter is [`loiter`] (**COP-011**):
+//! [`Loiter::init_target_m`] / [`Loiter::init_target`] then
+//! [`Loiter::update`].
+//!
 //! # What this crate does not own
 //!
 //! The S-curve and spline objects live in `ap-math` (COP-002 / COP-003).
@@ -49,8 +53,16 @@
 
 #![no_std]
 
+pub mod loiter;
 pub mod wpnav;
 
+pub use loiter::{
+    InitTargetContext, InitTargetLeftover, Loiter, LoiterOption, UpdateLoiterContext,
+    UpdateLoiterLeftover, LOITER_ACCEL_MAX_DEFAULT_MSS, LOITER_ACTIVE_TIMEOUT_MS,
+    LOITER_BRAKE_ACCEL_DEFAULT_MSS, LOITER_BRAKE_JERK_DEFAULT_MSSS,
+    LOITER_BRAKE_START_DELAY_DEFAULT_S, LOITER_DEFAULT_OPTIONS, LOITER_POS_CORRECTION_MAX_M,
+    LOITER_SPEED_DEFAULT_MS, LOITER_SPEED_MIN_MS, LOITER_VEL_CORRECTION_MAX_MS,
+};
 pub use wpnav::{
     AdvanceWpTargetContext, AdvanceWpTargetLeftover, AttitudeJerkLimits, GetTerrainContext,
     GetVectorNedContext, PosControlSpeedAccel, SetWpDestinationContext, TerrainSource,
