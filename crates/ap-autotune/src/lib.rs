@@ -8,9 +8,11 @@
 //! Demand transitions (`ATState::{IDLE, DEMAND_POS, DEMAND_NEG}` plus
 //! `start` / `stop`) live in [`state`]. The `AUTOTUNE_LEVEL` aggressiveness
 //! table lives in [`level`]. The roll/pitch `ATGains` snapshot
-//! (`save_gains` / `restore_gains`) lives in [`gains`]. This slice adds
-//! the saturation / overshoot P rewrite and `update_rmax` tau/rmax slew
-//! in [`update`]. D-limit hunting and FF median filter come later.
+//! (`save_gains` / `restore_gains`) lives in [`gains`]. Saturation /
+//! overshoot `update_gains` lives in [`update`]. This slice adds
+//! `AUTOTUNE_OPTIONS` (`has_option` FLTD/FLTT gates) and the
+//! `AUTOTUNE_AXES` single-axis start mask (roll only / pitch only /
+//! both) in [`options`]. I-term / FF coupling comes later.
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
@@ -18,6 +20,7 @@
 
 pub mod gains;
 pub mod level;
+pub mod options;
 pub mod state;
 pub mod update;
 
@@ -25,6 +28,12 @@ pub use gains::{apply_stop_gains, should_save_on_stop, snapshot_gains, AtGains};
 pub use level::{
     aggressiveness_target, constrain_autotune_level, tuning_row, LevelTarget, TuningRow,
     AUTOTUNE_LEVEL_DEFAULT, AUTOTUNE_LEVEL_MAX, AUTOTUNE_LEVEL_MIN, PITCH_TAU_SCALE, TUNING_TABLE,
+};
+pub use options::{
+    apply_filter_options, fltd_hz, fltt_hz, AutotuneAxes, AutotuneAxis, AutotuneOption,
+    AutotuneOptions, FilterUpdate, AUTOTUNE_AXES_DEFAULT, AUTOTUNE_AXIS_PITCH, AUTOTUNE_AXIS_ROLL,
+    AUTOTUNE_AXIS_YAW, AUTOTUNE_OPTION_DISABLE_FLTD_UPDATE, AUTOTUNE_OPTION_DISABLE_FLTT_UPDATE,
+    AUTOTUNE_OPTIONS_DEFAULT,
 };
 pub use state::{
     in_att_demand, next_demand_state, rate_threshold1, rate_threshold2, AtState, AtType, AutoTune,
