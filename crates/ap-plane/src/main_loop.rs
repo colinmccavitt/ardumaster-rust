@@ -136,6 +136,7 @@ use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
 use crate::takeoff_mode_hookup::{takeoff_mode_nav_tick, TakeoffModeNavInputs};
 use crate::autoland_mode_hookup::{autoland_mode_nav_tick, AutolandModeNavInputs};
+use crate::avoid_adsb_mode_hookup::{avoid_adsb_mode_nav_tick, AvoidAdsbModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -463,6 +464,16 @@ pub struct PlaneMainLoop {
     pub guided_loiter_radius_m: u16,
     /// GUIDED loiter direction applied this tick.
     pub guided_loiter_ccw: bool,
+    /// Whether AVOID_ADSB enter/navigate glue ran this tick.
+    pub avoid_adsb_mode_nav_applied: bool,
+    /// Whether ModeAvoidADSB::_enter armed ModeGuided::_enter this tick.
+    pub avoid_adsb_mode_started: bool,
+    /// Whether AVOID_ADSB navigate is allowed to call update_loiter this tick.
+    pub avoid_adsb_mode_loiter_allowed: bool,
+    /// Always 0 when applied: navigate calls update_loiter(0).
+    pub avoid_adsb_loiter_radius_m: u16,
+    /// WP_LOITER_RAD < 0 selects counterclockwise avoidance loiter.
+    pub avoid_adsb_loiter_ccw: bool,
     /// Upstream TKOFF_ALT, metres.
     pub takeoff_target_alt_m: u16,
     /// Upstream TKOFF_DIST, metres.
@@ -916,6 +927,11 @@ impl Default for PlaneMainLoop {
             guided_mode_loiter_allowed: false,
             guided_loiter_radius_m: 0,
             guided_loiter_ccw: false,
+            avoid_adsb_mode_nav_applied: false,
+            avoid_adsb_mode_started: false,
+            avoid_adsb_mode_loiter_allowed: false,
+            avoid_adsb_loiter_radius_m: 0,
+            avoid_adsb_loiter_ccw: false,
             takeoff_target_alt_m: crate::takeoff_mode_hookup::TKOFF_ALT_DEFAULT_M,
             takeoff_target_dist_m: crate::takeoff_mode_hookup::TKOFF_DIST_DEFAULT_M,
             current_loc_initialised: true,
@@ -1473,6 +1489,26 @@ impl PlaneMainLoop {
             }
             if guided_nav.clear_throttle_passthru {
                 self.guided_throttle_passthru = false;
+            }
+        }
+
+        let avoid_adsb_nav = avoid_adsb_mode_nav_tick(&AvoidAdsbModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            wp_loiter_rad_m: self.wp_loiter_rad_m,
+        });
+        self.avoid_adsb_mode_nav_applied = avoid_adsb_nav.applied;
+        self.avoid_adsb_mode_started = avoid_adsb_nav.started;
+        self.avoid_adsb_mode_loiter_allowed = avoid_adsb_nav.allow_loiter;
+        if avoid_adsb_nav.applied {
+            self.avoid_adsb_loiter_radius_m = avoid_adsb_nav.loiter_radius_m;
+            if avoid_adsb_nav.direction_set {
+                self.avoid_adsb_loiter_ccw = avoid_adsb_nav.loiter_ccw;
+            }
+            if avoid_adsb_nav.clear_throttle_passthru {
+                self.guided_throttle_passthru = false;
+                self.guided_active_radius_m = 0;
             }
         }
 
