@@ -14,6 +14,7 @@ pub mod offset;
 pub mod orientation;
 pub mod params;
 pub mod persist;
+pub mod primary;
 pub mod scale;
 pub mod sitl;
 pub mod soft_iron;
@@ -44,6 +45,7 @@ pub use params::{
     CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT,
 };
 pub use persist::{offsets_already_saved, save_instance_offset, save_offsets};
+pub use primary::first_usable;
 pub use scale::{
     apply_scale, have_scale_factor, COMPASS_MAX_SCALE_FACTOR, COMPASS_MIN_SCALE_FACTOR,
     COMPASS_SCALE_DEFAULT,

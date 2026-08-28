@@ -143,4 +143,10 @@ impl CompassParams {
             self.compass2.use_for_yaw
         }
     }
+
+    /// First instance with COMPASS_USE, upstream Compass::get_first_usable.
+    #[must_use]
+    pub fn first_usable(&self) -> u8 {
+        crate::primary::first_usable(&[self.compass1.use_for_yaw, self.compass2.use_for_yaw])
+    }
 }

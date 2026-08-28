@@ -134,6 +134,13 @@ impl SitlCompassHookup {
         self.cluster.backend(self.cluster.primary())
     }
 
+    /// Select `_first_usable` from `COMPASS_USE` / `USE2`, upstream `Compass::read`.
+    pub fn select_first_usable(&mut self) -> u8 {
+        let idx = self.params.first_usable();
+        self.cluster.set_primary(idx);
+        idx
+    }
+
     /// Run timer tick and publish mag sample + yaw drift input.
     #[must_use]
     pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32, gps: Option<GpsDeclinationFix>) -> SitlCompassPublish {
