@@ -1,6 +1,6 @@
 [package]
 name = "ap-rc"
-description = "Port of ArduPilot libraries/RC_Channel: PWM scale, deadzone, aux-function switch latch, FS_THR_VALUE failsafe floor, RCMAP channel map and RCn_TRIM persist (Plane-4.7.0). Tracked as FW-019."
+description = "Port of ArduPilot libraries/RC_Channel: PWM scale, deadzone, aux-function switch latch, FS_THR_VALUE failsafe floor, RCMAP channel map and RCn_TRIM persist, RC_OVERRIDE_TIME GCS override timeout (Plane-4.7.0). Tracked as FW-019."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

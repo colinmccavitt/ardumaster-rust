@@ -6,14 +6,16 @@
 //! resting stick is zero rather than a few counts of noise.
 //!
 //! Scaling, the aux-function switch latch, the FS_THR_VALUE / THR_FS_VALUE PWM floor,
-//! and the RCMAP_* channel map plus RCn_TRIM persist live here so radio.cpp work can
-//! share one conversion. The HAL owns the raw PWM microsecond I/O; Plane's
-//! failsafe hookup already reads those pulses.
+//! the RCMAP_* channel map plus RCn_TRIM persist, and the RC_OVERRIDE_TIME GCS
+//! override timeout live here so radio.cpp work can share one conversion. The HAL
+//! owns the raw PWM microsecond I/O; Plane's failsafe hookup already reads those
+//! pulses.
 
 #![no_std]
 
 pub mod aux_switch;
 pub mod fs_thr;
+pub mod override_timeout;
 pub mod rcmap;
 
 pub use aux_switch::{
@@ -24,6 +26,11 @@ pub use aux_switch::{
 pub use fs_thr::{
     throttle_below_fs_thr_value, throttle_pwm_in_failsafe, ThrFailsafe, FS_THR_VALUE_DEFAULT,
     FS_THR_VALUE_MAX, FS_THR_VALUE_MIN, THR_FS_VALUE_DEFAULT, THR_FS_VALUE_MAX, THR_FS_VALUE_MIN,
+};
+pub use override_timeout::{
+    apply_gcs_override_field, override_timeout_from_param, OverrideTimeout, RcOverride,
+    RC_OVERRIDE_IGNORE, RC_OVERRIDE_RELEASE, RC_OVERRIDE_TIME_DEFAULT, RC_OVERRIDE_TIME_MAX,
+    RC_OVERRIDE_TIME_MIN,
 };
 pub use rcmap::{
     mapped_pwm, persist_stick_trims, rcmap_channel_valid, rcmap_index, set_and_save_radio_trim,
