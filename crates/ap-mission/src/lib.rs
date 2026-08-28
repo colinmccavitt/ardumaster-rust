@@ -45,6 +45,13 @@ pub use loiter_time::{
     MAV_CMD_NAV_LOITER_TIME,
 };
 
+mod loiter_to_alt;
+pub use loiter_to_alt::{
+    do_loiter_to_alt, is_nav_loiter_to_alt, loiter_to_alt_cmd, loiter_to_alt_reached,
+    verify_loiter_to_alt, DoLoiterToAltInputs, DoLoiterToAltOutput, VerifyLoiterToAltInputs,
+    VerifyLoiterToAltOutput, LOITER_TO_ALT_BAND_CM, MAV_CMD_NAV_LOITER_TO_ALT,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
