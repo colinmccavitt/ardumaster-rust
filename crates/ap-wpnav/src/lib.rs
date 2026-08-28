@@ -21,6 +21,11 @@
 //! A spline dest is [`set_spline_destination_ned_m`](WpNav::set_spline_destination_ned_m):
 //! same re-init and terrain-frame rules as the straight dest setter, then
 //! leftover origin / destination velocity vectors for `SplineCurve`.
+//! The next-leg preload is
+//! [`set_spline_destination_next_ned_m`](WpNav::set_spline_destination_next_ned_m):
+//! skip when the next dest terrain frame mismatches, then leftover
+//! `_spline_next_leg` origin / dest velocities and this-leg
+//! `set_destination_speed_max`.
 //!
 //! # What this crate does not own
 //!

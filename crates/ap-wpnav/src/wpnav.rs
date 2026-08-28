@@ -1,4 +1,4 @@
-//! Constructor, destination set, `update_wpnav`, `advance_wp_target_along_track`, and `set_spline_destination_NED_m` leftover.
+//! Constructor, destination set, `update_wpnav`, `advance_wp_target_along_track`, `set_spline_destination_NED_m`, and `set_spline_destination_next_NED_m` leftover.
 
 use ap_math::control::{shape_vel_accel, update_vel_accel};
 use ap_math::location::{get_bearing_cd, get_bearing_rad};
@@ -282,6 +282,11 @@ pub struct WpNav {
     spline_this_leg_set: bool,
     spline_origin_vel_ned_ms: Vector3f,
     spline_destination_vel_ned_ms: Vector3f,
+    spline_next_leg_set: bool,
+    spline_next_destination_ned_m: Vector3f,
+    spline_next_origin_vel_ned_ms: Vector3f,
+    spline_next_destination_vel_ned_ms: Vector3f,
+    need_this_leg_dest_speed_max: bool,
 }
 
 impl Default for WpNav {
@@ -341,6 +346,11 @@ impl WpNav {
             spline_this_leg_set: false,
             spline_origin_vel_ned_ms: Vector3f::zero(),
             spline_destination_vel_ned_ms: Vector3f::zero(),
+            spline_next_leg_set: false,
+            spline_next_destination_ned_m: Vector3f::zero(),
+            spline_next_origin_vel_ned_ms: Vector3f::zero(),
+            spline_next_destination_vel_ned_ms: Vector3f::zero(),
+            need_this_leg_dest_speed_max: false,
         }
     }
 
@@ -478,6 +488,39 @@ impl WpNav {
     #[must_use]
     pub fn spline_destination_vel_ned_ms(&self) -> Vector3f {
         self.spline_destination_vel_ned_ms
+    }
+
+    /// True after `set_spline_destination_next_NED_m` asked for a new
+    /// next-leg `SplineCurve::set_origin_and_destination`. The curve
+    /// object stays in `ap-math`.
+    #[must_use]
+    pub fn spline_next_leg_set(&self) -> bool {
+        self.spline_next_leg_set
+    }
+
+    /// Next-leg destination leftover forwarded to `_spline_next_leg`, NED m.
+    #[must_use]
+    pub fn spline_next_destination_ned_m(&self) -> Vector3f {
+        self.spline_next_destination_ned_m
+    }
+
+    /// Next-leg origin velocity leftover forwarded to `_spline_next_leg`, NED m/s.
+    #[must_use]
+    pub fn spline_next_origin_vel_ned_ms(&self) -> Vector3f {
+        self.spline_next_origin_vel_ned_ms
+    }
+
+    /// Next-leg destination velocity leftover forwarded to `_spline_next_leg`, NED m/s.
+    #[must_use]
+    pub fn spline_next_destination_vel_ned_ms(&self) -> Vector3f {
+        self.spline_next_destination_vel_ned_ms
+    }
+
+    /// Leftover of this-leg `set_destination_speed_max` after a next spline
+    /// was preloaded (`_scurve_this_leg` or `_spline_this_leg`).
+    #[must_use]
+    pub fn need_this_leg_dest_speed_max(&self) -> bool {
+        self.need_this_leg_dest_speed_max
     }
 
     /// True if the preloaded next leg is a spline.
@@ -685,6 +728,11 @@ impl WpNav {
         self.spline_this_leg_set = false;
         self.spline_origin_vel_ned_ms = Vector3f::zero();
         self.spline_destination_vel_ned_ms = Vector3f::zero();
+        self.spline_next_leg_set = false;
+        self.spline_next_destination_ned_m = Vector3f::zero();
+        self.spline_next_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_next_destination_vel_ned_ms = Vector3f::zero();
+        self.need_this_leg_dest_speed_max = false;
 
         self.offset_vel_ms = self.wp_desired_speed_ne_ms;
         self.offset_accel_mss = 0.0;
@@ -770,6 +818,11 @@ impl WpNav {
         self.spline_this_leg_set = false;
         self.spline_origin_vel_ned_ms = Vector3f::zero();
         self.spline_destination_vel_ned_ms = Vector3f::zero();
+        self.spline_next_leg_set = false;
+        self.spline_next_destination_ned_m = Vector3f::zero();
+        self.spline_next_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_next_destination_vel_ned_ms = Vector3f::zero();
+        self.need_this_leg_dest_speed_max = false;
         self.flags.fast_waypoint = false;
         self.flags.reached_destination = false;
 
@@ -855,7 +908,72 @@ impl WpNav {
         self.last_arc_rad = 0.0;
         self.this_leg_is_spline = true;
         self.next_leg_is_spline = false;
+        self.spline_next_leg_set = false;
+        self.spline_next_destination_ned_m = Vector3f::zero();
+        self.spline_next_origin_vel_ned_ms = Vector3f::zero();
+        self.spline_next_destination_vel_ned_ms = Vector3f::zero();
+        self.need_this_leg_dest_speed_max = false;
         self.flags.reached_destination = false;
+
+        true
+    }
+
+    /// Sets the next spline segment from NED metre vectors.
+    ///
+    /// Upstream `AC_WPNav::set_spline_destination_next_NED_m`. Does not
+    /// add the next point when the next dest terrain frame does not
+    /// match the current leg (returns true, state unchanged).
+    /// `SplineCurve::set_speed_accel` / `set_origin_and_destination`
+    /// stay in `ap-math` (COP-003) — this slice records the leftover
+    /// origin / destination velocity vectors for `_spline_next_leg`,
+    /// marks `next_leg_is_spline`, and records that this-leg
+    /// `set_destination_speed_max` must run.
+    pub fn set_spline_destination_next_ned_m(
+        &mut self,
+        next_destination_ned_m: Vector3f,
+        next_is_terrain_alt: bool,
+        next_next_destination_ned_m: Vector3f,
+        next_next_is_terrain_alt: bool,
+        next_next_is_spline: bool,
+    ) -> bool {
+        // do not add next point if alt types don't match
+        if next_is_terrain_alt != self.is_terrain_alt {
+            return true;
+        }
+
+        // calculate origin and origin velocity vector
+        let origin_vector_ned_m = if self.this_leg_is_spline {
+            // leftover of `_spline_this_leg.get_destination_vel`
+            self.spline_destination_vel_ned_ms
+        } else {
+            self.destination_ned_m - self.origin_ned_m
+        };
+
+        // calculate destination velocity vector
+        let destination_vector_ned_m = if next_is_terrain_alt == next_next_is_terrain_alt {
+            if next_next_is_spline {
+                next_next_destination_ned_m - self.destination_ned_m
+            } else {
+                next_next_destination_ned_m - next_destination_ned_m
+            }
+        } else {
+            Vector3f::zero()
+        };
+
+        // `_spline_next_leg.set_speed_accel` / `set_origin_and_destination`
+        // stay in ap-math. Record leftover vectors that leftover would consume.
+        self.spline_next_destination_ned_m = next_destination_ned_m;
+        self.spline_next_origin_vel_ned_ms = origin_vector_ned_m;
+        self.spline_next_destination_vel_ned_ms = destination_vector_ned_m;
+        self.spline_next_leg_set = true;
+        self.next_leg_is_spline = true;
+
+        // next destination provided so fast waypoint
+        self.flags.fast_waypoint = true;
+
+        // leftover of this-leg `set_destination_speed_max` to match
+        // `_spline_next_leg.get_origin_speed_max` (scurve or spline).
+        self.need_this_leg_dest_speed_max = true;
 
         true
     }
