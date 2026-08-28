@@ -170,12 +170,12 @@ fn takeoff_and_waypoint_controller_gates() {
 #[test]
 fn catalog_marks_controllers_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 13);
+    assert_eq!(on_main, 14);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 5);
+    assert_eq!(remaining, 4);
     assert!(completeness_has(
         "position / takeoff / waypoint controllers",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
     assert!(completeness_has(
         "assisted-flight latch extras",
@@ -183,7 +183,7 @@ fn catalog_marks_controllers_this_slice_and_leaves_other_rows() {
     ));
     assert!(completeness_has(
         "land-sequence predicates",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     assert_eq!(POSITION2_DIST_THRESHOLD_M as i32, 10);
     assert_eq!(POSITION2_TARGET_SPEED_MS as i32, 3);

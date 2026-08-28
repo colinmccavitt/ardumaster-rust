@@ -2,11 +2,10 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover position / takeoff /
-//! waypoint controllers (`vtol_position_controller` /
-//! `takeoff_controller` / `waypoint_controller`).
-//! [`PortStatus::Remaining`] are leftover `quadplane.cpp` / `.h`
-//! surfaces not yet stubbed (land-sequence predicates, motors/hold,
+//! be redone. [`PortStatus::ThisSlice`] is leftover land-sequence
+//! predicates (`in_vtol_land_approach` / descent / final / sequence /
+//! poscontrol / airbrake). [`PortStatus::Remaining`] are leftover
+//! `quadplane.cpp` / `.h` surfaces not yet stubbed (motors/hold,
 //! guided/QRTL, thrust-loss, TECS leftovers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
@@ -107,13 +106,13 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "position / takeoff / waypoint controllers",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "position_controller.rs vtol_position_controller / takeoff_controller / waypoint_controller",
     },
     QuadPlanePortItem {
         name: "land-sequence predicates",
-        status: PortStatus::Remaining,
-        note: "in_vtol_land_approach / descent / final / sequence / poscontrol / airbrake (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "land_sequence.rs in_vtol_land_approach / descent / final / sequence / poscontrol / airbrake",
     },
     QuadPlanePortItem {
         name: "AUTO mission VTOL",
@@ -612,9 +611,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 13);
+        assert_eq!(on_main, 14);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 5);
+        assert_eq!(remaining, 4);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -634,13 +633,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "position / takeoff / waypoint controllers",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "land-sequence predicates",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 13);
+        assert_eq!(on_main_items().count(), 14);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 5);
+        assert_eq!(remaining_items().count(), 4);
     }
 
     #[test]

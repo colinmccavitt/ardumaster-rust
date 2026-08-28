@@ -5,12 +5,14 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover assisted-flight latch extras already landed. This slice:
-//! leftover `vtol_position_controller` / `takeoff_controller` /
-//! `waypoint_controller` on [`crate::position_controller`].
+//! Leftover position / takeoff / waypoint controllers already landed.
+//! This slice: leftover land-sequence predicates on
+//! [`crate::land_sequence`] (`in_vtol_land_approach` / descent /
+//! final / sequence / poscontrol / airbrake).
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
-//! leftover Q_OPTIONS, assist latches, motor-test, tailsitter
-//! completeness, or the leftover catalog helpers for remaining rows.
+//! leftover Q_OPTIONS, assist latches, position controllers,
+//! motor-test, tailsitter completeness, or the leftover catalog
+//! helpers for remaining rows.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -28,6 +30,7 @@ pub mod air_mode;
 pub mod auto_vtol;
 pub mod completeness;
 pub mod landing;
+pub mod land_sequence;
 pub mod logging;
 pub mod mode_q;
 pub mod mode_qautotune;
