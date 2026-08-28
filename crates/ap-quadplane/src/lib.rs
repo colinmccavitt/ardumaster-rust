@@ -5,10 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::should_relax`] / [`QuadPlane::land_detector`]
-//! / [`QuadPlane::check_land_complete`] / [`QuadPlane::check_land_final`]
-//! (`Q_LAND_ALTCHG` landing-detect) and [`QuadPlane::do_user_takeoff`]
-//! (GUIDED user takeoff). It does not rewrite motor-test or throttle mix.
+//! Landing-detect / user-takeoff already landed. This slice:
+//! [`completeness`] starts the leftover `quadplane.cpp` / `.h` catalog
+//! (`Q_OPTIONS` bits, assisted-flight latch extras, logging,
+//! land-sequence predicates, AUTO mission VTOL, motors/hold, guided/QRTL).
+//! It does not rewrite setup, air-mode, landing, motor-test, or the
+//! other on-main modules.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -24,6 +26,7 @@
 
 pub mod air_mode;
 pub mod completeness;
+pub mod quadplane_completeness;
 pub mod landing;
 pub mod mode_q;
 pub mod motor_test;
