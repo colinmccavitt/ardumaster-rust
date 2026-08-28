@@ -41,6 +41,15 @@
 //! `set_FW_roll_pitch`). [`in_vtol_transition`] is the 1 s
 //! `last_vtol_mode_ms` window used by that leftover and by
 //! [`PitchLimit::allow_stick_mixing`].
+//!
+//! The `Tailsitter_Transition` FSM is [`TailsitterTransition`]
+//! (`ANGLE_WAIT_FW` / `ANGLE_WAIT_VTOL` / `DONE`). The leftover
+//! complete predicates — disarmed, roll-error, 1.5× timeout, and
+//! the vectored zero-throttle VTOL shortcut — live there; the
+//! pitch-angle half stays on [`crate::transition::TransitionRamp`].
+//! `update` / `VTOL_update` / `show_vtol_view` /
+//! `get_mav_vtol_state` / `restart` / `force_transition_complete`
+//! / [`Tailsitter::is_in_fw_flight`] are this slice.
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -1199,4 +1208,592 @@ impl PitchLimit {
         }
         true
     }
+}
+
+/// Minimum `|roll|` that ends a tailsitter transition, in centidegrees.
+///
+/// Upstream `MAX(4500, plane.roll_limit_cd + 500)` floor.
+pub const ROLL_ERROR_FLOOR_CD: i32 = 4500;
+
+/// Added to `roll_limit_cd` before the [`ROLL_ERROR_FLOOR_CD`] max.
+pub const ROLL_ERROR_MARGIN_CD: i32 = 500;
+
+/// `transition_*_complete` timeout scale: `1.5 * 1000 ms`.
+///
+/// Upstream `((angle ± initial_pitch*0.01) / rate) * 1500`.
+pub const TRANSITION_TIMEOUT_SCALE: f32 = 1500.0;
+
+/// Vectored VTOL complete: `get_pilot_throttle() < 0.05`.
+pub const VTOL_ZERO_THROTTLE: f32 = 0.05;
+
+/// Vectored VTOL complete: `ahrs.groundspeed() < 1.0` m/s.
+pub const VTOL_ZERO_GROUNDSPEED_MS: f32 = 1.0;
+
+/// Inverted-flight roll fold, upstream `18000 - labs(roll_sensor)`.
+pub const INVERTED_ROLL_CD: i32 = 18000;
+
+/// Why [`TailsitterTransition::transition_fw_complete`] /
+/// [`TailsitterTransition::transition_vtol_complete`] returned true.
+///
+/// The pitch-angle half is already on
+/// [`crate::transition::TransitionRamp::angle_complete`]. This is the
+/// leftover: disarmed, roll-error, 1.5× timeout, and the vectored
+/// zero-throttle VTOL shortcut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompleteReason {
+    /// `!arming.is_armed_and_safety_off()` — instant, no GCS text.
+    Disarmed,
+    /// `|pitch| > transition_angle * 100`.
+    Pitch,
+    /// `|roll|` (or inverted fold) past [`roll_error_limit_cd`].
+    RollError,
+    /// Elapsed time past the 1.5× rate-limit budget.
+    Timeout,
+    /// Vectored, pilot throttle under [`VTOL_ZERO_THROTTLE`],
+    /// groundspeed under [`VTOL_ZERO_GROUNDSPEED_MS`].
+    ZeroThrottle,
+}
+
+/// `Tailsitter_Transition::State`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TailsitterTransitionState {
+    /// VTOL → FW pitch-down wait. Upstream `ANGLE_WAIT_FW = 0`.
+    AngleWaitFw = 0,
+    /// FW → VTOL pitch-up wait. Upstream `ANGLE_WAIT_VTOL = 1`.
+    AngleWaitVtol = 1,
+    /// Transition finished. Upstream `DONE = 2`.
+    Done = 2,
+}
+
+/// Attitude / arming sample the complete predicates read.
+#[derive(Debug, Clone, Copy)]
+pub struct TransitionCompleteSample {
+    /// `plane.arming.is_armed_and_safety_off()`.
+    pub armed_and_safety_off: bool,
+    /// `ahrs.pitch_sensor` (centidegrees).
+    pub pitch_cd: i32,
+    /// `ahrs.roll_sensor` (centidegrees).
+    pub roll_cd: i32,
+    /// `plane.roll_limit_cd`.
+    pub roll_limit_cd: i32,
+    /// `AP_HAL::millis()`.
+    pub now_ms: u32,
+    /// `_is_vectored` — VTOL zero-throttle shortcut only.
+    pub is_vectored: bool,
+    /// `quadplane.get_pilot_throttle()` (0..1).
+    pub pilot_throttle: f32,
+    /// `ahrs.groundspeed()` (m/s).
+    pub groundspeed_ms: f32,
+    /// `plane.fly_inverted()`.
+    pub fly_inverted: bool,
+}
+
+impl TransitionCompleteSample {
+    /// Armed, level, 45° roll limit, moving, mid throttle.
+    #[must_use]
+    pub const fn armed_level() -> Self {
+        Self {
+            armed_and_safety_off: true,
+            pitch_cd: 0,
+            roll_cd: 0,
+            roll_limit_cd: 4500,
+            now_ms: 0,
+            is_vectored: false,
+            pilot_throttle: 0.5,
+            groundspeed_ms: 10.0,
+            fly_inverted: false,
+        }
+    }
+}
+
+/// Result of [`TailsitterTransition::update`] (FW-mode cycle).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransitionFwUpdate {
+    /// `TECS_controller.use_synthetic_airspeed()` this cycle.
+    ///
+    /// Latched from state *before* a same-cycle complete.
+    pub use_synthetic_airspeed: bool,
+    /// Forced true while still in `ANGLE_WAIT_FW`.
+    pub assisted_flight: bool,
+    /// Commanded pitch while waiting. `None` when not ramping.
+    pub nav_pitch_cd: Option<i32>,
+    /// Commanded roll while waiting. `None` when not ramping.
+    pub nav_roll_cd: Option<i32>,
+    /// `MAX(hover, current)` while waiting. `None` when not ramping.
+    pub throttle: Option<f32>,
+    /// Armed complete this cycle — start the FW pitch-down leftover.
+    pub start_fw_limit: bool,
+    /// Why we completed, if we did.
+    pub completed: Option<CompleteReason>,
+}
+
+/// Result of [`TailsitterTransition::vtol_update`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionVtolUpdate {
+    /// Still in `ANGLE_WAIT_VTOL` (complete returned false).
+    pub still_waiting: bool,
+    /// Assistance while the nose-up wait is running.
+    pub assisted_flight: bool,
+    /// Armed complete this cycle — start the VTOL pitch-forward leftover.
+    pub start_vtol_limit: bool,
+    /// Why we completed the VTOL wait, if we did.
+    pub completed: Option<CompleteReason>,
+}
+
+/// `Tailsitter_Transition` state machine, upstream `tailsitter.cpp`.
+///
+/// Holds `ANGLE_WAIT_FW` / `ANGLE_WAIT_VTOL` / `DONE`, the transition
+/// timestamps, and the leftover complete predicates (roll-error,
+/// 1.5× timeout, disarmed, vectored zero-throttle). The pitch / throttle
+/// *ramp* stays on [`crate::transition::TransitionRamp`]; this object
+/// owns the FSM that *calls* those ramps.
+///
+/// After QuadPlane `setup`, upstream `force_transition_complete()` so
+/// [`Self::new`] starts in [`TailsitterTransitionState::Done`].
+#[derive(Debug, Clone, Copy)]
+pub struct TailsitterTransition {
+    state: TailsitterTransitionState,
+    ramp: crate::transition::TransitionRamp,
+    vtol_transition_start_ms: u32,
+    vtol_transition_initial_pitch: f32,
+    fw_transition_start_ms: u32,
+    fw_transition_initial_pitch: f32,
+    last_vtol_mode_ms: u32,
+    vtol_limit_start_ms: u32,
+    fw_limit_start_ms: u32,
+}
+
+impl Default for TailsitterTransition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TailsitterTransition {
+    /// Post-`setup` object: `force_transition_complete` has run.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: TailsitterTransitionState::Done,
+            ramp: crate::transition::TransitionRamp::new(),
+            vtol_transition_start_ms: 0,
+            vtol_transition_initial_pitch: 0.0,
+            fw_transition_start_ms: 0,
+            fw_transition_initial_pitch: 0.0,
+            last_vtol_mode_ms: 0,
+            vtol_limit_start_ms: 0,
+            fw_limit_start_ms: 0,
+        }
+    }
+
+    /// Current `transition_state`.
+    #[must_use]
+    pub const fn state(&self) -> TailsitterTransitionState {
+        self.state
+    }
+
+    /// Upstream `complete()` — `transition_state == DONE`.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        matches!(self.state, TailsitterTransitionState::Done)
+    }
+
+    /// Upstream `get_log_transition_state`.
+    #[must_use]
+    pub const fn get_log_transition_state(&self) -> u8 {
+        self.state as u8
+    }
+
+    /// Upstream `active_frwd` — `transition_state == ANGLE_WAIT_FW`.
+    #[must_use]
+    pub const fn active_frwd(&self) -> bool {
+        matches!(self.state, TailsitterTransitionState::AngleWaitFw)
+    }
+
+    /// Pitch / throttle ramp parameters this FSM uses.
+    #[must_use]
+    pub const fn ramp(&self) -> crate::transition::TransitionRamp {
+        self.ramp
+    }
+
+    /// Mutable ramp (tests poke `Q_TAILSIT_ANGLE` / `RAT_*`).
+    #[must_use]
+    pub fn ramp_mut(&mut self) -> &mut crate::transition::TransitionRamp {
+        &mut self.ramp
+    }
+
+    /// `vtol_transition_start_ms`.
+    #[must_use]
+    pub const fn vtol_transition_start_ms(&self) -> u32 {
+        self.vtol_transition_start_ms
+    }
+
+    /// `fw_transition_start_ms`.
+    #[must_use]
+    pub const fn fw_transition_start_ms(&self) -> u32 {
+        self.fw_transition_start_ms
+    }
+
+    /// `last_vtol_mode_ms`.
+    #[must_use]
+    pub const fn last_vtol_mode_ms(&self) -> u32 {
+        self.last_vtol_mode_ms
+    }
+
+    /// `vtol_limit_start_ms` stamped by an armed [`Self::vtol_update`] complete.
+    #[must_use]
+    pub const fn vtol_limit_start_ms(&self) -> u32 {
+        self.vtol_limit_start_ms
+    }
+
+    /// `fw_limit_start_ms` stamped by an armed [`Self::update`] complete.
+    #[must_use]
+    pub const fn fw_limit_start_ms(&self) -> u32 {
+        self.fw_limit_start_ms
+    }
+
+    /// Upstream `Tailsitter::is_in_fw_flight`.
+    ///
+    /// `enabled && !in_vtol_mode && transition_state == DONE`.
+    #[must_use]
+    pub const fn is_in_fw_flight(&self, enabled: bool, in_vtol_mode: bool) -> bool {
+        enabled && !in_vtol_mode && self.complete()
+    }
+
+    /// Upstream `Tailsitter_Transition::show_vtol_view`.
+    ///
+    /// VTOL mode is hidden while still pitching up (`ANGLE_WAIT_VTOL`).
+    /// FW mode still shows the VTOL view while pitching down
+    /// (`ANGLE_WAIT_FW`).
+    #[must_use]
+    pub const fn show_vtol_view(&self, in_vtol_mode: bool) -> bool {
+        if in_vtol_mode && matches!(self.state, TailsitterTransitionState::AngleWaitVtol) {
+            return false;
+        }
+        if !in_vtol_mode && matches!(self.state, TailsitterTransitionState::AngleWaitFw) {
+            return true;
+        }
+        in_vtol_mode
+    }
+
+    /// Upstream `Tailsitter_Transition::get_mav_vtol_state`.
+    #[must_use]
+    pub const fn get_mav_vtol_state(&self, in_vtol_mode: bool) -> crate::air_mode::MavVtolState {
+        match self.state {
+            TailsitterTransitionState::AngleWaitVtol => {
+                crate::air_mode::MavVtolState::TransitionToMc
+            }
+            TailsitterTransitionState::Done => crate::air_mode::MavVtolState::Fw,
+            TailsitterTransitionState::AngleWaitFw => {
+                if in_vtol_mode {
+                    crate::air_mode::MavVtolState::Mc
+                } else {
+                    crate::air_mode::MavVtolState::TransitionToFw
+                }
+            }
+        }
+    }
+
+    /// Upstream `Tailsitter_Transition::allow_weathervane`.
+    ///
+    /// `in_vtol_transition` is the `now == 0` form (ANGLE_WAIT_VTOL
+    /// only). Weathervane waits until the VTOL leftover has also
+    /// cleared (`vtol_limit_start_ms == 0`).
+    #[must_use]
+    pub const fn allow_weathervane(&self, in_vtol_transition: bool) -> bool {
+        !in_vtol_transition && self.vtol_limit_start_ms == 0
+    }
+
+    /// Upstream `Tailsitter_Transition::restart`.
+    ///
+    /// `attitude_target_pitch_cd` is
+    /// `attitude_control->get_attitude_target_quat().get_euler_pitch()
+    /// * degrees(100)` — already in centidegrees, then clamped to
+    /// ±[`crate::transition::PITCH_CD_LIMIT`].
+    pub fn restart(&mut self, now_ms: u32, attitude_target_pitch_cd: f32) {
+        self.state = TailsitterTransitionState::AngleWaitFw;
+        self.fw_transition_start_ms = now_ms;
+        let limit = crate::transition::PITCH_CD_LIMIT as f32;
+        self.fw_transition_initial_pitch = constrain_f32(attitude_target_pitch_cd, -limit, limit);
+    }
+
+    /// Upstream `Tailsitter_Transition::force_transition_complete`.
+    ///
+    /// `nav_pitch_cd` is clamped to ±[`crate::transition::PITCH_CD_LIMIT`]
+    /// and stored as the next VTOL-transition start. Clears
+    /// `fw_limit_start_ms`.
+    pub fn force_transition_complete(&mut self, now_ms: u32, nav_pitch_cd: i32) {
+        self.state = TailsitterTransitionState::Done;
+        self.vtol_transition_start_ms = now_ms;
+        let limit = crate::transition::PITCH_CD_LIMIT as f32;
+        self.vtol_transition_initial_pitch = constrain_f32(nav_pitch_cd as f32, -limit, limit);
+        self.fw_limit_start_ms = 0;
+    }
+
+    /// Upstream `Tailsitter::transition_fw_complete`.
+    ///
+    /// Order: disarmed, pitch, roll-error, 1.5× timeout. `None` is
+    /// still waiting.
+    #[must_use]
+    pub fn transition_fw_complete(
+        &self,
+        sample: &TransitionCompleteSample,
+    ) -> Option<CompleteReason> {
+        if !sample.armed_and_safety_off {
+            return Some(CompleteReason::Disarmed);
+        }
+        if self
+            .ramp
+            .angle_complete(crate::transition::TransitionKind::ToFw, sample.pitch_cd)
+        {
+            return Some(CompleteReason::Pitch);
+        }
+        if roll_past_error(sample.roll_cd, sample.roll_limit_cd, false) {
+            return Some(CompleteReason::RollError);
+        }
+        if elapsed_past_timeout(
+            sample.now_ms,
+            self.fw_transition_start_ms,
+            fw_timeout_ms(
+                self.ramp.angle_fw(),
+                self.fw_transition_initial_pitch,
+                self.ramp.rate_fw(),
+            ),
+        ) {
+            return Some(CompleteReason::Timeout);
+        }
+        None
+    }
+
+    /// Upstream `Tailsitter::transition_vtol_complete`.
+    ///
+    /// Order: disarmed, vectored zero-throttle, pitch (`ANG_VT`
+    /// fallback), inverted roll-error, 1.5× timeout. `None` is still
+    /// waiting.
+    #[must_use]
+    pub fn transition_vtol_complete(
+        &self,
+        sample: &TransitionCompleteSample,
+    ) -> Option<CompleteReason> {
+        if !sample.armed_and_safety_off {
+            return Some(CompleteReason::Disarmed);
+        }
+        if sample.is_vectored
+            && sample.pilot_throttle < VTOL_ZERO_THROTTLE
+            && sample.groundspeed_ms < VTOL_ZERO_GROUNDSPEED_MS
+        {
+            return Some(CompleteReason::ZeroThrottle);
+        }
+        if self
+            .ramp
+            .angle_complete(crate::transition::TransitionKind::ToVtol, sample.pitch_cd)
+        {
+            return Some(CompleteReason::Pitch);
+        }
+        if roll_past_error(sample.roll_cd, sample.roll_limit_cd, sample.fly_inverted) {
+            return Some(CompleteReason::RollError);
+        }
+        if elapsed_past_timeout(
+            sample.now_ms,
+            self.vtol_transition_start_ms,
+            vtol_timeout_ms(
+                self.ramp.get_transition_angle_vtol(),
+                self.vtol_transition_initial_pitch,
+                self.ramp.rate_vtol(),
+            ),
+        ) {
+            return Some(CompleteReason::Timeout);
+        }
+        None
+    }
+
+    /// Upstream `Tailsitter_Transition::update` (fixed-wing mode).
+    ///
+    /// `ANGLE_WAIT_FW` ramps pitch down via
+    /// [`crate::transition::TransitionRamp::pitch_cd`] and holds
+    /// throttle at `MAX(hover, current)`. Completing while armed
+    /// stamps `fw_limit_start_ms`.
+    pub fn update(
+        &mut self,
+        sample: &TransitionCompleteSample,
+        inverted: bool,
+        hover: f32,
+        current_throttle: f32,
+    ) -> TransitionFwUpdate {
+        let use_synthetic_airspeed = !matches!(self.state, TailsitterTransitionState::Done);
+        if !matches!(self.state, TailsitterTransitionState::AngleWaitFw) {
+            return TransitionFwUpdate {
+                use_synthetic_airspeed,
+                assisted_flight: false,
+                nav_pitch_cd: None,
+                nav_roll_cd: None,
+                throttle: None,
+                start_fw_limit: false,
+                completed: None,
+            };
+        }
+        if let Some(reason) = self.transition_fw_complete(sample) {
+            self.state = TailsitterTransitionState::Done;
+            let start_fw_limit = sample.armed_and_safety_off;
+            if start_fw_limit {
+                self.fw_limit_start_ms = sample.now_ms;
+            }
+            return TransitionFwUpdate {
+                use_synthetic_airspeed,
+                assisted_flight: false,
+                nav_pitch_cd: None,
+                nav_roll_cd: None,
+                throttle: None,
+                start_fw_limit,
+                completed: Some(reason),
+            };
+        }
+        let dt = sample.now_ms.wrapping_sub(self.fw_transition_start_ms);
+        let nav_pitch_cd = self.ramp.pitch_cd(
+            crate::transition::TransitionKind::ToFw,
+            self.fw_transition_initial_pitch,
+            dt,
+            inverted,
+        );
+        let throttle = self.ramp.throttle(
+            crate::transition::TransitionKind::ToFw,
+            hover,
+            0.0,
+            current_throttle,
+        );
+        TransitionFwUpdate {
+            use_synthetic_airspeed,
+            assisted_flight: true,
+            nav_pitch_cd: Some(nav_pitch_cd),
+            nav_roll_cd: Some(0),
+            throttle: Some(throttle),
+            start_fw_limit: false,
+            completed: None,
+        }
+    }
+
+    /// Upstream `Tailsitter_Transition::VTOL_update`.
+    ///
+    /// More than [`LAST_VTOL_MODE_MS`] since the last VTOL cycle
+    /// enters `ANGLE_WAIT_VTOL`. Completing while armed stamps
+    /// `vtol_limit_start_ms`. Either way (except an incomplete wait)
+    /// [`Self::restart`] sets up the next FW transition.
+    ///
+    /// `attitude_target_pitch_cd` is forwarded to [`Self::restart`].
+    pub fn vtol_update(
+        &mut self,
+        sample: &TransitionCompleteSample,
+        attitude_target_pitch_cd: f32,
+    ) -> TransitionVtolUpdate {
+        let now = sample.now_ms;
+        if now.wrapping_sub(self.last_vtol_mode_ms) > LAST_VTOL_MODE_MS {
+            self.state = TailsitterTransitionState::AngleWaitVtol;
+        }
+        self.last_vtol_mode_ms = now;
+
+        if matches!(self.state, TailsitterTransitionState::AngleWaitVtol) {
+            if let Some(reason) = self.transition_vtol_complete(sample) {
+                let start_vtol_limit = sample.armed_and_safety_off;
+                if start_vtol_limit {
+                    self.vtol_limit_start_ms = now;
+                }
+                self.restart(now, attitude_target_pitch_cd);
+                return TransitionVtolUpdate {
+                    still_waiting: false,
+                    assisted_flight: true,
+                    start_vtol_limit,
+                    completed: Some(reason),
+                };
+            }
+            return TransitionVtolUpdate {
+                still_waiting: true,
+                assisted_flight: true,
+                start_vtol_limit: false,
+                completed: None,
+            };
+        }
+        self.restart(now, attitude_target_pitch_cd);
+        TransitionVtolUpdate {
+            still_waiting: false,
+            assisted_flight: false,
+            start_vtol_limit: false,
+            completed: None,
+        }
+    }
+
+    /// Upstream `set_FW_roll_pitch` nose-up half (`in_vtol_transition`).
+    ///
+    /// The `DONE` / `fw_limit_*` leftover stays on [`PitchLimit`]. When
+    /// not in the VTOL transition and state is `DONE`, this only
+    /// restamps `vtol_transition_start_ms` / initial pitch so the next
+    /// nose-up starts from the current demand.
+    pub fn set_fw_roll_pitch(
+        &mut self,
+        nav_pitch_cd: &mut i32,
+        nav_roll_cd: &mut i32,
+        now_ms: u32,
+        in_vtol_transition: bool,
+    ) {
+        if in_vtol_transition {
+            let dt = now_ms.wrapping_sub(self.vtol_transition_start_ms);
+            *nav_pitch_cd = self.ramp.pitch_cd(
+                crate::transition::TransitionKind::ToVtol,
+                self.vtol_transition_initial_pitch,
+                dt,
+                false,
+            );
+            *nav_roll_cd = 0;
+        } else if matches!(self.state, TailsitterTransitionState::Done) {
+            self.vtol_transition_start_ms = now_ms;
+            let limit = crate::transition::PITCH_CD_LIMIT as f32;
+            self.vtol_transition_initial_pitch = constrain_f32(*nav_pitch_cd as f32, -limit, limit);
+        }
+    }
+}
+
+impl Tailsitter {
+    /// Upstream `Tailsitter::is_in_fw_flight`.
+    ///
+    /// `enabled && !in_vtol_mode && transition_state == DONE`.
+    #[must_use]
+    pub const fn is_in_fw_flight(&self, in_vtol_mode: bool, transition_done: bool) -> bool {
+        self.enabled() && !in_vtol_mode && transition_done
+    }
+}
+
+/// Upstream `MAX(4500, roll_limit_cd + 500)`.
+#[must_use]
+pub const fn roll_error_limit_cd(roll_limit_cd: i32) -> i32 {
+    let extra = roll_limit_cd.saturating_add(ROLL_ERROR_MARGIN_CD);
+    if extra > ROLL_ERROR_FLOOR_CD {
+        extra
+    } else {
+        ROLL_ERROR_FLOOR_CD
+    }
+}
+
+fn roll_abs_cd(roll_cd: i32, fly_inverted: bool) -> i32 {
+    let abs_roll = roll_cd.unsigned_abs() as i32;
+    if fly_inverted {
+        INVERTED_ROLL_CD - abs_roll
+    } else {
+        abs_roll
+    }
+}
+
+fn roll_past_error(roll_cd: i32, roll_limit_cd: i32, fly_inverted: bool) -> bool {
+    roll_abs_cd(roll_cd, fly_inverted) > roll_error_limit_cd(roll_limit_cd)
+}
+
+fn fw_timeout_ms(angle_fw: i8, initial_pitch_cd: f32, rate_fw: f32) -> f32 {
+    (f32::from(angle_fw) + initial_pitch_cd * 0.01) / rate_fw * TRANSITION_TIMEOUT_SCALE
+}
+
+fn vtol_timeout_ms(angle_vtol: i8, initial_pitch_cd: f32, rate_vtol: f32) -> f32 {
+    (f32::from(angle_vtol) - initial_pitch_cd * 0.01) / rate_vtol * TRANSITION_TIMEOUT_SCALE
+}
+
+fn elapsed_past_timeout(now_ms: u32, start_ms: u32, timeout_ms: f32) -> bool {
+    now_ms.wrapping_sub(start_ms) as f32 > timeout_ms
 }
