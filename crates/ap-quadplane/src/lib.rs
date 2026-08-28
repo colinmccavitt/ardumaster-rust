@@ -5,12 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::classify_frame`] / `Q_FRAME_CLASS` frame
-//! selection. `setup()` picks tailsitter / tiltrotor / multicopter from
-//! `Q_FRAME_CLASS` plus `Q_TAILSIT_ENABLE` / `Q_TILT_ENABLE`, and
-//! records the motors object kind (`AP_MotorsMatrix` /
-//! `AP_MotorsTri` / `AP_MotorsTailsitter`). It does not rewrite
-//! ap-motors mixing or the tailsitter module.
+//! This slice: [`QuadPlane::update_throttle_mix`] and TIMER
+//! tilt-wait before forward flight. Transition owns mix during
+//! assisted `AIRSPEED_WAIT` / `TIMER`; otherwise mix follows the
+//! land-check / manual-throttle table. Completing TIMER waits for
+//! `tilt_fwd_complete`. It does not rewrite `setup()` frame-class
+//! or weathervane.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -27,6 +27,7 @@
 pub mod air_mode;
 pub mod poscontrol;
 pub mod tailsitter;
+pub mod throttle;
 pub mod transition;
 pub mod transition_fsm;
 pub mod vtol_mode;
