@@ -92,7 +92,9 @@ use crate::airspeed_offset_calibration_hookup::{
     airspeed_offset_calibration_tick, AirspeedOffsetCalibrationInputs,
 };
 use crate::airspeed_analog_hookup::AirspeedAnalogHookup;
+use crate::airspeed_type_hookup::select_airspeed_backend;
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
+use ap_airspeed::backend::{AirspeedBackendKind, ARSPD_TYPE_SITL};
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
 use ap_airspeed::sitl::{
@@ -263,6 +265,12 @@ pub struct PlaneMainLoop {
     pub airspeed_autocal: u8,
     /// Primary ARSPD_SKIP_CAL, skip startup / requested pitot offset cal.
     pub airspeed_skip_cal: bool,
+    /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
+    pub airspeed_type: u8,
+    /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
+    pub configured_airspeed_backend: AirspeedBackendKind,
+    /// Active airspeed backend after unported-type fallback.
+    pub active_airspeed_backend: AirspeedBackendKind,
     /// Optional analog airspeed backend, upstream `AP_Airspeed_Analog`.
     pub analog_airspeed: Option<AirspeedAnalogHookup>,
     /// Primary analog pin, upstream `ARSPD_PIN`.
@@ -599,6 +607,9 @@ impl Default for PlaneMainLoop {
             airspeed_temperature_c: ARSPD_TEMP_REF_C,
             airspeed_autocal: ARSPD_AUTOCAL_DEFAULT,
             airspeed_skip_cal: ARSPD_SKIP_CAL_DEFAULT,
+            airspeed_type: ARSPD_TYPE_SITL,
+            configured_airspeed_backend: AirspeedBackendKind::Sitl,
+            active_airspeed_backend: AirspeedBackendKind::Sitl,
             analog_airspeed: None,
             airspeed_pin: 0,
             airspeed_diff_pressure_pa: 0.0,
@@ -1046,6 +1057,23 @@ impl PlaneMainLoop {
             self.airspeed_pin = out.pin;
             self.airspeed_diff_pressure_pa = out.pressure_pa;
             self.airspeed_analog_have_pressure = out.have_pressure;
+        }
+        let sensor_type = self
+            .sitl_airspeed
+            .as_ref()
+            .map(|a| a.airspeed_params().primary_sensor_type())
+            .or_else(|| {
+                self.analog_airspeed
+                    .as_ref()
+                    .map(|a| a.airspeed_params().primary_sensor_type())
+            })
+            .unwrap_or(self.airspeed_type);
+        let typed = select_airspeed_backend(sensor_type);
+        self.airspeed_type = typed.sensor_type;
+        self.configured_airspeed_backend = typed.configured;
+        self.active_airspeed_backend = typed.active;
+        if !typed.enabled {
+            self.airspeed_use_for_control = false;
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);

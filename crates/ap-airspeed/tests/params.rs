@@ -1,3 +1,4 @@
+use ap_airspeed::backend::{ARSPD_TYPE_DEFAULT, ARSPD_TYPE_SITL};
 use ap_airspeed::params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };
@@ -28,6 +29,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.primary_pin(), 0);
     assert!((params.airspeed1.psi_range - 1.0).abs() < 1e-6);
     assert!((params.primary_psi_range() - 1.0).abs() < 1e-6);
+    assert_eq!(params.airspeed1.sensor_type, ARSPD_TYPE_SITL);
+    assert_eq!(params.primary_sensor_type(), ARSPD_TYPE_DEFAULT);
 }
 
 #[test]
@@ -57,6 +60,7 @@ fn instance_params_apply_to_sitl_config() {
         autocal: 1,
         pin: 13,
         psi_range: 2.0,
+        sensor_type: ARSPD_TYPE_SITL,
     }
     .apply_to_config();
     assert!(cfg.disabled);

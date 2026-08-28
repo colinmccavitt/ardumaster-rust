@@ -1,6 +1,7 @@
 //! Airspeed parameter table stub, upstream AP_Airspeed var_info. FW-010.
 
 use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
+use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
     SITL_AIRSPEED_MAX_INSTANCES,
@@ -29,6 +30,8 @@ pub struct AirspeedInstanceParams {
     pub pin: i8,
     /// Sensor PSI range, upstream `ARSPD_PSI_RANGE`.
     pub psi_range: f32,
+    /// Sensor backend type, upstream `ARSPD_TYPE`.
+    pub sensor_type: u8,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -44,6 +47,7 @@ impl Default for AirspeedInstanceParams {
             autocal: crate::sitl::ARSPD_AUTOCAL_DEFAULT,
             pin: ARSPD_PIN_DEFAULT,
             psi_range: ARSPD_PSI_RANGE_DEFAULT,
+            sensor_type: ARSPD_TYPE_DEFAULT,
         }
     }
 }
@@ -187,6 +191,16 @@ impl AirspeedParams {
             self.airspeed1.psi_range
         } else {
             self.airspeed2.psi_range
+        }
+    }
+
+    /// Primary instance `ARSPD_TYPE` / `ARSPD2_TYPE`.
+    #[must_use]
+    pub fn primary_sensor_type(&self) -> u8 {
+        if self.primary == 0 {
+            self.airspeed1.sensor_type
+        } else {
+            self.airspeed2.sensor_type
         }
     }
 }

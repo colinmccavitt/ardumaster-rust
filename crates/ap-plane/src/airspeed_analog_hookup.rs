@@ -68,6 +68,13 @@ impl AirspeedAnalogHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_TYPE` on the primary analog instance.
+    pub fn set_sensor_type(&mut self, sensor_type: u8) {
+        let mut params = self.params;
+        params.airspeed1.sensor_type = sensor_type;
+        self.apply_airspeed_params(params);
+    }
+
     /// Drive the mock analog source to a ratiometric voltage.
     pub fn set_voltage(&mut self, volts: f32) {
         let mut source = MockAnalogSource::new();

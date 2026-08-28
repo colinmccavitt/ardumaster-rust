@@ -7,6 +7,7 @@
 #![no_std]
 
 pub mod analog;
+pub mod backend;
 pub mod params;
 pub mod sitl;
 
@@ -23,6 +24,11 @@ pub use analog::{
     differential_pressure_pa, AnalogAirspeedBackend, AnalogAirspeedConfig,
     ARSPD_PIN_DEFAULT, ARSPD_PIN_DISABLED, ARSPD_PSI_RANGE_DEFAULT, ARSPD_TYPE_ANALOG,
     VOLTS_TO_PASCAL,
+};
+pub use backend::{
+    active_backend_kind, airspeed_type_enabled, backend_for_kind, backend_kind_from_type,
+    AirspeedBackendKind, ARSPD_TYPE_DEFAULT, ARSPD_TYPE_MS4525, ARSPD_TYPE_NONE,
+    ARSPD_TYPE_SITL,
 };
 pub use params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,

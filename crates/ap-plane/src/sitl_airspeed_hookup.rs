@@ -138,6 +138,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_TYPE` on every enabled instance.
+    pub fn set_sensor_type(&mut self, sensor_type: u8) {
+        let mut params = self.params;
+        params.airspeed1.sensor_type = sensor_type;
+        params.airspeed2.sensor_type = sensor_type;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
