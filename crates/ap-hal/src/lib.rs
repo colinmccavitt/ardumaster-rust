@@ -48,3 +48,4 @@ pub mod semaphore;
 pub mod serial;
 pub mod storage;
 pub mod time;
+pub mod util;
