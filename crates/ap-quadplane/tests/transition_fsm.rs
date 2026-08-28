@@ -3,7 +3,11 @@
 //! `get_mav_vtol_state` reports.
 
 use ap_quadplane::air_mode::MavVtolState;
-use ap_quadplane::transition_fsm::{SltTransition, TransitionPhase, TransitionState};
+use ap_quadplane::transition_fsm::{
+    back_transition_time_s, constrain_transition_time_ms, stopping_distance_m, SltTransition,
+    TransitionPhase, TransitionState, Q_TRANS_DECEL_DEFAULT, Q_TRANSITION_MS_DEFAULT,
+    Q_TRANSITION_MS_MAX, Q_TRANSITION_MS_MIN,
+};
 use ap_quadplane::QuadPlane;
 
 fn available_qp() -> QuadPlane {
@@ -29,6 +33,8 @@ fn new_zero_inits_to_airspeed_wait() {
     assert!(!fsm.in_forced_transition());
     assert_eq!(fsm.transition_start_ms(), 0);
     assert_eq!(fsm.transition_low_airspeed_ms(), 0);
+    assert_eq!(fsm.transition_time_ms(), Q_TRANSITION_MS_DEFAULT);
+    assert_eq!(fsm.transition_decel_mss(), Q_TRANS_DECEL_DEFAULT);
 }
 
 #[test]
@@ -134,4 +140,91 @@ fn quadplane_in_transition_needs_available() {
     let mut done = SltTransition::new();
     done.force_transition_complete();
     assert!(!qp.in_transition(&done));
+}
+
+#[test]
+fn q_transition_ms_default_and_constrain() {
+    assert_eq!(Q_TRANSITION_MS_DEFAULT, 5000);
+    assert_eq!(Q_TRANSITION_MS_MIN, 500);
+    assert_eq!(Q_TRANSITION_MS_MAX, 30000);
+    assert_eq!(constrain_transition_time_ms(5000), 5000);
+    assert_eq!(constrain_transition_time_ms(500), 500);
+    assert_eq!(constrain_transition_time_ms(30000), 30000);
+    assert_eq!(constrain_transition_time_ms(100), 500);
+    assert_eq!(constrain_transition_time_ms(-1), 500);
+    assert_eq!(constrain_transition_time_ms(i16::MAX), 30000);
+    let mut fsm = SltTransition::new();
+    assert_eq!(fsm.timer_duration_ms(), 5000);
+    fsm.set_transition_time_ms(100);
+    assert_eq!(fsm.timer_duration_ms(), 500);
+}
+
+#[test]
+fn airspeed_wait_lasts_until_airspeed_not_q_transition_ms() {
+    let mut fsm = SltTransition::new();
+    fsm.update_airspeed_wait(1, false, 0.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    assert_eq!(fsm.transition_start_ms(), 1);
+    // Well past Q_TRANSITION_MS with no airspeed: still waiting.
+    fsm.update_airspeed_wait(1 + 5_000 + 5_000, false, 0.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    assert_eq!(fsm.transition_start_ms(), 1);
+    fsm.update_airspeed_wait(20_000, true, 9.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    fsm.update_airspeed_wait(21_000, true, 10.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    fsm.update_airspeed_wait(22_000, true, 12.0, 10.0, true);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    fsm.update_airspeed_wait(23_000, true, 12.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    assert_eq!(fsm.transition_low_airspeed_ms(), 23_000);
+}
+
+#[test]
+fn timer_completes_after_constrained_q_transition_ms() {
+    let mut fsm = SltTransition::new();
+    fsm.update_airspeed_wait(1_000, true, 12.0, 10.0, false);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    assert_eq!(fsm.transition_low_airspeed_ms(), 1_000);
+    // Strict `>` — equal to the dwell is still TIMER.
+    fsm.update_timer(1_000 + fsm.timer_duration_ms(), true);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    fsm.update_timer(1_000 + fsm.timer_duration_ms() + 1, false);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    fsm.update_timer(1_000 + fsm.timer_duration_ms() + 1, true);
+    assert!(fsm.complete());
+    assert_eq!(fsm.transition_start_ms(), 0);
+    assert_eq!(fsm.transition_low_airspeed_ms(), 0);
+}
+
+#[test]
+fn custom_q_transition_ms_and_assist_back() {
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_time_ms(1000);
+    fsm.update_forward_timing(100, true, 20.0, 10.0, false, true);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    fsm.update_forward_timing(1_100, true, 20.0, 10.0, false, true);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    fsm.update_forward_timing(1_101, true, 8.0, 10.0, true, true);
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    fsm.update_forward_timing(1_200, true, 20.0, 10.0, false, true);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    fsm.update_forward_timing(2_201, true, 20.0, 10.0, false, true);
+    assert!(fsm.complete());
+}
+
+#[test]
+fn q_trans_decel_stopping_distance_and_back_time() {
+    assert_eq!(Q_TRANS_DECEL_DEFAULT, 2.0);
+    let fsm = SltTransition::new();
+    assert_eq!(fsm.transition_decel_mss(), 2.0);
+    // v = 10 m/s → v² = 100 → 100 / (2 * 2) = 25 m; t = 10 / 2 = 5 s.
+    assert_eq!(fsm.stopping_distance_m(100.0), 25.0);
+    assert_eq!(fsm.back_transition_time_s(10.0), 5.0);
+    assert_eq!(stopping_distance_m(100.0, 2.0), 25.0);
+    assert_eq!(back_transition_time_s(10.0, 2.0), 5.0);
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_decel_mss(4.0);
+    assert_eq!(fsm.stopping_distance_m(100.0), 12.5);
+    assert_eq!(fsm.back_transition_time_s(10.0), 2.5);
 }
