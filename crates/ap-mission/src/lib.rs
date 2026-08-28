@@ -2,7 +2,7 @@
 //!
 //! This slice is the in-memory `Mission_Command` record — the MAV_CMD waypoint
 //! item the rest of the mission library indexes — and the list that holds it.
-//! EEPROM, DO_JUMP, and the start/verify state machine come later.
+//! EEPROM and the start/verify state machine come later.
 //!
 //! # What is stored
 //!
@@ -68,6 +68,13 @@ pub use land::{
     do_land, is_nav_land, land_abort_altitude_cm, land_cmd, land_verify_height_m, verify_land,
     DoLandInputs, DoLandOutput, VerifyLandInputs, VerifyLandOutput, LAND_ABORT_ALT_DEFAULT_CM,
     LAND_ABORT_PITCH_DEFAULT_CD, MAV_CMD_NAV_LAND,
+};
+
+mod do_jump;
+pub use do_jump::{
+    do_jump, do_jump_cmd, is_do_jump, jump_content, jump_should_take, jump_target_valid,
+    DoJumpInputs, DoJumpOutput, JumpCommand, JUMP_MAX_LOOPS, JUMP_REPEAT_FOREVER, JUMP_TIMES_MAX,
+    MAV_CMD_DO_JUMP,
 };
 
 /// Mavlink cmd id of zero means invalid or missing command.
