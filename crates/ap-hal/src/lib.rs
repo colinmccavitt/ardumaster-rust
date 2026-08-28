@@ -41,6 +41,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 pub mod analog;
 pub mod context;
+pub mod device;
 pub mod gpio;
 pub mod internal_error;
 pub mod rc;
