@@ -3,6 +3,7 @@
 use ap_math::vector3::Vector3f;
 
 use crate::auto_rot::COMPASS_AUTO_ROT_DEFAULT;
+use crate::disable_mask::{instance_disabled, COMPASS_DISBLMSK_DEFAULT};
 use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
 use crate::orientation::{COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT};
@@ -89,6 +90,8 @@ pub struct CompassParams {
     pub board_orientation: u8,
     /// Auto-orientation after MAG_CAL, upstream `COMPASS_AUTO_ROT`.
     pub rotate_auto: u8,
+    /// Driver-type disable mask, upstream `COMPASS_DISBLMSK`.
+    pub disable_mask: u32,
 }
 
 impl Default for CompassParams {
@@ -104,6 +107,7 @@ impl Default for CompassParams {
             motor_comp_type: COMPASS_MOTCT_DEFAULT,
             board_orientation: COMPASS_ORIENT_DEFAULT,
             rotate_auto: COMPASS_AUTO_ROT_DEFAULT,
+            disable_mask: COMPASS_DISBLMSK_DEFAULT,
         }
     }
 }
@@ -116,7 +120,7 @@ impl CompassParams {
             self.compass2
         };
         let mut cfg = *backend.config();
-        cfg.disabled = inst.disabled;
+        cfg.disabled = instance_disabled(self.disable_mask, inst.disabled);
         cfg.offset = inst.offset;
         cfg.motor_compensation = inst.motor_compensation;
         cfg.motor_comp_type = self.motor_comp_type;
