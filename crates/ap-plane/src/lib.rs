@@ -91,6 +91,7 @@ pub mod battery_failsafe_hookup;
 pub mod failsafe_long_timeout_hookup;
 pub mod failsafe_short_timeout_hookup;
 pub mod terrain_failsafe_hookup;
+pub mod fence_failsafe_hookup;
 pub mod rc_channel_scale_hookup;
 pub mod rc_aux_switch_hookup;
 pub mod mission_alt_offset_glue_hookup;
