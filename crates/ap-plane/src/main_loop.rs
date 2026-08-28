@@ -124,6 +124,7 @@ use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs}
 use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
 use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
+use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -395,6 +396,18 @@ pub struct PlaneMainLoop {
     pub auto_mode_mission_started: bool,
     /// Whether AUTO navigate allowed a mission item advance this tick.
     pub auto_mode_mission_advanced: bool,
+    /// Upstream RTL_RADIUS, metres. Negative is CCW; zero uses WP_LOITER_RAD.
+    pub rtl_radius_m: i16,
+    /// Whether RTL enter/navigate glue ran this tick.
+    pub rtl_mode_nav_applied: bool,
+    /// Whether ModeRTL::_enter armed do_RTL this tick.
+    pub rtl_mode_started: bool,
+    /// Whether RTL navigate is allowed to call update_loiter this tick.
+    pub rtl_mode_loiter_allowed: bool,
+    /// abs(RTL_RADIUS) applied this tick.
+    pub rtl_loiter_radius_m: u16,
+    /// RTL_RADIUS < 0 selects counterclockwise loiter.
+    pub rtl_loiter_ccw: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -768,6 +781,12 @@ impl Default for PlaneMainLoop {
             auto_mode_mission_applied: false,
             auto_mode_mission_started: false,
             auto_mode_mission_advanced: false,
+            rtl_radius_m: 0,
+            rtl_mode_nav_applied: false,
+            rtl_mode_started: false,
+            rtl_mode_loiter_allowed: false,
+            rtl_loiter_radius_m: 0,
+            rtl_loiter_ccw: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1225,6 +1244,23 @@ impl PlaneMainLoop {
             && mission_out.advanced;
         if mission_out.ran {
             self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
+        }
+
+        let rtl_nav = rtl_mode_nav_tick(&RtlModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            home_is_set: self.home_is_set,
+            rtl_radius_m: self.rtl_radius_m,
+        });
+        self.rtl_mode_nav_applied = rtl_nav.applied;
+        self.rtl_mode_started = rtl_nav.started;
+        self.rtl_mode_loiter_allowed = rtl_nav.allow_loiter;
+        if rtl_nav.applied {
+            self.rtl_loiter_radius_m = rtl_nav.loiter_radius_m;
+            if rtl_nav.direction_set {
+                self.rtl_loiter_ccw = rtl_nav.loiter_ccw;
+            }
         }
 
         let have_baro = self
