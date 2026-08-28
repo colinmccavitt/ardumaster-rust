@@ -51,6 +51,8 @@
 //! range-finder / optical-flow enable is [`rng_flow_fusion`];
 //! covariance prediction is [`covariance`];
 //! output getters are [`output_observer`].
+//! Wind / earth-mag constrain (`ConstrainStates` 16..18 / 22..23,
+//! `MagTableConstrain`) lives in [`wind_mag`].
 
 #![no_std]
 
@@ -62,10 +64,12 @@ pub mod gyro_bias;
 pub mod height_fusion;
 pub mod mag_fusion;
 pub mod measurements;
-pub mod pos_vel_fusion;
 pub mod output_observer;
+pub mod pos_vel_fusion;
 pub mod rng_flow_fusion;
+pub mod wind_mag;
 
+pub use accel_bias::{AccelBias, ACCEL_BIAS_LIMIT_MPS2, ACCEL_BIAS_LIM_SCALER};
 pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
 pub use control::{AidingMode, FilterControl};
 pub use covariance::{
@@ -73,7 +77,6 @@ pub use covariance::{
     MAGB_P_NSE_DEFAULT, MAGE_P_NSE_DEFAULT, POS_VAR_GROWTH_LIMIT, PROCESS_NOISE_LEN,
     WIND_P_NSE_DEFAULT,
 };
-pub use accel_bias::{AccelBias, ACCEL_BIAS_LIM_SCALER, ACCEL_BIAS_LIMIT_MPS2};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use height_fusion::{
     HeightFuseSel, HeightFusion, HeightSource, HGT_INNOV_GATE_DEFAULT, HGT_RETRY_TIME_MODE12_MS,
@@ -83,12 +86,13 @@ pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
 };
-pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
 pub use output_observer::OutputObserver;
+pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
 pub use rng_flow_fusion::{
     FlowFuseSel, FlowUse, RngFlowFusion, RngFuseSel, DCM33_FLOW_MIN, FLOW_INNOV_GATE_DEFAULT,
     FLOW_USE_DEFAULT, MAX_FLOW_RATE_DEFAULT, RNG_INNOV_GATE_DEFAULT,
 };
+pub use wind_mag::{WindMagField, EARTH_FIELD_LIMIT_GA, MAG_EF_LIMIT_DEFAULT, WIND_VEL_LIMIT_MPS};
 
 use ap_math::vector2::Vector2;
 use ap_math::vector3::Vector3;
@@ -229,6 +233,8 @@ pub struct NavEkf3Core {
     covariance: Covariance,
     /// Output publisher, upstream `AP_NavEKF3_Outputs.cpp`.
     output: OutputObserver,
+    /// Wind / earth-mag constrain, upstream `ConstrainStates` 16..18 / 22..23.
+    wind_mag: WindMagField,
 }
 
 impl Default for NavEkf3Core {
@@ -255,6 +261,7 @@ impl NavEkf3Core {
             rng_flow: RngFlowFusion::new(),
             covariance: Covariance::new(),
             output: OutputObserver::new(),
+            wind_mag: WindMagField::new(),
         }
     }
 
@@ -309,6 +316,8 @@ impl NavEkf3Core {
         self.rng_flow.reset();
         self.covariance.covariance_init();
         self.output.reset();
+        self.wind_mag.reset();
+        self.wind_mag.write_into_states(&mut self.states);
         true
     }
 
@@ -331,6 +340,8 @@ impl NavEkf3Core {
             // strapdown when `runUpdates` is set. This stub has no
             // strapdown; the Q inject + symmetry copy-back still run.
             self.covariance.covariance_prediction();
+            // Upstream `UpdateStrapdownEquationsNED` ends with `ConstrainStates`.
+            self.constrain_wind_mag();
         } else {
             self.frames_since_predict = self.frames_since_predict.saturating_add(1);
         }
@@ -570,6 +581,31 @@ impl NavEkf3Core {
     /// Upstream `NavEKF3_core::getEulerAngles`.
     pub fn get_euler_angles(&mut self) -> Vector3<Ftype> {
         self.output.get_euler_angles(&self.states)
+    }
+
+    /// Wind / earth-mag helper, upstream `ConstrainStates` 16..18 / 22..23.
+    #[must_use]
+    pub const fn wind_mag(&self) -> &WindMagField {
+        &self.wind_mag
+    }
+
+    /// Mutable wind / earth-mag so tests can poke field, wind, and the WMM table.
+    pub fn wind_mag_mut(&mut self) -> &mut WindMagField {
+        &mut self.wind_mag
+    }
+
+    /// Earth-mag + wind half of upstream `ConstrainStates`.
+    pub fn constrain_wind_mag(&mut self) {
+        self.wind_mag.read_from_states(&self.states);
+        self.wind_mag.constrain();
+        self.wind_mag.write_into_states(&mut self.states);
+    }
+
+    /// Write earth-mag / wind so tests can exercise [`Self::constrain_wind_mag`].
+    pub fn write_wind_mag_for_test(&mut self, earth: Vector3<Ftype>, wind: Vector2<Ftype>) {
+        self.wind_mag.set_earth_mag(earth);
+        self.wind_mag.set_wind(wind);
+        self.wind_mag.write_into_states(&mut self.states);
     }
 
     /// Write pos / vel / attitude so tests can exercise the getters.
@@ -1159,5 +1195,52 @@ mod tests {
         near(euler.x, 0.05 as Ftype);
         near(euler.y, -0.10 as Ftype);
         near(euler.z, 0.15 as Ftype);
+    }
+
+    #[test]
+    fn core_constrain_wind_and_earth_mag_clamps_states() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.write_wind_mag_for_test(
+            Vector3::new(2.5 as Ftype, -(3.0 as Ftype), 0.4 as Ftype),
+            Vector2::new(150.0 as Ftype, -(180.0 as Ftype)),
+        );
+        core.constrain_wind_mag();
+        near(core.state(StateIndex::EarthMagN), EARTH_FIELD_LIMIT_GA);
+        near(core.state(StateIndex::EarthMagE), -EARTH_FIELD_LIMIT_GA);
+        near(core.state(StateIndex::EarthMagD), 0.4 as Ftype);
+        near(core.state(StateIndex::WindVelN), WIND_VEL_LIMIT_MPS);
+        near(core.state(StateIndex::WindVelE), -WIND_VEL_LIMIT_MPS);
+
+        core.wind_mag_mut().set_table_earth_field(
+            Vector3::new(0.22 as Ftype, 0.05 as Ftype, 0.41 as Ftype),
+            MAG_EF_LIMIT_DEFAULT,
+        );
+        core.write_wind_mag_for_test(
+            Vector3::new(2.0 as Ftype, -(2.0 as Ftype), 0.41 as Ftype),
+            Vector2::new(40.0 as Ftype, -(12.0 as Ftype)),
+        );
+        core.constrain_wind_mag();
+        let limit_ga = Ftype::from(MAG_EF_LIMIT_DEFAULT) * (0.001 as Ftype);
+        near(
+            core.state(StateIndex::EarthMagN),
+            (0.22 as Ftype) + limit_ga,
+        );
+        near(
+            core.state(StateIndex::EarthMagE),
+            (0.05 as Ftype) - limit_ga,
+        );
+        near(core.state(StateIndex::EarthMagD), 0.41 as Ftype);
+        near(core.state(StateIndex::WindVelN), 40.0 as Ftype);
+        near(core.state(StateIndex::WindVelE), -(12.0 as Ftype));
+
+        // Predict path runs ConstrainStates after CovariancePrediction.
+        core.write_wind_mag_for_test(
+            Vector3::new(0.1 as Ftype, 0.0 as Ftype, 0.2 as Ftype),
+            Vector2::new(250.0 as Ftype, -(250.0 as Ftype)),
+        );
+        core.update_filter(true);
+        near(core.state(StateIndex::WindVelN), WIND_VEL_LIMIT_MPS);
+        near(core.state(StateIndex::WindVelE), -WIND_VEL_LIMIT_MPS);
     }
 }
