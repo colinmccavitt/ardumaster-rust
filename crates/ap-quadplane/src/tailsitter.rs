@@ -30,8 +30,8 @@
 //!   frame, and either zero hover gain or no left tilt motor.
 //!
 //! The vectored-yaw tilt mix is [`VectoredYawMix`] (`Q_TAILSIT_VHGAIN` /
-//! `Q_TAILSIT_VFGAIN`). Stick remapping (`Q_TAILSIT_INPUT` PlaneMode /
-//! BodyFrameRoll) is a later slice.
+//! `Q_TAILSIT_VFGAIN`). Hover stick remapping is [`Tailsitter::check_input`]
+//! (`Q_TAILSIT_INPUT` PlaneMode / BodyFrameRoll).
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -43,6 +43,19 @@ pub const TAILSIT_ENABLE_DEFAULT: i8 = 0;
 /// Default `Q_TAILSIT_VHGAIN`, upstream `AP_GROUPINFO("VHGAIN", ..., 0.5)`.
 pub const VECTORED_HOVER_GAIN_DEFAULT: f32 = 0.5;
 
+/// Default `Q_TAILSIT_INPUT`, upstream `AP_GROUPINFO("INPUT", ..., 0)`.
+pub const TAILSIT_INPUT_DEFAULT: i8 = 0;
+
+/// Bit 0 of `Q_TAILSIT_INPUT` — PlaneMode stick swap.
+///
+/// Upstream `TAILSITTER_INPUT_PLANE = (1U<<0)`.
+pub const TAILSITTER_INPUT_PLANE: u8 = 1 << 0;
+
+/// Bit 1 of `Q_TAILSIT_INPUT` — body-frame roll when flying level.
+///
+/// Upstream `TAILSITTER_INPUT_BF_ROLL = (1U<<1)`.
+pub const TAILSITTER_INPUT_BF_ROLL: u8 = 1 << 1;
+
 /// Upstream `FLT_EPSILON` as used by `is_zero` in `AP_Math`.
 const FLT_EPSILON: f32 = 1.192_092_90e-7;
 
@@ -52,13 +65,32 @@ fn is_zero(v: f32) -> bool {
 
 /// How a duo-motor tailsitter takes yaw / pitch input.
 ///
-/// These are the airframe paths, not the `Q_TAILSIT_INPUT` stick bitmask.
+/// These are the airframe paths, not the `Q_TAILSIT_INPUT` stick bitmask
+/// ([`TailsitInput`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
     /// Tilt motors vector thrust for yaw. Upstream `_is_vectored`.
     VectoredYaw,
     /// Flying surfaces only. Upstream `is_control_surface_tailsitter`.
     ControlSurfaces,
+}
+
+/// Hover stick convention, upstream `Q_TAILSIT_INPUT`.
+///
+/// Bit 0 is PlaneMode, bit 1 is BodyFrameRoll. [`Tailsitter::check_input`]
+/// remaps `control_in` only when PlaneMode is set and the tailsitter is
+/// [`Tailsitter::active`]. BodyFrameRoll does not swap the sticks; it
+/// selects body-frame roll in the attitude controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailsitInput {
+    /// Bitmask 0. Roll stick = earth-frame roll, yaw stick = earth-frame yaw.
+    Multicopters,
+    /// Bit 0 only. `check_input` swaps: roll' = yaw, yaw' = -roll.
+    PlaneMode,
+    /// Bit 1 only. No `check_input` swap; attitude uses body-frame roll.
+    BodyFrameRoll,
+    /// Both bits. `check_input` swap plus pitch-rotated body-frame roll.
+    PlaneModeBodyFrameRoll,
 }
 
 /// What `Tailsitter::setup` reads off QuadPlane and the tailsitter params.
@@ -78,6 +110,8 @@ pub struct TailsitterConfig {
     pub tilt_motor_left: bool,
     /// `SRV_Channel::k_tiltMotorRight` assigned.
     pub tilt_motor_right: bool,
+    /// `Q_TAILSIT_INPUT`, upstream `AP_Int8 input_type`.
+    pub input: i8,
 }
 
 impl TailsitterConfig {
@@ -91,6 +125,7 @@ impl TailsitterConfig {
             vectored_hover_gain: VECTORED_HOVER_GAIN_DEFAULT,
             tilt_motor_left: false,
             tilt_motor_right: false,
+            input: TAILSIT_INPUT_DEFAULT,
         }
     }
 
@@ -104,6 +139,7 @@ impl TailsitterConfig {
             vectored_hover_gain: VECTORED_HOVER_GAIN_DEFAULT,
             tilt_motor_left: false,
             tilt_motor_right: false,
+            input: TAILSIT_INPUT_DEFAULT,
         }
     }
 }
@@ -123,6 +159,7 @@ pub struct Tailsitter {
     vectored_hover_gain: f32,
     tilt_motor_left: bool,
     tilt_motor_right: bool,
+    input: i8,
 }
 
 impl Tailsitter {
@@ -146,6 +183,7 @@ impl Tailsitter {
             vectored_hover_gain: cfg.vectored_hover_gain,
             tilt_motor_left: cfg.tilt_motor_left,
             tilt_motor_right: cfg.tilt_motor_right,
+            input: cfg.input,
         }
     }
 
@@ -199,6 +237,66 @@ impl Tailsitter {
             Some(InputType::ControlSurfaces)
         } else {
             None
+        }
+    }
+
+    /// Current `Q_TAILSIT_INPUT` bitmask.
+    #[must_use]
+    pub const fn input(&self) -> i8 {
+        self.input
+    }
+
+    /// Bit 0 of `Q_TAILSIT_INPUT`. Upstream `TAILSITTER_INPUT_PLANE`.
+    #[must_use]
+    pub const fn plane_mode(&self) -> bool {
+        (self.input as u8) & TAILSITTER_INPUT_PLANE != 0
+    }
+
+    /// Bit 1 of `Q_TAILSIT_INPUT`. Upstream `TAILSITTER_INPUT_BF_ROLL`.
+    #[must_use]
+    pub const fn body_frame_roll(&self) -> bool {
+        (self.input as u8) & TAILSITTER_INPUT_BF_ROLL != 0
+    }
+
+    /// Decode `Q_TAILSIT_INPUT` into a hover-stick convention.
+    #[must_use]
+    pub const fn tailsit_input(&self) -> TailsitInput {
+        match (self.plane_mode(), self.body_frame_roll()) {
+            (false, false) => TailsitInput::Multicopters,
+            (true, false) => TailsitInput::PlaneMode,
+            (false, true) => TailsitInput::BodyFrameRoll,
+            (true, true) => TailsitInput::PlaneModeBodyFrameRoll,
+        }
+    }
+
+    /// Upstream `Tailsitter::active`.
+    ///
+    /// True when enabled and either in a VTOL mode or in the
+    /// `ANGLE_WAIT_FW` fixed-wing transition.
+    #[must_use]
+    pub const fn active(&self, in_vtol_mode: bool, angle_wait_fw: bool) -> bool {
+        self.enabled() && (in_vtol_mode || angle_wait_fw)
+    }
+
+    /// Upstream `Tailsitter::check_input`.
+    ///
+    /// When active and PlaneMode, swap the roll and rudder `control_in`
+    /// values so the roll stick commands earth-frame yaw and the rudder
+    /// commands earth-frame roll: roll becomes yaw, yaw becomes -roll.
+    /// BodyFrameRoll does not change this swap.
+    #[must_use]
+    pub fn check_input(
+        &self,
+        roll: i16,
+        yaw: i16,
+        in_vtol_mode: bool,
+        angle_wait_fw: bool,
+    ) -> (i16, i16) {
+        if self.active(in_vtol_mode, angle_wait_fw) && self.plane_mode() {
+            let remapped_yaw = i16::try_from(-i32::from(roll)).unwrap_or(i16::MIN);
+            (yaw, remapped_yaw)
+        } else {
+            (roll, yaw)
         }
     }
 }
