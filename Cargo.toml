@@ -35,6 +35,7 @@ ap-baro = { path = "crates/ap-baro" }
 ap-compass = { path = "crates/ap-compass" }
 ap-common = { path = "crates/ap-common" }
 ap-declination = { path = "crates/ap-declination" }
+ap-ekf3 = { path = "crates/ap-ekf3" }
 ap-gps = { path = "crates/ap-gps" }
 ap-landing = { path = "crates/ap-landing" }
 ap-ins = { path = "crates/ap-ins" }

@@ -1,0 +1,21 @@
+[package]
+name = "ap-ekf3"
+description = "Port of ArduPilot libraries/AP_NavEKF3: 24-state estimator core types first (Plane-4.7.0). Tracked as FW-009."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+
+[features]
+default = []
+# ADR-0004 decision 3: mirrors upstream HAL_WITH_EKF_DOUBLE, a global
+# compile-time switch (AP_Math/ftype.h). Deliberately NOT a scalar generic:
+# a generic would permit mixed-precision builds upstream cannot produce,
+# leaving states with no upstream counterpart for sitl-diff to compare.
+ekf-double = ["ap-math/ekf-double"]
+
+[lints]
+workspace = true
