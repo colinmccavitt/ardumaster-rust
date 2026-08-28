@@ -9,9 +9,10 @@
 //! ranges, the FS_THR_VALUE / THR_FS_VALUE PWM floor, the RCMAP_* channel map
 //! plus RCn_TRIM persist, the RC_OVERRIDE_TIME GCS override timeout, the FLTMODE_CH six-position
 //! flight-mode switch decode, the FLTMODE1-FLTMODE6 slot mapping, INITIAL_MODE /
-//! boot-mode-from-switch, and the RC_OPTIONS bitfield live here so radio.cpp
-//! work can share one conversion. The HAL owns the raw PWM microsecond I/O;
-//! Plane's failsafe hookup already reads those pulses.
+//! boot-mode-from-switch, the RC_OPTIONS bitfield, and the RC_SPEED PWM
+//! update-rate live here so radio.cpp work can share one conversion. The HAL
+//! owns the raw PWM microsecond I/O; Plane's failsafe hookup already reads
+//! those pulses.
 
 #![no_std]
 
@@ -22,6 +23,7 @@ pub mod initial_mode;
 pub mod option_switch;
 pub mod override_timeout;
 pub mod rc_options;
+pub mod rc_speed;
 pub mod rcmap;
 
 pub use aux_switch::{
@@ -61,6 +63,10 @@ pub use rc_options::{
     apply_arming_rc_checks, apply_radio_in, apply_rc_options, apply_receiver_failsafe,
     apply_switch_reversed, RcArmingChecks, RcOption, RcOptions, RcOptionsApplied,
     RC_OPTIONS_DEFAULT,
+};
+pub use rc_speed::{
+    apply_rc_speed, clamp_rc_speed, pwm_period_us, RcSpeed, RC_FAST_SPEED, RC_SPEED_DEFAULT,
+    RC_SPEED_MAX, RC_SPEED_MIN,
 };
 pub use rcmap::{
     mapped_pwm, persist_stick_trims, rcmap_channel_valid, rcmap_index, set_and_save_radio_trim,
