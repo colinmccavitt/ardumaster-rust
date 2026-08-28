@@ -5,13 +5,15 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`YawUpdateInputs`](ap_ahrs::YawUpdateInputs).
 
 use ap_ahrs::YawCompassSample;
+use ap_compass::calibrate::CompassCalibrator;
 use ap_compass::offset::learn_offsets_enabled;
-use ap_compass::{CompassDeclinationState, CompassParams, GpsDeclinationFix};
-use ap_math::vector3::Vector3f;
 use ap_compass::sitl::{
     CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
+    SITL_COMPASS_MAX_INSTANCES,
 };
+use ap_compass::{CompassDeclinationState, CompassParams, GpsDeclinationFix};
 use ap_math::matrix3::Matrix3f;
+use ap_math::vector3::Vector3f;
 
 /// Sim truth fed into the SITL compass backend each tick.
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +43,7 @@ pub struct SitlCompassHookup {
     pub compass_use_for_yaw: bool,
     /// Battery current in amps (or throttle 0..1), upstream motor compensation.
     pub battery_current_amps: f32,
+    calibrators: [CompassCalibrator; SITL_COMPASS_MAX_INSTANCES],
 }
 
 impl Default for SitlCompassHookup {
@@ -52,6 +55,7 @@ impl Default for SitlCompassHookup {
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
             battery_current_amps: 0.0,
+            calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
         }
     }
 }
@@ -78,6 +82,7 @@ impl SitlCompassHookup {
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
             battery_current_amps: 0.0,
+            calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
         }
     }
 
@@ -141,6 +146,37 @@ impl SitlCompassHookup {
         idx
     }
 
+    /// Start MAG_CAL on every healthy `COMPASS_USE` instance.
+    #[must_use]
+    pub fn start_calibration_all(&mut self) -> bool {
+        let n = self.cluster.instance_count() as usize;
+        let mut healthy = [false; SITL_COMPASS_MAX_INSTANCES];
+        let mut use_for_yaw = [false; SITL_COMPASS_MAX_INSTANCES];
+        for i in 0..n {
+            healthy[i] = self
+                .cluster
+                .backend(i as u8)
+                .is_some_and(SitlCompassBackend::healthy);
+            use_for_yaw[i] = if i == 0 {
+                self.params.compass1.use_for_yaw
+            } else {
+                self.params.compass2.use_for_yaw
+            };
+        }
+        ap_compass::calibrate::start_calibration_all(&mut self.calibrators[..n], &healthy[..n], &use_for_yaw[..n])
+    }
+
+    /// Cancel MAG_CAL on every instance, upstream `cancel_calibration_all`.
+    pub fn cancel_calibration_all(&mut self) {
+        ap_compass::calibrate::cancel_calibration_all(&mut self.calibrators);
+    }
+
+    /// Upstream `Compass::is_calibrating`.
+    #[must_use]
+    pub fn is_calibrating(&self) -> bool {
+        ap_compass::calibrate::is_calibrating(&self.calibrators[..self.cluster.instance_count() as usize])
+    }
+
     /// Run timer tick and publish mag sample + yaw drift input.
     #[must_use]
     pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32, gps: Option<GpsDeclinationFix>) -> SitlCompassPublish {
@@ -163,7 +199,7 @@ impl SitlCompassHookup {
             mag_body: sample.mag_body,
             declination_rad: self.declination.effective_declination_rad(&self.params),
             update_interval_s: Some(loop_dt),
-            calibrating: false,
+            calibrating: self.is_calibrating(),
         });
         SitlCompassPublish {
             sample,
@@ -184,5 +220,6 @@ pub fn hookup_with_disabled_primary() -> SitlCompassHookup {
         truth: SitlCompassTruth::default(),
         compass_use_for_yaw: true,
         battery_current_amps: 0.0,
+        calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
     }
 }

@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod calibrate;
 pub mod consistent;
 pub mod declination;
 pub mod learn;
@@ -26,6 +27,10 @@ pub use sitl::{
     SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES, SITL_COMPASS_UPDATE_MS,
 };
 
+pub use calibrate::{
+    cancel_calibration_all, is_calibrating, start_calibration, start_calibration_all,
+    CompassCalStatus, CompassCalibrator,
+};
 pub use consistent::{consistent, use_for_yaw_if_consistent, CompassInstanceField};
 pub use learn::LearnType;
 pub use motor_comp::{
