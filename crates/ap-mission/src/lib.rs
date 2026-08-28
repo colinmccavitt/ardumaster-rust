@@ -29,6 +29,15 @@ pub use loiter_unlimited::{
     VerifyLoiterUnlimOutput, MAV_CMD_NAV_LOITER_UNLIM,
 };
 
+mod loiter_turns;
+pub use loiter_turns::{
+    do_loiter_turns, is_nav_loiter_turns, loiter_turns_cmd, loiter_turns_radius_m,
+    loiter_turns_total_cd, pack_loiter_turns_p1, verify_loiter_turns, DoLoiterTurnsInputs,
+    DoLoiterTurnsOutput, VerifyLoiterTurnsInputs, VerifyLoiterTurnsOutput,
+    LOITER_TURNS_CD_PER_ORBIT, LOITER_TURNS_FRACTIONAL_BIT, LOITER_TURNS_RADIUS_X10_BIT,
+    MAV_CMD_NAV_LOITER_TURNS,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
