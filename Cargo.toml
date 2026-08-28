@@ -28,6 +28,7 @@ ap-nav = { path = "crates/ap-nav" }
 ap-plane = { path = "crates/ap-plane" }
 ap-servo = { path = "crates/ap-servo" }
 ap-ahrs = { path = "crates/ap-ahrs" }
+ap-arming = { path = "crates/ap-arming" }
 ap-airspeed = { path = "crates/ap-airspeed" }
 ap-baro = { path = "crates/ap-baro" }
 ap-compass = { path = "crates/ap-compass" }

@@ -21,6 +21,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-arming"
+version = "0.1.0"
+
+[[package]]
 name = "ap-baro"
 version = "0.1.0"
 dependencies = [
@@ -159,6 +163,7 @@ version = "0.1.0"
 dependencies = [
  "ap-ahrs",
  "ap-airspeed",
+ "ap-arming",
  "ap-baro",
  "ap-compass",
  "ap-control",

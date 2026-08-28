@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 ap-ahrs = { workspace = true }
+ap-arming = { workspace = true }
 ap-airspeed = { workspace = true }
 ap-baro = { workspace = true }
 ap-compass = { workspace = true }

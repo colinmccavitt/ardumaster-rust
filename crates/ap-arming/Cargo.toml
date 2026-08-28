@@ -1,0 +1,10 @@
+[package]
+name = "ap-arming"
+description = "Port of ArduPilot libraries/AP_Arming: ARMING_REQUIRE / check-registry pre_arm_checks gate (Plane-4.7.0). Tracked as FW-026."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
