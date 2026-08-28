@@ -34,6 +34,8 @@
 //! (`Q_TAILSIT_INPUT` PlaneMode / BodyFrameRoll). Forward-flight lift-motor
 //! hold is [`Tailsitter::output_kind`] / [`mask_motor_actuator`]
 //! (`Q_TAILSIT_MOTMX` / `output_motor_mask`).
+//! Control-surface speed scaling is [`GainScaling`] (`Q_TAILSIT_GSCMSK`).
+//! Pitch-relax after a hover-gain vectored setup is [`Tailsitter::relax_pitch`].
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -403,6 +405,20 @@ impl Tailsitter {
     pub const fn output_min_first(soft_armed: bool, emergency_stop: bool) -> bool {
         !soft_armed || emergency_stop
     }
+
+    /// Upstream `Tailsitter::relax_pitch`.
+    ///
+    /// Vectored belly-sitters keep pitch tight so the motors stay
+    /// pointed and the props do not hit the ground. Everyone else
+    /// relaxes. After a FW to VTOL rate-limit has started
+    /// (`vtol_limit_start_ms != 0`) pitch is always relaxed, even on
+    /// a vectored airframe. Hover-gain leftover: `_is_vectored` is
+    /// the same predicate as [`Self::is_vectored`] (`Q_TAILSIT_VHGAIN`
+    /// plus a tilt motor).
+    #[must_use]
+    pub fn relax_pitch(&self, vtol_limit_start_ms: u32) -> bool {
+        !self.enabled() || !self.is_vectored() || vtol_limit_start_ms != 0
+    }
 }
 
 /// Whether motor `i` stays live in FW under `Q_TAILSIT_MOTMX`.
@@ -597,4 +613,367 @@ fn is_positive(v: f32) -> bool {
 
 fn constrain_f32(v: f32, min: f32, max: f32) -> f32 {
     v.clamp(min, max)
+}
+
+/// Bit 0 of `Q_TAILSIT_GSCMSK` — scale gains with throttle.
+///
+/// Upstream `TAILSITTER_GSCL_THROTTLE`.
+pub const TAILSITTER_GSCL_THROTTLE: u16 = 1 << 0;
+
+/// Bit 1 of `Q_TAILSIT_GSCMSK` — reduce gain at high throttle / tilt.
+///
+/// Upstream `TAILSITTER_GSCL_ATT_THR`.
+pub const TAILSITTER_GSCL_ATT_THR: u16 = 1 << 1;
+
+/// Bit 2 of `Q_TAILSIT_GSCMSK` — disk-theory velocity scaling.
+///
+/// Upstream `TAILSITTER_GSCL_DISK_THEORY`. Requires a
+/// positive `Q_TAILSIT_DSKLD`.
+pub const TAILSITTER_GSCL_DISK_THEORY: u16 = 1 << 2;
+
+/// Bit 3 of `Q_TAILSIT_GSCMSK` — scale with air density.
+///
+/// Upstream `TAILSITTER_GSCL_ALTITUDE`.
+pub const TAILSITTER_GSCL_ALTITUDE: u16 = 1 << 3;
+
+/// Default `Q_TAILSIT_GSCMSK`, upstream `TAILSITTER_GSCL_THROTTLE`.
+pub const GAIN_SCALING_MASK_DEFAULT: u16 = TAILSITTER_GSCL_THROTTLE;
+
+/// Default `Q_TAILSIT_DSKLD`, upstream `AP_GROUPINFO("DSKLD", ..., 0)`.
+pub const DISK_LOADING_DEFAULT: f32 = 0.0;
+
+/// Sea-level air density used by the disk-theory path.
+///
+/// Upstream `SSL_AIR_DENSITY` in `AP_Math/definitions.h`.
+pub const SSL_AIR_DENSITY: f32 = 1.225;
+
+/// Standard gravity used by the disk-theory path.
+///
+/// Upstream `GRAVITY_MSS`.
+pub const GRAVITY_MSS: f32 = 9.806_65;
+
+/// `cosf(0.125 * pi)` — tilt angle where ATT_THR starts ramping down.
+///
+/// Upstream `constexpr float c_trans_angle = 0.9238795`.
+pub const ATT_THR_C_TRANS_ANGLE: f32 = 0.923_879_5;
+
+/// ATT_THR positive slew time-constant, seconds. Upstream `posTC`.
+pub const ATT_THR_POS_TC: f32 = 2.0;
+
+/// ATT_THR negative slew time-constant, seconds. Upstream `negTC`.
+pub const ATT_THR_NEG_TC: f32 = 1.0;
+
+/// Which `speed_scaling` branch produces `spd_scaler`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GainScalePath {
+    /// ATT_THR bit set. Tilt + high-throttle attenuation, then slew.
+    AttThr,
+    /// DISK_THEORY bit, positive `Q_TAILSIT_DSKLD`, and an airspeed estimate.
+    DiskTheory,
+    /// DISK_THEORY bit and positive DSKLD, but no airspeed — throttle fallback.
+    DiskTheoryFallback,
+    /// THROTTLE bit set. The GROUPINFO default.
+    Throttle,
+    /// No producing bit. `spd_scaler` stays 1.
+    Unity,
+}
+
+/// Inputs `Tailsitter::speed_scaling` reads besides its own params.
+#[derive(Debug, Clone, Copy)]
+pub struct SpeedScaleInput {
+    /// `motors->get_throttle_hover()`.
+    pub hover: f32,
+    /// `motors->get_throttle_out()`.
+    pub throttle: f32,
+    /// `ahrs_view->get_rotation_body_to_ned().c.z`.
+    pub c_tilt: f32,
+    /// `quadplane.ahrs.airspeed_EAS` succeeded.
+    pub have_airspeed: bool,
+    /// EAS from that call; unused when [`Self::have_airspeed`] is false.
+    pub airspeed: f32,
+    /// `ahrs.get_air_density_ratio()`. 1.0 at sea level.
+    pub density_ratio: f32,
+    /// `plane.G_Dt`, seconds.
+    pub dt_s: f32,
+}
+
+impl SpeedScaleInput {
+    /// Hover 0.4, mid throttle, level tilt, sea-level, 400 Hz loop.
+    #[must_use]
+    pub const fn hover_level() -> Self {
+        Self {
+            hover: 0.4,
+            throttle: 0.4,
+            c_tilt: 1.0,
+            have_airspeed: false,
+            airspeed: 0.0,
+            density_ratio: 1.0,
+            dt_s: 0.002_5,
+        }
+    }
+}
+
+/// `spd_scaler` / `throttle_scaler` from one `speed_scaling` cycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpeedScaleOutput {
+    /// Which branch produced `speed_scaler` before the altitude multiply.
+    pub path: GainScalePath,
+    /// Hover/throttle ratio, used on the tilt motors and the THROTTLE path.
+    pub throttle_scaler: f32,
+    /// Applied to aileron / elevator / rudder (and logged as `speed_scaler`).
+    pub speed_scaler: f32,
+}
+
+/// Control-surface speed scaling, upstream `Tailsitter::speed_scaling`.
+///
+/// Tracked as **VT-007**. `Q_TAILSIT_GSCMSK` selects the method:
+///
+/// - Throttle (default): `spd_scaler = constrain(hover/throttle, GSCMIN, GSCMAX)`.
+/// - ATT_THR: reduce throws at large tilt (`c.z` below
+///   [`ATT_THR_C_TRANS_ANGLE`]) and high throttle, then slew with
+///   [`ATT_THR_POS_TC`] / [`ATT_THR_NEG_TC`]. If the result is still >= 1
+///   and the Throttle bit is also set, take `MAX(throttle_scaler, 1)`.
+/// - Disk theory: `Ue^2` from disk loading; no airspeed falls back to
+///   the throttle scaler. Positive DSKLD is required.
+/// - Altitude: after any of the above, divide by the air-density ratio.
+///
+/// Tilt motors always take `throttle_scaler`; flying surfaces take
+/// `spd_scaler`. The hover/throttle formula itself already lives on
+/// [`crate::transition::TransitionRamp::throttle_scaler`]; this object
+/// is the GSCMASK dispatch the ramp stub deferred.
+#[derive(Debug, Clone, Copy)]
+pub struct GainScaling {
+    mask: u16,
+    throttle_scale_max: f32,
+    gain_scaling_min: f32,
+    disk_loading: f32,
+    last_spd_scaler: f32,
+}
+
+impl Default for GainScaling {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GainScaling {
+    /// `AP_GROUPINFO` defaults for GSCMSK / GSCMAX / GSCMIN / DSKLD.
+    ///
+    /// `last_spd_scaler` starts at 1, matching the field initializer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            mask: GAIN_SCALING_MASK_DEFAULT,
+            throttle_scale_max: crate::transition::THROTTLE_SCALE_MAX_DEFAULT,
+            gain_scaling_min: crate::transition::GAIN_SCALING_MIN_DEFAULT,
+            disk_loading: DISK_LOADING_DEFAULT,
+            last_spd_scaler: 1.0,
+        }
+    }
+
+    /// Current `Q_TAILSIT_GSCMSK`.
+    #[must_use]
+    pub const fn mask(&self) -> u16 {
+        self.mask
+    }
+
+    /// Poke `Q_TAILSIT_GSCMSK`.
+    pub fn set_mask(&mut self, mask: u16) {
+        self.mask = mask;
+    }
+
+    /// `Q_TAILSIT_GSCMAX`.
+    #[must_use]
+    pub const fn throttle_scale_max(&self) -> f32 {
+        self.throttle_scale_max
+    }
+
+    /// `Q_TAILSIT_GSCMIN`.
+    #[must_use]
+    pub const fn gain_scaling_min(&self) -> f32 {
+        self.gain_scaling_min
+    }
+
+    /// `Q_TAILSIT_DSKLD`.
+    #[must_use]
+    pub const fn disk_loading(&self) -> f32 {
+        self.disk_loading
+    }
+
+    /// Poke `Q_TAILSIT_DSKLD`.
+    pub fn set_disk_loading(&mut self, disk_loading: f32) {
+        self.disk_loading = disk_loading;
+    }
+
+    /// Last slewed `spd_scaler`, upstream `last_spd_scaler`.
+    #[must_use]
+    pub const fn last_spd_scaler(&self) -> f32 {
+        self.last_spd_scaler
+    }
+
+    /// Which branch `speed_scaling` would take for this mask / DSKLD.
+    #[must_use]
+    pub fn path(&self, have_airspeed: bool) -> GainScalePath {
+        if self.mask & TAILSITTER_GSCL_ATT_THR != 0 {
+            GainScalePath::AttThr
+        } else if self.mask & TAILSITTER_GSCL_DISK_THEORY != 0 && is_positive(self.disk_loading) {
+            if have_airspeed {
+                GainScalePath::DiskTheory
+            } else {
+                GainScalePath::DiskTheoryFallback
+            }
+        } else if self.mask & TAILSITTER_GSCL_THROTTLE != 0 {
+            GainScalePath::Throttle
+        } else {
+            GainScalePath::Unity
+        }
+    }
+
+    /// Hover/throttle scaler, same formula as
+    /// [`crate::transition::TransitionRamp::throttle_scaler`].
+    #[must_use]
+    pub fn throttle_scaler(&self, hover: f32, throttle: f32) -> f32 {
+        if is_positive(throttle) {
+            constrain_f32(
+                hover / throttle,
+                self.gain_scaling_min,
+                self.throttle_scale_max,
+            )
+        } else {
+            self.throttle_scale_max
+        }
+    }
+
+    /// ATT_THR tilt + high-throttle attenuation, before the slew.
+    ///
+    /// Level (`c.z = 1`) and throttle at or below `1.25 * hover` leaves
+    /// the scaler at 1. Tilt past [`ATT_THR_C_TRANS_ANGLE`] ramps toward
+    /// GSCMIN; throttle above the (possibly reduced) threshold multiplies
+    /// a further attenuation.
+    #[must_use]
+    pub fn att_thr_pre_slew(&self, hover: f32, throttle: f32, c_tilt: f32) -> f32 {
+        let min_scale = self.gain_scaling_min;
+        let mut tthr = 1.25 * hover;
+        let mut spd_scaler = 1.0;
+        if c_tilt < ATT_THR_C_TRANS_ANGLE {
+            let alpha = (1.0 - min_scale) / ATT_THR_C_TRANS_ANGLE;
+            let beta = 1.0 - alpha * ATT_THR_C_TRANS_ANGLE;
+            spd_scaler = constrain_f32(beta + alpha * c_tilt, min_scale, 1.0);
+            tthr = 0.5 * hover;
+        }
+        if throttle > tthr {
+            let throttle_atten = 1.0 - (throttle - tthr) / (1.0 - tthr);
+            spd_scaler *= throttle_atten;
+            spd_scaler = constrain_f32(spd_scaler, min_scale, 1.0);
+        }
+        spd_scaler
+    }
+
+    /// Limit the ATT_THR scaler to +/- `G_Dt / TC` of [`Self::last_spd_scaler`].
+    pub fn slew(&mut self, target: f32, dt_s: f32) -> f32 {
+        let posdelta = dt_s / ATT_THR_POS_TC;
+        let negdelta = dt_s / ATT_THR_NEG_TC;
+        let spd = constrain_f32(
+            target,
+            self.last_spd_scaler - negdelta,
+            self.last_spd_scaler + posdelta,
+        );
+        self.last_spd_scaler = spd;
+        spd
+    }
+
+    /// After ATT_THR slew: if `spd >= 1` and the Throttle bit is set,
+    /// `MAX(throttle_scaler, 1)`.
+    #[must_use]
+    pub fn att_thr_maybe_throttle(&self, spd_scaler: f32, hover: f32, throttle: f32) -> f32 {
+        if spd_scaler >= 1.0 && self.mask & TAILSITTER_GSCL_THROTTLE != 0 {
+            self.throttle_scaler(hover, throttle).max(1.0)
+        } else {
+            spd_scaler
+        }
+    }
+
+    /// Disk-theory `spd_scaler` when airspeed is known.
+    ///
+    /// `Ue^2_hover / Ue^2` with `Ue^2 = ((t/t_h) * DSKLD * g) / (0.5 rho) + U0^2`.
+    /// Altitude bit uses sea-level density for the hover case.
+    #[must_use]
+    pub fn disk_theory_scaler(
+        &self,
+        hover: f32,
+        throttle: f32,
+        airspeed: f32,
+        density_ratio: f32,
+    ) -> f32 {
+        let rho = SSL_AIR_DENSITY * density_ratio;
+        let hover_rho = if self.mask & TAILSITTER_GSCL_ALTITUDE != 0 {
+            SSL_AIR_DENSITY
+        } else {
+            rho
+        };
+        let sq_hover_outflow = (self.disk_loading * GRAVITY_MSS) / (0.5 * hover_rho);
+        let u0 = if airspeed > 0.0 { airspeed } else { 0.0 };
+        let thrust_term = if is_positive(hover) {
+            (throttle / hover) * self.disk_loading * GRAVITY_MSS / (0.5 * rho)
+        } else {
+            0.0
+        };
+        let sq_outflow = thrust_term + u0 * u0;
+        if is_positive(sq_outflow) {
+            constrain_f32(
+                sq_hover_outflow / sq_outflow,
+                self.gain_scaling_min,
+                self.throttle_scale_max,
+            )
+        } else {
+            self.throttle_scale_max
+        }
+    }
+
+    /// Altitude bit: divide by the air-density ratio.
+    #[must_use]
+    pub fn apply_altitude(&self, spd_scaler: f32, density_ratio: f32) -> f32 {
+        if self.mask & TAILSITTER_GSCL_ALTITUDE != 0 {
+            spd_scaler / density_ratio
+        } else {
+            spd_scaler
+        }
+    }
+
+    /// One `speed_scaling` cycle. Updates [`Self::last_spd_scaler`] on ATT_THR.
+    pub fn scale(&mut self, inp: &SpeedScaleInput) -> SpeedScaleOutput {
+        let throttle_scaler = self.throttle_scaler(inp.hover, inp.throttle);
+        let path = self.path(inp.have_airspeed);
+        let mut speed_scaler = match path {
+            GainScalePath::AttThr => {
+                let pre = self.att_thr_pre_slew(inp.hover, inp.throttle, inp.c_tilt);
+                let slewed = self.slew(pre, inp.dt_s);
+                self.att_thr_maybe_throttle(slewed, inp.hover, inp.throttle)
+            }
+            GainScalePath::DiskTheory => {
+                self.disk_theory_scaler(inp.hover, inp.throttle, inp.airspeed, inp.density_ratio)
+            }
+            GainScalePath::DiskTheoryFallback | GainScalePath::Throttle => throttle_scaler,
+            GainScalePath::Unity => 1.0,
+        };
+        speed_scaler = self.apply_altitude(speed_scaler, inp.density_ratio);
+        SpeedScaleOutput {
+            path,
+            throttle_scaler,
+            speed_scaler,
+        }
+    }
+
+    /// Flying-surface throw after `speed_scaling`. Tilt motors use
+    /// [`Self::scale_tilt`] instead.
+    #[must_use]
+    pub const fn scale_surface(value: f32, speed_scaler: f32) -> f32 {
+        value * speed_scaler
+    }
+
+    /// Tilt-motor throw after `speed_scaling` — always `throttle_scaler`.
+    #[must_use]
+    pub const fn scale_tilt(value: f32, throttle_scaler: f32) -> f32 {
+        value * throttle_scaler
+    }
 }
