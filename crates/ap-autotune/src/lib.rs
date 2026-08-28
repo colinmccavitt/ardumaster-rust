@@ -19,11 +19,15 @@
 //! becomes `0.01`) lives in [`start`]. The actuator / rate / target
 //! LPF cutoffs on `start` (0.75 Hz / 0.75 Hz / 4 Hz at the scheduler
 //! loop rate) live in [`filters`].
+//! The completeness closer (`OnMain` vs `Remaining`, IMAX-on-start,
+//! yaw `att_limit` 20 deg, `done_count` N-cycle save) lives in
+//! [`completeness`].
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
 #![no_std]
 
+pub mod completeness;
 pub mod ff;
 pub mod ff_estimate;
 pub mod filters;
@@ -34,6 +38,10 @@ pub mod start;
 pub mod state;
 pub mod update;
 
+pub use completeness::{
+    att_limit_deg, should_save_after_cycles, start_constrain_imax, AutotunePortItem, PortStatus,
+    AUTOTUNE_COMPLETENESS, DONE_COUNT_SAVE, YAW_ATT_LIMIT_DEG,
+};
 pub use ff::{
     apply_ff_i, constrain_ff_step, constrain_imax, couple_ff_i, couple_i,
     AUTOTUNE_DECREASE_FF_STEP, AUTOTUNE_INCREASE_FF_STEP, AUTOTUNE_I_RATIO, AUTOTUNE_MAX_IMAX,

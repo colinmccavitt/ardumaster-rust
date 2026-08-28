@@ -5,6 +5,7 @@
 //! target rate and attitude error both look like a stick demand, and
 //! returns to `IDLE` when the rate falls back through a lower threshold.
 
+use crate::ff::constrain_imax;
 use crate::gains::{apply_stop_gains, snapshot_gains, AtGains};
 use crate::start::floor_start_ff;
 
@@ -191,6 +192,13 @@ pub struct AutoTune {
     /// Not stored on [`AtGains`] (see [`crate::ff`]); [`AutoTune::start`]
     /// floors values below [`crate::start::AUTOTUNE_MIN_FF`].
     pub ff: f32,
+    /// Integrator limit, upstream `ATGains::IMAX` / `rpid.kIMAX()`.
+    ///
+    /// [`AutoTune::start`] clamps into
+    /// [`crate::ff::AUTOTUNE_MIN_IMAX`]..=[`crate::ff::AUTOTUNE_MAX_IMAX`].
+    pub imax: f32,
+    /// Stable cycles after both limits, upstream `done_count`.
+    pub done_count: u8,
 }
 
 impl AutoTune {
@@ -214,6 +222,8 @@ impl AutoTune {
             p_limit: 0.0,
             d_limit: 0.0,
             ff: 0.0,
+            imax: 0.0,
+            done_count: 0,
         }
     }
 
@@ -236,8 +246,8 @@ impl AutoTune {
     /// Upstream `AP_AutoTune::start` — enter AUTOTUNE on this axis.
     ///
     /// Sets `running`, forces `IDLE`, snapshots `current` into
-    /// `restore` / `last_save`, then floors FF below 0.01 so the tuner
-    /// never starts at zero feed-forward.
+    /// `restore` / `last_save`, floors FF below 0.01, clamps IMAX into
+    /// 0.4..=0.9, and clears `done_count`.
     pub fn start(&mut self) {
         self.running = true;
         self.state = AtState::Idle;
@@ -246,7 +256,9 @@ impl AutoTune {
         self.last_save = last_save;
         self.p_limit = 0.0;
         self.d_limit = 0.0;
+        self.done_count = 0;
         self.ff = floor_start_ff(self.ff);
+        self.imax = constrain_imax(self.imax);
     }
 
     /// Upstream `AP_AutoTune::stop` — leave AUTOTUNE on this axis.
