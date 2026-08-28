@@ -14,9 +14,11 @@
 //! [`mission::MissionItemInt`] / [`mission::MissionRequestInt`]
 //! (msgid 73 / 51) against a small in-memory mission table, and sends
 //! [`health::SysStatus`] / [`health::BatteryStatus`] (msgid 1 / 147) from a
-//! [`health::HealthSnapshot`], and sends [`channels::RcChannels`] /
+//! [`health::HealthSnapshot`], sends [`channels::RcChannels`] /
 //! [`channels::ServoOutputRaw`] (msgid 65 / 36) from a
-//! [`channels::ChannelSnapshot`]. The rest of
+//! [`channels::ChannelSnapshot`], and sends [`hud::VfrHud`] /
+//! [`hud::NavControllerOutput`] (msgid 74 / 62) from a
+//! [`hud::HudSnapshot`]. The rest of
 //! `modules/mavlink` stays ungenerated until later slices.
 //!
 //! # What this slice does not include
@@ -36,6 +38,7 @@ pub mod dispatch;
 pub mod framing;
 pub mod health;
 pub mod heartbeat;
+pub mod hud;
 pub mod mission;
 pub mod param;
 pub mod pose;
@@ -62,6 +65,10 @@ pub use health::{
 };
 pub use heartbeat::{
     Heartbeat, MAV_AUTOPILOT_ARDUPILOTMEGA, MAV_TYPE_FIXED_WING, MSG_ID_HEARTBEAT,
+};
+pub use hud::{
+    HudSnapshot, NavControllerOutput, VfrHud, MSG_ID_NAV_CONTROLLER_OUTPUT, MSG_ID_VFR_HUD,
+    NAV_CONTROLLER_OUTPUT_CRC, NAV_CONTROLLER_OUTPUT_LEN, VFR_HUD_CRC, VFR_HUD_LEN,
 };
 pub use mission::{
     MissionItemInt, MissionRequestInt, MissionTable, MAV_CMD_NAV_WAYPOINT,

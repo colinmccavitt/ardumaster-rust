@@ -9,8 +9,9 @@
 //! looks it up for download. Send path is `GCS_MAVLINK::send_heartbeat`,
 //! `send_text`, `queued_param_send`, `send_parameter_value`,
 //! `send_attitude`, `send_global_position_int`, `send_mission_item_int`,
-//! `send_sys_status`, `send_battery_status`, `send_rc_channels`, and
-//! `send_servo_output_raw`.
+//! `send_sys_status`, `send_battery_status`, `send_rc_channels`,
+//! `send_servo_output_raw`, `send_vfr_hud`, and
+//! `send_nav_controller_output`.
 
 use crate::channels::{
     ChannelSnapshot, MSG_ID_RC_CHANNELS, MSG_ID_SERVO_OUTPUT_RAW, RC_CHANNELS_LEN,
@@ -25,6 +26,10 @@ use crate::health::{
     HealthSnapshot, BATTERY_STATUS_LEN, MSG_ID_BATTERY_STATUS, MSG_ID_SYS_STATUS, SYS_STATUS_LEN,
 };
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
+use crate::hud::{
+    HudSnapshot, MSG_ID_NAV_CONTROLLER_OUTPUT, MSG_ID_VFR_HUD, NAV_CONTROLLER_OUTPUT_LEN,
+    VFR_HUD_LEN,
+};
 use crate::mission::{
     MissionItemInt, MissionRequestInt, MissionTable, MISSION_ITEM_INT_LEN, MSG_ID_MISSION_ITEM_INT,
     MSG_ID_MISSION_REQUEST_INT,
@@ -369,6 +374,47 @@ impl GcsMavlink {
             self.sysid,
             self.compid,
             MSG_ID_SERVO_OUTPUT_RAW,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing VFR_HUD, upstream `GCS_MAVLINK::send_vfr_hud`.
+    ///
+    /// Packs airspeed / groundspeed / heading / throttle / altitude / climb
+    /// from `hud` and frames them for Write. Stream-rate gating
+    /// (`MSG_VFR_HUD`) is later.
+    #[must_use]
+    pub fn send_vfr_hud(&mut self, out: &mut [u8], hud: &HudSnapshot) -> Option<usize> {
+        let vfr = hud.vfr_hud();
+        let mut payload = [0u8; VFR_HUD_LEN];
+        vfr.encode(&mut payload)?;
+        let frame = Frame::new(self.seq, self.sysid, self.compid, MSG_ID_VFR_HUD, &payload)?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
+    }
+
+    /// Encode one outgoing NAV_CONTROLLER_OUTPUT, upstream
+    /// `GCS_MAVLINK_Plane::send_nav_controller_output`.
+    ///
+    /// Packs desired attitude / bearings, waypoint distance, and nav errors
+    /// from `hud` and frames them for Write. Stream-rate gating
+    /// (`MSG_NAV_CONTROLLER_OUTPUT`) is later.
+    #[must_use]
+    pub fn send_nav_controller_output(
+        &mut self,
+        out: &mut [u8],
+        hud: &HudSnapshot,
+    ) -> Option<usize> {
+        let nav = hud.nav_controller_output();
+        let mut payload = [0u8; NAV_CONTROLLER_OUTPUT_LEN];
+        nav.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            MSG_ID_NAV_CONTROLLER_OUTPUT,
             &payload,
         )?;
         self.seq = self.seq.wrapping_add(1);
