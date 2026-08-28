@@ -5,12 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! This slice: [`QuadPlane::update_throttle_mix`] and TIMER
-//! tilt-wait before forward flight. Transition owns mix during
-//! assisted `AIRSPEED_WAIT` / `TIMER`; otherwise mix follows the
-//! land-check / manual-throttle table. Completing TIMER waits for
-//! `tilt_fwd_complete`. It does not rewrite `setup()` frame-class
-//! or weathervane.
+//! This slice: [`QuadPlane::mavlink_motor_test_start`] /
+//! [`QuadPlane::motor_test_output`] / [`QuadPlane::motor_test_stop`]
+//! (`MAV_CMD_DO_MOTOR_TEST`). Start refuses unavailable / armed /
+//! failed motors checks; output maps percent/PWM/pilot throttle,
+//! walks a multi-motor gap, and stop disarms. It does not rewrite
+//! throttle mix or weathervane.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -26,6 +26,7 @@
 
 pub mod air_mode;
 pub mod mode_q;
+pub mod motor_test;
 pub mod poscontrol;
 pub mod tailsitter;
 pub mod throttle;
@@ -215,6 +216,10 @@ pub struct QuadPlane {
     weathervane_inited: bool,
     /// Upstream `AC_WeatherVane *weathervane` (embedded, not a heap pointer).
     weathervane: weathervane::WeatherVane,
+    /// Upstream `motor_test` start / output / stop block.
+    motor_test: motor_test::MotorTest,
+    /// `motors->armed()` latch written by motor-test start / stop.
+    motors_armed: bool,
 }
 
 impl QuadPlane {
@@ -242,6 +247,8 @@ impl QuadPlane {
             assisted_flight: false,
             weathervane_inited: false,
             weathervane: weathervane::WeatherVane::new(),
+            motor_test: motor_test::MotorTest::new(),
+            motors_armed: false,
         }
     }
 
@@ -272,6 +279,8 @@ impl QuadPlane {
             assisted_flight: false,
             weathervane_inited: false,
             weathervane: weathervane::WeatherVane::new(),
+            motor_test: motor_test::MotorTest::new(),
+            motors_armed: false,
         }
     }
 
