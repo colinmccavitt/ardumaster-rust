@@ -1,0 +1,10 @@
+[package]
+name = "ap-autotune"
+description = "Port of ArduPilot libraries/APM_Control/AP_AutoTune (Plane-4.7.0). Tracked as FW-040."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

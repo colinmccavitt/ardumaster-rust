@@ -25,6 +25,10 @@ name = "ap-arming"
 version = "0.1.0"
 
 [[package]]
+name = "ap-autotune"
+version = "0.1.0"
+
+[[package]]
 name = "ap-baro"
 version = "0.1.0"
 dependencies = [
