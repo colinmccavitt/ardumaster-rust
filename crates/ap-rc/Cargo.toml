@@ -1,6 +1,6 @@
 [package]
 name = "ap-rc"
-description = "Port of ArduPilot libraries/RC_Channel: PWM scale + deadzone (Plane-4.7.0). Tracked as FW-019."
+description = "Port of ArduPilot libraries/RC_Channel: PWM scale, deadzone, aux-function switch latch (Plane-4.7.0). Tracked as FW-019."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -81,6 +81,7 @@ pub mod rangefinder_bump_hookup;
 pub mod rangefinder_bump_scheduler_hookup;
 pub mod rc_failsafe_scheduler_hookup;
 pub mod rc_channel_scale_hookup;
+pub mod rc_aux_switch_hookup;
 pub mod mission_alt_offset_glue_hookup;
 pub mod rangefinder_correction_glue_hookup;
 pub mod mission_scheduler_hookup;

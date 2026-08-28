@@ -5,12 +5,20 @@
 //! own min/trim/max, an optional reverse, and a deadzone around trim so a
 //! resting stick is zero rather than a few counts of noise.
 //!
-//! This crate is the first dedicated `RC_Channel` slice. The HAL owns the raw
-//! PWM microsecond I/O; Plane's failsafe hookup already reads those pulses.
-//! Scaling belongs here so later aux-function and radio.cpp work can share
-//! one conversion.
+//! Scaling and the aux-function switch latch live here so radio.cpp work can
+//! share one conversion. The HAL owns the raw PWM microsecond I/O; Plane's
+//! failsafe hookup already reads those pulses.
 
 #![no_std]
+
+pub mod aux_switch;
+
+pub use aux_switch::{
+    get_aux_switch_pos, init_position_on_first_radio_read, read_3pos_switch, AuxFunc,
+    AuxSwitchLatch, AuxSwitchPos, AUX_SWITCH_PWM_TRIGGER_HIGH, AUX_SWITCH_PWM_TRIGGER_LOW,
+    RC_MAX_LIMIT_PWM, RC_MIN_LIMIT_PWM, SWITCH_DEBOUNCE_TIME_MS,
+};
+
 
 /// Upstream `RC_CHAN_MIN_DEFAULT` / `RC_Channel::radio_min` default.
 pub const RC_CHAN_MIN_DEFAULT: u16 = 1100;
