@@ -19,6 +19,8 @@
 //! becomes `0.01`) lives in [`start`]. The actuator / rate / target
 //! LPF cutoffs on `start` (0.75 Hz / 0.75 Hz / 4 Hz at the scheduler
 //! loop rate) live in [`filters`].
+//! Action / D-limit hunting (`RAISE_D` / `LOWER_D` / `LOWER_PD` /
+//! `IDLE_LOWER_PD`) lives in [`action`].
 //! The completeness closer (`OnMain` vs `Remaining`, IMAX-on-start,
 //! yaw `att_limit` 20 deg, `done_count` N-cycle save) lives in
 //! [`completeness`].
@@ -27,6 +29,7 @@
 
 #![no_std]
 
+pub mod action;
 pub mod completeness;
 pub mod ff;
 pub mod ff_estimate;
@@ -38,6 +41,10 @@ pub mod start;
 pub mod state;
 pub mod update;
 
+pub use action::{
+    apply_d_hunt, apply_idle_lower_pd, hunt_d_action, hunt_d_gains, Action, D_SET_SETTLE_MS,
+    IDLE_OSCILLATE_MS, LOWER_D_AGAIN_MUL, LOWER_D_FIRST_MUL, RAISE_D_MUL,
+};
 pub use completeness::{
     att_limit_deg, should_save_after_cycles, start_constrain_imax, AutotunePortItem, PortStatus,
     AUTOTUNE_COMPLETENESS, DONE_COUNT_SAVE, YAW_ATT_LIMIT_DEG,

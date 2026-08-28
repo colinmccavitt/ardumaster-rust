@@ -32,10 +32,10 @@ const THIS_SLICE: &[&str] = &[
     "IMAX constrain on start",
     "yaw att_limit 20 deg",
     "save_gains after N stable cycles",
+    "Action / D-limit hunting",
 ];
 
 const REMAINING: &[&str] = &[
-    "Action / D-limit hunting",
     "slew_limit / SlewLimiter",
     "log_ATRP 25Hz",
     "EEPROM save_*_if_changed",

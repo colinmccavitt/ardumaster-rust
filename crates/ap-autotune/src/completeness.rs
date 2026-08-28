@@ -3,11 +3,10 @@
 //!
 //! Catalogs the Plane AutoTune port. Items marked [`PortStatus::OnMain`]
 //! landed in earlier slices and must not be redone. [`PortStatus::ThisSlice`]
-//! is this table plus IMAX-on-start (0.4..=0.9), the yaw attitude limit
-//! (20 deg), and `save_gains` after `DONE_COUNT_SAVE` stable cycles.
+//! includes Action / D-limit hunting (`RAISE_D` / `LOWER_D` /
+//! `LOWER_PD` / `IDLE_LOWER_PD`) plus the earlier closer rows.
 //! [`PortStatus::Remaining`] are still-open `AP_AutoTune.cpp` gaps
-//! (Action / D-limit hunting, slew limiter, ATRP log, EEPROM
-//! `save_*_if_changed`).
+//! (slew limiter, ATRP log, EEPROM `save_*_if_changed`).
 //!
 //! This module does not rewrite [`crate::filters`] or [`crate::start`].
 
@@ -122,8 +121,8 @@ pub const AUTOTUNE_COMPLETENESS: &[AutotunePortItem] = &[
     },
     AutotunePortItem {
         name: "Action / D-limit hunting",
-        status: PortStatus::Remaining,
-        note: "RAISE_D / LOWER_D / LOWER_PD / IDLE_LOWER_PD oscillation paths",
+        status: PortStatus::ThisSlice,
+        note: "action.rs RAISE_D / LOWER_D / LOWER_PD / IDLE_LOWER_PD",
     },
     AutotunePortItem {
         name: "slew_limit / SlewLimiter",
