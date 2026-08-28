@@ -2,10 +2,10 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover guided_start /
-//! guided_update / RTL_MODE. [`PortStatus::Remaining`] are leftover
-//! `quadplane.cpp` / `.h` surfaces not yet stubbed (thrust-loss,
-//! TECS leftovers).
+//! be redone. [`PortStatus::ThisSlice`] is leftover thrust_loss_check /
+//! run_esc_calibration / takeoff_failure_scalar. [`PortStatus::Remaining`]
+//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
+//! (TECS leftovers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
 //! [`crate::landing`], [`crate::land_sequence`], [`crate::logging`],
@@ -125,13 +125,13 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "guided / QRTL / RTL_MODE",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "guided.rs guided_start / guided_update / RTL_MODE NONE..QRTL_ALWAYS / guided_mode_enabled",
     },
     QuadPlanePortItem {
         name: "thrust-loss / ESC-cal / takeoff-failure",
-        status: PortStatus::Remaining,
-        note: "thrust_loss_check / run_esc_calibration / takeoff_failure_scalar (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "thrust_loss.rs thrust_loss_check / run_esc_calibration / takeoff_failure_scalar",
     },
     QuadPlanePortItem {
         name: "TECS / stick-mix / stopping-distance leftovers",
@@ -645,6 +645,140 @@ pub const fn rtl_mode_vtol_landing(mode: RtlMode) -> bool {
     matches!(mode, RtlMode::SwitchQrtl | RtlMode::VtolApproachQrtl)
 }
 
+/// Leftover `Q_THRST_LOSS_OPT` bits, upstream `ThrustLoss::Option`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ThrustLossOption {
+    /// Bit 0, upstream `ThrustLoss::Option::DISABLED`.
+    Disabled = 1 << 0,
+    /// Bit 1, upstream `ThrustLoss::Option::VTOL_ONLY`.
+    VtolOnly = 1 << 1,
+}
+
+impl ThrustLossOption {
+    /// Upstream discriminant.
+    #[must_use]
+    pub const fn as_i32(self) -> i32 {
+        self as i32
+    }
+}
+
+/// `sq(radians(15.0))` — leftover tilt-target reject.
+pub const THRUST_LOSS_TILT_LIMIT_DEG: f32 = 15.0;
+
+/// `sq(radians(15.0))`.
+pub const THRUST_LOSS_TILT_LIMIT_RAD_SQ: f32 = {
+    let r = 15.0 * 3.141_592_7 / 180.0;
+    r * r
+};
+
+/// Leftover attitude-error reject, degrees.
+pub const THRUST_LOSS_ANGLE_ERROR_DEG: f32 = 30.0;
+
+/// Leftover throttle floor (`get_throttle_in() < 0.25`).
+pub const THRUST_LOSS_THROTTLE_MIN: f32 = 0.25;
+
+/// Leftover throttle-saturation gate (`get_throttle_in() < 0.9`).
+pub const THRUST_LOSS_THROTTLE_SAT: f32 = 0.9;
+
+/// Floor on leftover `takeoff_time_limit_ms`, upstream `MAX(..., 5000)`.
+pub const TAKEOFF_FAILURE_TIME_LIMIT_MIN_MS: u32 = 5000;
+
+/// Upstream `ThrustLoss::option_is_set`.
+#[must_use]
+pub const fn thrust_loss_option_is_set(options: i32, option: ThrustLossOption) -> bool {
+    options & option.as_i32() != 0
+}
+
+/// `DISABLED` bit — check is off in every mode.
+#[must_use]
+pub const fn thrust_loss_disabled(options: i32) -> bool {
+    thrust_loss_option_is_set(options, ThrustLossOption::Disabled)
+}
+
+/// `VTOL_ONLY` while not in a Q* / VTOL-auto mode.
+#[must_use]
+pub const fn thrust_loss_vtol_only_skip(options: i32, in_vtol_mode: bool) -> bool {
+    thrust_loss_option_is_set(options, ThrustLossOption::VtolOnly) && !in_vtol_mode
+}
+
+/// Already boosting, disarmed, not flying, or spool not unlimited.
+#[must_use]
+pub const fn thrust_loss_already_engaged_or_idle(
+    thrust_boost: bool,
+    armed: bool,
+    is_flying: bool,
+    spool_unlimited: bool,
+) -> bool {
+    thrust_boost || !armed || !is_flying || !spool_unlimited
+}
+
+/// Target tilt `xy().length_squared() > sq(radians(15))`.
+#[must_use]
+pub const fn thrust_loss_tilt_too_steep(att_target_xy_rad_len_sq: f32) -> bool {
+    att_target_xy_rad_len_sq > THRUST_LOSS_TILT_LIMIT_RAD_SQ
+}
+
+/// Throttle below 90% and not already upper-limited.
+#[must_use]
+pub const fn thrust_loss_throttle_not_saturated(throttle_in: f32, throttle_upper: bool) -> bool {
+    throttle_in < THRUST_LOSS_THROTTLE_SAT && !throttle_upper
+}
+
+/// Throttle below 25% — reject (avoids low-command false positives).
+#[must_use]
+pub const fn thrust_loss_throttle_too_low(throttle_in: f32) -> bool {
+    throttle_in < THRUST_LOSS_THROTTLE_MIN
+}
+
+/// No NED vel, or `vel_NED.z` is not positive (not descending).
+#[must_use]
+pub const fn thrust_loss_not_descending(have_vel_ned: bool, vel_ned_z: f32) -> bool {
+    !have_vel_ned || vel_ned_z <= 0.0
+}
+
+/// Attitude error at or above 30 deg — aircraft already lost control.
+#[must_use]
+pub const fn thrust_loss_attitude_lost(att_error_deg: f32) -> bool {
+    att_error_deg >= THRUST_LOSS_ANGLE_ERROR_DEG
+}
+
+/// Leftover `run_esc_calibration` passthrough (0 when disarmed).
+#[must_use]
+pub const fn esc_cal_passthrough(mode: i8, armed: bool, throttle_input: f32) -> f32 {
+    if !armed {
+        return 0.0;
+    }
+    match mode {
+        1 => throttle_input * 0.01,
+        2 => 1.0,
+        _ => 0.0,
+    }
+}
+
+/// `is_positive(takeoff_failure_scalar)`.
+#[must_use]
+pub const fn takeoff_failure_scalar_armed(scalar: f32) -> bool {
+    scalar > 0.0
+}
+
+/// `is_positive(scalar) && elapsed > takeoff_time_limit_ms`.
+#[must_use]
+pub const fn takeoff_failure_timed_out(scalar: f32, elapsed_ms: u32, limit_ms: u32) -> bool {
+    takeoff_failure_scalar_armed(scalar) && elapsed_ms > limit_ms
+}
+
+/// `MAX(travel_time_s * takeoff_failure_scalar * 1000, 5000)`.
+#[must_use]
+pub const fn takeoff_failure_time_limit_ms(travel_time_s: f32, scalar: f32) -> u32 {
+    let scaled = travel_time_s * scalar * 1000.0;
+    if scaled > TAKEOFF_FAILURE_TIME_LIMIT_MIN_MS as f32 {
+        scaled as u32
+    } else {
+        TAKEOFF_FAILURE_TIME_LIMIT_MIN_MS
+    }
+}
+
 /// Rows already hooked up on `main` (must not be redone).
 #[must_use]
 pub fn on_main_items() -> impl Iterator<Item = &'static QuadPlanePortItem> {
@@ -714,9 +848,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 16);
+        assert_eq!(on_main, 17);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 2);
+        assert_eq!(remaining, 1);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -748,13 +882,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "guided / QRTL / RTL_MODE",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "thrust-loss / ESC-cal / takeoff-failure",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 16);
+        assert_eq!(on_main_items().count(), 17);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 2);
+        assert_eq!(remaining_items().count(), 1);
     }
 
     #[test]
@@ -879,6 +1017,34 @@ mod tests {
         assert!(land_sequence(true, false, false, false));
         assert!(land_sequence(false, true, false, false));
         assert!(!land_sequence(false, false, false, false));
+    }
+
+    #[test]
+    fn leftover_thrust_loss_esc_cal_and_takeoff_failure_helpers() {
+        assert!(thrust_loss_disabled(ThrustLossOption::Disabled.as_i32()));
+        assert!(!thrust_loss_disabled(0));
+        assert!(thrust_loss_vtol_only_skip(
+            ThrustLossOption::VtolOnly.as_i32(),
+            false
+        ));
+        assert!(!thrust_loss_vtol_only_skip(
+            ThrustLossOption::VtolOnly.as_i32(),
+            true
+        ));
+        assert!(thrust_loss_already_engaged_or_idle(true, true, true, true));
+        assert!(thrust_loss_tilt_too_steep(1.0));
+        assert!(!thrust_loss_tilt_too_steep(0.0));
+        assert!(thrust_loss_throttle_not_saturated(0.5, false));
+        assert!(thrust_loss_throttle_too_low(0.2));
+        assert!(thrust_loss_not_descending(false, 1.0));
+        assert!(thrust_loss_attitude_lost(THRUST_LOSS_ANGLE_ERROR_DEG));
+        assert_eq!((esc_cal_passthrough(1, true, 50.0) * 100.0) as i32, 50);
+        assert_eq!(esc_cal_passthrough(2, true, 0.0) as i32, 1);
+        assert!(!takeoff_failure_scalar_armed(0.0));
+        assert!(takeoff_failure_scalar_armed(1.0));
+        assert_eq!(takeoff_failure_time_limit_ms(1.0, 0.0), 5000);
+        assert!(takeoff_failure_timed_out(1.0, 5001, 5000));
+        assert!(!takeoff_failure_timed_out(0.0, 5001, 5000));
     }
 
     #[test]

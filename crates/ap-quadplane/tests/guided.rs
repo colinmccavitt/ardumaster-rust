@@ -115,11 +115,15 @@ fn rtl_mode_qrtl_always_and_vtol_landing() {
 #[test]
 fn catalog_marks_guided_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 16);
+    assert_eq!(on_main, 17);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 2);
+    assert_eq!(remaining, 1);
     assert!(completeness_has(
         "guided / QRTL / RTL_MODE",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "thrust-loss / ESC-cal / takeoff-failure",
         PortStatus::ThisSlice
     ));
     assert!(completeness_has(
@@ -127,7 +131,7 @@ fn catalog_marks_guided_this_slice_and_leaves_other_rows() {
         PortStatus::OnMain
     ));
     assert!(completeness_has(
-        "thrust-loss / ESC-cal / takeoff-failure",
+        "TECS / stick-mix / stopping-distance leftovers",
         PortStatus::Remaining
     ));
     assert!(completeness_has(

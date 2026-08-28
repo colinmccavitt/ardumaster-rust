@@ -5,13 +5,13 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover motors_output / hold / set_armed already landed.
-//! This slice: leftover guided_start / guided_update / RTL_MODE on
-//! [`crate::guided`].
+//! Leftover guided_start / guided_update / RTL_MODE already landed.
+//! This slice: leftover thrust_loss_check / run_esc_calibration /
+//! takeoff_failure_scalar on [`crate::thrust_loss`].
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
 //! leftover Q_OPTIONS, assist latches, position controllers,
-//! land-sequence, motors_output, motor-test, tailsitter completeness,
-//! or the leftover catalog helpers for remaining rows.
+//! land-sequence, motors_output, guided, motor-test, tailsitter
+//! completeness, or the leftover TECS / stick-mix row.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -29,8 +29,8 @@ pub mod air_mode;
 pub mod auto_vtol;
 pub mod completeness;
 pub mod guided;
-pub mod landing;
 pub mod land_sequence;
+pub mod landing;
 pub mod logging;
 pub mod mode_q;
 pub mod mode_qautotune;
@@ -43,6 +43,7 @@ pub mod position_controller;
 pub mod quadplane_completeness;
 pub mod tailsitter;
 pub mod throttle;
+pub mod thrust_loss;
 pub mod tiltrotor;
 pub mod tiltrotor_completeness;
 pub mod transition;
@@ -263,6 +264,10 @@ pub struct QuadPlane {
     position_controller: position_controller::PositionControllers,
     /// Leftover motors_output / hold / set_armed latches.
     motors_output_state: motors_output::MotorsOutputState,
+    /// Leftover `thrust_loss` counter / `Q_THRST_LOSS_OPT`.
+    thrust_loss: thrust_loss::ThrustLoss,
+    /// Leftover `Q_ESC_CAL` + Notify latch.
+    esc_calibration: thrust_loss::EscCalibration,
 }
 
 impl QuadPlane {
@@ -305,6 +310,8 @@ impl QuadPlane {
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),
             motors_output_state: motors_output::MotorsOutputState::new(),
+            thrust_loss: thrust_loss::ThrustLoss::new(),
+            esc_calibration: thrust_loss::EscCalibration::new(),
         }
     }
 
@@ -350,6 +357,8 @@ impl QuadPlane {
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),
             motors_output_state: motors_output::MotorsOutputState::new(),
+            thrust_loss: thrust_loss::ThrustLoss::new(),
+            esc_calibration: thrust_loss::EscCalibration::new(),
         }
     }
 

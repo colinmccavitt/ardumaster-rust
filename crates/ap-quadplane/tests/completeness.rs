@@ -30,15 +30,13 @@ const ON_MAIN: &[&str] = &[
     "position / takeoff / waypoint controllers",
     "land-sequence predicates",
     "motors_output / hold / set_armed",
+    "guided / QRTL / RTL_MODE",
 ];
 
-const THIS_SLICE: &[&str] = &["guided / QRTL / RTL_MODE"];
+const THIS_SLICE: &[&str] = &["thrust-loss / ESC-cal / takeoff-failure"];
 
 /// Leftover `quadplane.cpp` / `.h` surfaces not yet stubbed.
-const REMAINING: &[&str] = &[
-    "thrust-loss / ESC-cal / takeoff-failure",
-    "TECS / stick-mix / stopping-distance leftovers",
-];
+const REMAINING: &[&str] = &["TECS / stick-mix / stopping-distance leftovers"];
 
 #[test]
 fn completeness_table_matches_main_versus_leftover_api() {
@@ -77,7 +75,7 @@ fn completeness_table_matches_main_versus_leftover_api() {
 #[test]
 fn leftover_api_rows_name_upstream_surfaces() {
     let leftover: Vec<&QuadPlanePortItem> = remaining_items().collect();
-    assert_eq!(leftover.len(), 2);
+    assert_eq!(leftover.len(), 1);
     assert!(completeness_has(
         "leftover Q_OPTIONS bits",
         PortStatus::OnMain
@@ -100,6 +98,10 @@ fn leftover_api_rows_name_upstream_surfaces() {
     ));
     assert!(completeness_has(
         "guided / QRTL / RTL_MODE",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "thrust-loss / ESC-cal / takeoff-failure",
         PortStatus::ThisSlice
     ));
     assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
@@ -134,9 +136,11 @@ fn leftover_api_rows_name_upstream_surfaces() {
             && item.note.contains("guided_start")
             && item.note.contains("RTL_MODE")
     }));
-    assert!(leftover
-        .iter()
-        .any(|item| item.note.contains("thrust_loss_check")));
+    assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
+        item.name == "thrust-loss / ESC-cal / takeoff-failure"
+            && item.note.contains("thrust_loss_check")
+            && item.note.contains("run_esc_calibration")
+    }));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("should_disable_TECS")));

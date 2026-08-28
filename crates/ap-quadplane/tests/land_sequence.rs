@@ -128,9 +128,9 @@ fn auto_without_vtol_land_and_airbrake_uses_mode_auto() {
 #[test]
 fn catalog_marks_land_sequence_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 16);
+    assert_eq!(on_main, 17);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 2);
+    assert_eq!(remaining, 1);
     assert!(completeness_has(
         "land-sequence predicates",
         PortStatus::OnMain

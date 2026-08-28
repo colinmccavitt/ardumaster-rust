@@ -308,7 +308,7 @@ impl QuadPlane {
     /// still run `motors->output()`. ESC-cal and unassisted tailsitter
     /// transition return without that output. The output path may run
     /// the rate controller and latches `last_motors_active_ms`.
-    /// `thrust_loss_check` is a later leftover row — this only reports
+    /// `thrust_loss_check` lives on [`crate::thrust_loss`] — this only reports
     /// the inactive flag that check would see.
     pub fn motors_output(&mut self, view: MotorsOutputView) -> MotorsOutputTick {
         if self.leftover_motors_delay_arming(view.arming_delay_active) {
