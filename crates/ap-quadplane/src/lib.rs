@@ -15,6 +15,7 @@
 #![no_std]
 
 pub mod tailsitter;
+pub mod transition;
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
 pub const Q_ENABLE_DEFAULT: i8 = 0;
