@@ -128,12 +128,12 @@ fn auto_without_vtol_land_and_airbrake_uses_mode_auto() {
 #[test]
 fn catalog_marks_land_sequence_this_slice_and_leaves_other_rows() {
     let (on_main, this_slice, remaining) = completeness_counts();
-    assert_eq!(on_main, 14);
+    assert_eq!(on_main, 15);
     assert_eq!(this_slice, 1);
-    assert_eq!(remaining, 4);
+    assert_eq!(remaining, 3);
     assert!(completeness_has(
         "land-sequence predicates",
-        PortStatus::ThisSlice
+        PortStatus::OnMain
     ));
     assert!(completeness_has(
         "position / takeoff / waypoint controllers",
@@ -141,7 +141,7 @@ fn catalog_marks_land_sequence_this_slice_and_leaves_other_rows() {
     ));
     assert!(completeness_has(
         "motors_output / hold / set_armed",
-        PortStatus::Remaining
+        PortStatus::ThisSlice
     ));
     let mut qp = QuadPlane::with_enable(1);
     assert!(qp.setup());

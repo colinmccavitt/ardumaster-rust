@@ -5,14 +5,13 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover position / takeoff / waypoint controllers already landed.
-//! This slice: leftover land-sequence predicates on
-//! [`crate::land_sequence`] (`in_vtol_land_approach` / descent /
-//! final / sequence / poscontrol / airbrake).
+//! Leftover land-sequence predicates already landed.
+//! This slice: leftover motors_output / hold_hover / hold_stabilize /
+//! set_armed on [`crate::motors_output`].
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
 //! leftover Q_OPTIONS, assist latches, position controllers,
-//! motor-test, tailsitter completeness, or the leftover catalog
-//! helpers for remaining rows.
+//! land-sequence, motor-test, tailsitter completeness, or the leftover
+//! catalog helpers for remaining rows.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -37,6 +36,7 @@ pub mod mode_qautotune;
 pub mod mode_qland;
 pub mod mode_qrtl;
 pub mod motor_test;
+pub mod motors_output;
 pub mod poscontrol;
 pub mod position_controller;
 pub mod quadplane_completeness;
@@ -254,6 +254,8 @@ pub struct QuadPlane {
     logging: logging::QLogging,
     /// Leftover position / takeoff / waypoint controller timers.
     position_controller: position_controller::PositionControllers,
+    /// Leftover motors_output / hold / set_armed latches.
+    motors_output_state: motors_output::MotorsOutputState,
 }
 
 impl QuadPlane {
@@ -292,6 +294,7 @@ impl QuadPlane {
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),
+            motors_output_state: motors_output::MotorsOutputState::new(),
         }
     }
 
@@ -333,6 +336,7 @@ impl QuadPlane {
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
             position_controller: position_controller::PositionControllers::new(),
+            motors_output_state: motors_output::MotorsOutputState::new(),
         }
     }
 

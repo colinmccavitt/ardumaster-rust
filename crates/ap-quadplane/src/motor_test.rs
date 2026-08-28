@@ -305,10 +305,10 @@ impl QuadPlane {
         self.motor_test.running
     }
 
-    /// Motors-armed latch written by start / stop (`set_armed`).
+    /// Motors-armed latch written by start / stop (`motors->armed`).
     ///
-    /// Guided `guided_wait_takeoff` and `init_throttle_wait` side
-    /// effects of the full `set_armed` path are a later slice.
+    /// The full `set_armed` path (`guided_wait_takeoff` /
+    /// `init_throttle_wait`) lives on [`crate::motors_output`].
     #[must_use]
     pub const fn motors_armed(&self) -> bool {
         self.motors_armed

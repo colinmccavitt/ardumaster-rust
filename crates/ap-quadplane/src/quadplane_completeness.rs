@@ -2,14 +2,13 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover land-sequence
-//! predicates (`in_vtol_land_approach` / descent / final / sequence /
-//! poscontrol / airbrake). [`PortStatus::Remaining`] are leftover
-//! `quadplane.cpp` / `.h` surfaces not yet stubbed (motors/hold,
-//! guided/QRTL, thrust-loss, TECS leftovers).
+//! be redone. [`PortStatus::ThisSlice`] is leftover motors_output /
+//! hold_hover / hold_stabilize / set_armed. [`PortStatus::Remaining`]
+//! are leftover `quadplane.cpp` / `.h` surfaces not yet stubbed
+//! (guided/QRTL, thrust-loss, TECS leftovers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
-//! [`crate::landing`], [`crate::logging`],
+//! [`crate::landing`], [`crate::land_sequence`], [`crate::logging`],
 //! [`crate::mode_q`], [`crate::motor_test`], [`crate::poscontrol`],
 //! [`crate::tailsitter`], [`crate::throttle`], [`crate::transition`],
 //! [`crate::transition_fsm`], [`crate::vtol_mode`], or
@@ -111,7 +110,7 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "land-sequence predicates",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "land_sequence.rs in_vtol_land_approach / descent / final / sequence / poscontrol / airbrake",
     },
     QuadPlanePortItem {
@@ -121,8 +120,8 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "motors_output / hold / set_armed",
-        status: PortStatus::Remaining,
-        note: "motors_output / hold_hover / hold_stabilize / set_armed (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "motors_output.rs motors_output / hold_hover / hold_stabilize / set_armed",
     },
     QuadPlanePortItem {
         name: "guided / QRTL / RTL_MODE",
@@ -234,7 +233,8 @@ impl QuadPlane {
     /// SLT airspeed-wait climb clamp: `LEVEL_TRANSITION` and not tiltrotor.
     ///
     /// Upstream `MIN(assist_climb_rate_cms(), 0)` in
-    /// `SLT_Transition::update`. `hold_hover` is a later leftover row.
+    /// `SLT_Transition::update`. `hold_hover` is stubbed on
+    /// [`crate::motors_output`].
     #[must_use]
     pub const fn leftover_level_transition_limits_climb(&self, tiltrotor_enabled: bool) -> bool {
         self.leftover_level_transition() && !tiltrotor_enabled
@@ -274,8 +274,7 @@ impl QuadPlane {
     /// `motors_output` arming-delay gate.
     ///
     /// `DELAY_ARMING` or `DISARMED_TILT` plus `arming.get_delay_arming()`
-    /// keeps the spool at `SHUT_DOWN`. `motors_output` itself is a later
-    /// leftover row.
+    /// keeps the spool at `SHUT_DOWN`. Used by [`crate::motors_output`].
     #[must_use]
     pub const fn leftover_motors_delay_arming(&self, arming_delay_active: bool) -> bool {
         arming_delay_active
@@ -410,6 +409,15 @@ pub const QTUN_PERIOD_MS: u32 = 40;
 /// `DELAY_ARMING` or `DISARMED_TILT` is set).
 pub const ARMING_DELAY_MS: u32 = 2000;
 
+/// `motors_output` thrust-loss inactive window, ms.
+pub const MOTORS_INACTIVE_MS: u32 = 100;
+
+/// Rate-controller relax window, ms (`now - last_att_control_ms > 100`).
+pub const ATT_CONTROL_RELAX_MS: u32 = 100;
+
+/// `motors->get_throttle()` floor that counts as active.
+pub const MOTORS_ACTIVE_THROTTLE: f32 = 0.01;
+
 /// Leftover logger message names from `quadplane.cpp`.
 pub const LOG_MESSAGES: &[&str] = &["QTUN", "QPOS", "QBRK", "FWDT"];
 
@@ -542,6 +550,51 @@ pub const fn land_sequence(qrtl: bool, approach: bool, descent: bool, land_final
     qrtl || approach || descent || land_final
 }
 
+/// `hold_stabilize` ground-idle gate: `throttle_in <= 0 && !air_mode`.
+#[must_use]
+pub const fn hold_stabilize_ground_idle(throttle_in: f32, air_mode_active: bool) -> bool {
+    throttle_in <= 0.0 && !air_mode_active
+}
+
+/// Angle-boost in `hold_stabilize`: off for tailsitter + assist.
+#[must_use]
+pub const fn hold_stabilize_should_boost(tailsitter_enabled: bool, assisted_flight: bool) -> bool {
+    !(tailsitter_enabled && assisted_flight)
+}
+
+/// Tailsitter VTOL-transition skip: `in_vtol_transition && !assisted`.
+#[must_use]
+pub const fn motors_output_skip_tailsitter_transition(
+    tailsitter_in_vtol_transition: bool,
+    assisted_flight: bool,
+) -> bool {
+    tailsitter_in_vtol_transition && !assisted_flight
+}
+
+/// `(now - last_motors_active_ms) > 100`.
+#[must_use]
+pub const fn motors_inactive(now_ms: u32, last_motors_active_ms: u32) -> bool {
+    now_ms.wrapping_sub(last_motors_active_ms) > MOTORS_INACTIVE_MS
+}
+
+/// `motors->get_throttle() > 0.01 || tiltrotor.motors_active()`.
+#[must_use]
+pub const fn motors_were_active(motors_throttle: f32, tiltrotor_motors_active: bool) -> bool {
+    motors_throttle > MOTORS_ACTIVE_THROTTLE || tiltrotor_motors_active
+}
+
+/// Rate-controller inactive relax: `(now - last_att_control_ms) > 100`.
+#[must_use]
+pub const fn att_control_relax_stale(now_ms: u32, last_att_control_ms: u32) -> bool {
+    now_ms.wrapping_sub(last_att_control_ms) > ATT_CONTROL_RELAX_MS
+}
+
+/// `hold_hover` climb demand: `target_climb_rate_cms * 0.01`.
+#[must_use]
+pub const fn climb_rate_ms_from_cms(target_climb_rate_cms: f32) -> f32 {
+    target_climb_rate_cms * 0.01
+}
+
 /// Rows already hooked up on `main` (must not be redone).
 #[must_use]
 pub fn on_main_items() -> impl Iterator<Item = &'static QuadPlanePortItem> {
@@ -611,9 +664,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 14);
+        assert_eq!(on_main, 15);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 4);
+        assert_eq!(remaining, 3);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -637,13 +690,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "land-sequence predicates",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "motors_output / hold / set_armed",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 14);
+        assert_eq!(on_main_items().count(), 15);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 4);
+        assert_eq!(remaining_items().count(), 3);
     }
 
     #[test]
@@ -768,5 +825,25 @@ mod tests {
         assert!(land_sequence(true, false, false, false));
         assert!(land_sequence(false, true, false, false));
         assert!(!land_sequence(false, false, false, false));
+    }
+
+    #[test]
+    fn leftover_motors_output_hold_and_inactive_helpers() {
+        assert!(hold_stabilize_ground_idle(0.0, false));
+        assert!(!hold_stabilize_ground_idle(0.1, false));
+        assert!(!hold_stabilize_ground_idle(0.0, true));
+        assert!(hold_stabilize_should_boost(false, false));
+        assert!(!hold_stabilize_should_boost(true, true));
+        assert!(motors_output_skip_tailsitter_transition(true, false));
+        assert!(!motors_output_skip_tailsitter_transition(true, true));
+        assert!(motors_inactive(101, 0));
+        assert!(!motors_inactive(100, 0));
+        assert!(att_control_relax_stale(101, 0));
+        assert!(motors_were_active(0.02, false));
+        assert!(!motors_were_active(0.01, false));
+        assert!(motors_were_active(0.0, true));
+        assert_eq!(climb_rate_ms_from_cms(100.0) as i32, 1);
+        assert_eq!(MOTORS_INACTIVE_MS, 100);
+        assert_eq!(ATT_CONTROL_RELAX_MS, 100);
     }
 }

@@ -28,13 +28,13 @@ const ON_MAIN: &[&str] = &[
     "leftover Q_OPTIONS bits",
     "assisted-flight latch extras",
     "position / takeoff / waypoint controllers",
+    "land-sequence predicates",
 ];
 
-const THIS_SLICE: &[&str] = &["land-sequence predicates"];
+const THIS_SLICE: &[&str] = &["motors_output / hold / set_armed"];
 
 /// Leftover `quadplane.cpp` / `.h` surfaces not yet stubbed.
 const REMAINING: &[&str] = &[
-    "motors_output / hold / set_armed",
     "guided / QRTL / RTL_MODE",
     "thrust-loss / ESC-cal / takeoff-failure",
     "TECS / stick-mix / stopping-distance leftovers",
@@ -77,7 +77,7 @@ fn completeness_table_matches_main_versus_leftover_api() {
 #[test]
 fn leftover_api_rows_name_upstream_surfaces() {
     let leftover: Vec<&QuadPlanePortItem> = remaining_items().collect();
-    assert_eq!(leftover.len(), 4);
+    assert_eq!(leftover.len(), 3);
     assert!(completeness_has(
         "leftover Q_OPTIONS bits",
         PortStatus::OnMain
@@ -92,6 +92,10 @@ fn leftover_api_rows_name_upstream_surfaces() {
     ));
     assert!(completeness_has(
         "land-sequence predicates",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "motors_output / hold / set_armed",
         PortStatus::ThisSlice
     ));
     assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
@@ -113,13 +117,14 @@ fn leftover_api_rows_name_upstream_surfaces() {
             && item.note.contains("vtol_position_controller")
     }));
     assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
-        item.name == "land-sequence predicates"
-            && item.note.contains("in_vtol_land_approach")
+        item.name == "land-sequence predicates" && item.note.contains("in_vtol_land_approach")
     }));
     assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-    assert!(leftover
-        .iter()
-        .any(|item| item.note.contains("motors_output")));
+    assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
+        item.name == "motors_output / hold / set_armed"
+            && item.note.contains("hold_hover")
+            && item.note.contains("set_armed")
+    }));
     assert!(leftover.iter().any(|item| item.note.contains("RTL_MODE")));
     assert!(leftover
         .iter()
