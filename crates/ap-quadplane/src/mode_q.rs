@@ -1,4 +1,4 @@
-//! QSTABILIZE / QHOVER / QACRO `_enter` stub, upstream
+//! QSTABILIZE / QHOVER / QACRO enter + `run()` stub, upstream
 //! `ArduPlane/mode_qstabilize.cpp` / `mode_qhover.cpp` / `mode_qacro.cpp`
 //! (Plane-4.7.0).
 //!
@@ -10,7 +10,16 @@
 //! `transition->force_transition_complete()`, relaxes attitude, and
 //! zeros the yaw-rate time constant.
 //!
-//! `run()` / `update()` are later slices.
+//! `run()` is the attitude / throttle tick:
+//! [`qstabilize_run`] -> [`QManualRunAction::HoldStabilize`]
+//! (`hold_stabilize(get_pilot_throttle())`);
+//! [`qhover_run`] -> [`QManualRunAction::HoldHover`]
+//! (`hold_hover(get_pilot_desired_climb_rate_cms())`) or the
+//! `throttle_wait` leftover;
+//! [`qacro_run`] -> [`QManualRunAction::AcroRates`] (body-frame
+//! rates + pilot throttle) or the same leftover. Tailsitter FW
+//! pull-up is [`QManualRunAction::FwControllers`]. `update()`
+//! (nav_roll / nav_pitch from sticks) is a later slice.
 
 use crate::transition_fsm::SltTransition;
 use crate::QuadPlane;
@@ -211,4 +220,259 @@ pub fn qacro_enter(
     state.yaw_rate_tc_cleared = true;
     state.acro_quat_latched = true;
     true
+}
+
+/// Default `Q_ACRO_RLL_RATE` (deg/s).
+pub const Q_ACRO_ROLL_RATE_DEFAULT: f32 = 360.0;
+/// Default `Q_ACRO_PIT_RATE` (deg/s).
+pub const Q_ACRO_PITCH_RATE_DEFAULT: f32 = 180.0;
+/// Default `Q_ACRO_YAW_RATE` (deg/s).
+pub const Q_ACRO_YAW_RATE_DEFAULT: f32 = 90.0;
+
+/// Motors spool a Q-manual `run()` would request this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QManualSpool {
+    /// Path did not call `set_desired_spool_state` (FW / ESC-cal).
+    Unchanged,
+    /// `AP_Motors::DesiredSpoolState::GROUND_IDLE`.
+    GroundIdle,
+    /// `AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED`.
+    ThrottleUnlimited,
+}
+
+/// Which attitude / throttle path a Q-manual `run()` took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QManualRunAction {
+    /// Tailsitter FW pull-up: `Mode::run()`.
+    FwControllers,
+    /// QStabilize `esc_calibration != 0`: `run_esc_calibration`.
+    EscCalibration,
+    /// QStabilize normal: `hold_stabilize(get_pilot_throttle())`.
+    HoldStabilize,
+    /// QHover / QAcro `throttle_wait` leftover.
+    ThrottleWait,
+    /// QHover flying: `hold_hover(get_pilot_desired_climb_rate_cms())`.
+    HoldHover,
+    /// QAcro flying: body-frame rate demand + pilot throttle.
+    AcroRates,
+}
+
+/// QAcro body-frame rate demand (`input_rate_bf_roll_pitch_yaw_*_cds`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QAcroRateDemand {
+    /// `target_roll` (cd/s).
+    pub roll_cds: f32,
+    /// `target_pitch` (cd/s).
+    pub pitch_cds: f32,
+    /// `target_yaw` (cd/s).
+    pub yaw_cds: f32,
+    /// `plane.g.acro_locking` -> `*_3_cds` (true) vs `*_2_cds`.
+    pub locking: bool,
+}
+
+/// Outcome of one Q-manual `run()` tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QManualRun {
+    /// Stabilize / hover / acro / leftover / FW / ESC-cal.
+    pub action: QManualRunAction,
+    /// Spool this path would request.
+    pub spool: QManualSpool,
+    /// `assign_tilt_to_fwd_thr()` ran (QStabilize after FW check;
+    /// QHover only on the flying branch; QAcro never).
+    pub tilt_assigned: bool,
+    /// QHover wait calls `pos_control->D_relax_controller(0)`.
+    pub d_relaxed: bool,
+    /// QAcro flying-branch rate demand; `None` otherwise.
+    pub acro_rates: Option<QAcroRateDemand>,
+}
+
+impl QManualRun {
+    const fn fw_controllers() -> Self {
+        Self {
+            action: QManualRunAction::FwControllers,
+            spool: QManualSpool::Unchanged,
+            tilt_assigned: false,
+            d_relaxed: false,
+            acro_rates: None,
+        }
+    }
+
+    const fn esc_calibration() -> Self {
+        Self {
+            action: QManualRunAction::EscCalibration,
+            spool: QManualSpool::Unchanged,
+            tilt_assigned: true,
+            d_relaxed: false,
+            acro_rates: None,
+        }
+    }
+
+    const fn hold_stabilize() -> Self {
+        Self {
+            action: QManualRunAction::HoldStabilize,
+            spool: QManualSpool::Unchanged,
+            tilt_assigned: true,
+            d_relaxed: false,
+            acro_rates: None,
+        }
+    }
+
+    const fn hold_hover() -> Self {
+        Self {
+            action: QManualRunAction::HoldHover,
+            spool: QManualSpool::ThrottleUnlimited,
+            tilt_assigned: true,
+            d_relaxed: false,
+            acro_rates: None,
+        }
+    }
+
+    const fn throttle_wait(d_relaxed: bool) -> Self {
+        Self {
+            action: QManualRunAction::ThrottleWait,
+            spool: QManualSpool::GroundIdle,
+            tilt_assigned: false,
+            d_relaxed,
+            acro_rates: None,
+        }
+    }
+
+    const fn acro_rates(rates: QAcroRateDemand) -> Self {
+        Self {
+            action: QManualRunAction::AcroRates,
+            spool: QManualSpool::ThrottleUnlimited,
+            tilt_assigned: false,
+            d_relaxed: false,
+            acro_rates: Some(rates),
+        }
+    }
+}
+
+/// Pilot / vehicle view Q-manual `run()` reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QManualRunView {
+    /// `tailsitter.in_vtol_transition(now)` -- FW pull-up early-out.
+    pub tailsitter_in_vtol_transition: bool,
+    /// `quadplane.esc_calibration` (QStabilize only).
+    pub esc_calibration: i8,
+    /// `tailsitter.enabled()` -- QAcro swaps body-frame roll / yaw.
+    pub tailsitter_enabled: bool,
+    /// `plane.g.acro_locking`.
+    pub acro_locking: bool,
+    /// `channel_roll->norm_input()` (QAcro).
+    pub roll_norm: f32,
+    /// `channel_pitch->norm_input()` (QAcro).
+    pub pitch_norm: f32,
+    /// `channel_rudder->norm_input()` (QAcro).
+    pub rudder_norm: f32,
+    /// `Q_ACRO_RLL_RATE`.
+    pub acro_roll_rate: f32,
+    /// `Q_ACRO_PIT_RATE`.
+    pub acro_pitch_rate: f32,
+    /// `Q_ACRO_YAW_RATE`.
+    pub acro_yaw_rate: f32,
+}
+
+impl QManualRunView {
+    /// Level sticks, no FW pull-up, no ESC-cal, conventional airframe.
+    #[must_use]
+    pub const fn flying() -> Self {
+        Self {
+            tailsitter_in_vtol_transition: false,
+            esc_calibration: 0,
+            tailsitter_enabled: false,
+            acro_locking: false,
+            roll_norm: 0.0,
+            pitch_norm: 0.0,
+            rudder_norm: 0.0,
+            acro_roll_rate: Q_ACRO_ROLL_RATE_DEFAULT,
+            acro_pitch_rate: Q_ACRO_PITCH_RATE_DEFAULT,
+            acro_yaw_rate: Q_ACRO_YAW_RATE_DEFAULT,
+        }
+    }
+
+    /// Tailsitter FW pull-up phase of VTOL transition.
+    #[must_use]
+    pub const fn tailsitter_fw_transition() -> Self {
+        let mut v = Self::flying();
+        v.tailsitter_in_vtol_transition = true;
+        v
+    }
+}
+
+/// QAcro body-frame rates from sticks, upstream `ModeQAcro::run`.
+///
+/// Pitch is always `pitch_norm * Q_ACRO_PIT_RATE * 100`. Conventional
+/// airframes map roll / rudder to roll / yaw. Tailsitters swap those
+/// axes (`+rudder -> roll`, `-roll -> yaw`) because the 90 degree Y
+/// rotation for copter mode swaps body-frame roll and yaw.
+#[must_use]
+pub const fn qacro_rate_demand(view: &QManualRunView) -> QAcroRateDemand {
+    let pitch_cds = view.pitch_norm * view.acro_pitch_rate * 100.0;
+    let (roll_cds, yaw_cds) = if view.tailsitter_enabled {
+        (
+            view.rudder_norm * view.acro_yaw_rate * 100.0,
+            -view.roll_norm * view.acro_roll_rate * 100.0,
+        )
+    } else {
+        (
+            view.roll_norm * view.acro_roll_rate * 100.0,
+            view.rudder_norm * view.acro_yaw_rate * 100.0,
+        )
+    };
+    QAcroRateDemand {
+        roll_cds,
+        pitch_cds,
+        yaw_cds,
+        locking: view.acro_locking,
+    }
+}
+
+/// Upstream `ModeQStabilize::run`.
+///
+/// Tailsitter FW pull-up runs `Mode::run()`. Otherwise
+/// `assign_tilt_to_fwd_thr()`, then ESC-cal or
+/// `hold_stabilize(get_pilot_throttle())`.
+#[must_use]
+pub const fn qstabilize_run(view: &QManualRunView) -> QManualRun {
+    if view.tailsitter_in_vtol_transition {
+        return QManualRun::fw_controllers();
+    }
+    if view.esc_calibration != 0 {
+        return QManualRun::esc_calibration();
+    }
+    QManualRun::hold_stabilize()
+}
+
+/// Upstream `ModeQHover::run`.
+///
+/// Tailsitter FW pull-up runs `Mode::run()`. `throttle_wait` is the
+/// leftover: ground idle, throttle out 0, relax attitude, D-relax.
+/// Otherwise `assign_tilt_to_fwd_thr()` then
+/// `hold_hover(get_pilot_desired_climb_rate_cms())`.
+#[must_use]
+pub const fn qhover_run(qp: &QuadPlane, view: &QManualRunView) -> QManualRun {
+    if view.tailsitter_in_vtol_transition {
+        return QManualRun::fw_controllers();
+    }
+    if qp.throttle_wait() {
+        return QManualRun::throttle_wait(true);
+    }
+    QManualRun::hold_hover()
+}
+
+/// Upstream `ModeQAcro::run`.
+///
+/// Tailsitter FW pull-up runs `Mode::run()`. `throttle_wait` is the
+/// leftover (no D-relax). Otherwise `THROTTLE_UNLIMITED`, body-frame
+/// rates, and `set_throttle_out(get_pilot_throttle(), false, 10)`.
+#[must_use]
+pub const fn qacro_run(qp: &QuadPlane, view: &QManualRunView) -> QManualRun {
+    if view.tailsitter_in_vtol_transition {
+        return QManualRun::fw_controllers();
+    }
+    if qp.throttle_wait() {
+        return QManualRun::throttle_wait(false);
+    }
+    QManualRun::acro_rates(qacro_rate_demand(view))
 }

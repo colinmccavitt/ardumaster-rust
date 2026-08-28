@@ -1,9 +1,11 @@
-//! QSTABILIZE / QHOVER / QACRO `_enter` — upstream
+//! QSTABILIZE / QHOVER / QACRO `_enter` + `run()` — upstream
 //! `mode_qstabilize.cpp` / `mode_qhover.cpp` / `mode_qacro.cpp`.
 
 use ap_quadplane::mode_q::{
-    qacro_enter, qhover_enter, qstabilize_enter, QAcroEnterState, QHoverEnterState, QHoverEnterView,
-    QManualMode, MODE_QACRO, MODE_QHOVER, MODE_QSTABILIZE,
+    qacro_enter, qacro_run, qhover_enter, qhover_run, qstabilize_enter, qstabilize_run,
+    QAcroEnterState, QHoverEnterState, QHoverEnterView, QManualMode, QManualRunAction, QManualRunView,
+    QManualSpool, MODE_QACRO, MODE_QHOVER, MODE_QSTABILIZE, Q_ACRO_PITCH_RATE_DEFAULT,
+    Q_ACRO_ROLL_RATE_DEFAULT, Q_ACRO_YAW_RATE_DEFAULT,
 };
 use ap_quadplane::poscontrol::{PositionControlState, THROTTLE_WAIT_INPUT_MIN};
 use ap_quadplane::transition_fsm::{SltTransition, TransitionState};
@@ -147,4 +149,102 @@ fn qstabilize_and_qacro_do_not_use_init_throttle_wait() {
     let mut state = QAcroEnterState::new();
     assert!(qacro_enter(&mut qp, &mut transition, &mut state));
     assert!(!qp.throttle_wait());
+}
+
+
+#[test]
+fn qstabilize_run_uses_hold_stabilize() {
+    let view = QManualRunView::flying();
+    let out = qstabilize_run(&view);
+    assert_eq!(out.action, QManualRunAction::HoldStabilize);
+    assert!(out.tilt_assigned);
+    assert_eq!(out.spool, QManualSpool::Unchanged);
+    assert!(!out.d_relaxed);
+    assert!(out.acro_rates.is_none());
+}
+
+#[test]
+fn qstabilize_run_esc_cal_and_tailsitter_fw() {
+    let mut esc = QManualRunView::flying();
+    esc.esc_calibration = 1;
+    let out = qstabilize_run(&esc);
+    assert_eq!(out.action, QManualRunAction::EscCalibration);
+    assert!(out.tilt_assigned);
+
+    let fw = QManualRunView::tailsitter_fw_transition();
+    let out = qstabilize_run(&fw);
+    assert_eq!(out.action, QManualRunAction::FwControllers);
+    assert!(!out.tilt_assigned);
+}
+
+#[test]
+fn qhover_run_hold_hover_vs_throttle_wait() {
+    let mut qp = available_qp();
+    let view = QManualRunView::flying();
+
+    qp.set_throttle_wait(false);
+    let flying = qhover_run(&qp, &view);
+    assert_eq!(flying.action, QManualRunAction::HoldHover);
+    assert!(flying.tilt_assigned);
+    assert_eq!(flying.spool, QManualSpool::ThrottleUnlimited);
+    assert!(!flying.d_relaxed);
+
+    qp.set_throttle_wait(true);
+    let wait = qhover_run(&qp, &view);
+    assert_eq!(wait.action, QManualRunAction::ThrottleWait);
+    assert!(!wait.tilt_assigned);
+    assert_eq!(wait.spool, QManualSpool::GroundIdle);
+    assert!(wait.d_relaxed);
+
+    let fw = qhover_run(&qp, &QManualRunView::tailsitter_fw_transition());
+    assert_eq!(fw.action, QManualRunAction::FwControllers);
+}
+
+#[test]
+fn qacro_run_rates_vs_throttle_wait() {
+    let mut qp = available_qp();
+    let mut view = QManualRunView::flying();
+    view.roll_norm = 0.5;
+    view.pitch_norm = -0.25;
+    view.rudder_norm = 1.0;
+
+    qp.set_throttle_wait(false);
+    let flying = qacro_run(&qp, &view);
+    assert_eq!(flying.action, QManualRunAction::AcroRates);
+    assert!(!flying.tilt_assigned);
+    assert_eq!(flying.spool, QManualSpool::ThrottleUnlimited);
+    assert!(!flying.d_relaxed);
+    let rates = flying.acro_rates.expect("acro rates");
+    assert_eq!(rates.roll_cds, 0.5 * Q_ACRO_ROLL_RATE_DEFAULT * 100.0);
+    assert_eq!(rates.pitch_cds, -0.25 * Q_ACRO_PITCH_RATE_DEFAULT * 100.0);
+    assert_eq!(rates.yaw_cds, 1.0 * Q_ACRO_YAW_RATE_DEFAULT * 100.0);
+    assert!(!rates.locking);
+
+    qp.set_throttle_wait(true);
+    let wait = qacro_run(&qp, &view);
+    assert_eq!(wait.action, QManualRunAction::ThrottleWait);
+    assert_eq!(wait.spool, QManualSpool::GroundIdle);
+    assert!(!wait.d_relaxed);
+    assert!(wait.acro_rates.is_none());
+}
+
+#[test]
+fn qacro_run_tailsitter_swaps_roll_yaw() {
+    let mut qp = available_qp();
+    qp.set_throttle_wait(false);
+    let mut view = QManualRunView::flying();
+    view.tailsitter_enabled = true;
+    view.acro_locking = true;
+    view.roll_norm = 0.5;
+    view.pitch_norm = 0.25;
+    view.rudder_norm = -1.0;
+
+    let out = qacro_run(&qp, &view);
+    assert_eq!(out.action, QManualRunAction::AcroRates);
+    let rates = out.acro_rates.expect("acro rates");
+    // tailsitter: roll = rudder * yaw_rate * 100; yaw = -roll * roll_rate * 100
+    assert_eq!(rates.roll_cds, -1.0 * Q_ACRO_YAW_RATE_DEFAULT * 100.0);
+    assert_eq!(rates.pitch_cds, 0.25 * Q_ACRO_PITCH_RATE_DEFAULT * 100.0);
+    assert_eq!(rates.yaw_cds, -0.5 * Q_ACRO_ROLL_RATE_DEFAULT * 100.0);
+    assert!(rates.locking);
 }
