@@ -27,8 +27,21 @@
 //! - [`TiltType::Bicopter`] — must use tailsitter frame class (10).
 //!
 //! [`Tiltrotor::tilt_type`] is `Some` only when the object is live and
-//! the stored discriminant is one of those four. The slew / vectored-yaw
-//! mix / flap leftover lives in later slices.
+//! the stored discriminant is one of those four.
+//!
+//! # Tilt angle and slew
+//!
+//! Upstream `current_tilt` is a 0..1 proportion (0 = rotors up / hover,
+//! 1 = fully forward). [`Tiltrotor::tilt_angle`] is that as degrees
+//! (`current_tilt * 90`), matching the TILT log field. [`Tiltrotor::slew`]
+//! walks `current_tilt` toward a target at `Q_TILT_RATE_UP` /
+//! `Q_TILT_RATE_DN` (`max_rate_up_dps` / `max_rate_down_dps`). Rate-down
+//! of zero uses the up rate. `up` in [`Tiltrotor::tilt_max_change`] is
+//! `newtilt < current_tilt` — decreasing tilt is hover-ward.
+//!
+//! The 90 DPS fast-tilt override (manual / unstabilised FW), flap-range
+//! rate (`Q_TILT_WING_FLAP`), vectored-yaw mix, and `continuous_update`
+//! leftover live in later slices.
 
 /// Default `Q_TILT_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, Tiltrotor, enable, 0)`.
 pub const TILT_ENABLE_DEFAULT: i8 = 0;
@@ -38,6 +51,20 @@ pub const TILT_MASK_DEFAULT: i16 = 0;
 
 /// Default `Q_TILT_TYPE`, upstream `AP_GROUPINFO("TYPE", 5, Tiltrotor, type, TILT_TYPE_CONTINUOUS)`.
 pub const TILT_TYPE_DEFAULT: i8 = 0;
+
+/// Default `Q_TILT_RATE_UP`, upstream `AP_GROUPINFO("RATE_UP", 3, Tiltrotor, max_rate_up_dps, 40)`.
+pub const TILT_RATE_UP_DPS_DEFAULT: i16 = 40;
+
+/// Default `Q_TILT_RATE_DN`, upstream `AP_GROUPINFO("RATE_DN", 6, Tiltrotor, max_rate_down_dps, 0)`.
+///
+/// Zero means "use [`TILT_RATE_UP_DPS_DEFAULT`]" in [`Tiltrotor::tilt_max_change`].
+pub const TILT_RATE_DN_DPS_DEFAULT: i16 = 0;
+
+/// Default `Q_TILT_WING_FLAP`, upstream `AP_GROUPINFO("WING_FLAP", 10, Tiltrotor, flap_angle_deg, 0)`.
+///
+/// Held so [`Tiltrotor::get_fully_forward_tilt`] matches upstream
+/// (`1 - flap/90`). Flap mix itself is a later slice.
+pub const TILT_FLAP_ANGLE_DEG_DEFAULT: f32 = 0.0;
 
 /// Types of tilt mechanisms, upstream `Tiltrotor::TILT_TYPE_*`.
 ///
@@ -134,6 +161,11 @@ pub struct Tiltrotor {
     setup_complete: bool,
     tilt_mask: i16,
     tilt_type: i8,
+    max_rate_up_dps: i16,
+    max_rate_down_dps: i16,
+    flap_angle_deg: f32,
+    current_tilt: f32,
+    angle_achieved: bool,
 }
 
 impl Tiltrotor {
@@ -145,8 +177,7 @@ impl Tiltrotor {
     #[must_use]
     pub fn setup(cfg: TiltrotorConfig) -> Self {
         let mut enable = cfg.enable.unwrap_or(TILT_ENABLE_DEFAULT);
-        if cfg.enable.is_none()
-            && (cfg.tilt_mask != 0 || cfg.tilt_type == TiltType::Bicopter as i8)
+        if cfg.enable.is_none() && (cfg.tilt_mask != 0 || cfg.tilt_type == TiltType::Bicopter as i8)
         {
             enable = 1;
         }
@@ -159,6 +190,11 @@ impl Tiltrotor {
             setup_complete,
             tilt_mask: cfg.tilt_mask,
             tilt_type: cfg.tilt_type,
+            max_rate_up_dps: TILT_RATE_UP_DPS_DEFAULT,
+            max_rate_down_dps: TILT_RATE_DN_DPS_DEFAULT,
+            flap_angle_deg: TILT_FLAP_ANGLE_DEG_DEFAULT,
+            current_tilt: 0.0,
+            angle_achieved: false,
         }
     }
 
@@ -207,4 +243,131 @@ impl Tiltrotor {
     pub const fn is_vectored(&self) -> bool {
         self.enabled() && self.tilt_mask != 0 && self.tilt_type == TiltType::VectoredYaw as i8
     }
+
+    /// Current `Q_TILT_RATE_UP` after setup, degrees per second.
+    #[must_use]
+    pub const fn max_rate_up_dps(&self) -> i16 {
+        self.max_rate_up_dps
+    }
+
+    /// Write `Q_TILT_RATE_UP`.
+    pub fn set_max_rate_up_dps(&mut self, max_rate_up_dps: i16) {
+        self.max_rate_up_dps = max_rate_up_dps;
+    }
+
+    /// Current `Q_TILT_RATE_DN` after setup, degrees per second.
+    #[must_use]
+    pub const fn max_rate_down_dps(&self) -> i16 {
+        self.max_rate_down_dps
+    }
+
+    /// Write `Q_TILT_RATE_DN`. Zero means "use the up rate".
+    pub fn set_max_rate_down_dps(&mut self, max_rate_down_dps: i16) {
+        self.max_rate_down_dps = max_rate_down_dps;
+    }
+
+    /// Current tilt proportion, upstream `Tiltrotor::current_tilt`.
+    ///
+    /// `0` is rotors up (hover), `1` is fully forward.
+    #[must_use]
+    pub const fn current_tilt(&self) -> f32 {
+        self.current_tilt
+    }
+
+    /// Current tilt in degrees from vertical, `current_tilt * 90`.
+    ///
+    /// Matches the TILT field `write_log` stores (`current_tilt * 90.0`).
+    #[must_use]
+    pub const fn tilt_angle(&self) -> f32 {
+        self.current_tilt * 90.0
+    }
+
+    /// Upstream `bool angle_achieved` after the last [`Self::slew`].
+    #[must_use]
+    pub const fn angle_achieved(&self) -> bool {
+        self.angle_achieved
+    }
+
+    /// Upstream `Tiltrotor::tilt_angle_achieved`.
+    ///
+    /// True when disabled, when the type is not continuous, or when the
+    /// last slew reached its target. Slow rates can leave continuous
+    /// tilts lagging, so this is not the same as [`Self::fully_fwd`].
+    #[must_use]
+    pub const fn tilt_angle_achieved(&self) -> bool {
+        !self.enabled() || self.tilt_type != TiltType::Continuous as i8 || self.angle_achieved
+    }
+
+    /// Upstream `Tiltrotor::get_fully_forward_tilt`.
+    ///
+    /// `1 - flap_angle_deg/90`. Default flap is zero, so this is `1`.
+    #[must_use]
+    pub const fn get_fully_forward_tilt(&self) -> f32 {
+        1.0 - (self.flap_angle_deg * (1.0 / 90.0))
+    }
+
+    /// Upstream `Tiltrotor::fully_fwd`.
+    #[must_use]
+    pub const fn fully_fwd(&self) -> bool {
+        self.enabled() && self.tilt_mask != 0 && self.current_tilt >= self.get_fully_forward_tilt()
+    }
+
+    /// Upstream `Tiltrotor::fully_up`.
+    #[must_use]
+    pub const fn fully_up(&self) -> bool {
+        self.enabled() && self.tilt_mask != 0 && self.current_tilt <= 0.0
+    }
+
+    /// Maximum tilt-proportion change this tick, upstream `tilt_max_change`.
+    ///
+    /// `up` is hover-ward (`newtilt < current_tilt`). `dt_s` is
+    /// `plane.G_Dt`. The 90 DPS fast-tilt override and flap-range
+    /// argument are later slices.
+    #[must_use]
+    pub const fn tilt_max_change(&self, up: bool, dt_s: f32) -> f32 {
+        let rate = if up || self.max_rate_down_dps <= 0 {
+            self.max_rate_up_dps as f32
+        } else {
+            self.max_rate_down_dps as f32
+        };
+        let dt = if dt_s < 0.0 { 0.0 } else { dt_s };
+        rate * dt * (1.0 / 90.0)
+    }
+
+    /// Slew `current_tilt` toward `newtilt`, upstream `Tiltrotor::slew`.
+    ///
+    /// `newtilt` is 0..1. `dt_s` is `plane.G_Dt`. Servo output
+    /// (`k_motor_tilt`) is a later slice.
+    pub fn slew(&mut self, newtilt: f32, dt_s: f32) {
+        let up = newtilt < self.current_tilt;
+        let max_change = self.tilt_max_change(up, dt_s);
+        self.current_tilt = constrain_f32(
+            newtilt,
+            self.current_tilt - max_change,
+            self.current_tilt + max_change,
+        );
+        self.angle_achieved = is_equal_f32(newtilt, self.current_tilt);
+    }
+}
+
+const fn abs_f32(v: f32) -> f32 {
+    if v < 0.0 {
+        -v
+    } else {
+        v
+    }
+}
+
+const fn constrain_f32(v: f32, lo: f32, hi: f32) -> f32 {
+    if v < lo {
+        lo
+    } else if v > hi {
+        hi
+    } else {
+        v
+    }
+}
+
+const fn is_equal_f32(a: f32, b: f32) -> bool {
+    abs_f32(a - b) < f32::EPSILON
 }
