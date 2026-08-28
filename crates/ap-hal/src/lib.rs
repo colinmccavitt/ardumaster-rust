@@ -44,6 +44,7 @@ pub mod context;
 pub mod gpio;
 pub mod internal_error;
 pub mod rc;
+pub mod semaphore;
 pub mod serial;
 pub mod storage;
 pub mod time;
