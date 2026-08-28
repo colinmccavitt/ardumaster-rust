@@ -5,11 +5,13 @@
 
 use ap_hal::analog::AnalogSource;
 
+use crate::psi_range::clamp_psi_range;
+
 /// 3DR analog airspeed sensor scale, upstream `VOLTS_TO_PASCAL`.
 pub const VOLTS_TO_PASCAL: f32 = 819.0;
 
-/// Upstream `PSI_RANGE_DEFAULT` / `ARSPD_PSI_RANGE`.
-pub const ARSPD_PSI_RANGE_DEFAULT: f32 = 1.0;
+/// Upstream `PSI_RANGE_DEFAULT` / `ARSPD_PSI_RANGE` (owned by `psi_range`).
+pub use crate::psi_range::ARSPD_PSI_RANGE_DEFAULT;
 
 /// Upstream `ARSPD_PIN` param-table default.
 pub const ARSPD_PIN_DEFAULT: i8 = 0;
@@ -42,12 +44,7 @@ impl Default for AnalogAirspeedConfig {
 /// `AP_Airspeed_Analog::get_differential_pressure`.
 #[must_use]
 pub fn differential_pressure_pa(voltage: f32, psi_range: f32) -> f32 {
-    let range = if psi_range > 0.0 {
-        psi_range
-    } else {
-        ARSPD_PSI_RANGE_DEFAULT
-    };
-    voltage * VOLTS_TO_PASCAL / range
+    voltage * VOLTS_TO_PASCAL / clamp_psi_range(psi_range)
 }
 
 /// Analog pitot backend, upstream `AP_Airspeed_Analog`.

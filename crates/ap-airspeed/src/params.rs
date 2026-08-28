@@ -1,6 +1,7 @@
 //! Airspeed parameter table stub, upstream AP_Airspeed var_info. FW-010.
 
-use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
+use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT};
+use crate::psi_range::ARSPD_PSI_RANGE_DEFAULT;
 use crate::primary::{clamp_primary, ARSPD_PRIMARY_DEFAULT};
 use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;

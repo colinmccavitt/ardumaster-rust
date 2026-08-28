@@ -109,6 +109,7 @@ use ap_airspeed::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use ap_airspeed::wind_warn::ARSPD_WIND_WARN_DEFAULT;
 use ap_airspeed::primary::ARSPD_PRIMARY_DEFAULT;
 use ap_airspeed::fbw::{ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT};
+use ap_airspeed::psi_range::{clamp_psi_range, ARSPD_PSI_RANGE_DEFAULT};
 use ap_airspeed::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -306,6 +307,8 @@ pub struct PlaneMainLoop {
     pub airspeed_fbw_min: f32,
     /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX` / `AIRSPEED_MAX`.
     pub airspeed_fbw_max: f32,
+    /// Primary PSI full-scale (clamped), upstream `ARSPD_PSI_RANGE`.
+    pub airspeed_psi_range: f32,
     /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
     pub airspeed_type: u8,
     /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
@@ -777,6 +780,7 @@ impl Default for PlaneMainLoop {
             airspeed_primary: ARSPD_PRIMARY_DEFAULT,
             airspeed_fbw_min: ARSPD_FBW_MIN_DEFAULT,
             airspeed_fbw_max: ARSPD_FBW_MAX_DEFAULT,
+            airspeed_psi_range: ARSPD_PSI_RANGE_DEFAULT,
             airspeed_type: ARSPD_TYPE_SITL,
             configured_airspeed_backend: AirspeedBackendKind::Sitl,
             active_airspeed_backend: AirspeedBackendKind::Sitl,
@@ -1281,6 +1285,7 @@ impl PlaneMainLoop {
             self.airspeed_primary = out.health.primary;
             self.airspeed_fbw_min = airspeed.airspeed_params().fbw_min;
             self.airspeed_fbw_max = airspeed.airspeed_params().fbw_max;
+            self.airspeed_psi_range = clamp_psi_range(airspeed.airspeed_params().primary_psi_range());
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
@@ -1306,6 +1311,7 @@ impl PlaneMainLoop {
             self.airspeed_options = out.options;
             self.airspeed_wind_max = out.wind_max;
             self.airspeed_wind_warn = out.wind_warn;
+            self.airspeed_psi_range = clamp_psi_range(out.psi_range);
         }
         let sensor_type = self
             .sitl_airspeed

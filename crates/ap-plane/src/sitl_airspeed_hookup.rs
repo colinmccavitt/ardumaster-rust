@@ -5,6 +5,7 @@
 //! [`PlaneMainLoop::ahrs_update`] builds [`DriftMotionInputs`](ap_ahrs::DriftMotionInputs).
 
 use ap_airspeed::params::AirspeedParams;
+use ap_airspeed::psi_range::clamp_psi_range;
 use ap_airspeed::wind_max::wind_max_exceeded;
 use ap_airspeed::wind_warn::wind_warn_exceeded;
 use ap_airspeed::sitl::{
@@ -88,6 +89,8 @@ pub struct SitlAirspeedPublish {
     pub fbw_min: f32,
     /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX`.
     pub fbw_max: f32,
+    /// Primary PSI full-scale (clamped), upstream `ARSPD_PSI_RANGE`.
+    pub psi_range: f32,
 }
 
 impl SitlAirspeedHookup {
@@ -247,6 +250,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_PSI_RANGE` on every enabled instance.
+    pub fn set_psi_range(&mut self, psi_range: f32) {
+        let mut params = self.params;
+        params.airspeed1.psi_range = psi_range;
+        params.airspeed2.psi_range = psi_range;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -321,6 +332,7 @@ impl SitlAirspeedHookup {
             ),
             fbw_min: self.params.fbw_min,
             fbw_max: self.params.fbw_max,
+            psi_range: clamp_psi_range(self.params.primary_psi_range()),
         }
     }
 }

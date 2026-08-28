@@ -4,6 +4,7 @@
 //! a configured `ARSPD_PIN` publishes differential pressure.
 
 use ap_airspeed::analog::AnalogAirspeedBackend;
+use ap_airspeed::psi_range::clamp_psi_range;
 use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::tube_order::last_pressure_pa;
 use ap_hal::analog::MockAnalogSource;
@@ -148,6 +149,13 @@ impl AirspeedAnalogHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_PSI_RANGE` on the primary analog instance.
+    pub fn set_psi_range(&mut self, psi_range: f32) {
+        let mut params = self.params;
+        params.airspeed1.psi_range = psi_range;
+        self.apply_airspeed_params(params);
+    }
+
     /// Drive the mock analog source to a ratiometric voltage.
     pub fn set_voltage(&mut self, volts: f32) {
         let mut source = MockAnalogSource::new();
@@ -173,7 +181,7 @@ impl AirspeedAnalogHookup {
                 .unwrap_or(0.0),
             have_pressure: pressure.is_some(),
             pin: self.backend.config().pin,
-            psi_range: self.backend.config().psi_range,
+            psi_range: clamp_psi_range(self.backend.config().psi_range),
             tube_order,
             bus: self.params.primary_bus(),
             devid: self.params.primary_devid(),

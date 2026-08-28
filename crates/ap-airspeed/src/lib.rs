@@ -14,6 +14,7 @@ pub mod fbw;
 pub mod options;
 pub mod params;
 pub mod primary;
+pub mod psi_range;
 pub mod sitl;
 pub mod tube_order;
 pub mod wind_max;
@@ -56,6 +57,7 @@ pub use bus::{
 pub use fbw::{
     clamp_fbw_airspeed, fbw_envelope, ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT,
 };
+pub use psi_range::{clamp_psi_range, psi_range_valid};
 pub use devid::{
     clear_devid_if_not_found, devid_address, devid_after_probe, devid_bus, devid_bus_type,
     devid_devtype, devid_for_configured, devid_is_set, make_bus_id, ARSPD_DEVID_DEFAULT,
