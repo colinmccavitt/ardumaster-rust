@@ -36,7 +36,7 @@ impl Default for AirspeedInstanceParams {
         Self {
             disabled: false,
             offset_mps: 0.0,
-            skip_cal: false,
+            skip_cal: crate::sitl::ARSPD_SKIP_CAL_DEFAULT,
             ratio: ARSPD_RATIO_DEFAULT,
             use_airspeed: crate::sitl::ARSPD_USE_DEFAULT,
             temperature_c: crate::sitl::ARSPD_TEMP_REF_C,
@@ -157,6 +157,16 @@ impl AirspeedParams {
             self.airspeed1.autocal
         } else {
             self.airspeed2.autocal
+        }
+    }
+
+    /// Primary instance `ARSPD_SKIP_CAL` / `ARSPD2_SKIP_CAL`.
+    #[must_use]
+    pub fn primary_skip_cal(&self) -> bool {
+        if self.primary == 0 {
+            self.airspeed1.skip_cal
+        } else {
+            self.airspeed2.skip_cal
         }
     }
 

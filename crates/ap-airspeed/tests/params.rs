@@ -4,7 +4,7 @@ use ap_airspeed::params::{
 use ap_airspeed::sitl::{
     apply_autocal_ratio, apply_pitot_ratio, apply_temp_compensation, sitl_airspeed_temperature_c,
     SitlAirspeedBackend, SitlAirspeedCluster, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT,
-    ARSPD_TEMP_REF_C,
+    ARSPD_SKIP_CAL_DEFAULT, ARSPD_TEMP_REF_C,
 };
 
 #[test]
@@ -22,6 +22,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.airspeed1.temp_coeff, 0.0);
     assert_eq!(params.airspeed1.autocal, ARSPD_AUTOCAL_DEFAULT);
     assert_eq!(params.primary_autocal(), 0);
+    assert_eq!(params.airspeed1.skip_cal, ARSPD_SKIP_CAL_DEFAULT);
+    assert!(!params.primary_skip_cal());
     assert_eq!(params.airspeed1.pin, 0);
     assert_eq!(params.primary_pin(), 0);
     assert!((params.airspeed1.psi_range - 1.0).abs() < 1e-6);
@@ -129,4 +131,16 @@ fn apply_airspeed_params_sets_autocal_on_both_instances() {
     params.apply_to_cluster(&mut cluster);
     assert_eq!(cluster.backend(0).unwrap().config().autocal, 1);
     assert_eq!(cluster.backend(1).unwrap().config().autocal, 1);
+}
+
+#[test]
+fn apply_airspeed_params_sets_skip_cal_on_both_instances() {
+    let mut cluster = SitlAirspeedCluster::default();
+    let _ = cluster.register(SitlAirspeedBackend::default());
+    let mut params = AirspeedParams::default();
+    params.airspeed1.skip_cal = true;
+    params.airspeed2.skip_cal = true;
+    params.apply_to_cluster(&mut cluster);
+    assert!(cluster.backend(0).unwrap().config().skip_cal);
+    assert!(cluster.backend(1).unwrap().config().skip_cal);
 }

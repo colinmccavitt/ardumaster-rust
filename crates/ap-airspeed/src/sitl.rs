@@ -32,6 +32,9 @@ pub const ARSPD_TEMP_COEFF_DEFAULT: f32 = 0.0;
 /// Upstream `ARSPD_AUTOCAL` / `ARSPD2_AUTOCAL` default (disabled).
 pub const ARSPD_AUTOCAL_DEFAULT: u8 = 0;
 
+/// Upstream `ARSPD_SKIP_CAL` / `ARSPD2_SKIP_CAL` default (run startup / requested cal).
+pub const ARSPD_SKIP_CAL_DEFAULT: bool = false;
+
 /// Pitot sample from one backend read, upstream `get_airspeed()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AirspeedSampleState {
@@ -68,7 +71,7 @@ impl Default for SitlAirspeedConfig {
         Self {
             disabled: false,
             offset_mps: 0.0,
-            skip_cal: false,
+            skip_cal: ARSPD_SKIP_CAL_DEFAULT,
             ratio: ARSPD_RATIO_DEFAULT,
             use_airspeed: ARSPD_USE_DEFAULT,
             temperature_c: ARSPD_TEMP_REF_C,
@@ -225,6 +228,10 @@ impl SitlAirspeedBackend {
 
     pub fn set_autocal(&mut self, autocal: u8) {
         self.config.autocal = autocal;
+    }
+
+    pub fn set_skip_cal(&mut self, skip_cal: bool) {
+        self.config.skip_cal = skip_cal;
     }
 
     /// Learn pitot ratio from GPS groundspeed, upstream `update_calibration`.
@@ -429,6 +436,12 @@ impl SitlAirspeedCluster {
     pub fn set_autocal_all(&mut self, autocal: u8) {
         for i in 0..self.instance_count as usize {
             self.backends[i].set_autocal(autocal);
+        }
+    }
+
+    pub fn set_skip_cal_all(&mut self, skip_cal: bool) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_skip_cal(skip_cal);
         }
     }
 

@@ -96,7 +96,8 @@ use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
 use ap_airspeed::sitl::{
-    tas_for_nav, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT,
+    tas_for_nav, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_SKIP_CAL_DEFAULT,
+    ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT,
 };
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -259,6 +260,8 @@ pub struct PlaneMainLoop {
     pub airspeed_temperature_c: f32,
     /// Primary `ARSPD_AUTOCAL`, upstream automatic pitot-ratio calibration.
     pub airspeed_autocal: u8,
+    /// Primary ARSPD_SKIP_CAL, skip startup / requested pitot offset cal.
+    pub airspeed_skip_cal: bool,
     /// Optional analog airspeed backend, upstream `AP_Airspeed_Analog`.
     pub analog_airspeed: Option<AirspeedAnalogHookup>,
     /// Primary analog pin, upstream `ARSPD_PIN`.
@@ -590,6 +593,7 @@ impl Default for PlaneMainLoop {
             airspeed_use_for_control: true,
             airspeed_temperature_c: ARSPD_TEMP_REF_C,
             airspeed_autocal: ARSPD_AUTOCAL_DEFAULT,
+            airspeed_skip_cal: ARSPD_SKIP_CAL_DEFAULT,
             analog_airspeed: None,
             airspeed_pin: 0,
             airspeed_diff_pressure_pa: 0.0,
@@ -1012,6 +1016,10 @@ impl PlaneMainLoop {
                 .backend()
                 .map(|backend| backend.config().autocal)
                 .unwrap_or(ARSPD_AUTOCAL_DEFAULT);
+            self.airspeed_skip_cal = airspeed
+                .backend()
+                .map(|backend| backend.config().skip_cal)
+                .unwrap_or(ARSPD_SKIP_CAL_DEFAULT);
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }

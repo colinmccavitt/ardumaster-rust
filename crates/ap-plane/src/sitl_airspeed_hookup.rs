@@ -7,7 +7,7 @@
 use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
-    ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C,
+    ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_SKIP_CAL_DEFAULT, ARSPD_TEMP_REF_C,
 };
 use ap_math::vector3::Vector3f;
 
@@ -62,6 +62,8 @@ pub struct SitlAirspeedPublish {
     pub temperature_c: f32,
     /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL`.
     pub autocal: u8,
+    /// Skip startup / requested offset calibration, upstream ARSPD_SKIP_CAL.
+    pub skip_cal: bool,
 }
 
 impl SitlAirspeedHookup {
@@ -128,6 +130,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set ARSPD_SKIP_CAL on every enabled instance.
+    pub fn set_skip_cal(&mut self, skip_cal: bool) {
+        let mut params = self.params;
+        params.airspeed1.skip_cal = skip_cal;
+        params.airspeed2.skip_cal = skip_cal;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -177,6 +187,11 @@ impl SitlAirspeedHookup {
                 .backend(self.cluster.primary())
                 .map(|backend| backend.config().autocal)
                 .unwrap_or(ARSPD_AUTOCAL_DEFAULT),
+            skip_cal: self
+                .cluster
+                .backend(self.cluster.primary())
+                .map(|backend| backend.config().skip_cal)
+                .unwrap_or(ARSPD_SKIP_CAL_DEFAULT),
         }
     }
 }
