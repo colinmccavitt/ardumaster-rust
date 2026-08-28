@@ -18,6 +18,7 @@
 #![no_std]
 
 pub mod aux_switch;
+pub mod completeness;
 pub mod fltmode;
 pub mod fs_thr;
 pub mod initial_mode;
@@ -28,6 +29,7 @@ pub mod rc_reversed;
 pub mod rc_speed;
 pub mod rcmap;
 
+pub use completeness::{PortStatus, RcPortItem, RC_COMPLETENESS};
 pub use aux_switch::{
     get_aux_switch_pos, init_position_on_first_radio_read, read_3pos_switch, AuxFunc,
     AuxSwitchLatch, AuxSwitchPos, AUX_SWITCH_PWM_TRIGGER_HIGH, AUX_SWITCH_PWM_TRIGGER_LOW,
