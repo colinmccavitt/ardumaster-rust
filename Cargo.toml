@@ -16,6 +16,7 @@ rust-version = "1.98"
 libm = "0.2"
 
 ap-math = { path = "crates/ap-math" }
+ap-mission = { path = "crates/ap-mission" }
 ap-motors = { path = "crates/ap-motors" }
 ap-hal = { path = "crates/ap-hal" }
 ap-filter = { path = "crates/ap-filter" }

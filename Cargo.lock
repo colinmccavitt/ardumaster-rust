@@ -113,6 +113,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-mission"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-motors"
 version = "0.1.0"
 dependencies = [
@@ -161,6 +168,7 @@ dependencies = [
  "ap-ins",
  "ap-landing",
  "ap-math",
+ "ap-mission",
  "ap-nav",
  "ap-pid",
  "ap-rc",
