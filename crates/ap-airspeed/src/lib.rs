@@ -15,6 +15,7 @@ pub mod params;
 pub mod sitl;
 pub mod tube_order;
 pub mod wind_max;
+pub mod wind_warn;
 
 pub use sitl::{
     apply_autocal_ratio, apply_pitot_ratio, apply_temp_compensation, eas_from_tas,
@@ -61,4 +62,7 @@ pub use options::{
 };
 pub use wind_max::{
     airspeed_groundspeed_delta, wind_max_enabled, wind_max_exceeded, ARSPD_WIND_MAX_DEFAULT,
+};
+pub use wind_warn::{
+    wind_warn_enabled, wind_warn_exceeded, wind_warn_threshold, ARSPD_WIND_WARN_DEFAULT,
 };

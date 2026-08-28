@@ -6,6 +6,7 @@
 
 use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::wind_max::wind_max_exceeded;
+use ap_airspeed::wind_warn::wind_warn_exceeded;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
     ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_SKIP_CAL_DEFAULT, ARSPD_TEMP_REF_C,
@@ -79,6 +80,10 @@ pub struct SitlAirspeedPublish {
     pub wind_max: f32,
     /// True when the enabled WIND_MAX check fails.
     pub wind_max_exceeded: bool,
+    /// Airspeed-vs-wind warning (m/s), upstream `ARSPD_WIND_WARN`.
+    pub wind_warn: f32,
+    /// True when the enabled WIND_WARN threshold is exceeded.
+    pub wind_warn_exceeded: bool,
 }
 
 impl SitlAirspeedHookup {
@@ -210,6 +215,13 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_WIND_WARN` (m/s).
+    pub fn set_wind_warn(&mut self, wind_warn: f32) {
+        let mut params = self.params;
+        params.wind_warn = wind_warn;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -273,6 +285,13 @@ impl SitlAirspeedHookup {
             wind_max_exceeded: wind_max_exceeded(
                 sample.eas_mps,
                 self.gps_groundspeed_mps,
+                self.params.wind_max,
+            ),
+            wind_warn: self.params.wind_warn,
+            wind_warn_exceeded: wind_warn_exceeded(
+                sample.eas_mps,
+                self.gps_groundspeed_mps,
+                self.params.wind_warn,
                 self.params.wind_max,
             ),
         }

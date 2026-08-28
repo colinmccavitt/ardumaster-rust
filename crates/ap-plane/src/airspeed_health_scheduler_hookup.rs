@@ -27,6 +27,8 @@ pub struct AirspeedHealthSchedulerOutput {
     pub use_for_tecs: bool,
     /// True when the enabled `ARSPD_WIND_MAX` check fails.
     pub wind_max_exceeded: bool,
+    /// True when the enabled `ARSPD_WIND_WARN` threshold is exceeded.
+    pub wind_warn_exceeded: bool,
 }
 
 /// Run timer tick, primary selection, and health refresh.
@@ -45,6 +47,7 @@ pub fn airspeed_health_scheduler_tick(
         use_airspeed: published.use_airspeed,
         use_for_tecs: published.use_for_tecs,
         wind_max_exceeded: published.wind_max_exceeded,
+        wind_warn_exceeded: published.wind_warn_exceeded,
     }
 }
 
