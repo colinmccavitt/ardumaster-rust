@@ -1,9 +1,9 @@
 //! QuadPlane / VTOL support, upstream `ArduPlane/quadplane.*` (Plane-4.7.0).
 //!
-//! Tracked as **VT-001**. This slice is `QuadPlane::setup`: when
-//! `Q_ENABLE != 0` it initialises the lift-motor object and sets
-//! `initialised`. [`QuadPlane::available`] then returns that flag, not
-//! [`QuadPlane::enabled`].
+//! Tracked as **VT-001**. `setup` / `available` live on [`QuadPlane`].
+//! [`QuadPlane::in_vtol_mode`] / [`QuadPlane::in_vtol_auto`] (this
+//! slice) are true when the current flight mode is a Q* VTOL mode, or
+//! AUTO is flying a VTOL nav command.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -16,6 +16,7 @@
 
 pub mod tailsitter;
 pub mod transition;
+pub mod vtol_mode;
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
 pub const Q_ENABLE_DEFAULT: i8 = 0;
