@@ -16,7 +16,9 @@
 //! IMAX clamp) lives in [`ff`]. The single-event FF estimate
 //! (`FF_single`, `ff_filter.apply`, `ff_count` 1/4 gates) lives in
 //! [`ff_estimate`]. The `start` zero-FF floor (`current.FF < 0.01`
-//! becomes `0.01`) lives in [`start`].
+//! becomes `0.01`) lives in [`start`]. The actuator / rate / target
+//! LPF cutoffs on `start` (0.75 Hz / 0.75 Hz / 4 Hz at the scheduler
+//! loop rate) live in [`filters`].
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
@@ -24,6 +26,7 @@
 
 pub mod ff;
 pub mod ff_estimate;
+pub mod filters;
 pub mod gains;
 pub mod level;
 pub mod options;
@@ -40,6 +43,10 @@ pub use ff_estimate::{
     apply_ff_count_gains, apply_ff_count_gate, ff_estimate_pending, ff_estimate_ready, ff_single,
     FfEstimate, AUTOTUNE_MIN_D, AUTOTUNE_MIN_P, FF_COUNT_FIRST, FF_COUNT_READY,
     FF_FILTER_RETURN_ELEMENT, FF_READY_P_SCALE,
+};
+pub use filters::{
+    set_start_filter_cutoffs, start_filters, StartFilters, ACTUATOR_FILTER_HZ, RATE_FILTER_HZ,
+    TARGET_FILTER_HZ,
 };
 pub use gains::{apply_stop_gains, should_save_on_stop, snapshot_gains, AtGains};
 pub use level::{
