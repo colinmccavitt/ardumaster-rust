@@ -7,6 +7,7 @@
 
 use crate::ff::constrain_imax;
 use crate::gains::{apply_stop_gains, snapshot_gains, AtGains};
+use crate::slew::floor_slew_limit;
 use crate::start::floor_start_ff;
 
 /// Fraction of `min(att_limit/tau, rmax_pos)` that starts a demand event.
@@ -199,6 +200,11 @@ pub struct AutoTune {
     pub imax: f32,
     /// Stable cycles after both limits, upstream `done_count`.
     pub done_count: u8,
+    /// Live PID slew limit, upstream `rpid.slew_limit()`.
+    ///
+    /// [`AutoTune::start`] floors a non-positive value to
+    /// [`crate::slew::SLEW_LIMIT_DEFAULT`].
+    pub slew_limit: f32,
 }
 
 impl AutoTune {
@@ -224,6 +230,7 @@ impl AutoTune {
             ff: 0.0,
             imax: 0.0,
             done_count: 0,
+            slew_limit: 0.0,
         }
     }
 
@@ -247,7 +254,8 @@ impl AutoTune {
     ///
     /// Sets `running`, forces `IDLE`, snapshots `current` into
     /// `restore` / `last_save`, floors FF below 0.01, clamps IMAX into
-    /// 0.4..=0.9, and clears `done_count`.
+    /// 0.4..=0.9, floors a non-positive slew limit to 150 deg/s, and
+    /// clears `done_count`.
     pub fn start(&mut self) {
         self.running = true;
         self.state = AtState::Idle;
@@ -259,6 +267,7 @@ impl AutoTune {
         self.done_count = 0;
         self.ff = floor_start_ff(self.ff);
         self.imax = constrain_imax(self.imax);
+        self.slew_limit = floor_slew_limit(self.slew_limit);
     }
 
     /// Upstream `AP_AutoTune::stop` — leave AUTOTUNE on this axis.

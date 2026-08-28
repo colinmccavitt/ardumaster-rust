@@ -21,6 +21,8 @@
 //! loop rate) live in [`filters`].
 //! Action / D-limit hunting (`RAISE_D` / `LOWER_D` / `LOWER_PD` /
 //! `IDLE_LOWER_PD`) lives in [`action`].
+//! The `slew_limit` / `SlewLimiter` pair (default 150 deg/s, P/D
+//! slew-rate tracking) lives in [`slew`].
 //! The completeness closer (`OnMain` vs `Remaining`, IMAX-on-start,
 //! yaw `att_limit` 20 deg, `done_count` N-cycle save) lives in
 //! [`completeness`].
@@ -37,6 +39,7 @@ pub mod filters;
 pub mod gains;
 pub mod level;
 pub mod options;
+pub mod slew;
 pub mod start;
 pub mod state;
 pub mod update;
@@ -73,6 +76,10 @@ pub use options::{
     AutotuneOptions, FilterUpdate, AUTOTUNE_AXES_DEFAULT, AUTOTUNE_AXIS_PITCH, AUTOTUNE_AXIS_ROLL,
     AUTOTUNE_AXIS_YAW, AUTOTUNE_OPTIONS_DEFAULT, AUTOTUNE_OPTION_DISABLE_FLTD_UPDATE,
     AUTOTUNE_OPTION_DISABLE_FLTT_UPDATE,
+};
+pub use slew::{
+    floor_slew_limit, peak_slew_rate, scale_pd_sample, slew_limit_params, PdSlewTrackers,
+    SLEW_LIMIT_DEFAULT, SLEW_LIMIT_SCALE, SLEW_LIMIT_TAU,
 };
 pub use start::{floor_start_ff, AUTOTUNE_MIN_FF};
 pub use state::{

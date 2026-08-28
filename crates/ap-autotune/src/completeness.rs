@@ -3,10 +3,10 @@
 //!
 //! Catalogs the Plane AutoTune port. Items marked [`PortStatus::OnMain`]
 //! landed in earlier slices and must not be redone. [`PortStatus::ThisSlice`]
-//! includes Action / D-limit hunting (`RAISE_D` / `LOWER_D` /
-//! `LOWER_PD` / `IDLE_LOWER_PD`) plus the earlier closer rows.
+//! includes the `slew_limit` / `SlewLimiter` pair plus Action /
+//! D-limit hunting and the earlier closer rows.
 //! [`PortStatus::Remaining`] are still-open `AP_AutoTune.cpp` gaps
-//! (slew limiter, ATRP log, EEPROM `save_*_if_changed`).
+//! (ATRP log, EEPROM `save_*_if_changed`).
 //!
 //! This module does not rewrite [`crate::filters`] or [`crate::start`].
 
@@ -126,7 +126,7 @@ pub const AUTOTUNE_COMPLETENESS: &[AutotunePortItem] = &[
     },
     AutotunePortItem {
         name: "slew_limit / SlewLimiter",
-        status: PortStatus::Remaining,
+        status: PortStatus::ThisSlice,
         note: "default slew_limit 150 deg/s, P/D slew rate tracking",
     },
     AutotunePortItem {
