@@ -44,7 +44,6 @@ mod tests {
     use super::*;
     use crate::sitl_compass_hookup::SitlCompassHookup;
     use ap_compass::filter_range::COMPASS_FLTR_RNG_DEFAULT;
-    use ap_compass::filter_range::COMPASS_FLTR_RNG_DEFAULT;
 
     #[test]
     fn default_range_keeps_filter_off() {
