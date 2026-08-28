@@ -8,8 +8,8 @@
 //! Scaling, the aux-function switch latch, the 2-pos vs 3-pos option-switch PWM
 //! ranges, the FS_THR_VALUE / THR_FS_VALUE PWM floor, the RCMAP_* channel map
 //! plus RCn_TRIM persist, the RC_OVERRIDE_TIME GCS override timeout, the FLTMODE_CH six-position
-//! flight-mode switch decode, the FLTMODE1-FLTMODE6 slot mapping, and INITIAL_MODE /
-//! boot-mode-from-switch live here so radio.cpp
+//! flight-mode switch decode, the FLTMODE1-FLTMODE6 slot mapping, INITIAL_MODE /
+//! boot-mode-from-switch, and the RC_OPTIONS bitfield live here so radio.cpp
 //! work can share one conversion. The HAL owns the raw PWM microsecond I/O;
 //! Plane's failsafe hookup already reads those pulses.
 
@@ -21,6 +21,7 @@ pub mod fs_thr;
 pub mod initial_mode;
 pub mod option_switch;
 pub mod override_timeout;
+pub mod rc_options;
 pub mod rcmap;
 
 pub use aux_switch::{
@@ -55,6 +56,11 @@ pub use override_timeout::{
     apply_gcs_override_field, override_timeout_from_param, OverrideTimeout, RcOverride,
     RC_OVERRIDE_IGNORE, RC_OVERRIDE_RELEASE, RC_OVERRIDE_TIME_DEFAULT, RC_OVERRIDE_TIME_MAX,
     RC_OVERRIDE_TIME_MIN,
+};
+pub use rc_options::{
+    apply_arming_rc_checks, apply_radio_in, apply_rc_options, apply_receiver_failsafe,
+    apply_switch_reversed, RcArmingChecks, RcOption, RcOptions, RcOptionsApplied,
+    RC_OPTIONS_DEFAULT,
 };
 pub use rcmap::{
     mapped_pwm, persist_stick_trims, rcmap_channel_valid, rcmap_index, set_and_save_radio_trim,
