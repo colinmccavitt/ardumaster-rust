@@ -104,6 +104,7 @@ use ap_airspeed::sitl::{
 };
 use ap_airspeed::bus::ARSPD_BUS_DEFAULT;
 use ap_airspeed::devid::ARSPD_DEVID_DEFAULT;
+use ap_airspeed::options::ARSPD_OPTIONS_DEFAULT;
 use ap_airspeed::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -280,6 +281,8 @@ pub struct PlaneMainLoop {
     pub airspeed_bus: u8,
     /// Sensor device ID, upstream `ARSPD_DEVID`.
     pub airspeed_devid: i32,
+    /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
+    pub airspeed_options: u32,
     /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
     pub airspeed_type: u8,
     /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
@@ -691,6 +694,7 @@ impl Default for PlaneMainLoop {
             airspeed_tube_order: ARSPD_TUBE_ORDER_DEFAULT,
             airspeed_bus: ARSPD_BUS_DEFAULT,
             airspeed_devid: ARSPD_DEVID_DEFAULT,
+            airspeed_options: ARSPD_OPTIONS_DEFAULT,
             airspeed_type: ARSPD_TYPE_SITL,
             configured_airspeed_backend: AirspeedBackendKind::Sitl,
             active_airspeed_backend: AirspeedBackendKind::Sitl,
@@ -1161,6 +1165,7 @@ impl PlaneMainLoop {
             self.airspeed_tube_order = airspeed.airspeed_params().primary_tube_order();
             self.airspeed_bus = airspeed.airspeed_params().primary_bus();
             self.airspeed_devid = airspeed.airspeed_params().primary_devid();
+            self.airspeed_options = airspeed.airspeed_params().options;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
@@ -1183,6 +1188,7 @@ impl PlaneMainLoop {
             self.airspeed_tube_order = out.tube_order;
             self.airspeed_bus = out.bus;
             self.airspeed_devid = out.devid;
+            self.airspeed_options = out.options;
         }
         let sensor_type = self
             .sitl_airspeed

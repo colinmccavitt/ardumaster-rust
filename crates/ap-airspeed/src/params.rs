@@ -4,6 +4,7 @@ use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEF
 use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::devid::ARSPD_DEVID_DEFAULT;
+use crate::options::ARSPD_OPTIONS_DEFAULT;
 use crate::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
@@ -95,6 +96,8 @@ pub struct AirspeedParams {
     pub airspeed1: AirspeedInstanceParams,
     pub airspeed2: AirspeedInstanceParams,
     pub primary: u8,
+    /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
+    pub options: u32,
 }
 
 impl Default for AirspeedParams {
@@ -103,6 +106,7 @@ impl Default for AirspeedParams {
             airspeed1: AirspeedInstanceParams::default(),
             airspeed2: AirspeedInstanceParams::default(),
             primary: 0,
+            options: ARSPD_OPTIONS_DEFAULT,
         }
     }
 }
@@ -244,5 +248,11 @@ impl AirspeedParams {
         } else {
             self.airspeed2.devid
         }
+    }
+
+    /// Vehicle-level `ARSPD_OPTIONS`.
+    #[must_use]
+    pub fn options(&self) -> u32 {
+        self.options
     }
 }

@@ -38,6 +38,8 @@ pub struct AirspeedAnalogPublish {
     pub bus: u8,
     /// Bound `ARSPD_DEVID`.
     pub devid: i32,
+    /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
+    pub options: u32,
 }
 
 impl AirspeedAnalogHookup {
@@ -103,6 +105,13 @@ impl AirspeedAnalogHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_OPTIONS`.
+    pub fn set_options(&mut self, options: u32) {
+        let mut params = self.params;
+        params.options = options;
+        self.apply_airspeed_params(params);
+    }
+
     /// Drive the mock analog source to a ratiometric voltage.
     pub fn set_voltage(&mut self, volts: f32) {
         let mut source = MockAnalogSource::new();
@@ -132,6 +141,7 @@ impl AirspeedAnalogHookup {
             tube_order,
             bus: self.params.primary_bus(),
             devid: self.params.primary_devid(),
+            options: self.params.options,
         }
     }
 }

@@ -72,6 +72,8 @@ pub struct SitlAirspeedPublish {
     pub bus: u8,
     /// Sensor device ID, upstream `ARSPD_DEVID`.
     pub devid: i32,
+    /// Vehicle-level bitmask, upstream `ARSPD_OPTIONS`.
+    pub options: u32,
 }
 
 impl SitlAirspeedHookup {
@@ -189,6 +191,13 @@ impl SitlAirspeedHookup {
         self.set_devid(devid);
     }
 
+    /// Set vehicle-level `ARSPD_OPTIONS`.
+    pub fn set_options(&mut self, options: u32) {
+        let mut params = self.params;
+        params.options = options;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -247,6 +256,7 @@ impl SitlAirspeedHookup {
             tube_order: self.params.primary_tube_order(),
             bus: self.params.primary_bus(),
             devid: self.params.primary_devid(),
+            options: self.params.options,
         }
     }
 }

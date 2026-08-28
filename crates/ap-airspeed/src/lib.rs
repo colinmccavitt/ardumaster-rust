@@ -10,6 +10,7 @@ pub mod analog;
 pub mod backend;
 pub mod bus;
 pub mod devid;
+pub mod options;
 pub mod params;
 pub mod sitl;
 pub mod tube_order;
@@ -49,4 +50,11 @@ pub use devid::{
     clear_devid_if_not_found, devid_address, devid_after_probe, devid_bus, devid_bus_type,
     devid_devtype, devid_for_configured, devid_is_set, make_bus_id, ARSPD_DEVID_DEFAULT,
     BUS_TYPE_I2C, BUS_TYPE_SITL, MS4525_I2C_ADDR,
+};
+pub use options::{
+    disable_on_wind_max_failure, disable_voltage_correction, option_enabled,
+    reenable_on_wind_max_recovery, report_offset, use_ekf_consistency, ARSPD_OPTIONS_DEFAULT,
+    ARSPD_OPTION_DISABLE_VOLTAGE_CORRECTION, ARSPD_OPTION_ON_FAILURE_AHRS_WIND_MAX_DO_DISABLE,
+    ARSPD_OPTION_ON_FAILURE_AHRS_WIND_MAX_RECOVERY_DO_REENABLE, ARSPD_OPTION_REPORT_OFFSET,
+    ARSPD_OPTION_USE_EKF_CONSISTENCY,
 };
