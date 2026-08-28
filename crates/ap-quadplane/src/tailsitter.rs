@@ -29,8 +29,9 @@
 //!   elevon / V-tail. Upstream `is_control_surface_tailsitter`: tailsitter
 //!   frame, and either zero hover gain or no left tilt motor.
 //!
-//! Stick remapping (`Q_TAILSIT_INPUT` PlaneMode / BodyFrameRoll) and the
-//! vectored mix itself are later slices.
+//! The vectored-yaw tilt mix is [`VectoredYawMix`] (`Q_TAILSIT_VHGAIN` /
+//! `Q_TAILSIT_VFGAIN`). Stick remapping (`Q_TAILSIT_INPUT` PlaneMode /
+//! BodyFrameRoll) is a later slice.
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
@@ -200,4 +201,163 @@ impl Tailsitter {
             None
         }
     }
+}
+
+/// Default `Q_TAILSIT_VFGAIN`, upstream `AP_GROUPINFO("VFGAIN", ..., 0)`.
+pub const VECTORED_FORWARD_GAIN_DEFAULT: f32 = 0.0;
+
+/// Default `Q_TAILSIT_VHPOW`, upstream `AP_GROUPINFO("VHPOW", ..., 2.5)`.
+pub const VECTORED_HOVER_POWER_DEFAULT: f32 = 2.5;
+
+/// Upstream `SERVO_MAX` / `SERVO_OUTPUT_RANGE` for tilt motors and surfaces.
+pub const SERVO_MAX: f32 = 4500.0;
+
+/// Vectored-yaw tilt-motor mix, upstream `Tailsitter::output` + motors tilt.
+///
+/// Tracked as **VT-007**. Duo-motor tailsitters vector thrust for yaw and
+/// pitch by tilting the motors. `AP_MotorsTailsitter` writes
+/// `tilt_left = pitch - yaw`, `tilt_right = pitch + yaw` (each -1..1,
+/// then `* SERVO_MAX`). `Tailsitter::output` then applies the gains:
+///
+/// - Hover / VTOL: no tilt unless [`Q_TAILSIT_VHGAIN`](VECTORED_HOVER_GAIN_DEFAULT)
+///   is positive; then `extra_elevator + tilt * VHGAIN` (assist path also
+///   multiplies the hover/throttle scaler). Extra elevator is a power-law
+///   of the pitch error (`Q_TAILSIT_VHPOW`) so the motors can point up
+///   for takeoff without integrator windup.
+/// - Forward flight: no tilt unless `Q_TAILSIT_VFGAIN` is positive; then
+///   `(elevator ± aileron) * VFGAIN * scaler`.
+///
+/// This is the tailsitter-specific mix, not a rewrite of ap-motors mixing.
+#[derive(Debug, Clone, Copy)]
+pub struct VectoredYawMix {
+    hover_gain: f32,
+    forward_gain: f32,
+    hover_power: f32,
+}
+
+impl Default for VectoredYawMix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VectoredYawMix {
+    /// `AP_GROUPINFO` defaults for VHGAIN / VFGAIN / VHPOW.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            hover_gain: VECTORED_HOVER_GAIN_DEFAULT,
+            forward_gain: VECTORED_FORWARD_GAIN_DEFAULT,
+            hover_power: VECTORED_HOVER_POWER_DEFAULT,
+        }
+    }
+
+    /// `Q_TAILSIT_VHGAIN`.
+    #[must_use]
+    pub const fn hover_gain(&self) -> f32 {
+        self.hover_gain
+    }
+
+    /// `Q_TAILSIT_VFGAIN`.
+    #[must_use]
+    pub const fn forward_gain(&self) -> f32 {
+        self.forward_gain
+    }
+
+    /// `Q_TAILSIT_VHPOW`.
+    #[must_use]
+    pub const fn hover_power(&self) -> f32 {
+        self.hover_power
+    }
+
+    /// Poke `Q_TAILSIT_VHGAIN`.
+    pub fn set_hover_gain(&mut self, gain: f32) {
+        self.hover_gain = gain;
+    }
+
+    /// Poke `Q_TAILSIT_VFGAIN`.
+    pub fn set_forward_gain(&mut self, gain: f32) {
+        self.forward_gain = gain;
+    }
+
+    /// Poke `Q_TAILSIT_VHPOW`.
+    pub fn set_hover_power(&mut self, power: f32) {
+        self.hover_power = power;
+    }
+
+    /// Hover / VTOL tilt from motors pitch and yaw in `-1..1`.
+    ///
+    /// `tilt_left = (pitch - yaw) * SERVO_MAX * VHGAIN`,
+    /// `tilt_right = (pitch + yaw) * SERVO_MAX * VHGAIN`.
+    /// Zero (or negative) VHGAIN produces zero tilt.
+    #[must_use]
+    pub fn hover_tilt(&self, pitch: f32, yaw: f32) -> (f32, f32) {
+        self.mix_hover(pitch, yaw, 0.0, 1.0)
+    }
+
+    /// Hover mix with extra elevator and the assist throttle scaler.
+    ///
+    /// Upstream assist path is `tilt * VHGAIN * throttle_scaler` with no
+    /// extra elevator. The main VTOL path is
+    /// `extra_elevator + tilt * VHGAIN` (scaler 1).
+    #[must_use]
+    pub fn mix_hover(
+        &self,
+        pitch: f32,
+        yaw: f32,
+        extra_elevator: f32,
+        throttle_scaler: f32,
+    ) -> (f32, f32) {
+        if !is_positive(self.hover_gain) {
+            return (0.0, 0.0);
+        }
+        let left = (pitch - yaw) * SERVO_MAX;
+        let right = (pitch + yaw) * SERVO_MAX;
+        (
+            extra_elevator + left * self.hover_gain * throttle_scaler,
+            extra_elevator + right * self.hover_gain * throttle_scaler,
+        )
+    }
+
+    /// Forward-flight tilt from already-scaled elevator / aileron.
+    ///
+    /// `tilt_left = (elevator + aileron) * VFGAIN * scaler`,
+    /// `tilt_right = (elevator - aileron) * VFGAIN * scaler`.
+    /// Zero (or negative) VFGAIN produces zero tilt.
+    #[must_use]
+    pub fn mix_forward(&self, elevator: f32, aileron: f32, scaler: f32) -> (f32, f32) {
+        if !is_positive(self.forward_gain) {
+            return (0.0, 0.0);
+        }
+        (
+            (elevator + aileron) * self.forward_gain * scaler,
+            (elevator - aileron) * self.forward_gain * scaler,
+        )
+    }
+
+    /// Extra elevator from the halved pitch error, upstream `Tailsitter::output`.
+    ///
+    /// `extra_pitch = constrain(pitch_error_cd, ±SERVO_MAX) / SERVO_MAX`,
+    /// then `sign * |extra_pitch|^VHPOW * SERVO_MAX` when the error is
+    /// non-zero and the airframe is in a VTOL mode. Zero VHGAIN skips it.
+    #[must_use]
+    pub fn extra_elevator(&self, pitch_error_cd: f32, in_vtol_mode: bool) -> f32 {
+        if !is_positive(self.hover_gain) {
+            return 0.0;
+        }
+        let extra_pitch = constrain_f32(pitch_error_cd, -SERVO_MAX, SERVO_MAX) / SERVO_MAX;
+        if is_zero(extra_pitch) || !in_vtol_mode {
+            return 0.0;
+        }
+        let extra_sign = if extra_pitch > 0.0 { 1.0 } else { -1.0 };
+        extra_sign * libm::powf(extra_pitch.abs(), self.hover_power) * SERVO_MAX
+    }
+}
+
+fn is_positive(v: f32) -> bool {
+    v > 0.0
+}
+
+fn constrain_f32(v: f32, min: f32, max: f32) -> f32 {
+    v.clamp(min, max)
 }
