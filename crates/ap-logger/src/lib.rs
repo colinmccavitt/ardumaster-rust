@@ -16,7 +16,9 @@
 //! and last-log id from the file-backend mock. [`replay`] is MAVLink
 //! log-transfer download: `LOG_REQUEST_DATA` (msgid 119) answered with
 //! `LOG_DATA` (msgid 120) chunks of recorded bytes from the
-//! file-backend mock.
+//! file-backend mock. [`dropped`] is the buffer-full counter:
+//! `_dropped` increments when `Write` is rejected by a full backend
+//! and `num_dropped()` exposes the count.
 //!
 //! # What this crate does not include yet
 //!
@@ -26,6 +28,7 @@
 #![no_std]
 
 pub mod backend;
+pub mod dropped;
 pub mod file;
 pub mod gate;
 pub mod replay;
@@ -34,6 +37,7 @@ pub mod transfer;
 pub mod write;
 
 pub use backend::{LogBackend, MemoryBackend};
+pub use dropped::DroppedMessages;
 pub use file::{FileBackend, LOG_FILE_PATH_MAX};
 pub use gate::{
     LogGate, DEFAULT_LOG_BITMASK, MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_FULLRATE,
