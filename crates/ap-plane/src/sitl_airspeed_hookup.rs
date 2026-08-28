@@ -68,6 +68,8 @@ pub struct SitlAirspeedPublish {
     pub tube_order: u8,
     /// I2C bus, upstream `ARSPD_BUS`.
     pub bus: u8,
+    /// Sensor device ID, upstream `ARSPD_DEVID`.
+    pub devid: i32,
 }
 
 impl SitlAirspeedHookup {
@@ -166,6 +168,25 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_DEVID` on every enabled instance.
+    pub fn set_devid(&mut self, devid: i32) {
+        let mut params = self.params;
+        params.airspeed1.devid = devid;
+        params.airspeed2.devid = devid;
+        self.apply_airspeed_params(params);
+    }
+
+    /// Latch or clear DEVID after a backend probe, upstream `set_bus_id`.
+    pub fn assign_devid_from_probe(&mut self, found: bool) {
+        let devid = ap_airspeed::devid::devid_after_probe(
+            found,
+            self.params.primary_sensor_type(),
+            self.params.primary_bus(),
+            self.params.primary,
+        );
+        self.set_devid(devid);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -222,6 +243,7 @@ impl SitlAirspeedHookup {
                 .unwrap_or(ARSPD_SKIP_CAL_DEFAULT),
             tube_order: self.params.primary_tube_order(),
             bus: self.params.primary_bus(),
+            devid: self.params.primary_devid(),
         }
     }
 }

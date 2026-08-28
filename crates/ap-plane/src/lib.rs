@@ -29,6 +29,7 @@ pub mod airspeed_analog_hookup;
 pub mod airspeed_type_hookup;
 pub mod airspeed_tube_order_hookup;
 pub mod airspeed_bus_hookup;
+pub mod airspeed_devid_hookup;
 pub mod compass_health_scheduler_hookup;
 pub mod compass_offset_calibration_hookup;
 pub mod compass_offset_persist_hookup;

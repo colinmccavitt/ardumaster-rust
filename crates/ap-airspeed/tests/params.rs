@@ -35,6 +35,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.primary_tube_order(), 2);
     assert_eq!(params.airspeed1.bus, 1);
     assert_eq!(params.primary_bus(), 1);
+    assert_eq!(params.airspeed1.devid, 0);
+    assert_eq!(params.primary_devid(), 0);
 }
 
 #[test]
@@ -67,6 +69,7 @@ fn instance_params_apply_to_sitl_config() {
         sensor_type: ARSPD_TYPE_SITL,
         tube_order: 2,
         bus: 1,
+        devid: 0,
     }
     .apply_to_config();
     assert!(cfg.disabled);

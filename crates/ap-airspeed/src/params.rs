@@ -3,6 +3,7 @@
 use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
 use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
+use crate::devid::ARSPD_DEVID_DEFAULT;
 use crate::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
@@ -38,6 +39,8 @@ pub struct AirspeedInstanceParams {
     pub tube_order: u8,
     /// I2C bus, upstream ARSPD_BUS.
     pub bus: u8,
+    /// Sensor device ID, upstream `ARSPD_DEVID` / `bus_id`.
+    pub devid: i32,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -56,6 +59,7 @@ impl Default for AirspeedInstanceParams {
             sensor_type: ARSPD_TYPE_DEFAULT,
             tube_order: ARSPD_TUBE_ORDER_DEFAULT,
             bus: ARSPD_BUS_DEFAULT,
+            devid: ARSPD_DEVID_DEFAULT,
         }
     }
 }
@@ -229,6 +233,16 @@ impl AirspeedParams {
             self.airspeed1.bus
         } else {
             self.airspeed2.bus
+        }
+    }
+
+    /// Primary instance `ARSPD_DEVID` / `ARSPD2_DEVID`.
+    #[must_use]
+    pub fn primary_devid(&self) -> i32 {
+        if self.primary == 0 {
+            self.airspeed1.devid
+        } else {
+            self.airspeed2.devid
         }
     }
 }

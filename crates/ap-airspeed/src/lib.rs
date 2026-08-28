@@ -9,6 +9,7 @@
 pub mod analog;
 pub mod backend;
 pub mod bus;
+pub mod devid;
 pub mod params;
 pub mod sitl;
 pub mod tube_order;
@@ -42,4 +43,9 @@ pub use tube_order::{
 pub use bus::{
     i2c_probe_bus, uses_i2c_bus, ARSPD_BUS_DEFAULT, ARSPD_BUS_EXTERNAL, ARSPD_BUS_EXTERNAL2,
     ARSPD_BUS_INTERNAL,
+};
+pub use devid::{
+    clear_devid_if_not_found, devid_address, devid_after_probe, devid_bus, devid_bus_type,
+    devid_devtype, devid_for_configured, devid_is_set, make_bus_id, ARSPD_DEVID_DEFAULT,
+    BUS_TYPE_I2C, BUS_TYPE_SITL, MS4525_I2C_ADDR,
 };
