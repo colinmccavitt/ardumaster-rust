@@ -15,6 +15,7 @@
 pub mod accel_threshold;
 pub mod check_bitmask;
 pub mod rudder_arming;
+pub mod vehicle_arm;
 
 /// Default `ARMING_REQUIRE` on Plane, upstream `Required::YES_MIN_PWM`.
 pub const ARMING_REQUIRE_DEFAULT: Required = Required::YesMinPwm;
