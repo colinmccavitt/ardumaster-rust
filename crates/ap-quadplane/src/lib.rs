@@ -37,6 +37,7 @@ pub mod poscontrol;
 pub mod quadplane_completeness;
 pub mod tailsitter;
 pub mod throttle;
+pub mod tiltrotor;
 pub mod transition;
 pub mod transition_fsm;
 pub mod vtol_mode;
