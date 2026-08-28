@@ -23,10 +23,13 @@
 //! file-backend mock catalog, last-log id, and drop count. [`rotate`]
 //! is max-files rotation: `get_max_num_logs` caps the mock catalog and
 //! drops the oldest row when a new StartWrite would overflow.
+//! [`streaming`] is `WriteStreaming`: a rate-limited periodic write
+//! gate that only emits when `1000 / rate_hz` milliseconds have
+//! elapsed since the last send of that msgid.
 //!
 //! # What this crate does not include yet
 //!
-//! The DataFlash page map, rate limiting, and the `AP_Logger`
+//! The DataFlash page map, FMT registry lookup, and the `AP_Logger`
 //! front-end. Those land in later FW-030 slices.
 
 #![no_std]
@@ -38,6 +41,7 @@ pub mod file;
 pub mod gate;
 pub mod replay;
 pub mod rotate;
+pub mod streaming;
 pub mod structure;
 pub mod transfer;
 pub mod write;
@@ -58,6 +62,7 @@ pub use replay::{
     MSG_ID_LOG_DATA, MSG_ID_LOG_REQUEST_DATA,
 };
 pub use rotate::{LogRotate, DEFAULT_MAX_LOG_FILES};
+pub use streaming::{WriteStreaming, DEFAULT_STREAM_RATE_HZ};
 pub use structure::{
     fill_format, LogFormat, LogPacketHeader, LogStructure, FMT_FORMAT_LEN, FMT_LABELS_LEN,
     FMT_NAME_LEN, HEAD_BYTE1, HEAD_BYTE2, LOG_FORMAT_LEN, LOG_FORMAT_MSG, LOG_PACKET_HEADER_LEN,
