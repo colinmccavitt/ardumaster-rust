@@ -5,13 +5,12 @@
 //! when the current flight mode is a Q* VTOL mode, or AUTO is flying a
 //! VTOL nav command.
 //!
-//! Leftover `Q_OPTIONS` bits already landed. This slice:
-//! leftover assisted-flight latch extras on [`QuadPlane`]
-//! (`force_fw_control_recovery` / `in_spin_recovery` QTUN bits,
-//! `leftover_show_vtol_view` / `leftover_use_multicopter_control`).
+//! Leftover assisted-flight latch extras already landed. This slice:
+//! leftover `vtol_position_controller` / `takeoff_controller` /
+//! `waypoint_controller` on [`crate::position_controller`].
 //! It does not rewrite setup, air-mode, landing, auto_vtol, logging,
-//! leftover Q_OPTIONS, motor-test, tailsitter completeness, or the
-//! leftover catalog helpers for remaining rows.
+//! leftover Q_OPTIONS, assist latches, motor-test, tailsitter
+//! completeness, or the leftover catalog helpers for remaining rows.
 //!
 //! Upstream:
 //! - `enabled()` is `return enable != 0` (`Q_ENABLE`, `AP_Int8 enable`).
@@ -36,6 +35,7 @@ pub mod mode_qland;
 pub mod mode_qrtl;
 pub mod motor_test;
 pub mod poscontrol;
+pub mod position_controller;
 pub mod quadplane_completeness;
 pub mod tailsitter;
 pub mod throttle;
@@ -249,6 +249,8 @@ pub struct QuadPlane {
     auto_vtol: auto_vtol::AutoVtol,
     /// Leftover QTUN / QPOS / AttRate logger block.
     logging: logging::QLogging,
+    /// Leftover position / takeoff / waypoint controller timers.
+    position_controller: position_controller::PositionControllers,
 }
 
 impl QuadPlane {
@@ -286,6 +288,7 @@ impl QuadPlane {
             guided_takeoff: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
+            position_controller: position_controller::PositionControllers::new(),
         }
     }
 
@@ -326,6 +329,7 @@ impl QuadPlane {
             guided_takeoff: false,
             auto_vtol: auto_vtol::AutoVtol::new(),
             logging: logging::QLogging::new(),
+            position_controller: position_controller::PositionControllers::new(),
         }
     }
 

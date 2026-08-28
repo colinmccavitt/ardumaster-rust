@@ -26,13 +26,13 @@ const ON_MAIN: &[&str] = &[
     "AUTO mission VTOL",
     "logging",
     "leftover Q_OPTIONS bits",
+    "assisted-flight latch extras",
 ];
 
-const THIS_SLICE: &[&str] = &["assisted-flight latch extras"];
+const THIS_SLICE: &[&str] = &["position / takeoff / waypoint controllers"];
 
 /// Leftover `quadplane.cpp` / `.h` surfaces not yet stubbed.
 const REMAINING: &[&str] = &[
-    "position / takeoff / waypoint controllers",
     "land-sequence predicates",
     "motors_output / hold / set_armed",
     "guided / QRTL / RTL_MODE",
@@ -77,13 +77,17 @@ fn completeness_table_matches_main_versus_leftover_api() {
 #[test]
 fn leftover_api_rows_name_upstream_surfaces() {
     let leftover: Vec<&QuadPlanePortItem> = remaining_items().collect();
-    assert_eq!(leftover.len(), 6);
+    assert_eq!(leftover.len(), 5);
     assert!(completeness_has(
         "leftover Q_OPTIONS bits",
         PortStatus::OnMain
     ));
     assert!(completeness_has(
         "assisted-flight latch extras",
+        PortStatus::OnMain
+    ));
+    assert!(completeness_has(
+        "position / takeoff / waypoint controllers",
         PortStatus::ThisSlice
     ));
     assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
@@ -100,9 +104,10 @@ fn leftover_api_rows_name_upstream_surfaces() {
     assert!(QUADPLANE_COMPLETENESS
         .iter()
         .any(|item| item.name == "logging" && item.note.contains("Log_Write_QControl_Tuning")));
-    assert!(leftover
-        .iter()
-        .any(|item| item.note.contains("vtol_position_controller")));
+    assert!(QUADPLANE_COMPLETENESS.iter().any(|item| {
+        item.name == "position / takeoff / waypoint controllers"
+            && item.note.contains("vtol_position_controller")
+    }));
     assert!(leftover
         .iter()
         .any(|item| item.note.contains("in_vtol_land_approach")));

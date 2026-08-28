@@ -2,12 +2,12 @@
 //!
 //! Catalogs the `ArduPlane/quadplane.cpp` / `.h` port. Items marked
 //! [`PortStatus::OnMain`] landed in earlier VT-001 slices and must not
-//! be redone. [`PortStatus::ThisSlice`] is leftover assisted-flight
-//! latch extras (`force_fw_control_recovery` / `in_spin_recovery` QTUN
-//! bits, `leftover_show_vtol_view` / `leftover_use_multicopter_control`).
+//! be redone. [`PortStatus::ThisSlice`] is leftover position / takeoff /
+//! waypoint controllers (`vtol_position_controller` /
+//! `takeoff_controller` / `waypoint_controller`).
 //! [`PortStatus::Remaining`] are leftover `quadplane.cpp` / `.h`
 //! surfaces not yet stubbed (land-sequence predicates, motors/hold,
-//! guided/QRTL, thrust-loss, TECS leftovers, position controllers).
+//! guided/QRTL, thrust-loss, TECS leftovers).
 //!
 //! This module does not rewrite [`crate::air_mode`], [`crate::auto_vtol`],
 //! [`crate::landing`], [`crate::logging`],
@@ -97,7 +97,7 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "assisted-flight latch extras",
-        status: PortStatus::ThisSlice,
+        status: PortStatus::OnMain,
         note: "force_fw_control_recovery / in_spin_recovery QTUN bits / leftover_show_vtol_view / leftover_use_multicopter_control",
     },
     QuadPlanePortItem {
@@ -107,8 +107,8 @@ pub const QUADPLANE_COMPLETENESS: &[QuadPlanePortItem] = &[
     },
     QuadPlanePortItem {
         name: "position / takeoff / waypoint controllers",
-        status: PortStatus::Remaining,
-        note: "vtol_position_controller / takeoff_controller / waypoint_controller (not stubbed)",
+        status: PortStatus::ThisSlice,
+        note: "position_controller.rs vtol_position_controller / takeoff_controller / waypoint_controller",
     },
     QuadPlanePortItem {
         name: "land-sequence predicates",
@@ -337,10 +337,7 @@ impl QuadPlane {
     /// packs the same bits from [`crate::logging::QTunView`].
     #[must_use]
     pub const fn leftover_qtun_assist_latch_flags(&self) -> u8 {
-        leftover_qtun_assist_latch_flags(
-            self.force_fw_control_recovery,
-            self.in_spin_recovery,
-        )
+        leftover_qtun_assist_latch_flags(self.force_fw_control_recovery, self.in_spin_recovery)
     }
 
     /// Upstream `QuadPlane::show_vtol_view` leftover recovery gate.
@@ -615,9 +612,9 @@ mod tests {
     fn table_covers_main_surfaces_and_leftover_api() {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
-        assert_eq!(on_main, 12);
+        assert_eq!(on_main, 13);
         assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 6);
+        assert_eq!(remaining, 5);
         assert!(completeness_has(
             "setup / Q_FRAME_CLASS",
             PortStatus::OnMain
@@ -633,13 +630,17 @@ mod tests {
         ));
         assert!(completeness_has(
             "assisted-flight latch extras",
+            PortStatus::OnMain
+        ));
+        assert!(completeness_has(
+            "position / takeoff / waypoint controllers",
             PortStatus::ThisSlice
         ));
         assert!(completeness_has("logging", PortStatus::OnMain));
         assert!(completeness_has("AUTO mission VTOL", PortStatus::OnMain));
-        assert_eq!(on_main_items().count(), 12);
+        assert_eq!(on_main_items().count(), 13);
         assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 6);
+        assert_eq!(remaining_items().count(), 5);
     }
 
     #[test]
