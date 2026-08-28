@@ -129,6 +129,7 @@ use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
 use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
 use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
+use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -434,6 +435,18 @@ pub struct PlaneMainLoop {
     pub loiter_ccw: bool,
     /// Stick mixing plus ENABLE_LOITER_ALT_CONTROL: FBWB-style altitude.
     pub loiter_alt_control: bool,
+    /// Upstream ModeGuided::active_radius_m. Zero uses WP_LOITER_RAD.
+    pub guided_active_radius_m: u16,
+    /// Whether GUIDED enter/navigate glue ran this tick.
+    pub guided_mode_nav_applied: bool,
+    /// Whether ModeGuided::_enter armed set_guided_WP this tick.
+    pub guided_mode_started: bool,
+    /// Whether GUIDED navigate is allowed to call update_loiter this tick.
+    pub guided_mode_loiter_allowed: bool,
+    /// active_radius_m applied this tick (0 after enter).
+    pub guided_loiter_radius_m: u16,
+    /// GUIDED loiter direction applied this tick.
+    pub guided_loiter_ccw: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -824,6 +837,12 @@ impl Default for PlaneMainLoop {
             loiter_radius_m: 0,
             loiter_ccw: false,
             loiter_alt_control: false,
+            guided_active_radius_m: 0,
+            guided_mode_nav_applied: false,
+            guided_mode_started: false,
+            guided_mode_loiter_allowed: false,
+            guided_loiter_radius_m: 0,
+            guided_loiter_ccw: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1322,6 +1341,28 @@ impl PlaneMainLoop {
             self.loiter_radius_m = loiter_nav.loiter_radius_m;
             if loiter_nav.direction_set {
                 self.loiter_ccw = loiter_nav.loiter_ccw;
+            }
+        }
+
+        let guided_nav = guided_mode_nav_tick(&GuidedModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            active_radius_m: self.guided_active_radius_m,
+            wp_loiter_rad_m: self.wp_loiter_rad_m,
+            guided_ccw: self.guided_loiter_ccw,
+        });
+        self.guided_mode_nav_applied = guided_nav.applied;
+        self.guided_mode_started = guided_nav.started;
+        self.guided_mode_loiter_allowed = guided_nav.allow_loiter;
+        if guided_nav.applied {
+            self.guided_loiter_radius_m = guided_nav.loiter_radius_m;
+            self.guided_active_radius_m = guided_nav.loiter_radius_m;
+            if guided_nav.direction_set {
+                self.guided_loiter_ccw = guided_nav.loiter_ccw;
+            }
+            if guided_nav.clear_throttle_passthru {
+                self.guided_throttle_passthru = false;
             }
         }
 

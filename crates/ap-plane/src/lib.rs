@@ -87,6 +87,7 @@ pub mod thermal_mode_hookup;
 pub mod auto_mode_hookup;
 pub mod rtl_mode_hookup;
 pub mod loiter_mode_hookup;
+pub mod guided_mode_hookup;
 pub mod mode_transition_throttle_hookup;
 pub mod mode_table_hookup;
 pub mod servo_mix;
