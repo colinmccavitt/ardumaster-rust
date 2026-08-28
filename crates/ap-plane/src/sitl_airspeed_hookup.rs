@@ -53,6 +53,8 @@ pub struct SitlAirspeedPublish {
     pub health: AirspeedHealthFlags,
     /// Primary instance pitot ratio, upstream `ARSPD_RATIO`.
     pub ratio: f32,
+    /// Whether TAS is used for TECS/nav, upstream `ARSPD_USE`.
+    pub use_airspeed: bool,
 }
 
 impl SitlAirspeedHookup {
@@ -83,6 +85,14 @@ impl SitlAirspeedHookup {
         let mut params = self.params;
         params.airspeed1.ratio = ratio;
         params.airspeed2.ratio = ratio;
+        self.apply_airspeed_params(params);
+    }
+
+    /// Set `ARSPD_USE` on every enabled instance.
+    pub fn set_use_airspeed(&mut self, use_airspeed: u8) {
+        let mut params = self.params;
+        params.airspeed1.use_airspeed = use_airspeed;
+        params.airspeed2.use_airspeed = use_airspeed;
         self.apply_airspeed_params(params);
     }
 
@@ -123,6 +133,7 @@ impl SitlAirspeedHookup {
             healthy,
             health,
             ratio,
+            use_airspeed: self.cluster.primary_use_for_control(),
         }
     }
 }

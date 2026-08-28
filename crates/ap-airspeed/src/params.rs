@@ -16,6 +16,8 @@ pub struct AirspeedInstanceParams {
     pub skip_cal: bool,
     /// Pitot tube ratio, upstream `ARSPD_RATIO`.
     pub ratio: f32,
+    /// Use TAS for TECS/nav, upstream `ARSPD_USE`.
+    pub use_airspeed: u8,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -25,6 +27,7 @@ impl Default for AirspeedInstanceParams {
             offset_mps: 0.0,
             skip_cal: false,
             ratio: ARSPD_RATIO_DEFAULT,
+            use_airspeed: crate::sitl::ARSPD_USE_DEFAULT,
         }
     }
 }
@@ -37,6 +40,7 @@ impl AirspeedInstanceParams {
             offset_mps: self.offset_mps,
             skip_cal: self.skip_cal,
             ratio: self.ratio,
+            use_airspeed: self.use_airspeed,
         }
     }
 }
@@ -85,6 +89,16 @@ impl AirspeedParams {
             self.airspeed1.ratio
         } else {
             self.airspeed2.ratio
+        }
+    }
+
+    /// Primary instance `ARSPD_USE` / `ARSPD2_USE`.
+    #[must_use]
+    pub fn primary_use_airspeed(&self) -> u8 {
+        if self.primary == 0 {
+            self.airspeed1.use_airspeed
+        } else {
+            self.airspeed2.use_airspeed
         }
     }
 }

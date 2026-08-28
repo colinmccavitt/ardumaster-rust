@@ -13,6 +13,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert!(!params.airspeed1.disabled);
     assert!((params.airspeed1.ratio - 2.0).abs() < 1e-6);
     assert!((params.primary_ratio() - 2.0).abs() < 1e-6);
+    assert_eq!(params.airspeed1.use_airspeed, 1);
+    assert_eq!(params.primary_use_airspeed(), 1);
 }
 
 #[test]
@@ -36,12 +38,14 @@ fn instance_params_apply_to_sitl_config() {
         offset_mps: 1.5,
         skip_cal: true,
         ratio: 1.0,
+        use_airspeed: 0,
     }
     .apply_to_config();
     assert!(cfg.disabled);
     assert!((cfg.offset_mps - 1.5).abs() < 1e-6);
     assert!(cfg.skip_cal);
     assert!((cfg.ratio - 1.0).abs() < 1e-6);
+    assert_eq!(cfg.use_airspeed, 0);
 }
 
 #[test]

@@ -91,7 +91,7 @@ use crate::airspeed_offset_calibration_hookup::{
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
-use ap_airspeed::sitl::ARSPD_RATIO_DEFAULT;
+use ap_airspeed::sitl::{tas_for_nav, ARSPD_RATIO_DEFAULT, ARSPD_USE_DEFAULT};
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
@@ -241,6 +241,12 @@ pub struct PlaneMainLoop {
     pub airspeed_offset_calibrated: bool,
     /// Primary pitot tube ratio, upstream `ARSPD_RATIO`.
     pub airspeed_ratio: f32,
+    /// Primary `ARSPD_USE`, upstream `AP_Airspeed` use param.
+    pub airspeed_use: u8,
+    /// Whether TAS is used for TECS/nav, upstream `AP_Airspeed::use()`.
+    pub airspeed_use_for_control: bool,
+    /// Last TECS `use_airspeed` feed, upstream `TECS_controller.use_airspeed()`.
+    pub last_tecs_use_airspeed: bool,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
     pub mag_sample: Option<MagSampleState>,
     /// Whether the SITL compass backend is healthy, upstream `AP_Compass::healthy()`.
@@ -544,6 +550,9 @@ impl Default for PlaneMainLoop {
             airspeed_calibrate_requested: false,
             airspeed_offset_calibrated: false,
             airspeed_ratio: ARSPD_RATIO_DEFAULT,
+            airspeed_use: ARSPD_USE_DEFAULT,
+            airspeed_use_for_control: true,
+            last_tecs_use_airspeed: false,
             baro_sample: None,
             mag_sample: None,
             compass_healthy: false,
@@ -755,6 +764,9 @@ impl Default for PlaneMainLoop {
 impl PlaneMainLoop {
     /// Whether TECS should use the airspeed throttle path, upstream `use_airspeed()`.
     fn tecs_use_airspeed(&self) -> bool {
+        if !self.airspeed_use_for_control {
+            return false;
+        }
         if self.sitl_airspeed.is_some() {
             self.airspeed_healthy && self.airspeed_tas > 1.0
         } else {
@@ -921,6 +933,11 @@ impl PlaneMainLoop {
                 .backend()
                 .map(|backend| backend.config().ratio)
                 .unwrap_or(ARSPD_RATIO_DEFAULT);
+            self.airspeed_use = airspeed
+                .backend()
+                .map(|backend| backend.config().use_airspeed)
+                .unwrap_or(ARSPD_USE_DEFAULT);
+            self.airspeed_use_for_control = out.use_airspeed;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
@@ -943,7 +960,7 @@ impl PlaneMainLoop {
             self.yaw_ctx,
             self.gps_yaw,
             self.gps_velocity,
-            self.airspeed_tas,
+            tas_for_nav(self.airspeed_tas, self.airspeed_use_for_control),
             self.eas2tas,
             &mut self.ahrs.last_gps_fix_ms,
         );
@@ -1057,6 +1074,7 @@ impl PlaneMainLoop {
             .map(|s| s.have_sample)
             .unwrap_or(self.baro_healthy);
         let use_airspeed = self.tecs_use_airspeed();
+        self.last_tecs_use_airspeed = use_airspeed;
         let tecs_out = altitude_tecs_feed_tick(
             &mut self.tecs,
             &AltitudeTecsFeedInputs {

@@ -16,6 +16,9 @@ pub const SITL_AIRSPEED_MAX_INSTANCES: usize = 2;
 /// Upstream `ARSPD_RATIO` default (pitot tube ratio).
 pub const ARSPD_RATIO_DEFAULT: f32 = 2.0;
 
+/// SITL plane default for `ARSPD_USE` (param table default is 0; SITL enables Use).
+pub const ARSPD_USE_DEFAULT: u8 = 1;
+
 /// Pitot sample from one backend read, upstream `get_airspeed()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AirspeedSampleState {
@@ -35,6 +38,8 @@ pub struct SitlAirspeedConfig {
     pub skip_cal: bool,
     /// Pitot tube ratio, upstream `ARSPD_RATIO`.
     pub ratio: f32,
+    /// Use TAS for TECS/nav, upstream `ARSPD_USE` (0=DoNotUse, 1=Use).
+    pub use_airspeed: u8,
 }
 
 impl Default for SitlAirspeedConfig {
@@ -44,6 +49,7 @@ impl Default for SitlAirspeedConfig {
             offset_mps: 0.0,
             skip_cal: false,
             ratio: ARSPD_RATIO_DEFAULT,
+            use_airspeed: ARSPD_USE_DEFAULT,
         }
     }
 }
@@ -64,6 +70,22 @@ pub fn pitot_tas_from_body(airspeed_bf: Vector3f) -> f32 {
 pub fn apply_pitot_ratio(tas_mps: f32, ratio: f32) -> f32 {
     if ratio > 0.0 {
         (tas_mps * (ratio / ARSPD_RATIO_DEFAULT)).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// Upstream `AP_Airspeed::use()`: enabled instance with `ARSPD_USE != 0`.
+#[must_use]
+pub fn use_airspeed_for_control(disabled: bool, use_airspeed: u8) -> bool {
+    !disabled && use_airspeed != 0
+}
+
+/// TAS consumed by TECS/AHRS nav: zero when `ARSPD_USE` is disabled.
+#[must_use]
+pub fn tas_for_nav(tas_mps: f32, use_for_control: bool) -> f32 {
+    if use_for_control {
+        tas_mps
     } else {
         0.0
     }
@@ -139,6 +161,16 @@ impl SitlAirspeedBackend {
 
     pub fn set_ratio(&mut self, ratio: f32) {
         self.config.ratio = ratio;
+    }
+
+    pub fn set_use_airspeed(&mut self, use_airspeed: u8) {
+        self.config.use_airspeed = use_airspeed;
+    }
+
+    /// Upstream `AP_Airspeed::use()` for this instance.
+    #[must_use]
+    pub fn use_for_control(&self) -> bool {
+        use_airspeed_for_control(self.config.disabled, self.config.use_airspeed)
     }
 
     /// Latch current raw TAS as the pitot offset, upstream `AP_Airspeed::calibrate()`.
@@ -285,6 +317,20 @@ impl SitlAirspeedCluster {
         for i in 0..self.instance_count as usize {
             self.backends[i].set_ratio(ratio);
         }
+    }
+
+    pub fn set_use_airspeed_all(&mut self, use_airspeed: u8) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_use_airspeed(use_airspeed);
+        }
+    }
+
+    /// Primary instance `AP_Airspeed::use()`.
+    #[must_use]
+    pub fn primary_use_for_control(&self) -> bool {
+        self.backend(self.primary)
+            .map(SitlAirspeedBackend::use_for_control)
+            .unwrap_or(false)
     }
 
     pub fn timer_tick_all(
@@ -452,5 +498,21 @@ mod tests {
         assert!(backend.timer_tick(Vector3f::new(20.0, 0.0, 0.0), 1.0, 10));
         assert!((backend.state().tas_mps - 10.0).abs() < 1e-6);
         assert!((backend.state().eas_mps - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn use_airspeed_zero_disables_control_gate() {
+        assert!(use_airspeed_for_control(false, 1));
+        assert!(!use_airspeed_for_control(false, 0));
+        assert!(!use_airspeed_for_control(true, 1));
+        assert_eq!(tas_for_nav(20.0, false), 0.0);
+        assert!((tas_for_nav(20.0, true) - 20.0).abs() < 1e-6);
+        let mut backend = SitlAirspeedBackend::default();
+        assert!(backend.use_for_control());
+        backend.set_use_airspeed(0);
+        assert!(!backend.use_for_control());
+        assert!(backend.timer_tick(Vector3f::new(16.0, 0.0, 0.0), 1.0, 10));
+        assert!(backend.healthy());
+        assert!((backend.state().tas_mps - 16.0).abs() < 1e-6);
     }
 }
