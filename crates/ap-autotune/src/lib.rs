@@ -9,21 +9,28 @@
 //! `start` / `stop`) live in [`state`]. The `AUTOTUNE_LEVEL` aggressiveness
 //! table lives in [`level`]. The roll/pitch `ATGains` snapshot
 //! (`save_gains` / `restore_gains`) lives in [`gains`]. Saturation /
-//! overshoot `update_gains` lives in [`update`]. This slice adds
-//! `AUTOTUNE_OPTIONS` (`has_option` FLTD/FLTT gates) and the
-//! `AUTOTUNE_AXES` single-axis start mask (roll only / pitch only /
-//! both) in [`options`]. I-term / FF coupling comes later.
+//! overshoot `update_gains` lives in [`update`]. `AUTOTUNE_OPTIONS`
+//! (`has_option` FLTD/FLTT gates) and the `AUTOTUNE_AXES` single-axis
+//! start mask live in [`options`]. I-term / FF coupling
+//! (`AUTOTUNE_INCREASE_FF_STEP` / `DECREASE_FF_STEP`, roll `min(FF, P)`,
+//! IMAX clamp) lives in [`ff`].
 //! `ATGains` rate/tau fields already live on `ap-control::RateGains`
 //! (FW-017); they are not rewritten here.
 
 #![no_std]
 
+pub mod ff;
 pub mod gains;
 pub mod level;
 pub mod options;
 pub mod state;
 pub mod update;
 
+pub use ff::{
+    apply_ff_i, constrain_ff_step, constrain_imax, couple_ff_i, couple_i,
+    AUTOTUNE_DECREASE_FF_STEP, AUTOTUNE_INCREASE_FF_STEP, AUTOTUNE_I_RATIO, AUTOTUNE_MAX_IMAX,
+    AUTOTUNE_MIN_IMAX, TRIM_TCONST,
+};
 pub use gains::{apply_stop_gains, should_save_on_stop, snapshot_gains, AtGains};
 pub use level::{
     aggressiveness_target, constrain_autotune_level, tuning_row, LevelTarget, TuningRow,
@@ -32,8 +39,8 @@ pub use level::{
 pub use options::{
     apply_filter_options, fltd_hz, fltt_hz, AutotuneAxes, AutotuneAxis, AutotuneOption,
     AutotuneOptions, FilterUpdate, AUTOTUNE_AXES_DEFAULT, AUTOTUNE_AXIS_PITCH, AUTOTUNE_AXIS_ROLL,
-    AUTOTUNE_AXIS_YAW, AUTOTUNE_OPTION_DISABLE_FLTD_UPDATE, AUTOTUNE_OPTION_DISABLE_FLTT_UPDATE,
-    AUTOTUNE_OPTIONS_DEFAULT,
+    AUTOTUNE_AXIS_YAW, AUTOTUNE_OPTIONS_DEFAULT, AUTOTUNE_OPTION_DISABLE_FLTD_UPDATE,
+    AUTOTUNE_OPTION_DISABLE_FLTT_UPDATE,
 };
 pub use state::{
     in_att_demand, next_demand_state, rate_threshold1, rate_threshold2, AtState, AtType, AutoTune,
