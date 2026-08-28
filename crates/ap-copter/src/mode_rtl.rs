@@ -5,8 +5,9 @@
 //! home, loiter, then either descend to `RTL_ALT_FINAL` or land. This file
 //! owns the init that parks the machine on [`RtlSubMode::Starting`] and the
 //! run that advances that machine. The path geometry (`build_path` /
-//! `compute_return_target`) and the LAND / FINAL_DESCENT controllers are
-//! not here — they are later leftovers. What is here is *which state we
+//! `compute_return_target`) and the LAND controller are not here — they
+//! are later leftovers. Descent start/run and restart-without-terrain
+//! are here. What is here is *which state we
 //! are in* and *which runner that state calls*.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
@@ -49,6 +50,7 @@
 //! flying leftovers and then the timer / 2-degree armed-yaw gate.
 
 use crate::auto_yaw::YawMode;
+use crate::land_horizontal::land_cancelled_by_throttle;
 use crate::mode_brake::is_disarmed_or_landed;
 use ap_math::scalar::{radians, wrap_pi};
 use ap_motors::spool::DesiredSpoolState;
@@ -133,7 +135,7 @@ pub enum RtlRunner {
     ClimbReturn,
     /// `loiterathome_run`.
     LoiterAtHome,
-    /// `descent_run`. Not expanded in this leftover.
+    /// `descent_run`. See [`rtl_descent_run`].
     FinalDescent,
     /// `land_run(disarm_on_land)`. Not expanded in this leftover.
     Land {
@@ -562,5 +564,175 @@ pub fn rtl_run(view: &RtlRunView) -> RtlRun {
         loiter_start_ms,
         runner: Some(runner),
         wp,
+    }
+}
+
+/// Within this many metres of `RTL_ALT_FINAL` the descent stage is done.
+///
+/// Upstream compares centimetres converted with `* 0.01` against a
+/// 20 cm window. The leftover takes metres on both sides.
+pub const RTL_DESCENT_COMPLETE_M: f32 = 0.2;
+
+/// Leftover of `ModeRTL::restart_without_terrain`.
+///
+/// The climb-return runner already applies this when the return
+/// destination setter fails. The function is the leftover itself: terrain
+/// following is forbidden, the machine is parked back on
+/// [`RtlSubMode::Starting`] with `_state_complete` still true so the same
+/// tick fallthrough-climbs a no-terrain path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RtlRestart {
+    /// Always false. Terrain following is done for this RTL.
+    pub terrain_following_allowed: bool,
+    /// Always [`RtlSubMode::Starting`].
+    pub state: RtlSubMode,
+    /// Always true, so `run`'s first switch rebuilds the path immediately.
+    pub state_complete: bool,
+}
+
+/// Upstream `ModeRTL::restart_without_terrain`.
+#[must_use]
+pub const fn rtl_restart_without_terrain() -> RtlRestart {
+    RtlRestart {
+        terrain_following_allowed: false,
+        state: RtlSubMode::Starting,
+        state_complete: true,
+    }
+}
+
+/// Leftover of `ModeRTL::descent_start`.
+///
+/// The first-switch walk in [`rtl_run`] already parks `_state` on
+/// [`RtlSubMode::FinalDescent`]. This leftover is the controller seed
+/// that walk does not own: initialise D at the current stopping point
+/// and hold yaw. Landing-gear deploy is not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RtlDescentStart {
+    /// Always [`RtlSubMode::FinalDescent`].
+    pub state: RtlSubMode,
+    /// Always false.
+    pub state_complete: bool,
+    /// `D_init_controller_stopping_point`.
+    pub d_init_stopping_point: bool,
+    /// Always [`YawMode::Hold`].
+    pub yaw: YawMode,
+}
+
+/// Upstream `ModeRTL::descent_start`.
+#[must_use]
+pub const fn rtl_descent_start() -> RtlDescentStart {
+    RtlDescentStart {
+        state: RtlSubMode::FinalDescent,
+        state_complete: false,
+        d_init_stopping_point: true,
+        yaw: YawMode::Hold,
+    }
+}
+
+/// Vehicle view `ModeRTL::descent_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct RtlDescentView {
+    /// `motors->armed()`.
+    pub armed: bool,
+    /// `copter.ap.auto_armed`.
+    pub auto_armed: bool,
+    /// `copter.ap.land_complete`.
+    pub land_complete: bool,
+    /// `rc().has_valid_input()`.
+    pub has_valid_input: bool,
+    /// `g.throttle_behavior`.
+    pub throttle_behavior: i32,
+    /// `copter.rc_throttle_control_in_filter.get()`.
+    pub filtered_throttle_control_in: f32,
+    /// `g.land_repositioning`.
+    pub land_repositioning: bool,
+    /// `copter.ap.land_repo_active` on entry.
+    pub land_repo_active: bool,
+    /// Pilot reposition velocity is zero.
+    pub pilot_velocity_is_zero: bool,
+    /// `rtl_path.descent_target.alt * 0.01`, metres.
+    pub descent_target_alt_m: f32,
+    /// `pos_control->get_pos_estimate_U_m()`.
+    pub pos_u_m: f32,
+}
+
+impl RtlDescentView {
+    /// Armed, auto-armed, airborne, no pilot intervention, 10 m still to go.
+    #[must_use]
+    pub const fn descending() -> Self {
+        Self {
+            armed: true,
+            auto_armed: true,
+            land_complete: false,
+            has_valid_input: true,
+            throttle_behavior: 0,
+            filtered_throttle_control_in: 0.0,
+            land_repositioning: false,
+            land_repo_active: false,
+            pilot_velocity_is_zero: true,
+            descent_target_alt_m: 10.0,
+            pos_u_m: 20.0,
+        }
+    }
+}
+
+/// Leftover of one `ModeRTL::descent_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RtlDescentRun {
+    /// `is_disarmed_or_landed` fired; `make_safe_ground_handling` and return.
+    pub safe_ground: bool,
+    /// Raised stick asked Loiter, then AltHold, with `THROTTLE_LAND_ESCAPE`.
+    pub cancel_escape: bool,
+    /// `land_repo_active` after this tick.
+    pub land_repo_active: bool,
+    /// Spool ask on the flying path. `None` on the ground path.
+    pub desired_spool: Option<DesiredSpoolState>,
+    /// `input_vel_accel_NE_m` plus `NE_update_controller` on the flying path.
+    pub input_vel_ne: bool,
+    /// `D_set_alt_target_with_slew_m` plus `D_update_controller`.
+    pub d_slew: bool,
+    /// Within [`RTL_DESCENT_COMPLETE_M`] of the target. False on the ground
+    /// path — the 20 cm check does not run before the early return.
+    pub state_complete: bool,
+}
+
+/// The 20 cm FINAL_DESCENT arrival gate.
+#[must_use]
+pub fn rtl_descent_complete(descent_target_alt_m: f32, pos_u_m: f32) -> bool {
+    libm::fabsf(descent_target_alt_m - pos_u_m) < RTL_DESCENT_COMPLETE_M
+}
+
+/// Upstream `ModeRTL::descent_run`.
+#[must_use]
+pub fn rtl_descent_run(view: &RtlDescentView) -> RtlDescentRun {
+    if is_disarmed_or_landed(view.armed, view.auto_armed, view.land_complete) {
+        return RtlDescentRun {
+            safe_ground: true,
+            cancel_escape: false,
+            land_repo_active: view.land_repo_active,
+            desired_spool: None,
+            input_vel_ne: false,
+            d_slew: false,
+            state_complete: false,
+        };
+    }
+
+    let cancel_escape = land_cancelled_by_throttle(
+        view.throttle_behavior,
+        view.filtered_throttle_control_in,
+        view.has_valid_input,
+    );
+
+    let land_repo_active = view.land_repo_active
+        || (view.has_valid_input && view.land_repositioning && !view.pilot_velocity_is_zero);
+
+    RtlDescentRun {
+        safe_ground: false,
+        cancel_escape,
+        land_repo_active,
+        desired_spool: Some(DesiredSpoolState::ThrottleUnlimited),
+        input_vel_ne: true,
+        d_slew: true,
+        state_complete: rtl_descent_complete(view.descent_target_alt_m, view.pos_u_m),
     }
 }

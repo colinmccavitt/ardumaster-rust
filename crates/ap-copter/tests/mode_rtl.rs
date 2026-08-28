@@ -2,11 +2,12 @@
 
 use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_rtl::{
-    rtl_alt_type, rtl_init, rtl_is_landing, rtl_loiter_complete, rtl_loiter_yaw_aligned, rtl_run,
-    rtl_mode_flags, RtlAltType, RtlInitView, RtlRunner, RtlRunView, RtlSubMode,
-    MODE_NUMBER_LAND, MODE_NUMBER_RTL, MODE_REASON_TERRAIN_FAILSAFE, RTL_ALT_FINAL_M_DEFAULT,
-    RTL_ALT_M_DEFAULT, RTL_ALT_MIN_M, RTL_CLIMB_MIN_M_DEFAULT, RTL_LOITER_TIME_MS,
-    RTL_LOITER_YAW_ALIGN_DEG,
+    rtl_alt_type, rtl_descent_complete, rtl_descent_run, rtl_descent_start, rtl_init,
+    rtl_is_landing, rtl_loiter_complete, rtl_loiter_yaw_aligned, rtl_mode_flags,
+    rtl_restart_without_terrain, rtl_run, RtlAltType, RtlDescentView, RtlInitView, RtlRunView,
+    RtlRunner, RtlSubMode, MODE_NUMBER_LAND, MODE_NUMBER_RTL, MODE_REASON_TERRAIN_FAILSAFE,
+    RTL_ALT_FINAL_M_DEFAULT, RTL_ALT_MIN_M, RTL_ALT_M_DEFAULT, RTL_CLIMB_MIN_M_DEFAULT,
+    RTL_DESCENT_COMPLETE_M, RTL_LOITER_TIME_MS, RTL_LOITER_YAW_ALIGN_DEG,
 };
 use ap_math::scalar::radians;
 use ap_motors::spool::DesiredSpoolState;
@@ -22,6 +23,7 @@ fn constants_match_upstream_defines() {
     assert_eq!(MODE_NUMBER_RTL, 6);
     assert_eq!(MODE_NUMBER_LAND, 9);
     assert_eq!(MODE_REASON_TERRAIN_FAILSAFE, 11);
+    assert_eq!(RTL_DESCENT_COMPLETE_M.to_bits(), 0.2f32.to_bits());
 }
 
 #[test]
@@ -103,10 +105,7 @@ fn starting_complete_builds_path_and_climbs() {
     assert_eq!(out.runner, Some(RtlRunner::ClimbReturn));
     let wp = out.wp.expect("climb runner");
     assert!(!wp.safe_ground);
-    assert_eq!(
-        wp.desired_spool,
-        Some(DesiredSpoolState::ThrottleUnlimited)
-    );
+    assert_eq!(wp.desired_spool, Some(DesiredSpoolState::ThrottleUnlimited));
     assert!(wp.update_wpnav);
     assert!(wp.update_d);
 }
@@ -306,4 +305,94 @@ fn submode_numbers_are_declaration_order() {
     assert_eq!(RtlSubMode::LoiterAtHome.as_number(), 3);
     assert_eq!(RtlSubMode::FinalDescent.as_number(), 4);
     assert_eq!(RtlSubMode::Land.as_number(), 5);
+}
+
+#[test]
+fn restart_without_terrain_parks_starting_complete() {
+    let out = rtl_restart_without_terrain();
+    assert!(!out.terrain_following_allowed);
+    assert_eq!(out.state, RtlSubMode::Starting);
+    assert!(out.state_complete);
+}
+
+#[test]
+fn descent_start_seeds_d_at_the_stopping_point() {
+    let out = rtl_descent_start();
+    assert_eq!(out.state, RtlSubMode::FinalDescent);
+    assert!(!out.state_complete);
+    assert!(out.d_init_stopping_point);
+    assert_eq!(out.yaw, YawMode::Hold);
+}
+
+#[test]
+fn descent_complete_is_a_twenty_centimetre_window() {
+    assert!(rtl_descent_complete(10.0, 10.0));
+    assert!(rtl_descent_complete(10.0, 10.19));
+    assert!(rtl_descent_complete(10.0, 9.81));
+    // The gate is strict `<`, not `<=`. Compare against the constant
+    // itself so the boundary is a representable difference.
+    assert!(!rtl_descent_complete(0.0, RTL_DESCENT_COMPLETE_M));
+    assert!(!rtl_descent_complete(10.0, 10.3));
+    assert!(!rtl_descent_complete(10.0, 9.7));
+}
+
+#[test]
+fn descent_run_flies_slew_and_is_not_done_far_from_target() {
+    let out = rtl_descent_run(&RtlDescentView::descending());
+    assert!(!out.safe_ground);
+    assert!(!out.cancel_escape);
+    assert!(!out.land_repo_active);
+    assert_eq!(
+        out.desired_spool,
+        Some(DesiredSpoolState::ThrottleUnlimited)
+    );
+    assert!(out.input_vel_ne);
+    assert!(out.d_slew);
+    assert!(!out.state_complete);
+}
+
+#[test]
+fn descent_run_completes_inside_the_window() {
+    let mut view = RtlDescentView::descending();
+    view.pos_u_m = 10.05;
+    let out = rtl_descent_run(&view);
+    assert!(out.state_complete);
+}
+
+#[test]
+fn descent_run_grounds_before_pilot_or_complete_check() {
+    let mut view = RtlDescentView::descending();
+    view.land_complete = true;
+    view.pos_u_m = 10.0;
+    view.throttle_behavior = 2;
+    view.filtered_throttle_control_in = 800.0;
+    let out = rtl_descent_run(&view);
+    assert!(out.safe_ground);
+    assert!(!out.cancel_escape);
+    assert!(!out.state_complete);
+    assert_eq!(out.desired_spool, None);
+}
+
+#[test]
+fn descent_run_throttle_cancel_is_loiter_then_althold() {
+    let mut view = RtlDescentView::descending();
+    view.throttle_behavior = 2;
+    view.filtered_throttle_control_in = 701.0;
+    let out = rtl_descent_run(&view);
+    assert!(out.cancel_escape);
+    assert!(out.input_vel_ne);
+}
+
+#[test]
+fn descent_run_repositioning_latches_repo_and_does_not_clear_it() {
+    let mut view = RtlDescentView::descending();
+    view.land_repositioning = true;
+    view.pilot_velocity_is_zero = false;
+    let out = rtl_descent_run(&view);
+    assert!(out.land_repo_active);
+
+    view.pilot_velocity_is_zero = true;
+    view.land_repo_active = true;
+    let held = rtl_descent_run(&view);
+    assert!(held.land_repo_active);
 }

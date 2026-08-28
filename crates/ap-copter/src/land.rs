@@ -135,3 +135,23 @@ pub fn land_descent(
         ignore_descent_limit,
     }
 }
+
+/// `LAND_WITH_DELAY_MS` (`config.h:328`). Failsafe land-with-pause hold.
+///
+/// Four seconds between `set_mode_land_with_pause` and the first descent
+/// demand. The clock starts at `ModeLand::init` (`land_start_time`), and
+/// the pause flag is raised *after* init, so the hold is a full four
+/// seconds of already-in-Land flight rather than four seconds that
+/// include the mode change.
+pub const LAND_WITH_DELAY_MS: u32 = 4_000;
+
+/// Whether the failsafe pause has expired this tick.
+///
+/// Upstream is `land_pause && millis() - land_start_time >= LAND_WITH_DELAY_MS`.
+/// Time uses unsigned wrap, C++ `uint32_t`. Equality fires. The pause is
+/// only consulted on the flying path; a landed aircraft keeps the flag
+/// until it is flying again.
+#[must_use]
+pub const fn land_pause_expired(land_pause: bool, now_ms: u32, land_start_ms: u32) -> bool {
+    land_pause && now_ms.wrapping_sub(land_start_ms) >= LAND_WITH_DELAY_MS
+}

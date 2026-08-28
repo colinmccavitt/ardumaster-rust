@@ -230,3 +230,17 @@ fn a_paused_descent_commands_nothing() {
         }
     }
 }
+
+#[test]
+fn land_pause_expires_at_equality_and_wraps() {
+    use ap_copter::land::{land_pause_expired, LAND_WITH_DELAY_MS};
+
+    assert!(!land_pause_expired(false, 10_000, 0));
+    assert!(!land_pause_expired(true, LAND_WITH_DELAY_MS - 1, 0));
+    assert!(land_pause_expired(true, LAND_WITH_DELAY_MS, 0));
+    assert!(land_pause_expired(
+        true,
+        LAND_WITH_DELAY_MS.wrapping_sub(1),
+        u32::MAX
+    ));
+}
