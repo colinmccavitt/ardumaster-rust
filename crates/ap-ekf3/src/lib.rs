@@ -16,6 +16,8 @@
 //! fusion enable (`SelectFlowFusion`, `EstimateTerrainOffset` quality
 //! gates) lives in [`rng_flow_fusion`]. Covariance prediction
 //! (process-noise inject + `P` symmetry) lives in [`covariance`].
+//! Output getters (`getPosNE`, `getVelNED`, `getEulerAngles`) live
+//! in [`output_observer`].
 //! The 3-axis Kalman mag update is not here.
 //!
 //! # Twenty-four states, one vector
@@ -44,7 +46,8 @@
 //! enable is [`pos_vel_fusion`]; TAS / air-data enable is
 //! [`air_data_fusion`]; height / baro enable is [`height_fusion`];
 //! range-finder / optical-flow enable is [`rng_flow_fusion`];
-//! covariance prediction is [`covariance`].
+//! covariance prediction is [`covariance`];
+//! output getters are [`output_observer`].
 
 #![no_std]
 
@@ -56,6 +59,7 @@ pub mod height_fusion;
 pub mod mag_fusion;
 pub mod measurements;
 pub mod pos_vel_fusion;
+pub mod output_observer;
 pub mod rng_flow_fusion;
 
 pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
@@ -75,11 +79,14 @@ pub use measurements::{
     IMU_BUFFER_CAPACITY,
 };
 pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
+pub use output_observer::OutputObserver;
 pub use rng_flow_fusion::{
     FlowFuseSel, FlowUse, RngFlowFusion, RngFuseSel, DCM33_FLOW_MIN, FLOW_INNOV_GATE_DEFAULT,
     FLOW_USE_DEFAULT, MAX_FLOW_RATE_DEFAULT, RNG_INNOV_GATE_DEFAULT,
 };
 
+use ap_math::vector2::Vector2;
+use ap_math::vector3::Vector3;
 use ap_math::Ftype;
 
 /// Length of the EKF3 state vector, upstream `Vector24` / `statesArray`.
@@ -213,6 +220,8 @@ pub struct NavEkf3Core {
     rng_flow: RngFlowFusion,
     /// State covariance, upstream `P` / `CovariancePrediction`.
     covariance: Covariance,
+    /// Output publisher, upstream `AP_NavEKF3_Outputs.cpp`.
+    output: OutputObserver,
 }
 
 impl Default for NavEkf3Core {
@@ -237,6 +246,7 @@ impl NavEkf3Core {
             height: HeightFusion::new(),
             rng_flow: RngFlowFusion::new(),
             covariance: Covariance::new(),
+            output: OutputObserver::new(),
         }
     }
 
@@ -288,6 +298,7 @@ impl NavEkf3Core {
         self.height.reset();
         self.rng_flow.reset();
         self.covariance.covariance_init();
+        self.output.reset();
         true
     }
 
@@ -499,6 +510,54 @@ impl NavEkf3Core {
     pub fn covariance_prediction(&mut self) {
         self.covariance.covariance_prediction();
     }
+
+    /// Output publisher, upstream `getPosNE` / `getVelNED` / `getEulerAngles`.
+    #[must_use]
+    pub const fn output(&self) -> &OutputObserver {
+        &self.output
+    }
+
+    /// Mutable output so tests can reset the last-published snapshot.
+    pub fn output_mut(&mut self) -> &mut OutputObserver {
+        &mut self.output
+    }
+
+    /// Upstream `NavEKF3_core::getPosNE`.
+    pub fn get_pos_ne(&mut self) -> (Vector2<Ftype>, bool) {
+        self.output
+            .get_pos_ne(&self.states, self.control.aiding_mode())
+    }
+
+    /// Upstream `NavEKF3_core::getVelNED`.
+    pub fn get_vel_ned(&mut self) -> Vector3<Ftype> {
+        self.output.get_vel_ned(&self.states)
+    }
+
+    /// Upstream `NavEKF3_core::getEulerAngles`.
+    pub fn get_euler_angles(&mut self) -> Vector3<Ftype> {
+        self.output.get_euler_angles(&self.states)
+    }
+
+    /// Write pos / vel / attitude so tests can exercise the getters.
+    pub fn write_outputs_for_test(
+        &mut self,
+        pos_n: Ftype,
+        pos_e: Ftype,
+        vel_ned: Vector3<Ftype>,
+        roll: Ftype,
+        pitch: Ftype,
+        yaw: Ftype,
+    ) {
+        OutputObserver::write_pose_into_states(
+            &mut self.states,
+            pos_n,
+            pos_e,
+            vel_ned,
+            roll,
+            pitch,
+            yaw,
+        );
+    }
 }
 
 /// Frontend that owns the cores, upstream `NavEKF3`.
@@ -640,6 +699,48 @@ impl NavEkf3 {
         }
         for core in self.cores.iter_mut().take(self.num_cores as usize) {
             core.reset_gyro_bias();
+        }
+    }
+
+    /// Core at `index`, if that slot was instantiated (mutable).
+    pub fn core_mut(&mut self, index: usize) -> Option<&mut NavEkf3Core> {
+        if index < self.num_cores as usize {
+            self.cores.get_mut(index)
+        } else {
+            None
+        }
+    }
+
+    /// Upstream `NavEKF3::getPosNE`. Returns `(zero, false)` when no cores.
+    pub fn get_pos_ne(&mut self) -> (Vector2<Ftype>, bool) {
+        if self.num_cores == 0 {
+            return (Vector2::new(0.0 as Ftype, 0.0 as Ftype), false);
+        }
+        match self.cores.get_mut(0) {
+            Some(core) => core.get_pos_ne(),
+            None => (Vector2::new(0.0 as Ftype, 0.0 as Ftype), false),
+        }
+    }
+
+    /// Upstream `NavEKF3::getVelNED`. Zeros when no cores.
+    pub fn get_vel_ned(&mut self) -> Vector3<Ftype> {
+        if self.num_cores == 0 {
+            return Vector3::zero();
+        }
+        match self.cores.get_mut(0) {
+            Some(core) => core.get_vel_ned(),
+            None => Vector3::zero(),
+        }
+    }
+
+    /// Upstream `NavEKF3::getEulerAngles`. Zeros when no cores.
+    pub fn get_euler_angles(&mut self) -> Vector3<Ftype> {
+        if self.num_cores == 0 {
+            return Vector3::zero();
+        }
+        match self.cores.get_mut(0) {
+            Some(core) => core.get_euler_angles(),
+            None => Vector3::zero(),
         }
     }
 }
@@ -951,5 +1052,50 @@ mod tests {
             expected - upper
         };
         assert!(off_u < 1.0e-12 as Ftype);
+    }
+
+    fn near(a: Ftype, b: Ftype) {
+        let err = if a > b { a - b } else { b - a };
+        assert!(err < 1.0e-5 as Ftype, "{a} !~= {b}");
+    }
+
+    #[test]
+    fn frontend_output_getters_need_cores_then_publish_states() {
+        let mut ekf = NavEkf3::new();
+        let (ne, valid) = ekf.get_pos_ne();
+        assert!(!valid);
+        near(ne.x, 0.0 as Ftype);
+        near(ne.y, 0.0 as Ftype);
+        let vel = ekf.get_vel_ned();
+        near(vel.x, 0.0 as Ftype);
+        near(vel.y, 0.0 as Ftype);
+        near(vel.z, 0.0 as Ftype);
+
+        assert!(ekf.initialise_filter());
+        {
+            let core = ekf.core_mut(0).expect("primary");
+            core.control_mut()
+                .set_aiding_mode_for_test(AidingMode::Absolute);
+            core.write_outputs_for_test(
+                8.0 as Ftype,
+                -3.0 as Ftype,
+                Vector3::new(1.0 as Ftype, 2.0 as Ftype, -0.5 as Ftype),
+                0.05 as Ftype,
+                -0.10 as Ftype,
+                0.15 as Ftype,
+            );
+        }
+        let (ne, valid) = ekf.get_pos_ne();
+        assert!(valid);
+        near(ne.x, 8.0 as Ftype);
+        near(ne.y, -3.0 as Ftype);
+        let vel = ekf.get_vel_ned();
+        near(vel.x, 1.0 as Ftype);
+        near(vel.y, 2.0 as Ftype);
+        near(vel.z, -0.5 as Ftype);
+        let euler = ekf.get_euler_angles();
+        near(euler.x, 0.05 as Ftype);
+        near(euler.y, -0.10 as Ftype);
+        near(euler.z, 0.15 as Ftype);
     }
 }
