@@ -92,6 +92,13 @@ pub use do_set_home::{
     SET_HOME_USE_CURRENT,
 };
 
+mod do_set_roi;
+pub use do_set_roi::{
+    do_set_roi, do_set_roi_cmd, is_do_set_roi, roi_content, roi_location_set, DoSetRoiInputs,
+    DoSetRoiOutput, RoiCommand, MAV_CMD_DO_SET_ROI, MAV_MOUNT_MODE_GPS_POINT,
+    MAV_MOUNT_MODE_NEUTRAL,
+};
+
 /// Mavlink cmd id of zero means invalid or missing command.
 /// Upstream `AP_MISSION_CMD_ID_NONE`.
 pub const CMD_ID_NONE: u16 = 0;
