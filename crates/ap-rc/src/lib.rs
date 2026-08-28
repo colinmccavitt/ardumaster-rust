@@ -8,7 +8,8 @@
 //! Scaling, the aux-function switch latch, the 2-pos vs 3-pos option-switch PWM
 //! ranges, the FS_THR_VALUE / THR_FS_VALUE PWM floor, the RCMAP_* channel map
 //! plus RCn_TRIM persist, the RC_OVERRIDE_TIME GCS override timeout, the FLTMODE_CH six-position
-//! flight-mode switch decode, and the FLTMODE1–FLTMODE6 slot mapping live here so radio.cpp
+//! flight-mode switch decode, the FLTMODE1-FLTMODE6 slot mapping, and INITIAL_MODE /
+//! boot-mode-from-switch live here so radio.cpp
 //! work can share one conversion. The HAL owns the raw PWM microsecond I/O;
 //! Plane's failsafe hookup already reads those pulses.
 
@@ -17,6 +18,7 @@
 pub mod aux_switch;
 pub mod fltmode;
 pub mod fs_thr;
+pub mod initial_mode;
 pub mod option_switch;
 pub mod override_timeout;
 pub mod rcmap;
@@ -38,6 +40,11 @@ pub use fltmode::{
 pub use fs_thr::{
     throttle_below_fs_thr_value, throttle_pwm_in_failsafe, ThrFailsafe, FS_THR_VALUE_DEFAULT,
     FS_THR_VALUE_MAX, FS_THR_VALUE_MIN, THR_FS_VALUE_DEFAULT, THR_FS_VALUE_MAX, THR_FS_VALUE_MIN,
+};
+pub use initial_mode::{
+    boot_from_initial_mode, boot_mode_from_switch, boot_mode_from_switch_pwm, BootMode,
+    BootModeReason, INITIAL_MODE_DEFAULT, MODE_NUMBER_AUTO, MODE_REASON_INITIALISED,
+    MODE_REASON_RC_COMMAND,
 };
 pub use option_switch::{
     get_stick_gesture_pos, option_switch_asserted, option_switch_has_three_positions,
