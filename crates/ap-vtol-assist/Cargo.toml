@@ -1,0 +1,10 @@
+[package]
+name = "ap-vtol-assist"
+description = "Port of ArduPlane/VTOL_Assist: the enable / check gate first (Plane-4.7.0). Tracked as VT-002."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
