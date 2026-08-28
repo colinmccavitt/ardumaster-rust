@@ -23,6 +23,7 @@
 #![no_std]
 
 pub mod air_mode;
+pub mod completeness;
 pub mod landing;
 pub mod mode_q;
 pub mod motor_test;
@@ -33,6 +34,8 @@ pub mod transition;
 pub mod transition_fsm;
 pub mod vtol_mode;
 pub mod weathervane;
+
+pub use completeness::{PortStatus, TailsitterPortItem, TAILSITTER_COMPLETENESS};
 
 /// Default `Q_ENABLE`, upstream `AP_GROUPINFO_FLAGS("ENABLE", 1, QuadPlane, enable, 0, ...)`.
 pub const Q_ENABLE_DEFAULT: i8 = 0;

@@ -57,6 +57,12 @@
 //! [`SurfaceAssign`]. [`Tailsitter::write_log`] emits the TSIT
 //! packet. `Q_TAILSIT_ENABLE == 2` leftover is
 //! [`Tailsitter::enable_always_setup`].
+//!
+//! [`crate::completeness`] is the closer catalog: the enable / mix /
+//! ramp / FSM / copter-output slices are on main; leftover `var_info`,
+//! `defaults_table_tailsitter`, live `output()` SRV/motors writes,
+//! `speed_scaling` SRV apply + `MIN_VO`, the TSIT logger backend, and
+//! `Tailsitter_Transition` heap allocation stay documented as remaining.
 
 /// `Q_FRAME_CLASS` value that selects a duo-motor tailsitter, upstream
 /// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
