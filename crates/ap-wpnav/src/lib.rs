@@ -5,7 +5,10 @@
 //! collapsed into [`WpNav::wp_and_spline_init_m`]: clamp the speed and
 //! radius floors, compute S-curve jerk/snap from the attitude controller,
 //! clear the path legs, and seat origin and destination on the stopping
-//! point. That is the first real surface.
+//! point. After that the next call is
+//! [`set_wp_destination_ned_m`](WpNav::set_wp_destination_ned_m) (or the
+//! centimetre NEU wrapper), which seats a real destination and clears
+//! `reached_destination`.
 //!
 //! # What this crate does not own
 //!
@@ -23,7 +26,8 @@
 pub mod wpnav;
 
 pub use wpnav::{
-    AttitudeJerkLimits, PosControlSpeedAccel, WpNav, WpNavFlags, WPNAV_ACCELERATION_MS,
-    WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT, WP_RADIUS_M_DEFAULT,
-    WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN, WP_SPD_UP_DEFAULT,
+    AttitudeJerkLimits, PosControlSpeedAccel, SetWpDestinationContext, WpNav, WpNavFlags,
+    WPNAV_ACCELERATION_MS, WPNAV_ACTIVE_TIMEOUT_MS, WP_ACC_Z_DEFAULT, WP_JERK_DEFAULT,
+    WP_RADIUS_M_DEFAULT, WP_RADIUS_M_MIN, WP_SPD_DEFAULT, WP_SPD_DOWN_DEFAULT, WP_SPD_MIN,
+    WP_SPD_UP_DEFAULT,
 };

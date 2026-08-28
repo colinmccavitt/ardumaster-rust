@@ -1,4 +1,4 @@
-//! Constructor and `wp_and_spline_init_m`, upstream `AC_WPNav`.
+//! Constructor, `wp_and_spline_init_m`, and destination set/get, upstream `AC_WPNav`.
 
 use ap_math::scalar::{is_positive, is_zero, GRAVITY_MSS};
 use ap_math::vector3::Vector3f;
@@ -71,6 +71,32 @@ pub struct PosControlSpeedAccel {
     pub accel_d_mss: f32,
 }
 
+/// Caller-supplied inputs `set_wp_destination_NED_m` reads from
+/// PosControl, HAL, and terrain. ADR-0004 forbids those singletons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetWpDestinationContext {
+    /// `AP_HAL::millis` used by `is_active` and a possible re-init.
+    pub now_ms: u32,
+    /// Attitude limits re-init forwards to `calc_scurve_jerk_and_snap`.
+    pub attitude: AttitudeJerkLimits,
+    /// PosControl stopping point used when the previous destination was
+    /// interrupted. Same convention as [`WpNav::wp_and_spline_init_m`].
+    pub stopping_point_ned_m: Vector3f,
+    /// Terrain D offset, metres. Required when `is_terrain_alt` flips.
+    pub terrain_d_m: Option<f32>,
+}
+
+impl Default for SetWpDestinationContext {
+    fn default() -> Self {
+        Self {
+            now_ms: 0,
+            attitude: AttitudeJerkLimits::default(),
+            stopping_point_ned_m: Vector3f::zero(),
+            terrain_d_m: None,
+        }
+    }
+}
+
 /// The three `wpnav_flags` bits `wp_and_spline_init_m` writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WpNavFlags {
@@ -121,6 +147,12 @@ pub struct WpNav {
     scurve_legs_inited: bool,
     pos_control_stopping_point_inited: bool,
     pos_speed_accel: PosControlSpeedAccel,
+
+    next_destination_ned_m: Vector3f,
+    next_leg_is_spline: bool,
+    scurve_this_leg_calculated: bool,
+    pos_terrain_d_m: f32,
+    last_arc_rad: f32,
 }
 
 impl Default for WpNav {
@@ -172,6 +204,11 @@ impl WpNav {
                 speed_up_ms: 0.0,
                 accel_d_mss: 0.0,
             },
+            next_destination_ned_m: Vector3f::zero(),
+            next_leg_is_spline: false,
+            scurve_this_leg_calculated: false,
+            pos_terrain_d_m: 0.0,
+            last_arc_rad: 0.0,
         }
     }
 
@@ -227,6 +264,67 @@ impl WpNav {
     #[must_use]
     pub fn wp_origin_ned_m(&self) -> Vector3f {
         self.origin_ned_m
+    }
+
+    /// Destination of the current leg, NEU centimetres. Upstream
+    /// `get_wp_destination_NEU_cm`.
+    #[must_use]
+    pub fn wp_destination_neu_cm(&self) -> Vector3f {
+        Vector3f::new(
+            self.destination_ned_m.x * 100.0,
+            self.destination_ned_m.y * 100.0,
+            -self.destination_ned_m.z * 100.0,
+        )
+    }
+
+    /// Origin of the current leg, NEU centimetres. Upstream
+    /// `get_wp_origin_NEU_cm`.
+    #[must_use]
+    pub fn wp_origin_neu_cm(&self) -> Vector3f {
+        Vector3f::new(
+            self.origin_ned_m.x * 100.0,
+            self.origin_ned_m.y * 100.0,
+            -self.origin_ned_m.z * 100.0,
+        )
+    }
+
+    /// Preloaded next destination, NED metres. Cleared when a new current
+    /// destination is set.
+    #[must_use]
+    pub fn next_destination_ned_m(&self) -> Vector3f {
+        self.next_destination_ned_m
+    }
+
+    /// True if the current destination has been reached. Upstream
+    /// `reached_wp_destination`.
+    #[must_use]
+    pub fn reached_wp_destination(&self) -> bool {
+        self.flags.reached_destination
+    }
+
+    /// True after `set_wp_destination_NED_m` asked for a new this-leg
+    /// `SCurve::calculate_track`. The track object stays in `ap-math`.
+    #[must_use]
+    pub fn scurve_this_leg_calculated(&self) -> bool {
+        self.scurve_this_leg_calculated
+    }
+
+    /// Terrain D offset last written to `PosControl::init_pos_terrain_D_m`.
+    #[must_use]
+    pub fn pos_terrain_d_m(&self) -> f32 {
+        self.pos_terrain_d_m
+    }
+
+    /// Arc angle last passed to `calculate_track`, radians.
+    #[must_use]
+    pub fn last_arc_rad(&self) -> f32 {
+        self.last_arc_rad
+    }
+
+    /// True if the preloaded next leg is a spline.
+    #[must_use]
+    pub fn next_leg_is_spline(&self) -> bool {
+        self.next_leg_is_spline
     }
 
     /// Desired horizontal speed for the current segment, m/s.
@@ -392,12 +490,97 @@ impl WpNav {
         self.destination_ned_m = stopping_point_ned_m;
         self.is_terrain_alt = false;
         self.this_leg_is_spline = false;
+        self.next_leg_is_spline = false;
+        self.next_destination_ned_m = Vector3f::zero();
+        self.scurve_this_leg_calculated = false;
+        self.pos_terrain_d_m = 0.0;
+        self.last_arc_rad = 0.0;
 
         self.offset_vel_ms = self.wp_desired_speed_ne_ms;
         self.offset_accel_mss = 0.0;
         self.paused = false;
 
         self.wp_last_update_ms = now_ms;
+    }
+
+    /// Sets the current destination from a NEU centimetre vector.
+    /// Upstream `AC_WPNav::set_wp_destination_NEU_cm`.
+    pub fn set_wp_destination_neu_cm(
+        &mut self,
+        destination_neu_cm: Vector3f,
+        is_terrain_alt: bool,
+        ctx: SetWpDestinationContext,
+    ) -> bool {
+        let destination_ned_m = Vector3f::new(
+            destination_neu_cm.x * 0.01,
+            destination_neu_cm.y * 0.01,
+            -destination_neu_cm.z * 0.01,
+        );
+        self.set_wp_destination_ned_m(destination_ned_m, is_terrain_alt, 0.0, ctx)
+    }
+
+    /// Sets the current destination from a NED metre vector.
+    ///
+    /// Upstream `AC_WPNav::set_wp_destination_NED_m`. Re-inits when the
+    /// previous destination was interrupted (`!is_active` or not yet
+    /// reached). Previous destination becomes the new origin. Terrain
+    /// frame changes need `ctx.terrain_d_m`; missing terrain returns
+    /// false. `SCurve::calculate_track` stays in `ap-math` (COP-002) —
+    /// this slice records that a new this-leg is required.
+    pub fn set_wp_destination_ned_m(
+        &mut self,
+        destination_ned_m: Vector3f,
+        is_terrain_alt: bool,
+        arc_rad: f32,
+        ctx: SetWpDestinationContext,
+    ) -> bool {
+        // re-initialise if previous destination has been interrupted
+        if !self.is_active(ctx.now_ms) || !self.flags.reached_destination {
+            self.wp_and_spline_init_m(
+                self.wp_desired_speed_ne_ms,
+                ctx.stopping_point_ned_m,
+                ctx.now_ms,
+                ctx.attitude,
+            );
+        }
+
+        // _scurve_prev_leg.init() — object stays in ap-math.
+
+        // use previous destination as origin
+        self.origin_ned_m = self.destination_ned_m;
+
+        if is_terrain_alt == self.is_terrain_alt {
+            // Matching frame: spline origin-speed seed and scurve-prev
+            // copy need the stored SCurve / SplineCurve objects (COP-002
+            // / COP-003). After init, this_leg_is_spline is false.
+        } else {
+            let Some(terrain_d_m) = ctx.terrain_d_m else {
+                return false;
+            };
+            if is_terrain_alt {
+                self.origin_ned_m.z -= terrain_d_m;
+                self.pos_terrain_d_m = terrain_d_m;
+            } else {
+                self.origin_ned_m.z += terrain_d_m;
+                self.pos_terrain_d_m = 0.0;
+            }
+        }
+
+        self.destination_ned_m = destination_ned_m;
+        self.is_terrain_alt = is_terrain_alt;
+
+        // calculate_track / reuse of _scurve_next_leg is COP-002 plus
+        // set_wp_destination_next. Record that a new this-leg is needed.
+        self.scurve_this_leg_calculated = true;
+        self.last_arc_rad = arc_rad;
+
+        self.this_leg_is_spline = false;
+        self.next_leg_is_spline = false;
+        self.next_destination_ned_m = Vector3f::zero();
+        self.flags.fast_waypoint = false;
+        self.flags.reached_destination = false;
+
+        true
     }
 
     /// True if `wp_and_spline_init_m` or `update_wpnav` ran within 200 ms.
