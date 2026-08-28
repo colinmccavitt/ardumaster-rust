@@ -8,7 +8,7 @@ use ap_hal::completeness::{
 /// Surfaces already on main — do not redo these slices.
 const ON_MAIN: &[&str] = &["GPIO", "Semaphore", "Util", "Device"];
 
-const THIS_SLICE: &[&str] = &["completeness table"];
+const THIS_SLICE: &[&str] = &["completeness table", "DeviceManager get_device factory"];
 
 const REMAINING: &[&str] = &[
     "WSPIDevice",
@@ -17,7 +17,6 @@ const REMAINING: &[&str] = &[
     "Flash",
     "OpticalFlow",
     "BinarySemaphore",
-    "DeviceManager get_device factory",
 ];
 
 #[test]

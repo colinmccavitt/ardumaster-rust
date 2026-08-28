@@ -97,6 +97,15 @@ impl Speed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodicHandle(pub u32);
 
+/// Handle returned by [`I2cDeviceManager::get_device`] /
+/// [`SpiDeviceManager::get_device`].
+///
+/// Upstream wraps the pointer in `OwnPtr`. The port uses a 1-based slot
+/// index so a table-backed manager can hand out devices without a heap
+/// (`0` is never a valid handle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceHandle(pub u8);
+
 /// 24-bit bus identifier packed the way upstream's `DeviceId` union is.
 ///
 /// Bitfields (LSB first, matching GCC on the ChibiOS targets):
@@ -303,9 +312,20 @@ pub trait SpiDevice: Device {
 
 /// Configured I2C buses. Upstream `AP_HAL::I2CDeviceManager`.
 ///
-/// `get_device` is not ported (it heap-allocates). The masks are what
+/// [`I2cDeviceManager::get_device`] is the factory. A mask-only manager
+/// (no table) returns [`Error::NotPresent`]; [`crate::device_manager::TableDeviceManager`]
+/// fills a fixed slot instead of heap `OwnPtr`. The masks are what
 /// `FOREACH_I2C_*` walks.
 pub trait I2cDeviceManager {
+    /// Look up or allocate a device on `bus` at `address`.
+    ///
+    /// Upstream `get_device_ptr` / `get_device`. Extra C++ defaults
+    /// (`bus_clock`, `use_smbus`, `timeout_ms`) are board concerns.
+    fn get_device(&mut self, bus: u8, address: u8) -> Result<DeviceHandle> {
+        let _ = (bus, address);
+        Err(Error::NotPresent)
+    }
+
     /// Mask of configured I2C bus numbers. Upstream `get_bus_mask()`, default
     /// `0x0F`.
     fn bus_mask(&self) -> u32 {
@@ -325,8 +345,21 @@ pub trait I2cDeviceManager {
 
 /// Registered SPI devices. Upstream `AP_HAL::SPIDeviceManager`.
 ///
-/// `get_device` is not ported (it heap-allocates).
+/// [`SpiDeviceManager::get_device`] looks up by name (the C++ `const char*`
+/// factory). A count-only manager returns [`Error::NotPresent`].
 pub trait SpiDeviceManager {
+    /// Look up or allocate the named SPI device. Upstream `get_device`.
+    fn get_device(&mut self, name: &str) -> Result<DeviceHandle> {
+        let _ = name;
+        Err(Error::NotPresent)
+    }
+
+    /// Name at registration index `idx`. Upstream `get_device_name()`.
+    fn get_device_name(&self, idx: u8) -> Option<&str> {
+        let _ = idx;
+        None
+    }
+
     /// Number of registered SPI devices. Upstream `get_count()`, default 0.
     fn count(&self) -> u8 {
         0
@@ -478,7 +511,12 @@ impl Device for MockDevice {
     }
 
     fn set_address(&mut self, address: u8) {
-        self.id = DeviceId::new(self.id.bus_type(), self.id.bus_num(), address, self.id.devtype());
+        self.id = DeviceId::new(
+            self.id.bus_type(),
+            self.id.bus_num(),
+            address,
+            self.id.devtype(),
+        );
     }
 
     fn set_speed(&mut self, speed: Speed) -> Result<()> {

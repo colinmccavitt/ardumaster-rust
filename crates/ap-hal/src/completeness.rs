@@ -87,8 +87,8 @@ pub const HAL_COMPLETENESS: &[HalPortItem] = &[
     },
     HalPortItem {
         name: "DeviceManager get_device factory",
-        status: PortStatus::Remaining,
-        note: "I2CDeviceManager/SPIDeviceManager::get_device heap OwnPtr",
+        status: PortStatus::ThisSlice,
+        note: "table-backed I2C/SPI get_device (no heap OwnPtr)",
     },
 ];
 
@@ -162,8 +162,8 @@ mod tests {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
         assert_eq!(on_main, 4);
-        assert_eq!(this_slice, 1);
-        assert_eq!(remaining, 7);
+        assert_eq!(this_slice, 2);
+        assert_eq!(remaining, 6);
         assert!(completeness_has("GPIO", PortStatus::OnMain));
         assert!(completeness_has("Semaphore", PortStatus::OnMain));
         assert!(completeness_has("Util", PortStatus::OnMain));
@@ -175,11 +175,11 @@ mod tests {
         assert!(completeness_has("CANIface", PortStatus::Remaining));
         assert!(completeness_has(
             "DeviceManager get_device factory",
-            PortStatus::Remaining
+            PortStatus::ThisSlice
         ));
         assert_eq!(on_main_items().count(), 4);
-        assert_eq!(this_slice_items().count(), 1);
-        assert_eq!(remaining_items().count(), 7);
+        assert_eq!(this_slice_items().count(), 2);
+        assert_eq!(remaining_items().count(), 6);
     }
 
     #[test]

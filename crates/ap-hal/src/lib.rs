@@ -43,6 +43,7 @@ pub mod analog;
 pub mod completeness;
 pub mod context;
 pub mod device;
+pub mod device_manager;
 pub mod gpio;
 pub mod internal_error;
 pub mod rc;
