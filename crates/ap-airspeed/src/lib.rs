@@ -10,6 +10,7 @@ pub mod analog;
 pub mod backend;
 pub mod bus;
 pub mod devid;
+pub mod fbw;
 pub mod options;
 pub mod params;
 pub mod primary;
@@ -51,6 +52,9 @@ pub use tube_order::{
 pub use bus::{
     i2c_probe_bus, uses_i2c_bus, ARSPD_BUS_DEFAULT, ARSPD_BUS_EXTERNAL, ARSPD_BUS_EXTERNAL2,
     ARSPD_BUS_INTERNAL,
+};
+pub use fbw::{
+    clamp_fbw_airspeed, fbw_envelope, ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT,
 };
 pub use devid::{
     clear_devid_if_not_found, devid_address, devid_after_probe, devid_bus, devid_bus_type,

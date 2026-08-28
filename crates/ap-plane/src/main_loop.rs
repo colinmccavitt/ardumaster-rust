@@ -108,6 +108,7 @@ use ap_airspeed::options::ARSPD_OPTIONS_DEFAULT;
 use ap_airspeed::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use ap_airspeed::wind_warn::ARSPD_WIND_WARN_DEFAULT;
 use ap_airspeed::primary::ARSPD_PRIMARY_DEFAULT;
+use ap_airspeed::fbw::{ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT};
 use ap_airspeed::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -301,6 +302,10 @@ pub struct PlaneMainLoop {
     pub airspeed_wind_warn_exceeded: bool,
     /// Preferred instance, upstream `ARSPD_PRIMARY`.
     pub airspeed_primary: u8,
+    /// FBW minimum airspeed (m/s), upstream `ARSPD_FBW_MIN` / `AIRSPEED_MIN`.
+    pub airspeed_fbw_min: f32,
+    /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX` / `AIRSPEED_MAX`.
+    pub airspeed_fbw_max: f32,
     /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
     pub airspeed_type: u8,
     /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
@@ -770,6 +775,8 @@ impl Default for PlaneMainLoop {
             airspeed_wind_warn: ARSPD_WIND_WARN_DEFAULT,
             airspeed_wind_warn_exceeded: false,
             airspeed_primary: ARSPD_PRIMARY_DEFAULT,
+            airspeed_fbw_min: ARSPD_FBW_MIN_DEFAULT,
+            airspeed_fbw_max: ARSPD_FBW_MAX_DEFAULT,
             airspeed_type: ARSPD_TYPE_SITL,
             configured_airspeed_backend: AirspeedBackendKind::Sitl,
             active_airspeed_backend: AirspeedBackendKind::Sitl,
@@ -1272,6 +1279,8 @@ impl PlaneMainLoop {
             self.airspeed_wind_warn = airspeed.airspeed_params().wind_warn;
             self.airspeed_wind_warn_exceeded = out.wind_warn_exceeded;
             self.airspeed_primary = out.health.primary;
+            self.airspeed_fbw_min = airspeed.airspeed_params().fbw_min;
+            self.airspeed_fbw_max = airspeed.airspeed_params().fbw_max;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }

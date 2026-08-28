@@ -5,6 +5,7 @@ use crate::primary::{clamp_primary, ARSPD_PRIMARY_DEFAULT};
 use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::devid::ARSPD_DEVID_DEFAULT;
+use crate::fbw::{ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT};
 use crate::options::ARSPD_OPTIONS_DEFAULT;
 use crate::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use crate::wind_warn::ARSPD_WIND_WARN_DEFAULT;
@@ -104,6 +105,10 @@ pub struct AirspeedParams {
     pub wind_max: f32,
     /// Airspeed-vs-wind warning (m/s), upstream `ARSPD_WIND_WARN`.
     pub wind_warn: f32,
+    /// FBW minimum airspeed (m/s), upstream `ARSPD_FBW_MIN` / `AIRSPEED_MIN`.
+    pub fbw_min: f32,
+    /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX` / `AIRSPEED_MAX`.
+    pub fbw_max: f32,
 }
 
 impl Default for AirspeedParams {
@@ -115,6 +120,8 @@ impl Default for AirspeedParams {
             options: ARSPD_OPTIONS_DEFAULT,
             wind_max: ARSPD_WIND_MAX_DEFAULT,
             wind_warn: ARSPD_WIND_WARN_DEFAULT,
+            fbw_min: ARSPD_FBW_MIN_DEFAULT,
+            fbw_max: ARSPD_FBW_MAX_DEFAULT,
         }
     }
 }
@@ -280,5 +287,17 @@ impl AirspeedParams {
     #[must_use]
     pub fn wind_warn(&self) -> f32 {
         self.wind_warn
+    }
+
+    /// Vehicle-level `ARSPD_FBW_MIN` / `AIRSPEED_MIN` (m/s).
+    #[must_use]
+    pub fn fbw_min(&self) -> f32 {
+        self.fbw_min
+    }
+
+    /// Vehicle-level `ARSPD_FBW_MAX` / `AIRSPEED_MAX` (m/s).
+    #[must_use]
+    pub fn fbw_max(&self) -> f32 {
+        self.fbw_max
     }
 }

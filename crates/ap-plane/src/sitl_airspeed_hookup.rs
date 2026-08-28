@@ -84,6 +84,10 @@ pub struct SitlAirspeedPublish {
     pub wind_warn: f32,
     /// True when the enabled WIND_WARN threshold is exceeded.
     pub wind_warn_exceeded: bool,
+    /// FBW minimum airspeed (m/s), upstream `ARSPD_FBW_MIN`.
+    pub fbw_min: f32,
+    /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX`.
+    pub fbw_max: f32,
 }
 
 impl SitlAirspeedHookup {
@@ -229,6 +233,20 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set vehicle-level `ARSPD_FBW_MIN` (m/s).
+    pub fn set_fbw_min(&mut self, fbw_min: f32) {
+        let mut params = self.params;
+        params.fbw_min = fbw_min;
+        self.apply_airspeed_params(params);
+    }
+
+    /// Set vehicle-level `ARSPD_FBW_MAX` (m/s).
+    pub fn set_fbw_max(&mut self, fbw_max: f32) {
+        let mut params = self.params;
+        params.fbw_max = fbw_max;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -301,6 +319,8 @@ impl SitlAirspeedHookup {
                 self.params.wind_warn,
                 self.params.wind_max,
             ),
+            fbw_min: self.params.fbw_min,
+            fbw_max: self.params.fbw_max,
         }
     }
 }
