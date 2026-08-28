@@ -3,8 +3,10 @@
 //! HEARTBEAT is wired on receive. `handle_heartbeat` records
 //! `sysid_mygcs_seen` when the sender is `MAV_GCS_SYSID`. COMMAND_LONG
 //! and COMMAND_INT are classified against the Plane table
-//! (ARM/DISARM, DO_SET_MODE, NAV_TAKEOFF). Send path is
-//! `GCS_MAVLINK::send_heartbeat` and `send_text`.
+//! (ARM/DISARM, DO_SET_MODE, NAV_TAKEOFF). PARAM_REQUEST_LIST starts a
+//! queued `PARAM_VALUE` walk; PARAM_SET writes a named scalar in the
+//! in-memory table. Send path is `GCS_MAVLINK::send_heartbeat`,
+//! `send_text`, `queued_param_send`, and `send_parameter_value`.
 
 use crate::command::{
     classify, CommandInt, CommandLong, CommandVia, PlaneCommand, MSG_ID_COMMAND_INT,
@@ -12,6 +14,10 @@ use crate::command::{
 };
 use crate::framing::{decode_v2, encode_v2, DecodeError, Frame};
 use crate::heartbeat::{Heartbeat, MSG_ID_HEARTBEAT};
+use crate::param::{
+    ParamRequestList, ParamSet, ParamTable, ParamValue, MSG_ID_PARAM_REQUEST_LIST,
+    MSG_ID_PARAM_SET, PARAM_VALUE_LEN,
+};
 use crate::statustext::{StatusText, MSG_ID_STATUSTEXT, STATUSTEXT_LEN};
 
 /// Default vehicle sysid, upstream `MAV_SYSID` / `g.sysid_this_mav` default.
@@ -42,14 +48,25 @@ pub enum Dispatch {
         /// `Some` when the id is ARM/DISARM, DO_SET_MODE, or NAV_TAKEOFF.
         kind: Option<PlaneCommand>,
     },
-    /// Any other msgid, or a command not addressed to this vehicle.
+    /// Msgid 21 — PARAM_REQUEST_LIST started a queued `PARAM_VALUE` walk.
+    ParamRequestList {
+        /// `AP_Param::count_parameters` for this table.
+        count: u16,
+    },
+    /// Msgid 23 — PARAM_SET against a named scalar.
+    ParamSet {
+        /// `true` when `AP_Param::find` succeeded and the value was finite.
+        applied: bool,
+    },
+    /// Any other msgid, or a command/param not addressed to this vehicle.
     Unknown {
         /// Unrecognised message id.
         msgid: u32,
     },
 }
 
-/// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub.
+/// One GCS channel: HEARTBEAT send, msgid-0 receive, command-table stub,
+/// and PARAM_REQUEST_LIST / PARAM_SET against an in-memory table.
 ///
 /// Mirrors the `GCS_MAVLINK` methods this slice covers, not the full class.
 #[derive(Debug, Clone)]
@@ -59,6 +76,7 @@ pub struct GcsMavlink {
     seq: u8,
     gcs_sysid: u8,
     last_gcs_heartbeat_ms: u32,
+    params: ParamTable,
 }
 
 impl Default for GcsMavlink {
@@ -69,6 +87,7 @@ impl Default for GcsMavlink {
             seq: 0,
             gcs_sysid: DEFAULT_GCS_SYSID,
             last_gcs_heartbeat_ms: 0,
+            params: ParamTable::plane_stub(),
         }
     }
 }
@@ -91,6 +110,19 @@ impl GcsMavlink {
     #[must_use]
     pub const fn last_gcs_heartbeat_ms(&self) -> u32 {
         self.last_gcs_heartbeat_ms
+    }
+
+    /// Scalar count in the in-memory table.
+    #[must_use]
+    pub const fn param_count(&self) -> u16 {
+        self.params.count()
+    }
+
+    /// Current value of a named scalar, if present.
+    #[must_use]
+    pub fn param_value(&self, name: &str) -> Option<f32> {
+        let id = crate::param::encode_param_id(name);
+        self.params.find(&id).map(|(_, entry)| entry.value)
     }
 
     /// Encode one outgoing HEARTBEAT, upstream `GCS_MAVLINK::send_heartbeat`.
@@ -139,6 +171,24 @@ impl GcsMavlink {
         encode_v2(&frame, out)
     }
 
+    /// Encode the next queued `PARAM_VALUE`, upstream `queued_param_send`.
+    ///
+    /// `None` when the list walk is finished or `out` is too small.
+    #[must_use]
+    pub fn queued_param_send(&mut self, out: &mut [u8]) -> Option<usize> {
+        let value = self.params.next_queued()?;
+        self.encode_param_value(out, &value)
+    }
+
+    /// Encode one `PARAM_VALUE` by name, upstream `send_parameter_value`.
+    #[must_use]
+    pub fn send_parameter_value(&mut self, out: &mut [u8], name: &str) -> Option<usize> {
+        let id = crate::param::encode_param_id(name);
+        let (index, _) = self.params.find(&id)?;
+        let value = self.params.value_at(index)?;
+        self.encode_param_value(out, &value)
+    }
+
     /// Dispatch one already-framed message, upstream `handle_message`.
     pub fn handle_message(&mut self, frame: &Frame, now_ms: u32) -> Dispatch {
         match frame.msgid {
@@ -163,6 +213,25 @@ impl GcsMavlink {
                     msgid: MSG_ID_COMMAND_INT,
                 },
             },
+            MSG_ID_PARAM_REQUEST_LIST => match ParamRequestList::from_frame(frame) {
+                Some(req) if self.addressed_to_us(req.target_system) => {
+                    self.params.start_list();
+                    Dispatch::ParamRequestList {
+                        count: self.params.count(),
+                    }
+                }
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_PARAM_REQUEST_LIST,
+                },
+            },
+            MSG_ID_PARAM_SET => match ParamSet::from_frame(frame) {
+                Some(set) if self.addressed_to_us(set.target_system) => Dispatch::ParamSet {
+                    applied: self.params.set(&set.param_id, set.param_value).is_some(),
+                },
+                _ => Dispatch::Unknown {
+                    msgid: MSG_ID_PARAM_SET,
+                },
+            },
             msgid => Dispatch::Unknown { msgid },
         }
     }
@@ -171,6 +240,20 @@ impl GcsMavlink {
     pub fn handle_bytes(&mut self, buf: &[u8], now_ms: u32) -> Result<Dispatch, DecodeError> {
         let frame = decode_v2(buf)?;
         Ok(self.handle_message(&frame, now_ms))
+    }
+
+    fn encode_param_value(&mut self, out: &mut [u8], value: &ParamValue) -> Option<usize> {
+        let mut payload = [0u8; PARAM_VALUE_LEN];
+        value.encode(&mut payload)?;
+        let frame = Frame::new(
+            self.seq,
+            self.sysid,
+            self.compid,
+            crate::param::MSG_ID_PARAM_VALUE,
+            &payload,
+        )?;
+        self.seq = self.seq.wrapping_add(1);
+        encode_v2(&frame, out)
     }
 
     fn handle_heartbeat_frame(&mut self, frame: &Frame, now_ms: u32) -> Dispatch {
