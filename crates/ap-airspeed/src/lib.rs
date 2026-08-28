@@ -7,10 +7,12 @@
 #![no_std]
 
 pub mod analog;
+pub mod completeness;
 pub mod backend;
 pub mod bus;
 pub mod devid;
 pub mod fbw;
+pub mod off_pcnt;
 pub mod options;
 pub mod params;
 pub mod primary;
@@ -63,6 +65,11 @@ pub use devid::{
     devid_devtype, devid_for_configured, devid_is_set, make_bus_id, ARSPD_DEVID_DEFAULT,
     BUS_TYPE_I2C, BUS_TYPE_SITL, MS4525_I2C_ADDR,
 };
+pub use off_pcnt::{
+    off_pcnt_enabled, offset_change_warns, offset_change_warns_default_min,
+    offset_max_change, ARSPD_OFF_PCNT_DEFAULT,
+};
+pub use completeness::{AirspeedPortItem, PortStatus, AIRSPEED_COMPLETENESS};
 pub use options::{
     disable_on_wind_max_failure, disable_voltage_correction, option_enabled,
     reenable_on_wind_max_recovery, report_offset, use_ekf_consistency, ARSPD_OPTIONS_DEFAULT,

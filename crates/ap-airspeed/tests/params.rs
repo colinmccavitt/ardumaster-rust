@@ -3,6 +3,7 @@ use ap_airspeed::options::ARSPD_OPTIONS_DEFAULT;
 use ap_airspeed::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use ap_airspeed::wind_warn::ARSPD_WIND_WARN_DEFAULT;
 use ap_airspeed::fbw::{ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT};
+use ap_airspeed::off_pcnt::ARSPD_OFF_PCNT_DEFAULT;
 use ap_airspeed::params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };
@@ -51,6 +52,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.fbw_min(), 9.0);
     assert!((params.fbw_max - ARSPD_FBW_MAX_DEFAULT).abs() < 1e-6);
     assert_eq!(params.fbw_max(), 22.0);
+    assert_eq!(params.off_pcnt, ARSPD_OFF_PCNT_DEFAULT);
+    assert_eq!(params.off_pcnt(), 0);
 }
 
 #[test]

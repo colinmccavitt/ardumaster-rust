@@ -35,6 +35,7 @@ pub mod airspeed_wind_max_hookup;
 pub mod airspeed_wind_warn_hookup;
 pub mod airspeed_fbw_hookup;
 pub mod airspeed_psi_range_hookup;
+pub mod airspeed_off_pcnt_hookup;
 pub mod airspeed_primary_hookup;
 pub mod airspeed_tecs_health_hookup;
 pub mod compass_health_scheduler_hookup;

@@ -7,6 +7,7 @@ use crate::backend::ARSPD_TYPE_DEFAULT;
 use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::devid::ARSPD_DEVID_DEFAULT;
 use crate::fbw::{ARSPD_FBW_MAX_DEFAULT, ARSPD_FBW_MIN_DEFAULT};
+use crate::off_pcnt::ARSPD_OFF_PCNT_DEFAULT;
 use crate::options::ARSPD_OPTIONS_DEFAULT;
 use crate::wind_max::ARSPD_WIND_MAX_DEFAULT;
 use crate::wind_warn::ARSPD_WIND_WARN_DEFAULT;
@@ -110,6 +111,8 @@ pub struct AirspeedParams {
     pub fbw_min: f32,
     /// FBW maximum airspeed (m/s), upstream `ARSPD_FBW_MAX` / `AIRSPEED_MAX`.
     pub fbw_max: f32,
+    /// Plane-only offset-cal speed-error percent, upstream `ARSPD_OFF_PCNT`.
+    pub off_pcnt: i8,
 }
 
 impl Default for AirspeedParams {
@@ -123,6 +126,7 @@ impl Default for AirspeedParams {
             wind_warn: ARSPD_WIND_WARN_DEFAULT,
             fbw_min: ARSPD_FBW_MIN_DEFAULT,
             fbw_max: ARSPD_FBW_MAX_DEFAULT,
+            off_pcnt: ARSPD_OFF_PCNT_DEFAULT,
         }
     }
 }
@@ -300,5 +304,11 @@ impl AirspeedParams {
     #[must_use]
     pub fn fbw_max(&self) -> f32 {
         self.fbw_max
+    }
+
+    /// Vehicle-level `ARSPD_OFF_PCNT` (percent of `AIRSPEED_MIN`). Zero disables.
+    #[must_use]
+    pub fn off_pcnt(&self) -> i8 {
+        self.off_pcnt
     }
 }
