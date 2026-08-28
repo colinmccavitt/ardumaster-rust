@@ -66,6 +66,8 @@ pub struct SitlAirspeedPublish {
     pub skip_cal: bool,
     /// Pitot connector order, upstream `ARSPD_TUBE_ORDER`.
     pub tube_order: u8,
+    /// I2C bus, upstream `ARSPD_BUS`.
+    pub bus: u8,
 }
 
 impl SitlAirspeedHookup {
@@ -156,6 +158,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_BUS` on every enabled instance.
+    pub fn set_bus(&mut self, bus: u8) {
+        let mut params = self.params;
+        params.airspeed1.bus = bus;
+        params.airspeed2.bus = bus;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -211,6 +221,7 @@ impl SitlAirspeedHookup {
                 .map(|backend| backend.config().skip_cal)
                 .unwrap_or(ARSPD_SKIP_CAL_DEFAULT),
             tube_order: self.params.primary_tube_order(),
+            bus: self.params.primary_bus(),
         }
     }
 }

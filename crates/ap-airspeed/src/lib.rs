@@ -8,6 +8,7 @@
 
 pub mod analog;
 pub mod backend;
+pub mod bus;
 pub mod params;
 pub mod sitl;
 pub mod tube_order;
@@ -37,4 +38,8 @@ pub use params::{
 pub use tube_order::{
     airspeed_from_pressure, last_pressure_pa, PitotTubeOrder, ARSPD_TUBE_ORDER_AUTO,
     ARSPD_TUBE_ORDER_DEFAULT, ARSPD_TUBE_ORDER_NEGATIVE, ARSPD_TUBE_ORDER_POSITIVE,
+};
+pub use bus::{
+    i2c_probe_bus, uses_i2c_bus, ARSPD_BUS_DEFAULT, ARSPD_BUS_EXTERNAL, ARSPD_BUS_EXTERNAL2,
+    ARSPD_BUS_INTERNAL,
 };

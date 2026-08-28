@@ -2,6 +2,7 @@
 
 use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
 use crate::backend::ARSPD_TYPE_DEFAULT;
+use crate::bus::ARSPD_BUS_DEFAULT;
 use crate::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
@@ -35,6 +36,8 @@ pub struct AirspeedInstanceParams {
     pub sensor_type: u8,
     /// Pitot connector order, upstream `ARSPD_TUBE_ORDER`.
     pub tube_order: u8,
+    /// I2C bus, upstream ARSPD_BUS.
+    pub bus: u8,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -52,6 +55,7 @@ impl Default for AirspeedInstanceParams {
             psi_range: ARSPD_PSI_RANGE_DEFAULT,
             sensor_type: ARSPD_TYPE_DEFAULT,
             tube_order: ARSPD_TUBE_ORDER_DEFAULT,
+            bus: ARSPD_BUS_DEFAULT,
         }
     }
 }
@@ -215,6 +219,16 @@ impl AirspeedParams {
             self.airspeed1.tube_order
         } else {
             self.airspeed2.tube_order
+        }
+    }
+
+    /// Primary instance ARSPD_BUS / ARSPD2_BUS.
+    #[must_use]
+    pub fn primary_bus(&self) -> u8 {
+        if self.primary == 0 {
+            self.airspeed1.bus
+        } else {
+            self.airspeed2.bus
         }
     }
 }

@@ -101,6 +101,7 @@ use ap_airspeed::sitl::{
     tas_for_nav, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_SKIP_CAL_DEFAULT,
     ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT,
 };
+use ap_airspeed::bus::ARSPD_BUS_DEFAULT;
 use ap_airspeed::tube_order::ARSPD_TUBE_ORDER_DEFAULT;
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
@@ -271,6 +272,8 @@ pub struct PlaneMainLoop {
     pub airspeed_skip_cal: bool,
     /// Pitot connector order, upstream `ARSPD_TUBE_ORDER`.
     pub airspeed_tube_order: u8,
+    /// I2C bus, upstream `ARSPD_BUS`.
+    pub airspeed_bus: u8,
     /// Primary `ARSPD_TYPE`, upstream `AP_Airspeed` type param.
     pub airspeed_type: u8,
     /// Configured airspeed backend, upstream `AP_Airspeed::airspeed_type`.
@@ -650,6 +653,7 @@ impl Default for PlaneMainLoop {
             airspeed_autocal: ARSPD_AUTOCAL_DEFAULT,
             airspeed_skip_cal: ARSPD_SKIP_CAL_DEFAULT,
             airspeed_tube_order: ARSPD_TUBE_ORDER_DEFAULT,
+            airspeed_bus: ARSPD_BUS_DEFAULT,
             airspeed_type: ARSPD_TYPE_SITL,
             configured_airspeed_backend: AirspeedBackendKind::Sitl,
             active_airspeed_backend: AirspeedBackendKind::Sitl,
@@ -1100,6 +1104,7 @@ impl PlaneMainLoop {
                 .map(|backend| backend.config().skip_cal)
                 .unwrap_or(ARSPD_SKIP_CAL_DEFAULT);
             self.airspeed_tube_order = airspeed.airspeed_params().primary_tube_order();
+            self.airspeed_bus = airspeed.airspeed_params().primary_bus();
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
@@ -1120,6 +1125,7 @@ impl PlaneMainLoop {
             self.airspeed_diff_pressure_pa = out.pressure_pa;
             self.airspeed_analog_have_pressure = out.have_pressure;
             self.airspeed_tube_order = out.tube_order;
+            self.airspeed_bus = out.bus;
         }
         let sensor_type = self
             .sitl_airspeed
