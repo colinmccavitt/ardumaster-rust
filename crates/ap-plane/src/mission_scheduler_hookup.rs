@@ -15,6 +15,8 @@ use crate::target_altitude::{target_altitude, TargetAltitude, TargetAltitudeInpu
 pub struct MissionContext {
     pub current_index: u16,
     pub complete: bool,
+    /// Upstream AP_Mission::state() == MISSION_RUNNING.
+    pub running: bool,
 }
 
 /// HAL inputs for one mission scheduler tick.

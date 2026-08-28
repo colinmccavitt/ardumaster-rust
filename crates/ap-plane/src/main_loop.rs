@@ -123,6 +123,7 @@ use crate::cruise_mode_hookup::{cruise_mode_nav_tick, CruiseModeNavInputs};
 use crate::autotune_mode_hookup::{autotune_mode_nav_tick, AutotuneModeNavInputs};
 use crate::circle_mode_hookup::{circle_mode_nav_tick, CircleModeNavInputs};
 use crate::thermal_mode_hookup::{thermal_mode_nav_tick, ThermalModeNavInputs};
+use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -386,6 +387,14 @@ pub struct PlaneMainLoop {
     pub last_target_altitude: TargetAltitude,
     /// Whether the latest scheduler tick advanced the mission index.
     pub mission_advanced: bool,
+    /// Upstream AP::ahrs().home_is_set() — ModeAuto::navigate gates on this.
+    pub home_is_set: bool,
+    /// Whether AUTO mission start/advance glue ran this tick.
+    pub auto_mode_mission_applied: bool,
+    /// Whether ModeAuto::_enter start_or_resume armed the mission this tick.
+    pub auto_mode_mission_started: bool,
+    /// Whether AUTO navigate allowed a mission item advance this tick.
+    pub auto_mode_mission_advanced: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -755,6 +764,10 @@ impl Default for PlaneMainLoop {
             mission_inputs: MissionSchedulerInputs::default(),
             last_target_altitude: TargetAltitude::FromNextWaypoint,
             mission_advanced: false,
+            home_is_set: true,
+            auto_mode_mission_applied: false,
+            auto_mode_mission_started: false,
+            auto_mode_mission_advanced: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1168,6 +1181,25 @@ impl PlaneMainLoop {
         self.rc_sticks = rc_out.rc_sticks;
         self.srv_output_inputs.manual_flap_percent = rc_out.manual_flap_percent;
 
+        let auto_mission = auto_mode_mission_tick(&AutoModeMissionInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            mission_running: self.mission.running,
+            home_is_set: self.home_is_set,
+            waypoint_count: self.mission_inputs.waypoint_count,
+            current_index: self.mission.current_index,
+        });
+        self.auto_mode_mission_applied = auto_mission.applied;
+        self.auto_mode_mission_started = auto_mission.started;
+        if auto_mission.applied {
+            self.mission.running = auto_mission.mission_running;
+            if auto_mission.started {
+                self.mission.current_index = auto_mission.current_index;
+                self.mission.complete = false;
+            }
+        }
+
         let mission_out = mission_scheduler_tick(
             &mut self.mission,
             &self.landing,
@@ -1188,6 +1220,9 @@ impl PlaneMainLoop {
             ),
         );
         self.mission_advanced = mission_out.advanced;
+        self.auto_mode_mission_advanced = auto_mission.applied
+            && auto_mission.allow_advance
+            && mission_out.advanced;
         if mission_out.ran {
             self.next_wp_alt_m = mission_out.next_wp.alt as f32 * 0.01;
         }
