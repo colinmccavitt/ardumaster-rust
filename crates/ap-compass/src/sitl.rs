@@ -1,7 +1,8 @@
 //! SITL compass backend, upstream `AP_Compass_SITL::_timer`. FW-014.
 //!
 //! Rotates the WMM earth-frame field into body frame using true attitude.
-//! Applies `COMPASS_OFS` (`mag += offsets`) then `COMPASS_MOT * thr_or_curr`
+//! Applies `COMPASS_ORIENT` / board orientation (`rotate_field`), then
+//! `COMPASS_OFS` (`mag += offsets`) then `COMPASS_MOT * thr_or_curr`
 //! when `COMPASS_MOTCT` is current or throttle. Optional SITL hard-iron bias is
 //! added before offsets so learn-offsets can cancel metal in the frame.
 //! No noise or delay ring in this slice.
@@ -13,6 +14,7 @@ use ap_math::vector3::Vector3f;
 
 use crate::motor_comp::apply_motor_compensation;
 use crate::offset::{apply_offsets, learn_offsets, offsets_within_max};
+use crate::orientation::rotate_field;
 
 /// Minimum interval between compass updates, upstream `_timer` at 100 Hz.
 pub const SITL_COMPASS_UPDATE_MS: u32 = 10;
@@ -41,6 +43,12 @@ pub struct SitlCompassConfig {
     pub motor_compensation: Vector3f,
     /// Motor compensation type, upstream `COMPASS_MOTCT`.
     pub motor_comp_type: u8,
+    /// Instance orientation, upstream `COMPASS_ORIENT`.
+    pub orientation: u8,
+    /// External mount, upstream `COMPASS_EXTERNAL`.
+    pub external: bool,
+    /// AHRS board orientation applied when the compass is internal.
+    pub board_orientation: u8,
 }
 
 impl Default for SitlCompassConfig {
@@ -51,6 +59,9 @@ impl Default for SitlCompassConfig {
             hardiron_bias: Vector3f::zero(),
             motor_compensation: Vector3f::zero(),
             motor_comp_type: 0,
+            orientation: 0,
+            external: false,
+            board_orientation: 0,
         }
     }
 }
@@ -171,6 +182,12 @@ impl SitlCompassBackend {
             self.last_longitude_deg,
             self.last_attitude,
         );
+        let expected = rotate_field(
+            expected,
+            self.config.orientation,
+            self.config.external,
+            self.config.board_orientation,
+        );
         let ofs = learn_offsets(self.raw_mag_body, expected);
         if !offsets_within_max(ofs, offsets_max) {
             return false;
@@ -200,7 +217,12 @@ impl SitlCompassBackend {
         self.last_longitude_deg = longitude_deg;
         self.last_attitude = attitude;
         let (wmm, declination_rad) = mag_field_body_ned(latitude_deg, longitude_deg, attitude);
-        self.raw_mag_body = wmm + self.config.hardiron_bias;
+        self.raw_mag_body = rotate_field(
+            wmm + self.config.hardiron_bias,
+            self.config.orientation,
+            self.config.external,
+            self.config.board_orientation,
+        );
         let mag_body = apply_offsets(self.raw_mag_body, self.config.offset);
         let mag_body = apply_motor_compensation(
             mag_body,
@@ -340,12 +362,10 @@ impl SitlCompassCluster {
     #[must_use]
     pub fn primary_sample(&mut self) -> Option<MagSampleState> {
         let primary = self.primary as usize;
-        self.backends[primary]
-            .update()
-            .or_else(|| {
-                let sample = *self.backends[primary].state();
-                sample.have_sample.then_some(sample)
-            })
+        self.backends[primary].update().or_else(|| {
+            let sample = *self.backends[primary].state();
+            sample.have_sample.then_some(sample)
+        })
     }
 
     /// Learn offsets on every enabled instance, upstream `Compass::learn_offsets`.

@@ -9,6 +9,7 @@
 pub mod declination;
 pub mod motor_comp;
 pub mod offset;
+pub mod orientation;
 pub mod params;
 pub mod persist;
 pub mod sitl;
@@ -16,20 +17,24 @@ pub mod sitl;
 pub use declination::{CompassDeclinationState, GpsDeclinationFix};
 
 pub use sitl::{
-    mag_field_body_ned, CompassHealthFlags, MagSampleState, SitlCompassBackend,
-    SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
-    SITL_COMPASS_UPDATE_MS,
+    mag_field_body_ned, CompassHealthFlags, MagSampleState, SitlCompassBackend, SitlCompassCluster,
+    SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES, SITL_COMPASS_UPDATE_MS,
 };
 
-pub use persist::{offsets_already_saved, save_instance_offset, save_offsets};
-pub use offset::{
-    apply_offsets, learn_offsets, learn_offsets_enabled, offsets_within_max,
-    COMPASS_LEARN_DEFAULT, COMPASS_LEARN_EKF, COMPASS_LEARN_INFLIGHT, COMPASS_LEARN_NONE,
-    COMPASS_OFFSETS_MAX_DEFAULT,
-};
 pub use motor_comp::{
     apply_motor_compensation, learn_motor_compensation, motor_comp_enabled, motor_offset,
     COMPASS_MOTCT_DEFAULT, COMPASS_MOT_COMP_CURRENT, COMPASS_MOT_COMP_DISABLED,
     COMPASS_MOT_COMP_THROTTLE,
 };
-pub use params::{CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT};
+pub use offset::{
+    apply_offsets, learn_offsets, learn_offsets_enabled, offsets_within_max, COMPASS_LEARN_DEFAULT,
+    COMPASS_LEARN_EKF, COMPASS_LEARN_INFLIGHT, COMPASS_LEARN_NONE, COMPASS_OFFSETS_MAX_DEFAULT,
+};
+pub use orientation::{
+    apply_orientation, is_external, rotate_field, COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT,
+    COMPASS_ORIENT_YAW_90,
+};
+pub use params::{
+    CompassInstanceParams, CompassParams, COMPASS_AUTODEC_DEFAULT, COMPASS_USE_DEFAULT,
+};
+pub use persist::{offsets_already_saved, save_instance_offset, save_offsets};

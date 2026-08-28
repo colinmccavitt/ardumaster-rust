@@ -4,6 +4,7 @@ use ap_math::vector3::Vector3f;
 
 use crate::motor_comp::COMPASS_MOTCT_DEFAULT;
 use crate::offset::{COMPASS_LEARN_DEFAULT, COMPASS_OFFSETS_MAX_DEFAULT};
+use crate::orientation::{COMPASS_EXTERNAL_DEFAULT, COMPASS_ORIENT_DEFAULT};
 use crate::sitl::{
     SitlCompassBackend, SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
 };
@@ -22,6 +23,10 @@ pub struct CompassInstanceParams {
     pub offset: Vector3f,
     /// Motor compensation factors, upstream `COMPASS_MOT` / `MOT2`.
     pub motor_compensation: Vector3f,
+    /// Instance orientation, upstream `COMPASS_ORIENT` / `ORIENT2`.
+    pub orientation: u8,
+    /// External mount, upstream `COMPASS_EXTERNAL` / `EXTERN2`.
+    pub external: bool,
 }
 
 impl Default for CompassInstanceParams {
@@ -31,6 +36,8 @@ impl Default for CompassInstanceParams {
             use_for_yaw: COMPASS_USE_DEFAULT,
             offset: Vector3f::zero(),
             motor_compensation: Vector3f::zero(),
+            orientation: COMPASS_ORIENT_DEFAULT,
+            external: COMPASS_EXTERNAL_DEFAULT,
         }
     }
 }
@@ -41,6 +48,8 @@ impl CompassInstanceParams {
             disabled: self.disabled,
             offset: self.offset,
             motor_compensation: self.motor_compensation,
+            orientation: self.orientation,
+            external: self.external,
             ..SitlCompassConfig::default()
         }
     }
@@ -61,6 +70,8 @@ pub struct CompassParams {
     pub offsets_max: f32,
     /// Motor compensation type, upstream `COMPASS_MOTCT`.
     pub motor_comp_type: u8,
+    /// AHRS board orientation applied to internal compasses.
+    pub board_orientation: u8,
 }
 
 impl Default for CompassParams {
@@ -74,18 +85,26 @@ impl Default for CompassParams {
             learn: COMPASS_LEARN_DEFAULT,
             offsets_max: COMPASS_OFFSETS_MAX_DEFAULT,
             motor_comp_type: COMPASS_MOTCT_DEFAULT,
+            board_orientation: COMPASS_ORIENT_DEFAULT,
         }
     }
 }
 
 impl CompassParams {
     pub fn apply_instance(&self, instance: u8, backend: &mut SitlCompassBackend) {
-        let inst = if instance == 0 { self.compass1 } else { self.compass2 };
+        let inst = if instance == 0 {
+            self.compass1
+        } else {
+            self.compass2
+        };
         let mut cfg = *backend.config();
         cfg.disabled = inst.disabled;
         cfg.offset = inst.offset;
         cfg.motor_compensation = inst.motor_compensation;
         cfg.motor_comp_type = self.motor_comp_type;
+        cfg.orientation = inst.orientation;
+        cfg.external = inst.external;
+        cfg.board_orientation = self.board_orientation;
         backend.set_config(cfg);
     }
 
