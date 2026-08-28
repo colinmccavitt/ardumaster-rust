@@ -11,7 +11,9 @@
 //! Pos/vel fusion enable (`SelectVelPosFusion`, GPS inhibit / quality)
 //! lives in [`pos_vel_fusion`]. Air-data / TAS fusion enable
 //! (`SelectTasFusion`, innovation gate) lives in [`air_data_fusion`].
-//! Covariance prediction and the 3-axis Kalman mag update are not here.
+//! Height / baro fusion enable (`selectHeightForFusion`, `FuseBaro`,
+//! baro offset) lives in [`height_fusion`]. Covariance prediction and
+//! the 3-axis Kalman mag update are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -37,13 +39,14 @@
 //! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
 //! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
 //! enable is [`pos_vel_fusion`]; TAS / air-data enable is
-//! [`air_data_fusion`].
+//! [`air_data_fusion`]; height / baro enable is [`height_fusion`].
 
 #![no_std]
 
 pub mod air_data_fusion;
 pub mod control;
 pub mod gyro_bias;
+pub mod height_fusion;
 pub mod mag_fusion;
 pub mod measurements;
 pub mod pos_vel_fusion;
@@ -51,6 +54,9 @@ pub mod pos_vel_fusion;
 pub use air_data_fusion::{AirDataFusion, TasFuseSel, TAS_INNOV_GATE_DEFAULT, TAS_RETRY_TIME_MS};
 pub use control::{AidingMode, FilterControl};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
+pub use height_fusion::{
+    HeightFuseSel, HeightFusion, HeightSource, HGT_INNOV_GATE_DEFAULT, HGT_RETRY_TIME_MODE12_MS,
+};
 pub use mag_fusion::{MagFuseSel, MagFusion};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
@@ -185,6 +191,8 @@ pub struct NavEkf3Core {
     pos_vel: PosVelFusion,
     /// TAS / air-data fusion enable, upstream `AP_NavEKF3_AirDataFusion.cpp`.
     air_data: AirDataFusion,
+    /// Height / baro fusion enable, upstream `selectHeightForFusion`.
+    height: HeightFusion,
 }
 
 impl Default for NavEkf3Core {
@@ -206,6 +214,7 @@ impl NavEkf3Core {
             mag_fusion: MagFusion::new(),
             pos_vel: PosVelFusion::new(),
             air_data: AirDataFusion::new(),
+            height: HeightFusion::new(),
         }
     }
 
@@ -254,6 +263,7 @@ impl NavEkf3Core {
         self.mag_fusion.write_earth_into_states(&mut self.states);
         self.pos_vel.reset();
         self.air_data.reset();
+        self.height.reset();
         true
     }
 
@@ -283,6 +293,8 @@ impl NavEkf3Core {
         self.pos_vel
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
         self.pos_vel.select_vel_pos_fusion();
+        // Upstream `SelectVelPosFusion` calls `selectHeightForFusion`.
+        self.height.select_height_fusion(self.states_initialised);
         // Upstream `UpdateFilter` runs `SelectTasFusion` after pos/vel.
         self.air_data
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
@@ -402,6 +414,22 @@ impl NavEkf3Core {
         self.air_data
             .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
         self.air_data.select_tas_fusion(self.states_initialised);
+    }
+
+    /// Height / baro helper, upstream `selectHeightForFusion`.
+    #[must_use]
+    pub const fn height(&self) -> &HeightFusion {
+        &self.height
+    }
+
+    /// Mutable height latch so tests can poke baro / source / quality flags.
+    pub fn height_mut(&mut self) -> &mut HeightFusion {
+        &mut self.height
+    }
+
+    /// Upstream `NavEKF3_core::selectHeightForFusion`.
+    pub fn select_height_fusion(&mut self) {
+        self.height.select_height_fusion(self.states_initialised);
     }
 }
 
@@ -747,5 +775,42 @@ mod tests {
         inhibited.select_tas_fusion();
         assert!(inhibited.air_data().inhibit_wind_states());
         assert_eq!(inhibited.air_data().fuse_sel(), TasFuseSel::NotFusing);
+    }
+
+    #[test]
+    fn core_height_gate_needs_baro_sample() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.select_height_fusion();
+        assert_eq!(core.height().fuse_sel(), HeightFuseSel::NotFusing);
+
+        core.height_mut().set_quality_overrides(false, false, false);
+        core.height_mut().set_baro_data(true, 10.0 as Ftype);
+        core.height_mut().set_position_d(-(10.0 as Ftype));
+        core.height_mut().set_imu_sample_time_ms(1000);
+        core.select_height_fusion();
+        assert_eq!(core.height().fuse_sel(), HeightFuseSel::FuseBaro);
+        assert!(core.height().fuse_performed());
+
+        // Lost GPS height falls back to baro.
+        let mut fallback = NavEkf3Core::new();
+        assert!(fallback.initialise_filter_bootstrap());
+        fallback
+            .height_mut()
+            .set_quality_overrides(false, false, false);
+        fallback
+            .height_mut()
+            .set_configured_source(HeightSource::Gps);
+        fallback
+            .height_mut()
+            .set_active_hgt_source(HeightSource::Gps);
+        fallback.height_mut().set_gps_height(false, false);
+        fallback.height_mut().set_baro_data(true, 10.0 as Ftype);
+        fallback.height_mut().set_position_d(-(10.0 as Ftype));
+        fallback.height_mut().set_imu_sample_time_ms(1000);
+        fallback.select_height_fusion();
+        assert_eq!(fallback.height().active_hgt_source(), HeightSource::Baro);
+        assert_eq!(fallback.height().fuse_sel(), HeightFuseSel::FuseBaro);
+        assert!(fallback.height().fuse_performed());
     }
 }
