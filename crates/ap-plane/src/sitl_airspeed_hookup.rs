@@ -7,7 +7,7 @@
 use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
-    ARSPD_RATIO_DEFAULT,
+    ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C,
 };
 use ap_math::vector3::Vector3f;
 
@@ -55,6 +55,8 @@ pub struct SitlAirspeedPublish {
     pub ratio: f32,
     /// Whether TAS is used for TECS/nav, upstream `ARSPD_USE`.
     pub use_airspeed: bool,
+    /// Primary instance temperature (deg C), upstream `get_temperature()`.
+    pub temperature_c: f32,
 }
 
 impl SitlAirspeedHookup {
@@ -96,6 +98,22 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set temperature-compensation coefficient on every enabled instance.
+    pub fn set_temp_coeff(&mut self, temp_coeff: f32) {
+        let mut params = self.params;
+        params.airspeed1.temp_coeff = temp_coeff;
+        params.airspeed2.temp_coeff = temp_coeff;
+        self.apply_airspeed_params(params);
+    }
+
+    /// Set sensor / ISA temperature (deg C) on every enabled instance.
+    pub fn set_temperature_c(&mut self, temperature_c: f32) {
+        let mut params = self.params;
+        params.airspeed1.temperature_c = temperature_c;
+        params.airspeed2.temperature_c = temperature_c;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -134,6 +152,11 @@ impl SitlAirspeedHookup {
             health,
             ratio,
             use_airspeed: self.cluster.primary_use_for_control(),
+            temperature_c: self
+                .cluster
+                .backend(self.cluster.primary())
+                .map(|backend| backend.config().temperature_c)
+                .unwrap_or(ARSPD_TEMP_REF_C),
         }
     }
 }

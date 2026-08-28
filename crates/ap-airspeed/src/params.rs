@@ -18,6 +18,10 @@ pub struct AirspeedInstanceParams {
     pub ratio: f32,
     /// Use TAS for TECS/nav, upstream `ARSPD_USE`.
     pub use_airspeed: u8,
+    /// Sensor / ISA temperature (deg C), upstream SITL `get_temperature`.
+    pub temperature_c: f32,
+    /// Linear TAS temperature-compensation coefficient (1/deg C).
+    pub temp_coeff: f32,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -28,6 +32,8 @@ impl Default for AirspeedInstanceParams {
             skip_cal: false,
             ratio: ARSPD_RATIO_DEFAULT,
             use_airspeed: crate::sitl::ARSPD_USE_DEFAULT,
+            temperature_c: crate::sitl::ARSPD_TEMP_REF_C,
+            temp_coeff: crate::sitl::ARSPD_TEMP_COEFF_DEFAULT,
         }
     }
 }
@@ -41,6 +47,8 @@ impl AirspeedInstanceParams {
             skip_cal: self.skip_cal,
             ratio: self.ratio,
             use_airspeed: self.use_airspeed,
+            temperature_c: self.temperature_c,
+            temp_coeff: self.temp_coeff,
         }
     }
 }
@@ -99,6 +107,26 @@ impl AirspeedParams {
             self.airspeed1.use_airspeed
         } else {
             self.airspeed2.use_airspeed
+        }
+    }
+
+    /// Primary instance temperature (deg C).
+    #[must_use]
+    pub fn primary_temperature_c(&self) -> f32 {
+        if self.primary == 0 {
+            self.airspeed1.temperature_c
+        } else {
+            self.airspeed2.temperature_c
+        }
+    }
+
+    /// Primary instance temperature-compensation coefficient.
+    #[must_use]
+    pub fn primary_temp_coeff(&self) -> f32 {
+        if self.primary == 0 {
+            self.airspeed1.temp_coeff
+        } else {
+            self.airspeed2.temp_coeff
         }
     }
 }

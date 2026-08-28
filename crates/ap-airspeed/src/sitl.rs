@@ -19,6 +19,16 @@ pub const ARSPD_RATIO_DEFAULT: f32 = 2.0;
 /// SITL plane default for `ARSPD_USE` (param table default is 0; SITL enables Use).
 pub const ARSPD_USE_DEFAULT: u8 = 1;
 
+/// ISA sea-level temperature (deg C). SITL `get_temperature` uses
+/// `AP_Baro::get_temperatureC_for_alt_amsl`.
+pub const ARSPD_TEMP_REF_C: f32 = 15.0;
+
+/// ISA troposphere lapse rate (K/m) used by the SITL temperature stub.
+pub const ISA_LAPSE_K_PER_M: f32 = 0.0065;
+
+/// Default temperature-compensation coefficient (identity).
+pub const ARSPD_TEMP_COEFF_DEFAULT: f32 = 0.0;
+
 /// Pitot sample from one backend read, upstream `get_airspeed()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AirspeedSampleState {
@@ -26,6 +36,8 @@ pub struct AirspeedSampleState {
     pub eas_mps: f32,
     pub have_sample: bool,
     pub last_sample_time_ms: u32,
+    /// Last pitot / ISA temperature (deg C), upstream `get_temperature()`.
+    pub temperature_c: f32,
 }
 
 /// Per-instance SITL airspeed parameters, upstream `SITL::AirspeedParams` subset.
@@ -40,6 +52,10 @@ pub struct SitlAirspeedConfig {
     pub ratio: f32,
     /// Use TAS for TECS/nav, upstream `ARSPD_USE` (0=DoNotUse, 1=Use).
     pub use_airspeed: u8,
+    /// Sensor / ISA temperature (deg C), upstream SITL `get_temperature`.
+    pub temperature_c: f32,
+    /// Linear TAS temperature-compensation coefficient (1/deg C). Zero is identity.
+    pub temp_coeff: f32,
 }
 
 impl Default for SitlAirspeedConfig {
@@ -50,6 +66,8 @@ impl Default for SitlAirspeedConfig {
             skip_cal: false,
             ratio: ARSPD_RATIO_DEFAULT,
             use_airspeed: ARSPD_USE_DEFAULT,
+            temperature_c: ARSPD_TEMP_REF_C,
+            temp_coeff: ARSPD_TEMP_COEFF_DEFAULT,
         }
     }
 }
@@ -79,6 +97,19 @@ pub fn apply_pitot_ratio(tas_mps: f32, ratio: f32) -> f32 {
 #[must_use]
 pub fn use_airspeed_for_control(disabled: bool, use_airspeed: u8) -> bool {
     !disabled && use_airspeed != 0
+}
+
+/// ISA temperature at AMSL, upstream SITL `AP_Airspeed_SITL::get_temperature`.
+#[must_use]
+pub fn sitl_airspeed_temperature_c(alt_amsl_m: f32) -> f32 {
+    ARSPD_TEMP_REF_C - ISA_LAPSE_K_PER_M * alt_amsl_m
+}
+
+/// Linear temperature compensation of pitot TAS.
+/// `tas * (1 + coeff * (temp_c - T_ref))`. Coeff 0 leaves TAS unchanged.
+#[must_use]
+pub fn apply_temp_compensation(tas_mps: f32, temp_c: f32, coeff: f32) -> f32 {
+    (tas_mps * (1.0 + coeff * (temp_c - ARSPD_TEMP_REF_C))).max(0.0)
 }
 
 /// TAS consumed by TECS/AHRS nav: zero when `ARSPD_USE` is disabled.
@@ -167,6 +198,14 @@ impl SitlAirspeedBackend {
         self.config.use_airspeed = use_airspeed;
     }
 
+    pub fn set_temperature_c(&mut self, temperature_c: f32) {
+        self.config.temperature_c = temperature_c;
+    }
+
+    pub fn set_temp_coeff(&mut self, temp_coeff: f32) {
+        self.config.temp_coeff = temp_coeff;
+    }
+
     /// Upstream `AP_Airspeed::use()` for this instance.
     #[must_use]
     pub fn use_for_control(&self) -> bool {
@@ -202,12 +241,18 @@ impl SitlAirspeedBackend {
         let raw_tas = pitot_tas_from_body(airspeed_bf);
         self.raw_tas_mps = raw_tas;
         let tas_mps = apply_pitot_ratio((raw_tas - self.config.offset_mps).max(0.0), self.config.ratio);
+        let tas_mps = apply_temp_compensation(
+            tas_mps,
+            self.config.temperature_c,
+            self.config.temp_coeff,
+        );
         let eas_mps = eas_from_tas(tas_mps, eas2tas);
         self.pending = AirspeedSampleState {
             tas_mps,
             eas_mps,
             have_sample: true,
             last_sample_time_ms: now_ms,
+            temperature_c: self.config.temperature_c,
         };
         self.has_pending = true;
         true
@@ -322,6 +367,18 @@ impl SitlAirspeedCluster {
     pub fn set_use_airspeed_all(&mut self, use_airspeed: u8) {
         for i in 0..self.instance_count as usize {
             self.backends[i].set_use_airspeed(use_airspeed);
+        }
+    }
+
+    pub fn set_temperature_all(&mut self, temperature_c: f32) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_temperature_c(temperature_c);
+        }
+    }
+
+    pub fn set_temp_coeff_all(&mut self, temp_coeff: f32) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_temp_coeff(temp_coeff);
         }
     }
 
@@ -514,5 +571,36 @@ mod tests {
         assert!(backend.timer_tick(Vector3f::new(16.0, 0.0, 0.0), 1.0, 10));
         assert!(backend.healthy());
         assert!((backend.state().tas_mps - 16.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sitl_temperature_follows_isa_lapse() {
+        assert!((sitl_airspeed_temperature_c(0.0) - ARSPD_TEMP_REF_C).abs() < 1e-6);
+        assert!((sitl_airspeed_temperature_c(1000.0) - 8.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_temp_coeff_leaves_tas_unchanged() {
+        let mut backend = SitlAirspeedBackend::default();
+        assert!((backend.config().temperature_c - ARSPD_TEMP_REF_C).abs() < 1e-6);
+        assert!((backend.config().temp_coeff - ARSPD_TEMP_COEFF_DEFAULT).abs() < 1e-6);
+        assert!(backend.timer_tick(Vector3f::new(18.0, 0.0, 0.0), 1.0, 10));
+        assert!((backend.state().tas_mps - 18.0).abs() < 1e-6);
+        assert!((backend.state().temperature_c - ARSPD_TEMP_REF_C).abs() < 1e-6);
+    }
+
+    #[test]
+    fn temp_coeff_scales_tas_with_temperature_delta() {
+        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+            temperature_c: 25.0,
+            temp_coeff: 0.01,
+            ..SitlAirspeedConfig::default()
+        });
+        assert!(backend.timer_tick(Vector3f::new(20.0, 0.0, 0.0), 1.0, 10));
+        // 20 * (1 + 0.01 * (25 - 15)) = 22
+        assert!((backend.state().tas_mps - 22.0).abs() < 1e-6);
+        assert!((backend.state().eas_mps - 22.0).abs() < 1e-6);
+        assert!((backend.state().temperature_c - 25.0).abs() < 1e-6);
+        assert!((apply_temp_compensation(20.0, 15.0, 0.01) - 20.0).abs() < 1e-6);
     }
 }

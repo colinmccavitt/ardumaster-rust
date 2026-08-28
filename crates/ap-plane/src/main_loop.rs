@@ -94,7 +94,7 @@ use crate::airspeed_offset_calibration_hookup::{
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
-use ap_airspeed::sitl::{tas_for_nav, ARSPD_RATIO_DEFAULT, ARSPD_USE_DEFAULT};
+use ap_airspeed::sitl::{tas_for_nav, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT};
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
@@ -249,6 +249,8 @@ pub struct PlaneMainLoop {
     pub airspeed_use: u8,
     /// Whether TAS is used for TECS/nav, upstream `AP_Airspeed::use()`.
     pub airspeed_use_for_control: bool,
+    /// Primary pitot / ISA temperature (deg C), upstream `get_temperature()`.
+    pub airspeed_temperature_c: f32,
     /// Last TECS `use_airspeed` feed, upstream `TECS_controller.use_airspeed()`.
     pub last_tecs_use_airspeed: bool,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
@@ -562,6 +564,7 @@ impl Default for PlaneMainLoop {
             airspeed_ratio: ARSPD_RATIO_DEFAULT,
             airspeed_use: ARSPD_USE_DEFAULT,
             airspeed_use_for_control: true,
+            airspeed_temperature_c: ARSPD_TEMP_REF_C,
             last_tecs_use_airspeed: false,
             baro_sample: None,
             mag_sample: None,
@@ -964,6 +967,7 @@ impl PlaneMainLoop {
                 .map(|backend| backend.config().use_airspeed)
                 .unwrap_or(ARSPD_USE_DEFAULT);
             self.airspeed_use_for_control = out.use_airspeed;
+            self.airspeed_temperature_c = out.sample.temperature_c;
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }
