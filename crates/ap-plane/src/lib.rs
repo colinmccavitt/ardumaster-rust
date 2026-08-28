@@ -58,6 +58,7 @@ pub mod baro_arm_calibration_hookup;
 pub mod arming_check_registry_hookup;
 pub mod arming_check_bitmask_hookup;
 pub mod baro_ahrs_named_check_hookup;
+pub mod gps_ins_named_check_hookup;
 pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;
 pub mod sitl_ins_host_files;
