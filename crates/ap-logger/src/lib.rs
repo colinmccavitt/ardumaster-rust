@@ -13,19 +13,22 @@
 //! log-file session (`_write_filename`) into a buffer mock.
 //! [`transfer`] is MAVLink log-transfer listing: `LOG_REQUEST_LIST`
 //! (msgid 117) answered with `LOG_ENTRY` (msgid 118), using log count
-//! and last-log id from the file-backend mock.
+//! and last-log id from the file-backend mock. [`replay`] is MAVLink
+//! log-transfer download: `LOG_REQUEST_DATA` (msgid 119) answered with
+//! `LOG_DATA` (msgid 120) chunks of recorded bytes from the
+//! file-backend mock.
 //!
 //! # What this crate does not include yet
 //!
-//! The DataFlash page map, log rotation, rate limiting, MAVLink
-//! `LOG_REQUEST_DATA` / `LOG_DATA` replay, and the `AP_Logger`
-//! front-end. Those land in later FW-030 slices.
+//! The DataFlash page map, log rotation, rate limiting, log erase,
+//! and the `AP_Logger` front-end. Those land in later FW-030 slices.
 
 #![no_std]
 
 pub mod backend;
 pub mod file;
 pub mod gate;
+pub mod replay;
 pub mod structure;
 pub mod transfer;
 pub mod write;
@@ -38,6 +41,10 @@ pub use gate::{
     MASK_LOG_CURRENT, MASK_LOG_GPS, MASK_LOG_IMU, MASK_LOG_IMU_RAW, MASK_LOG_NOTCH_FULLRATE,
     MASK_LOG_NTUN, MASK_LOG_PM, MASK_LOG_RC, MASK_LOG_SONAR, MASK_LOG_TECS,
     MASK_LOG_VIDEO_STABILISATION,
+};
+pub use replay::{
+    LogData, LogReplay, LogRequestData, LOG_DATA_CHUNK_LEN, LOG_DATA_LEN, LOG_REQUEST_DATA_LEN,
+    MSG_ID_LOG_DATA, MSG_ID_LOG_REQUEST_DATA,
 };
 pub use structure::{
     fill_format, LogFormat, LogPacketHeader, LogStructure, FMT_FORMAT_LEN, FMT_LABELS_LEN,
