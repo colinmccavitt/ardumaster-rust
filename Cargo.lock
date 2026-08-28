@@ -79,6 +79,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-ekf3"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-filter"
 version = "0.1.0"
 dependencies = [
