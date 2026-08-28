@@ -91,6 +91,7 @@ use crate::airspeed_health_scheduler_hookup::{
 use crate::airspeed_offset_calibration_hookup::{
     airspeed_offset_calibration_tick, AirspeedOffsetCalibrationInputs,
 };
+use crate::airspeed_analog_hookup::AirspeedAnalogHookup;
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
@@ -258,6 +259,14 @@ pub struct PlaneMainLoop {
     pub airspeed_temperature_c: f32,
     /// Primary `ARSPD_AUTOCAL`, upstream automatic pitot-ratio calibration.
     pub airspeed_autocal: u8,
+    /// Optional analog airspeed backend, upstream `AP_Airspeed_Analog`.
+    pub analog_airspeed: Option<AirspeedAnalogHookup>,
+    /// Primary analog pin, upstream `ARSPD_PIN`.
+    pub airspeed_pin: i8,
+    /// Latest analog differential pressure (Pa).
+    pub airspeed_diff_pressure_pa: f32,
+    /// Whether the analog backend returned a pressure this tick.
+    pub airspeed_analog_have_pressure: bool,
     /// Last TECS `use_airspeed` feed, upstream `TECS_controller.use_airspeed()`.
     pub last_tecs_use_airspeed: bool,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
@@ -581,6 +590,10 @@ impl Default for PlaneMainLoop {
             airspeed_use_for_control: true,
             airspeed_temperature_c: ARSPD_TEMP_REF_C,
             airspeed_autocal: ARSPD_AUTOCAL_DEFAULT,
+            analog_airspeed: None,
+            airspeed_pin: 0,
+            airspeed_diff_pressure_pa: 0.0,
+            airspeed_analog_have_pressure: false,
             last_tecs_use_airspeed: false,
             baro_sample: None,
             mag_sample: None,
@@ -1012,6 +1025,12 @@ impl PlaneMainLoop {
                 self.airspeed_offset_calibrated = cal.calibrated;
                 self.airspeed_calibrate_requested = false;
             }
+        }
+        if let Some(analog) = self.analog_airspeed.as_mut() {
+            let out = analog.publish();
+            self.airspeed_pin = out.pin;
+            self.airspeed_diff_pressure_pa = out.pressure_pa;
+            self.airspeed_analog_have_pressure = out.have_pressure;
         }
         if let Some(vane) = self.wind_vane {
             self.ahrs.apply_wind_vane(vane);

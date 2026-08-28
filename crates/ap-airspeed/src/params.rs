@@ -1,5 +1,6 @@
 //! Airspeed parameter table stub, upstream AP_Airspeed var_info. FW-010.
 
+use crate::analog::{AnalogAirspeedConfig, ARSPD_PIN_DEFAULT, ARSPD_PSI_RANGE_DEFAULT};
 use crate::sitl::{
     SitlAirspeedBackend, SitlAirspeedCluster, SitlAirspeedConfig, ARSPD_RATIO_DEFAULT,
     SITL_AIRSPEED_MAX_INSTANCES,
@@ -24,6 +25,10 @@ pub struct AirspeedInstanceParams {
     pub temp_coeff: f32,
     /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL`.
     pub autocal: u8,
+    /// Analog input pin, upstream `ARSPD_PIN` (`-1` disables).
+    pub pin: i8,
+    /// Sensor PSI range, upstream `ARSPD_PSI_RANGE`.
+    pub psi_range: f32,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -37,6 +42,8 @@ impl Default for AirspeedInstanceParams {
             temperature_c: crate::sitl::ARSPD_TEMP_REF_C,
             temp_coeff: crate::sitl::ARSPD_TEMP_COEFF_DEFAULT,
             autocal: crate::sitl::ARSPD_AUTOCAL_DEFAULT,
+            pin: ARSPD_PIN_DEFAULT,
+            psi_range: ARSPD_PSI_RANGE_DEFAULT,
         }
     }
 }
@@ -53,6 +60,15 @@ impl AirspeedInstanceParams {
             temperature_c: self.temperature_c,
             temp_coeff: self.temp_coeff,
             autocal: self.autocal,
+        }
+    }
+
+    /// Analog pin / PSI-range config, upstream `ARSPD_PIN` / `ARSPD_PSI_RANGE`.
+    #[must_use]
+    pub fn analog_config(self) -> AnalogAirspeedConfig {
+        AnalogAirspeedConfig {
+            pin: self.pin,
+            psi_range: self.psi_range,
         }
     }
 }
@@ -141,6 +157,26 @@ impl AirspeedParams {
             self.airspeed1.autocal
         } else {
             self.airspeed2.autocal
+        }
+    }
+
+    /// Primary instance `ARSPD_PIN` / `ARSPD2_PIN`.
+    #[must_use]
+    pub fn primary_pin(&self) -> i8 {
+        if self.primary == 0 {
+            self.airspeed1.pin
+        } else {
+            self.airspeed2.pin
+        }
+    }
+
+    /// Primary instance `ARSPD_PSI_RANGE` / `ARSPD2_PSI_RANGE`.
+    #[must_use]
+    pub fn primary_psi_range(&self) -> f32 {
+        if self.primary == 0 {
+            self.airspeed1.psi_range
+        } else {
+            self.airspeed2.psi_range
         }
     }
 }

@@ -22,6 +22,10 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert_eq!(params.airspeed1.temp_coeff, 0.0);
     assert_eq!(params.airspeed1.autocal, ARSPD_AUTOCAL_DEFAULT);
     assert_eq!(params.primary_autocal(), 0);
+    assert_eq!(params.airspeed1.pin, 0);
+    assert_eq!(params.primary_pin(), 0);
+    assert!((params.airspeed1.psi_range - 1.0).abs() < 1e-6);
+    assert!((params.primary_psi_range() - 1.0).abs() < 1e-6);
 }
 
 #[test]
@@ -49,6 +53,8 @@ fn instance_params_apply_to_sitl_config() {
         temperature_c: 25.0,
         temp_coeff: 0.01,
         autocal: 1,
+        pin: 13,
+        psi_range: 2.0,
     }
     .apply_to_config();
     assert!(cfg.disabled);
@@ -59,6 +65,18 @@ fn instance_params_apply_to_sitl_config() {
     assert!((cfg.temperature_c - 25.0).abs() < 1e-6);
     assert!((cfg.temp_coeff - 0.01).abs() < 1e-6);
     assert_eq!(cfg.autocal, 1);
+}
+
+#[test]
+fn instance_params_apply_to_analog_config() {
+    let analog = AirspeedInstanceParams {
+        pin: 13,
+        psi_range: 2.0,
+        ..AirspeedInstanceParams::default()
+    }
+    .analog_config();
+    assert_eq!(analog.pin, 13);
+    assert!((analog.psi_range - 2.0).abs() < 1e-6);
 }
 
 #[test]

@@ -25,6 +25,7 @@ pub mod compass_pre_arm_hookup;
 pub mod airspeed_pre_arm_hookup;
 pub mod airspeed_health_scheduler_hookup;
 pub mod airspeed_offset_calibration_hookup;
+pub mod airspeed_analog_hookup;
 pub mod compass_health_scheduler_hookup;
 pub mod compass_offset_calibration_hookup;
 pub mod compass_offset_persist_hookup;

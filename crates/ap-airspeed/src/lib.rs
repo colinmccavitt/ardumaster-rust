@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod analog;
 pub mod params;
 pub mod sitl;
 
@@ -18,6 +19,11 @@ pub use sitl::{
     SITL_AIRSPEED_UPDATE_MS,
 };
 
+pub use analog::{
+    differential_pressure_pa, AnalogAirspeedBackend, AnalogAirspeedConfig,
+    ARSPD_PIN_DEFAULT, ARSPD_PIN_DISABLED, ARSPD_PSI_RANGE_DEFAULT, ARSPD_TYPE_ANALOG,
+    VOLTS_TO_PASCAL,
+};
 pub use params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };
