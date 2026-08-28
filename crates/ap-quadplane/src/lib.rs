@@ -25,6 +25,7 @@
 #![no_std]
 
 pub mod air_mode;
+pub mod mode_q;
 pub mod poscontrol;
 pub mod tailsitter;
 pub mod throttle;
