@@ -8,7 +8,9 @@
 //! lives in [`control`]. Gyro-bias reset / constrain / inactive-IMU
 //! learn lives in [`gyro_bias`]. Mag-fusion enable / yaw-reset
 //! (`SelectMagFusion`, `magFieldEarth`) lives in [`mag_fusion`].
-//! Covariance prediction and the 3-axis Kalman mag update are not here.
+//! Pos/vel fusion enable (`SelectVelPosFusion`, GPS inhibit / quality)
+//! lives in [`pos_vel_fusion`]. Covariance prediction and the 3-axis
+//! Kalman mag update are not here.
 //!
 //! # Twenty-four states, one vector
 //!
@@ -32,7 +34,8 @@
 //! AHRS `ekf3_loop` DCM fallback. That loop stays in `ap-ahrs`; this crate
 //! is the estimator, not the AHRS glue. The IMU ring is [`measurements`];
 //! the flight-mode latch is [`control`]; gyro bias is [`gyro_bias`];
-//! mag-fusion enable / yaw-reset is [`mag_fusion`].
+//! mag-fusion enable / yaw-reset is [`mag_fusion`]; pos/vel fusion
+//! enable is [`pos_vel_fusion`].
 
 #![no_std]
 
@@ -40,10 +43,12 @@ pub mod control;
 pub mod gyro_bias;
 pub mod mag_fusion;
 pub mod measurements;
+pub mod pos_vel_fusion;
 
 pub use control::{AidingMode, FilterControl};
 pub use gyro_bias::{GyroBias, GYRO_BIAS_INIT_DPS, GYRO_BIAS_LIMIT_RAD_S};
 pub use mag_fusion::{MagFuseSel, MagFusion};
+pub use pos_vel_fusion::{PosVelFuseSel, PosVelFusion};
 pub use measurements::{
     ImuBuffer, ImuElements, ImuRawSample, ImuSampleRing, EKF_TARGET_DT, EKF_TARGET_DT_MS,
     IMU_BUFFER_CAPACITY,
@@ -172,6 +177,8 @@ pub struct NavEkf3Core {
     gyro_bias: GyroBias,
     /// Mag-fusion enable / yaw-reset, upstream `AP_NavEKF3_MagFusion.cpp`.
     mag_fusion: MagFusion,
+    /// Pos/vel fusion enable, upstream `AP_NavEKF3_PosVelFusion.cpp`.
+    pos_vel: PosVelFusion,
 }
 
 impl Default for NavEkf3Core {
@@ -191,6 +198,7 @@ impl NavEkf3Core {
             control: FilterControl::new(),
             gyro_bias: GyroBias::new(),
             mag_fusion: MagFusion::new(),
+            pos_vel: PosVelFusion::new(),
         }
     }
 
@@ -237,6 +245,7 @@ impl NavEkf3Core {
         self.gyro_bias.write_into_states(&mut self.states);
         self.mag_fusion.reset();
         self.mag_fusion.write_earth_into_states(&mut self.states);
+        self.pos_vel.reset();
         true
     }
 
@@ -260,6 +269,12 @@ impl NavEkf3Core {
         }
         self.mag_fusion.select_mag_fusion(self.states_initialised);
         self.mag_fusion.write_earth_into_states(&mut self.states);
+        // Upstream `UpdateFilter` runs `SelectVelPosFusion` after mag.
+        self.pos_vel.set_gps_inhibit(self.control.gps_inhibit());
+        self.pos_vel.set_aiding_mode(self.control.aiding_mode());
+        self.pos_vel
+            .set_mag_fuse_timing(self.mag_fusion.mag_fuse_performed(), crate::EKF_TARGET_DT);
+        self.pos_vel.select_vel_pos_fusion();
     }
 
     /// Filter-mode latch, upstream `onGround` / `inFlight` / `gpsInhibit`.
@@ -339,6 +354,24 @@ impl NavEkf3Core {
     /// External yaw-reset request, upstream `magYawResetRequest`.
     pub fn request_mag_yaw_reset(&mut self) {
         self.mag_fusion.request_yaw_reset();
+    }
+
+    /// Pos/vel fusion helper, upstream `SelectVelPosFusion`.
+    #[must_use]
+    pub const fn pos_vel(&self) -> &PosVelFusion {
+        &self.pos_vel
+    }
+
+    /// Mutable pos/vel fusion so tests can poke GPS / quality flags.
+    pub fn pos_vel_mut(&mut self) -> &mut PosVelFusion {
+        &mut self.pos_vel
+    }
+
+    /// Upstream `NavEKF3_core::SelectVelPosFusion`.
+    pub fn select_vel_pos_fusion(&mut self) {
+        self.pos_vel.set_gps_inhibit(self.control.gps_inhibit());
+        self.pos_vel.set_aiding_mode(self.control.aiding_mode());
+        self.pos_vel.select_vel_pos_fusion();
     }
 }
 
@@ -626,5 +659,34 @@ mod tests {
         let e = core.state(StateIndex::EarthMagE) - (0.05 as Ftype);
         let d = core.state(StateIndex::EarthMagD) - (0.41 as Ftype);
         assert!(n * n + e * e + d * d < 1.0e-12 as Ftype);
+    }
+
+    #[test]
+    fn core_pos_vel_gate_needs_absolute_gps_and_quality() {
+        let mut core = NavEkf3Core::new();
+        assert!(core.initialise_filter_bootstrap());
+        core.select_vel_pos_fusion();
+        assert_eq!(core.pos_vel().fuse_sel(), PosVelFuseSel::NotFusing);
+
+        core.control_mut()
+            .set_aiding_mode_for_test(AidingMode::Absolute);
+        core.pos_vel_mut().set_gps_data_to_fuse(true);
+        core.pos_vel_mut().set_gps_accuracy_good(true);
+        core.select_vel_pos_fusion();
+        assert_eq!(core.pos_vel().fuse_sel(), PosVelFuseSel::FuseVelPos);
+        assert!(core.pos_vel().fuse_performed());
+
+        // `setInhibitGPS` is accepted only before AID_ABSOLUTE.
+        let mut inhibited = NavEkf3Core::new();
+        assert!(inhibited.initialise_filter_bootstrap());
+        assert_eq!(inhibited.set_inhibit_gps(), 1);
+        inhibited
+            .control_mut()
+            .set_aiding_mode_for_test(AidingMode::Absolute);
+        inhibited.pos_vel_mut().set_gps_data_to_fuse(true);
+        inhibited.pos_vel_mut().set_gps_accuracy_good(true);
+        inhibited.select_vel_pos_fusion();
+        assert!(inhibited.control().gps_inhibit());
+        assert_eq!(inhibited.pos_vel().fuse_sel(), PosVelFuseSel::NotFusing);
     }
 }
