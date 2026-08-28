@@ -130,6 +130,7 @@ use crate::auto_mode_hookup::{auto_mode_mission_tick, AutoModeMissionInputs};
 use crate::rtl_mode_hookup::{rtl_mode_nav_tick, RtlModeNavInputs};
 use crate::loiter_mode_hookup::{loiter_mode_nav_tick, LoiterModeNavInputs};
 use crate::guided_mode_hookup::{guided_mode_nav_tick, GuidedModeNavInputs};
+use crate::takeoff_mode_hookup::{takeoff_mode_nav_tick, TakeoffModeNavInputs};
 use crate::mode_glue_hookup::{
     mode_glue_set_servos_tick, mode_glue_stabilize_tick, mode_glue_update_control_tick,
     ModeGlueSetServosInputs, ModeGlueStabilizeInputs, ModeGlueUpdateControlInputs,
@@ -447,6 +448,24 @@ pub struct PlaneMainLoop {
     pub guided_loiter_radius_m: u16,
     /// GUIDED loiter direction applied this tick.
     pub guided_loiter_ccw: bool,
+    /// Upstream TKOFF_ALT, metres.
+    pub takeoff_target_alt_m: u16,
+    /// Upstream TKOFF_DIST, metres.
+    pub takeoff_target_dist_m: u16,
+    /// Upstream `plane.current_loc.initialised()`.
+    pub current_loc_initialised: bool,
+    /// Whether TAKEOFF enter/navigate glue ran this tick.
+    pub takeoff_mode_nav_applied: bool,
+    /// Whether ModeTakeoff::_enter cleared takeoff_mode_setup this tick.
+    pub takeoff_mode_started: bool,
+    /// Whether TAKEOFF update may place the climb/loiter waypoint this tick.
+    pub takeoff_mode_setup_allowed: bool,
+    /// Whether TAKEOFF navigate is allowed to call update_loiter this tick.
+    pub takeoff_mode_loiter_allowed: bool,
+    /// Always 0 when applied: navigate calls update_loiter(0).
+    pub takeoff_loiter_radius_m: u16,
+    /// WP_LOITER_RAD < 0 selects counterclockwise takeoff loiter.
+    pub takeoff_loiter_ccw: bool,
     /// HAL inputs for RC channel read and failsafe during the scheduler tick.
     pub rc_failsafe_inputs: RcFailsafeSchedulerInputs,
     /// Whether the latest scheduler tick saw an RC failsafe.
@@ -843,6 +862,15 @@ impl Default for PlaneMainLoop {
             guided_mode_loiter_allowed: false,
             guided_loiter_radius_m: 0,
             guided_loiter_ccw: false,
+            takeoff_target_alt_m: crate::takeoff_mode_hookup::TKOFF_ALT_DEFAULT_M,
+            takeoff_target_dist_m: crate::takeoff_mode_hookup::TKOFF_DIST_DEFAULT_M,
+            current_loc_initialised: true,
+            takeoff_mode_nav_applied: false,
+            takeoff_mode_started: false,
+            takeoff_mode_setup_allowed: false,
+            takeoff_mode_loiter_allowed: false,
+            takeoff_loiter_radius_m: 0,
+            takeoff_loiter_ccw: false,
             rc_failsafe_inputs: RcFailsafeSchedulerInputs::default(),
             in_rc_failsafe: false,
             ekf_healthy: false,
@@ -1363,6 +1391,29 @@ impl PlaneMainLoop {
             }
             if guided_nav.clear_throttle_passthru {
                 self.guided_throttle_passthru = false;
+            }
+        }
+
+        let takeoff_nav = takeoff_mode_nav_tick(&TakeoffModeNavInputs {
+            control_mode: self.mode.control_mode,
+            features: self.features,
+            mode_just_entered: self.mode_entry_reset,
+            home_is_set: self.home_is_set,
+            current_loc_initialised: self.current_loc_initialised,
+            target_alt_m: self.takeoff_target_alt_m,
+            target_dist_m: self.takeoff_target_dist_m,
+            wp_loiter_rad_m: self.wp_loiter_rad_m,
+        });
+        self.takeoff_mode_nav_applied = takeoff_nav.applied;
+        self.takeoff_mode_started = takeoff_nav.started;
+        self.takeoff_mode_setup_allowed = takeoff_nav.allow_setup;
+        self.takeoff_mode_loiter_allowed = takeoff_nav.allow_loiter;
+        if takeoff_nav.applied {
+            self.takeoff_loiter_radius_m = takeoff_nav.loiter_radius_m;
+            self.takeoff_target_alt_m = takeoff_nav.target_alt_m;
+            self.takeoff_target_dist_m = takeoff_nav.target_dist_m;
+            if takeoff_nav.direction_set {
+                self.takeoff_loiter_ccw = takeoff_nav.loiter_ccw;
             }
         }
 
