@@ -10,6 +10,7 @@ pub mod declination;
 pub mod motor_comp;
 pub mod offset;
 pub mod params;
+pub mod persist;
 pub mod sitl;
 
 pub use declination::{CompassDeclinationState, GpsDeclinationFix};
@@ -20,6 +21,7 @@ pub use sitl::{
     SITL_COMPASS_UPDATE_MS,
 };
 
+pub use persist::{offsets_already_saved, save_instance_offset, save_offsets};
 pub use offset::{
     apply_offsets, learn_offsets, learn_offsets_enabled, offsets_within_max,
     COMPASS_LEARN_DEFAULT, COMPASS_LEARN_EKF, COMPASS_LEARN_INFLIGHT, COMPASS_LEARN_NONE,

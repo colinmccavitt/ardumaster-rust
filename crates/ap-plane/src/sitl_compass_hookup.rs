@@ -118,6 +118,12 @@ impl SitlCompassHookup {
         self.cluster.learn_offsets(self.params.offsets_max)
     }
 
+    /// Persist backend `COMPASS_OFS` into params, upstream `Compass::save_offsets`.
+    #[must_use]
+    pub fn save_offsets(&mut self) -> bool {
+        ap_compass::persist::save_offsets(&mut self.params, &self.cluster)
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlCompassCluster {
         &self.cluster

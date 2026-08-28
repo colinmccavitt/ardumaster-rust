@@ -79,6 +79,9 @@ use crate::compass_health_scheduler_hookup::{
 use crate::compass_offset_calibration_hookup::{
     compass_offset_calibration_tick, CompassOffsetCalibrationInputs,
 };
+use crate::compass_offset_persist_hookup::{
+    compass_offset_persist_tick, CompassOffsetPersistInputs,
+};
 use crate::compass_motor_compensation_hookup::{
     compass_motor_compensation_tick, CompassMotorCompensationInputs,
 };
@@ -257,6 +260,10 @@ pub struct PlaneMainLoop {
     pub compass_learn_requested: bool,
     /// True after the last requested mag offset learn succeeded.
     pub compass_offsets_learned: bool,
+    /// Request a `COMPASS_OFS` persist this `ahrs_update`, upstream `save_offsets`.
+    pub compass_save_offsets_requested: bool,
+    /// True after the last requested mag offset persist succeeded.
+    pub compass_offsets_saved: bool,
     /// Battery current for `COMPASS_MOT`, upstream `AP_BattMonitor::current_amps`.
     pub compass_battery_current_amps: f32,
     /// Latest baro sample from the SITL backend, upstream `AP_Baro` frontend.
@@ -559,6 +566,8 @@ impl Default for PlaneMainLoop {
             compass_health: CompassHealthFlags::default(),
             compass_learn_requested: false,
             compass_offsets_learned: false,
+            compass_save_offsets_requested: false,
+            compass_offsets_saved: false,
             compass_battery_current_amps: 0.0,
             baro_healthy: false,
             baro_health: BaroHealthFlags::default(),
@@ -816,6 +825,19 @@ impl PlaneMainLoop {
                 );
                 self.compass_offsets_learned = cal.learned;
                 self.compass_learn_requested = false;
+                if cal.learned {
+                    self.compass_save_offsets_requested = true;
+                }
+            }
+            if self.compass_save_offsets_requested {
+                let persist = compass_offset_persist_tick(
+                    compass,
+                    CompassOffsetPersistInputs {
+                        request_save: true,
+                    },
+                );
+                self.compass_offsets_saved = persist.saved;
+                self.compass_save_offsets_requested = false;
             }
         }
         if let Some(gps) = self.sitl_gps.as_mut() {
