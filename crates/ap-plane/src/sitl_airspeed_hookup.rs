@@ -7,7 +7,7 @@
 use ap_airspeed::params::AirspeedParams;
 use ap_airspeed::sitl::{
     AirspeedHealthFlags, AirspeedSampleState, SitlAirspeedBackend, SitlAirspeedCluster,
-    ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C,
+    ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C,
 };
 use ap_math::vector3::Vector3f;
 
@@ -33,6 +33,8 @@ pub struct SitlAirspeedHookup {
     cluster: SitlAirspeedCluster,
     params: AirspeedParams,
     pub truth: SitlAirspeedTruth,
+    /// Horizontal GPS groundspeed (m/s) for `ARSPD_AUTOCAL`.
+    pub gps_groundspeed_mps: f32,
 }
 
 impl Default for SitlAirspeedHookup {
@@ -41,6 +43,7 @@ impl Default for SitlAirspeedHookup {
             cluster: SitlAirspeedCluster::default(),
             params: AirspeedParams::default(),
             truth: SitlAirspeedTruth::default(),
+            gps_groundspeed_mps: 0.0,
         }
     }
 }
@@ -57,6 +60,8 @@ pub struct SitlAirspeedPublish {
     pub use_airspeed: bool,
     /// Primary instance temperature (deg C), upstream `get_temperature()`.
     pub temperature_c: f32,
+    /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL`.
+    pub autocal: u8,
 }
 
 impl SitlAirspeedHookup {
@@ -69,6 +74,7 @@ impl SitlAirspeedHookup {
             cluster,
             params: AirspeedParams::default(),
             truth: SitlAirspeedTruth::default(),
+            gps_groundspeed_mps: 0.0,
         }
     }
 
@@ -114,6 +120,14 @@ impl SitlAirspeedHookup {
         self.apply_airspeed_params(params);
     }
 
+    /// Set `ARSPD_AUTOCAL` on every enabled instance.
+    pub fn set_autocal(&mut self, autocal: u8) {
+        let mut params = self.params;
+        params.airspeed1.autocal = autocal;
+        params.airspeed2.autocal = autocal;
+        self.apply_airspeed_params(params);
+    }
+
     #[must_use]
     pub const fn cluster(&self) -> &SitlAirspeedCluster {
         &self.cluster
@@ -135,6 +149,7 @@ impl SitlAirspeedHookup {
     pub fn publish(&mut self, eas2tas: f32) -> SitlAirspeedPublish {
         self.cluster.timer_tick_all(self.truth.airspeed_bf, eas2tas, self.truth.now_ms);
         self.cluster.select_primary_healthy();
+        self.cluster.update_autocal_all(self.gps_groundspeed_mps);
         let health = self.cluster.health_flags();
         let sample = self
             .cluster
@@ -157,6 +172,11 @@ impl SitlAirspeedHookup {
                 .backend(self.cluster.primary())
                 .map(|backend| backend.config().temperature_c)
                 .unwrap_or(ARSPD_TEMP_REF_C),
+            autocal: self
+                .cluster
+                .backend(self.cluster.primary())
+                .map(|backend| backend.config().autocal)
+                .unwrap_or(ARSPD_AUTOCAL_DEFAULT),
         }
     }
 }
@@ -170,5 +190,6 @@ pub fn hookup_with_disabled_primary() -> SitlAirspeedHookup {
         cluster: SitlAirspeedCluster::cluster_with_disabled_primary(),
         params,
         truth: SitlAirspeedTruth::default(),
+        gps_groundspeed_mps: 0.0,
     }
 }

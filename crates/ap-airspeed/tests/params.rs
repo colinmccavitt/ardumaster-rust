@@ -2,8 +2,9 @@ use ap_airspeed::params::{
     AirspeedInstanceParams, AirspeedParams, ARSPD_RATIO_PARAM_DEFAULT,
 };
 use ap_airspeed::sitl::{
-    apply_pitot_ratio, apply_temp_compensation, sitl_airspeed_temperature_c, SitlAirspeedBackend,
-    SitlAirspeedCluster, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C,
+    apply_autocal_ratio, apply_pitot_ratio, apply_temp_compensation, sitl_airspeed_temperature_c,
+    SitlAirspeedBackend, SitlAirspeedCluster, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT,
+    ARSPD_TEMP_REF_C,
 };
 
 #[test]
@@ -19,6 +20,8 @@ fn airspeed_params_defaults_match_upstream_ratio() {
     assert!((params.airspeed1.temperature_c - ARSPD_TEMP_REF_C).abs() < 1e-6);
     assert!((params.primary_temperature_c() - 15.0).abs() < 1e-6);
     assert_eq!(params.airspeed1.temp_coeff, 0.0);
+    assert_eq!(params.airspeed1.autocal, ARSPD_AUTOCAL_DEFAULT);
+    assert_eq!(params.primary_autocal(), 0);
 }
 
 #[test]
@@ -45,6 +48,7 @@ fn instance_params_apply_to_sitl_config() {
         use_airspeed: 0,
         temperature_c: 25.0,
         temp_coeff: 0.01,
+        autocal: 1,
     }
     .apply_to_config();
     assert!(cfg.disabled);
@@ -54,6 +58,7 @@ fn instance_params_apply_to_sitl_config() {
     assert_eq!(cfg.use_airspeed, 0);
     assert!((cfg.temperature_c - 25.0).abs() < 1e-6);
     assert!((cfg.temp_coeff - 0.01).abs() < 1e-6);
+    assert_eq!(cfg.autocal, 1);
 }
 
 #[test]
@@ -86,4 +91,24 @@ fn apply_airspeed_params_sets_temp_comp_on_both_instances() {
     assert!((cluster.backend(0).unwrap().config().temp_coeff - 0.02).abs() < 1e-6);
     assert!((cluster.backend(1).unwrap().config().temperature_c - 25.0).abs() < 1e-6);
     assert!((cluster.backend(1).unwrap().config().temp_coeff - 0.01).abs() < 1e-6);
+}
+
+#[test]
+fn apply_autocal_ratio_is_identity_when_disabled() {
+    assert_eq!(ARSPD_AUTOCAL_DEFAULT, 0);
+    assert!((apply_autocal_ratio(2.0, 25.0, 20.0, 0) - 2.0).abs() < 1e-6);
+    assert!((apply_autocal_ratio(2.0, 25.0, 20.0, 1) - 2.5).abs() < 1e-6);
+    assert!((apply_autocal_ratio(2.0, 0.0, 20.0, 1) - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn apply_airspeed_params_sets_autocal_on_both_instances() {
+    let mut cluster = SitlAirspeedCluster::default();
+    let _ = cluster.register(SitlAirspeedBackend::default());
+    let mut params = AirspeedParams::default();
+    params.airspeed1.autocal = 1;
+    params.airspeed2.autocal = 1;
+    params.apply_to_cluster(&mut cluster);
+    assert_eq!(cluster.backend(0).unwrap().config().autocal, 1);
+    assert_eq!(cluster.backend(1).unwrap().config().autocal, 1);
 }

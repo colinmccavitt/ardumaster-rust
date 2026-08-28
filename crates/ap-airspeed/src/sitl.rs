@@ -29,6 +29,9 @@ pub const ISA_LAPSE_K_PER_M: f32 = 0.0065;
 /// Default temperature-compensation coefficient (identity).
 pub const ARSPD_TEMP_COEFF_DEFAULT: f32 = 0.0;
 
+/// Upstream `ARSPD_AUTOCAL` / `ARSPD2_AUTOCAL` default (disabled).
+pub const ARSPD_AUTOCAL_DEFAULT: u8 = 0;
+
 /// Pitot sample from one backend read, upstream `get_airspeed()`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct AirspeedSampleState {
@@ -56,6 +59,8 @@ pub struct SitlAirspeedConfig {
     pub temperature_c: f32,
     /// Linear TAS temperature-compensation coefficient (1/deg C). Zero is identity.
     pub temp_coeff: f32,
+    /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL` (0=off).
+    pub autocal: u8,
 }
 
 impl Default for SitlAirspeedConfig {
@@ -68,6 +73,7 @@ impl Default for SitlAirspeedConfig {
             use_airspeed: ARSPD_USE_DEFAULT,
             temperature_c: ARSPD_TEMP_REF_C,
             temp_coeff: ARSPD_TEMP_COEFF_DEFAULT,
+            autocal: ARSPD_AUTOCAL_DEFAULT,
         }
     }
 }
@@ -110,6 +116,17 @@ pub fn sitl_airspeed_temperature_c(alt_amsl_m: f32) -> f32 {
 #[must_use]
 pub fn apply_temp_compensation(tas_mps: f32, temp_c: f32, coeff: f32) -> f32 {
     (tas_mps * (1.0 + coeff * (temp_c - ARSPD_TEMP_REF_C))).max(0.0)
+}
+
+/// One-step `ARSPD_AUTOCAL` ratio update from GPS groundspeed vs pitot TAS.
+/// Upstream `AP_Airspeed::update_calibration`: disabled when `autocal == 0`.
+/// Enabled: `ratio *= gps_gs / tas`, constrained to `[1, 4]`.
+#[must_use]
+pub fn apply_autocal_ratio(ratio: f32, gps_gs_mps: f32, tas_mps: f32, autocal: u8) -> f32 {
+    if autocal == 0 || !is_positive(gps_gs_mps) || !is_positive(tas_mps) {
+        return ratio;
+    }
+    (ratio * (gps_gs_mps / tas_mps)).clamp(1.0, 4.0)
 }
 
 /// TAS consumed by TECS/AHRS nav: zero when `ARSPD_USE` is disabled.
@@ -204,6 +221,33 @@ impl SitlAirspeedBackend {
 
     pub fn set_temp_coeff(&mut self, temp_coeff: f32) {
         self.config.temp_coeff = temp_coeff;
+    }
+
+    pub fn set_autocal(&mut self, autocal: u8) {
+        self.config.autocal = autocal;
+    }
+
+    /// Learn pitot ratio from GPS groundspeed, upstream `update_calibration`.
+    pub fn update_autocal(&mut self, gps_gs_mps: f32) {
+        if !self.pending.have_sample {
+            return;
+        }
+        let old_ratio = self.config.ratio;
+        let new_ratio = apply_autocal_ratio(
+            old_ratio,
+            gps_gs_mps,
+            self.pending.tas_mps,
+            self.config.autocal,
+        );
+        if (new_ratio - old_ratio).abs() <= f32::EPSILON {
+            return;
+        }
+        if is_positive(old_ratio) {
+            let scale = new_ratio / old_ratio;
+            self.pending.tas_mps = (self.pending.tas_mps * scale).max(0.0);
+            self.pending.eas_mps = (self.pending.eas_mps * scale).max(0.0);
+        }
+        self.config.ratio = new_ratio;
     }
 
     /// Upstream `AP_Airspeed::use()` for this instance.
@@ -379,6 +423,19 @@ impl SitlAirspeedCluster {
     pub fn set_temp_coeff_all(&mut self, temp_coeff: f32) {
         for i in 0..self.instance_count as usize {
             self.backends[i].set_temp_coeff(temp_coeff);
+        }
+    }
+
+    pub fn set_autocal_all(&mut self, autocal: u8) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].set_autocal(autocal);
+        }
+    }
+
+    /// Apply `ARSPD_AUTOCAL` to every enabled instance.
+    pub fn update_autocal_all(&mut self, gps_gs_mps: f32) {
+        for i in 0..self.instance_count as usize {
+            self.backends[i].update_autocal(gps_gs_mps);
         }
     }
 
@@ -602,5 +659,31 @@ mod tests {
         assert!((backend.state().eas_mps - 22.0).abs() < 1e-6);
         assert!((backend.state().temperature_c - 25.0).abs() < 1e-6);
         assert!((apply_temp_compensation(20.0, 15.0, 0.01) - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_autocal_leaves_ratio_unchanged() {
+        let mut backend = SitlAirspeedBackend::default();
+        assert_eq!(backend.config().autocal, ARSPD_AUTOCAL_DEFAULT);
+        assert!(backend.timer_tick(Vector3f::new(20.0, 0.0, 0.0), 1.0, 10));
+        backend.update_autocal(25.0);
+        assert!((backend.config().ratio - ARSPD_RATIO_DEFAULT).abs() < 1e-6);
+        assert!((backend.state().tas_mps - 20.0).abs() < 1e-6);
+        assert!((apply_autocal_ratio(2.0, 25.0, 20.0, 0) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn autocal_scales_ratio_toward_gps_groundspeed() {
+        let mut backend = SitlAirspeedBackend::with_config(SitlAirspeedConfig {
+            autocal: 1,
+            ..SitlAirspeedConfig::default()
+        });
+        assert!(backend.timer_tick(Vector3f::new(20.0, 0.0, 0.0), 1.0, 10));
+        backend.update_autocal(25.0);
+        // ratio *= 25/20 = 2.5; TAS *= 2.5/2.0 = 25
+        assert!((backend.config().ratio - 2.5).abs() < 1e-6);
+        assert!((backend.state().tas_mps - 25.0).abs() < 1e-6);
+        assert!((backend.state().eas_mps - 25.0).abs() < 1e-6);
+        assert!((apply_autocal_ratio(2.0, 30.0, 15.0, 1) - 4.0).abs() < 1e-6);
     }
 }

@@ -5,7 +5,7 @@
 //! those tasks to mode dispatch and the attitude/servo paths that follow.
 
 use ap_ahrs::{YawCompassSample, YawDriftContext, YawGpsSample};
-use ap_math::scalar::degrees;
+use ap_math::scalar::{degrees, safe_sqrt};
 use ap_ins::sitl::{SitlBodyState, SitlInsInstanceFiles, SITL_INS_MAX_INSTANCES};
 use ap_ins::{InertialSensorFrontend, LoopTiming, SitlInsMotorRuntime};
 use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
@@ -94,7 +94,9 @@ use crate::airspeed_offset_calibration_hookup::{
 use crate::sitl_airspeed_hookup::SitlAirspeedHookup;
 use ap_airspeed::sitl::AirspeedSampleState;
 use ap_airspeed::sitl::AirspeedHealthFlags;
-use ap_airspeed::sitl::{tas_for_nav, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT};
+use ap_airspeed::sitl::{
+    tas_for_nav, ARSPD_AUTOCAL_DEFAULT, ARSPD_RATIO_DEFAULT, ARSPD_TEMP_REF_C, ARSPD_USE_DEFAULT,
+};
 use ap_baro::sitl::BaroHealthFlags;
 use ap_compass::sitl::{CompassHealthFlags, MagSampleState};
 use crate::sitl_gps_hookup::SitlGpsHookup;
@@ -251,6 +253,8 @@ pub struct PlaneMainLoop {
     pub airspeed_use_for_control: bool,
     /// Primary pitot / ISA temperature (deg C), upstream `get_temperature()`.
     pub airspeed_temperature_c: f32,
+    /// Primary `ARSPD_AUTOCAL`, upstream automatic pitot-ratio calibration.
+    pub airspeed_autocal: u8,
     /// Last TECS `use_airspeed` feed, upstream `TECS_controller.use_airspeed()`.
     pub last_tecs_use_airspeed: bool,
     /// Latest mag sample from the SITL backend, upstream `AP_Compass::get_field()`.
@@ -565,6 +569,7 @@ impl Default for PlaneMainLoop {
             airspeed_use: ARSPD_USE_DEFAULT,
             airspeed_use_for_control: true,
             airspeed_temperature_c: ARSPD_TEMP_REF_C,
+            airspeed_autocal: ARSPD_AUTOCAL_DEFAULT,
             last_tecs_use_airspeed: false,
             baro_sample: None,
             mag_sample: None,
@@ -951,6 +956,13 @@ impl PlaneMainLoop {
             self.baro_was_soft_armed = arm_cal.was_soft_armed;
         }
         if let Some(airspeed) = self.sitl_airspeed.as_mut() {
+            if let Some(vel) = self.gps_velocity {
+                if vel.have_velocity {
+                    airspeed.gps_groundspeed_mps = safe_sqrt(
+                        vel.velocity_ned.x * vel.velocity_ned.x + vel.velocity_ned.y * vel.velocity_ned.y,
+                    );
+                }
+            }
             let out = airspeed_health_scheduler_tick(
                 airspeed,
                 &AirspeedHealthSchedulerInputs { eas2tas: self.eas2tas },
@@ -968,6 +980,10 @@ impl PlaneMainLoop {
                 .unwrap_or(ARSPD_USE_DEFAULT);
             self.airspeed_use_for_control = out.use_airspeed;
             self.airspeed_temperature_c = out.sample.temperature_c;
+            self.airspeed_autocal = airspeed
+                .backend()
+                .map(|backend| backend.config().autocal)
+                .unwrap_or(ARSPD_AUTOCAL_DEFAULT);
             if out.healthy {
                 self.airspeed_tas = out.sample.tas_mps;
             }

@@ -22,6 +22,8 @@ pub struct AirspeedInstanceParams {
     pub temperature_c: f32,
     /// Linear TAS temperature-compensation coefficient (1/deg C).
     pub temp_coeff: f32,
+    /// Automatic pitot-ratio calibration, upstream `ARSPD_AUTOCAL`.
+    pub autocal: u8,
 }
 
 impl Default for AirspeedInstanceParams {
@@ -34,6 +36,7 @@ impl Default for AirspeedInstanceParams {
             use_airspeed: crate::sitl::ARSPD_USE_DEFAULT,
             temperature_c: crate::sitl::ARSPD_TEMP_REF_C,
             temp_coeff: crate::sitl::ARSPD_TEMP_COEFF_DEFAULT,
+            autocal: crate::sitl::ARSPD_AUTOCAL_DEFAULT,
         }
     }
 }
@@ -49,6 +52,7 @@ impl AirspeedInstanceParams {
             use_airspeed: self.use_airspeed,
             temperature_c: self.temperature_c,
             temp_coeff: self.temp_coeff,
+            autocal: self.autocal,
         }
     }
 }
@@ -127,6 +131,16 @@ impl AirspeedParams {
             self.airspeed1.temp_coeff
         } else {
             self.airspeed2.temp_coeff
+        }
+    }
+
+    /// Primary instance `ARSPD_AUTOCAL` / `ARSPD2_AUTOCAL`.
+    #[must_use]
+    pub fn primary_autocal(&self) -> u8 {
+        if self.primary == 0 {
+            self.airspeed1.autocal
+        } else {
+            self.airspeed2.autocal
         }
     }
 }
