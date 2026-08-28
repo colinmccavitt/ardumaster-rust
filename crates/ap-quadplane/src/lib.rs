@@ -30,6 +30,7 @@ pub mod quadplane_completeness;
 pub mod landing;
 pub mod mode_q;
 pub mod mode_qland;
+pub mod mode_qrtl;
 pub mod motor_test;
 pub mod poscontrol;
 pub mod tailsitter;
