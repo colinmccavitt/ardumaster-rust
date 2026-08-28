@@ -8,9 +8,11 @@
 //! the 100 Hz leftover: start-or-update the mission, call the current
 //! submode body, and drop `auto_RTL` when the landing sequence is over.
 //! [`auto_takeoff_start`] is the first command-handler body:
-//! `ModeAuto::takeoff_start`, which `do_takeoff` calls. The other
-//! `do_*` bodies, `wp_start` / `land_start`, and the `*_run`
-//! controllers are later slices.
+//! `ModeAuto::takeoff_start`, which `do_takeoff` calls.
+//! [`auto_wp_start`] is the next: `ModeAuto::wp_start`, which
+//! `do_nav_wp` and the fly-to-location arm of `do_land` call. The
+//! other `do_*` bodies, `land_start`, and the `*_run` controllers
+//! are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -74,6 +76,21 @@
 //! plus one metre when landed, so a grounded copter always climbs.
 //! Success always HOLDs yaw, resets the D controller, starts
 //! `auto_takeoff`, and sets `_mode = TAKEOFF`.
+//!
+//! # wp_start inits an idle wpnav, then sets the dest
+//!
+//! `do_nav_wp` (and the fly-to-location arm of `do_land`) call this.
+//! An already-active wpnav is left alone. An idle one is re-inited;
+//! a TAKEOFF leftover that still has a completion NED hands that
+//! point in as the stopping origin so the first WP starts from the
+//! takeoff target rather than wherever the vehicle is now. Speed
+//! overrides apply only on that init: a non-positive xy override
+//! becomes 0 ("unset"), and up/down overrides only fire when
+//! `is_positive`. A failed `set_wp_destination_loc` (terrain /
+//! rangefinder) returns false without touching yaw or `_mode` —
+//! init side-effects, if they ran, stay. Success skips
+//! `set_mode_to_default` only for ROI, or FIXED when
+//! `WP_YAW_BEHAVIOR` is NONE, and parks in WP.
 
 /// `Mode::Number::AUTO`.
 pub const MODE_NUMBER_AUTO: u8 = 3;
@@ -915,5 +932,153 @@ pub const fn auto_takeoff_start(view: &AutoTakeoffStartView) -> AutoTakeoffStart
         d_init_controller: true,
         auto_takeoff_start: true,
         submode: Some(AutoSubMode::Takeoff),
+    }
+}
+
+/// Vehicle view [`auto_wp_start`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWpStartView {
+    /// `wp_nav->is_active()`.
+    pub wp_nav_active: bool,
+    /// `_mode` before the call.
+    pub submode: AutoSubMode,
+    /// `auto_takeoff.get_completion_pos_ned_m` succeeded.
+    pub takeoff_completion_pos: bool,
+    /// `desired_speed_override_ms.xy`. Zero means unset.
+    pub desired_speed_override_xy_ms: f32,
+    /// `desired_speed_override_ms.up`.
+    pub desired_speed_override_up_ms: f32,
+    /// `desired_speed_override_ms.down`.
+    pub desired_speed_override_down_ms: f32,
+    /// `wp_nav->set_wp_destination_loc(dest_loc)`.
+    pub dest_accepted: bool,
+    /// `auto_yaw.mode() == AutoYaw::Mode::ROI`.
+    pub auto_yaw_is_roi: bool,
+    /// `auto_yaw.mode() == AutoYaw::Mode::FIXED`.
+    pub auto_yaw_is_fixed: bool,
+    /// `copter.g.wp_yaw_behavior == WP_YAW_BEHAVIOR_NONE`.
+    pub wp_yaw_behavior_none: bool,
+}
+
+impl AutoWpStartView {
+    /// Idle wpnav after the LOITER park, dest accepted, yaw HOLD.
+    #[must_use]
+    pub const fn idle_loiter() -> Self {
+        Self {
+            wp_nav_active: false,
+            submode: AutoSubMode::Loiter,
+            takeoff_completion_pos: false,
+            desired_speed_override_xy_ms: 0.0,
+            desired_speed_override_up_ms: 0.0,
+            desired_speed_override_down_ms: 0.0,
+            dest_accepted: true,
+            auto_yaw_is_roi: false,
+            auto_yaw_is_fixed: false,
+            wp_yaw_behavior_none: false,
+        }
+    }
+
+    /// Leaving TAKEOFF with a completion NED.
+    #[must_use]
+    pub const fn from_takeoff() -> Self {
+        let mut view = Self::idle_loiter();
+        view.submode = AutoSubMode::Takeoff;
+        view.takeoff_completion_pos = true;
+        view
+    }
+
+    /// `set_wp_destination_loc` refused (terrain / rangefinder).
+    #[must_use]
+    pub const fn dest_refused() -> Self {
+        let mut view = Self::idle_loiter();
+        view.dest_accepted = false;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::wp_start` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWpStart {
+    /// What `wp_start` returned.
+    pub ok: bool,
+    /// `wp_nav->wp_and_spline_init_m` ran.
+    pub wp_and_spline_init: bool,
+    /// First argument to `wp_and_spline_init_m`. Zero when init did not run.
+    pub init_speed_xy_ms: f32,
+    /// The TAKEOFF completion NED was the stopping point.
+    pub stopping_point_from_takeoff: bool,
+    /// `wp_nav->set_speed_up_ms` ran.
+    pub set_speed_up: bool,
+    /// `wp_nav->set_speed_down_ms` ran.
+    pub set_speed_down: bool,
+    /// `set_wp_destination_loc` succeeded.
+    pub set_wp_destination: bool,
+    /// `auto_yaw.set_mode_to_default(false)` ran.
+    pub yaw_set_default: bool,
+    /// `_mode` after a successful start. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+}
+
+/// Upstream `is_positive` as the leftover uses it: a speed override of 0
+/// means "unset".
+#[must_use]
+const fn speed_override_set(ms: f32) -> bool {
+    ms > 0.0
+}
+
+/// Upstream `ModeAuto::wp_start`.
+///
+/// `do_nav_wp` is the usual caller. An idle wpnav is re-inited, and a
+/// TAKEOFF leftover can hand its completion NED as the stopping origin.
+/// Speed overrides apply only on that init. A dest refuse returns false
+/// without touching yaw or `_mode`. Success parks in WP unless yaw is
+/// already ROI, or FIXED with `WP_YAW_BEHAVIOR_NONE`.
+#[must_use]
+pub const fn auto_wp_start(view: &AutoWpStartView) -> AutoWpStart {
+    let mut wp_and_spline_init = false;
+    let mut init_speed_xy_ms = 0.0;
+    let mut stopping_point_from_takeoff = false;
+    let mut set_speed_up = false;
+    let mut set_speed_down = false;
+
+    if !view.wp_nav_active {
+        stopping_point_from_takeoff =
+            matches!(view.submode, AutoSubMode::Takeoff) && view.takeoff_completion_pos;
+        init_speed_xy_ms = if speed_override_set(view.desired_speed_override_xy_ms) {
+            view.desired_speed_override_xy_ms
+        } else {
+            0.0
+        };
+        wp_and_spline_init = true;
+        set_speed_up = speed_override_set(view.desired_speed_override_up_ms);
+        set_speed_down = speed_override_set(view.desired_speed_override_down_ms);
+    }
+
+    if !view.dest_accepted {
+        return AutoWpStart {
+            ok: false,
+            wp_and_spline_init,
+            init_speed_xy_ms,
+            stopping_point_from_takeoff,
+            set_speed_up,
+            set_speed_down,
+            set_wp_destination: false,
+            yaw_set_default: false,
+            submode: None,
+        };
+    }
+
+    let skip_yaw = view.auto_yaw_is_roi || (view.auto_yaw_is_fixed && view.wp_yaw_behavior_none);
+
+    AutoWpStart {
+        ok: true,
+        wp_and_spline_init,
+        init_speed_xy_ms,
+        stopping_point_from_takeoff,
+        set_speed_up,
+        set_speed_down,
+        set_wp_destination: true,
+        yaw_set_default: !skip_yaw,
+        submode: Some(AutoSubMode::Wp),
     }
 }
