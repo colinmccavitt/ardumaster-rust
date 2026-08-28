@@ -32,6 +32,7 @@ pub mod compass_offset_persist_hookup;
 pub mod compass_motor_compensation_hookup;
 pub mod compass_orientation_hookup;
 pub mod compass_scale_hookup;
+pub mod compass_soft_iron_hookup;
 pub mod baro_arm_calibration_hookup;
 pub mod arming_scheduler_hookup;
 pub mod ins_hntch_scheduler_hookup;

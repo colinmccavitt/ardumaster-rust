@@ -14,6 +14,7 @@ pub mod params;
 pub mod persist;
 pub mod scale;
 pub mod sitl;
+pub mod soft_iron;
 
 pub use declination::{CompassDeclinationState, GpsDeclinationFix};
 
@@ -43,3 +44,4 @@ pub use scale::{
     apply_scale, have_scale_factor, COMPASS_MAX_SCALE_FACTOR, COMPASS_MIN_SCALE_FACTOR,
     COMPASS_SCALE_DEFAULT,
 };
+pub use soft_iron::{apply_soft_iron, have_diagonals, COMPASS_DIA_DEFAULT, COMPASS_ODI_DEFAULT};

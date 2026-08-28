@@ -9,6 +9,7 @@ use crate::scale::COMPASS_SCALE_DEFAULT;
 use crate::sitl::{
     SitlCompassBackend, SitlCompassCluster, SitlCompassConfig, SITL_COMPASS_MAX_INSTANCES,
 };
+use crate::soft_iron::{COMPASS_DIA_DEFAULT, COMPASS_ODI_DEFAULT};
 
 /// Upstream COMPASS_AUTODEC default.
 pub const COMPASS_AUTODEC_DEFAULT: bool = true;
@@ -30,6 +31,10 @@ pub struct CompassInstanceParams {
     pub external: bool,
     /// Scale factor, upstream `COMPASS_SCALE` / `SCALE2`.
     pub scale: f32,
+    /// Soft-iron diagonal, upstream `COMPASS_DIA` / `DIA2`.
+    pub diagonals: Vector3f,
+    /// Soft-iron off-diagonal, upstream `COMPASS_ODI` / `ODI2`.
+    pub offdiagonals: Vector3f,
 }
 
 impl Default for CompassInstanceParams {
@@ -42,6 +47,8 @@ impl Default for CompassInstanceParams {
             orientation: COMPASS_ORIENT_DEFAULT,
             external: COMPASS_EXTERNAL_DEFAULT,
             scale: COMPASS_SCALE_DEFAULT,
+            diagonals: COMPASS_DIA_DEFAULT,
+            offdiagonals: COMPASS_ODI_DEFAULT,
         }
     }
 }
@@ -55,6 +62,8 @@ impl CompassInstanceParams {
             orientation: self.orientation,
             external: self.external,
             scale: self.scale,
+            diagonals: self.diagonals,
+            offdiagonals: self.offdiagonals,
             ..SitlCompassConfig::default()
         }
     }
@@ -111,6 +120,8 @@ impl CompassParams {
         cfg.external = inst.external;
         cfg.board_orientation = self.board_orientation;
         cfg.scale = inst.scale;
+        cfg.diagonals = inst.diagonals;
+        cfg.offdiagonals = inst.offdiagonals;
         backend.set_config(cfg);
     }
 
