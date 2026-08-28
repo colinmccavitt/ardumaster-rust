@@ -4,9 +4,11 @@
 
 use ap_quadplane::air_mode::MavVtolState;
 use ap_quadplane::transition_fsm::{
-    back_transition_time_s, constrain_transition_time_ms, stopping_distance_m, SltTransition,
-    TransitionPhase, TransitionState, Q_TRANS_DECEL_DEFAULT, Q_TRANSITION_MS_DEFAULT,
-    Q_TRANSITION_MS_MAX, Q_TRANSITION_MS_MIN,
+    back_transition_time_s, constrain_transition_time_ms, stopping_distance_m,
+    trans_fail_to_fw_set, SltTransition, TransFailAction, TransFailOutcome, TransitionPhase,
+    TransitionState, MODE_QLAND, MODE_QRTL, MODE_QSTABILIZE, MODE_REASON_VTOL_FAILED_TRANSITION,
+    Q_OPTIONS_TRANS_FAIL_TO_FW, Q_TRANSITION_MS_DEFAULT, Q_TRANSITION_MS_MAX, Q_TRANSITION_MS_MIN,
+    Q_TRANS_DECEL_DEFAULT, Q_TRANS_FAIL_ACT_DEFAULT, Q_TRANS_FAIL_DEFAULT, TRANSITION_H_LEFTOVER,
 };
 use ap_quadplane::QuadPlane;
 
@@ -35,6 +37,10 @@ fn new_zero_inits_to_airspeed_wait() {
     assert_eq!(fsm.transition_low_airspeed_ms(), 0);
     assert_eq!(fsm.transition_time_ms(), Q_TRANSITION_MS_DEFAULT);
     assert_eq!(fsm.transition_decel_mss(), Q_TRANS_DECEL_DEFAULT);
+    assert_eq!(fsm.transition_fail_timeout_s(), Q_TRANS_FAIL_DEFAULT);
+    assert_eq!(fsm.transition_fail_action(), TransFailAction::QLand);
+    assert!(!fsm.transition_fail_warned());
+    assert_eq!(fsm.q_options(), 0);
 }
 
 #[test]
@@ -227,4 +233,146 @@ fn q_trans_decel_stopping_distance_and_back_time() {
     fsm.set_transition_decel_mss(4.0);
     assert_eq!(fsm.stopping_distance_m(100.0), 12.5);
     assert_eq!(fsm.back_transition_time_s(10.0), 2.5);
+}
+
+#[test]
+fn trans_fail_defaults_and_action_decode() {
+    assert_eq!(Q_TRANS_FAIL_DEFAULT, 0);
+    assert_eq!(Q_TRANS_FAIL_ACT_DEFAULT, 0);
+    assert_eq!(Q_OPTIONS_TRANS_FAIL_TO_FW, 1 << 19);
+    assert_eq!(MODE_QSTABILIZE, 17);
+    assert_eq!(MODE_QLAND, 20);
+    assert_eq!(MODE_QRTL, 21);
+    assert_eq!(MODE_REASON_VTOL_FAILED_TRANSITION, 23);
+    assert_eq!(TransFailAction::from_param(0), TransFailAction::QLand);
+    assert_eq!(TransFailAction::from_param(1), TransFailAction::QRtl);
+    assert_eq!(TransFailAction::from_param(-1), TransFailAction::WarnOnly);
+    assert_eq!(TransFailAction::from_param(99), TransFailAction::WarnOnly);
+    assert_eq!(
+        TransFailOutcome::FallbackQLand.fallback_mode_number(),
+        Some(MODE_QLAND)
+    );
+    assert_eq!(
+        TransFailOutcome::FallbackQRtl.fallback_mode_number(),
+        Some(MODE_QRTL)
+    );
+    assert!(TransFailOutcome::FallbackQLand.requests_q_fallback());
+    assert!(!TransFailOutcome::WarnOnly.requests_q_fallback());
+    assert!(!TransFailOutcome::CompleteToFw.requests_q_fallback());
+    assert!(trans_fail_to_fw_set(Q_OPTIONS_TRANS_FAIL_TO_FW));
+    assert!(!trans_fail_to_fw_set(0));
+}
+
+#[test]
+fn trans_fail_zero_timeout_never_fires() {
+    let mut fsm = SltTransition::new();
+    fsm.update_airspeed_wait(1, false, 0.0, 10.0, false);
+    assert_eq!(
+        fsm.apply_transition_fail(1 + 60_000, false),
+        TransFailOutcome::Continue
+    );
+    assert!(!fsm.transition_fail_warned());
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+}
+
+#[test]
+fn trans_fail_qland_fallback_after_timeout() {
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_fail_timeout_s(5);
+    fsm.update_airspeed_wait(1_000, false, 0.0, 10.0, false);
+    // Strict `>` — equal to timeout * 1000 is still Continue.
+    assert_eq!(
+        fsm.apply_transition_fail(1_000 + 5_000, false),
+        TransFailOutcome::Continue
+    );
+    assert!(!fsm.transition_fail_warned());
+    assert_eq!(
+        fsm.apply_transition_fail(1_000 + 5_000 + 1, false),
+        TransFailOutcome::FallbackQLand
+    );
+    assert!(fsm.transition_fail_warned());
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+    assert_eq!(
+        TransFailOutcome::FallbackQLand.fallback_mode_number(),
+        Some(MODE_QLAND)
+    );
+}
+
+#[test]
+fn trans_fail_qrtl_and_warn_only() {
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_fail_timeout_s(2);
+    fsm.set_transition_fail_action(TransFailAction::QRtl);
+    fsm.update_airspeed_wait(100, false, 0.0, 10.0, false);
+    assert_eq!(
+        fsm.apply_transition_fail(100 + 2_001, false),
+        TransFailOutcome::FallbackQRtl
+    );
+    assert_eq!(
+        TransFailOutcome::FallbackQRtl.fallback_mode_number(),
+        Some(MODE_QRTL)
+    );
+
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_fail_timeout_s(2);
+    fsm.set_transition_fail_action(TransFailAction::WarnOnly);
+    fsm.update_airspeed_wait(100, false, 0.0, 10.0, false);
+    assert_eq!(
+        fsm.apply_transition_fail(100 + 2_001, false),
+        TransFailOutcome::WarnOnly
+    );
+    assert!(fsm.transition_fail_warned());
+    assert_eq!(fsm.transition_state(), TransitionState::AirspeedWait);
+}
+
+#[test]
+fn trans_fail_to_fw_completes_timer_when_tiltrotor_has_speed() {
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_fail_timeout_s(3);
+    fsm.set_q_options(Q_OPTIONS_TRANS_FAIL_TO_FW);
+    fsm.update_airspeed_wait(10, false, 0.0, 10.0, false);
+    assert_eq!(
+        fsm.apply_transition_fail(10 + 3_001, false),
+        TransFailOutcome::FallbackQLand
+    );
+    fsm.restart();
+    fsm.update_airspeed_wait(10, false, 0.0, 10.0, false);
+    assert_eq!(
+        fsm.apply_transition_fail(10 + 3_001, true),
+        TransFailOutcome::CompleteToFw
+    );
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+    assert!(fsm.in_forced_transition());
+    // Forced complete: assist-back must not throw to AIRSPEED_WAIT.
+    fsm.apply_assist_back(20_000, true);
+    assert_eq!(fsm.transition_state(), TransitionState::Timer);
+}
+
+#[test]
+fn trans_fail_disarmed_resets_timer_and_timer_state_skips_check() {
+    let mut fsm = SltTransition::new();
+    fsm.set_transition_fail_timeout_s(1);
+    fsm.update_airspeed_wait(1_000, false, 0.0, 10.0, false);
+    fsm.reset_fail_timer_if_disarmed(5_000, false);
+    assert_eq!(fsm.transition_start_ms(), 5_000);
+    assert_eq!(
+        fsm.apply_transition_fail(5_000 + 1_000, false),
+        TransFailOutcome::Continue
+    );
+    fsm.reset_fail_timer_if_disarmed(9_000, true);
+    assert_eq!(fsm.transition_start_ms(), 5_000);
+    fsm.enter_timer();
+    assert_eq!(
+        fsm.apply_transition_fail(5_000 + 10_000, false),
+        TransFailOutcome::Continue
+    );
+}
+
+#[test]
+fn transition_h_leftover_table_lists_attitude_helpers() {
+    assert!(TRANSITION_H_LEFTOVER.contains(&"set_FW_roll_pitch"));
+    assert!(TRANSITION_H_LEFTOVER.contains(&"show_vtol_view"));
+    assert!(TRANSITION_H_LEFTOVER.contains(&"allow_weathervane"));
+    assert_eq!(TRANSITION_H_LEFTOVER.len(), 11);
+    assert_eq!(MODE_QSTABILIZE, 17);
 }
