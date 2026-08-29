@@ -40,6 +40,7 @@ pub mod mode_land;
 pub mod mode_loiter;
 pub mod mode_poshold;
 pub mod mode_rtl;
+pub mod mode_sport;
 pub mod mode_stabilize;
 pub mod pilot_input;
 pub mod radio;
