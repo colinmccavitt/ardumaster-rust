@@ -7,8 +7,8 @@
 //! This leftover is the lean math: 10° at 20 m, a 10 cm deadzone,
 //! body-frame rotation, and the 5 m yaw-across-the-wind turn.
 //!
-//! GCS leftover lives in [`crate::autotune_gcs`]. Logging, `target_angle_*`
-//! / `angle_lim_*`, and the twitching helpers stay leftover. Heli is out of scope.
+//! GCS leftover lives in [`crate::autotune_gcs`]. Logging leftover lives
+//! in [`crate::autotune_log`]. Heli is out of scope.
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 

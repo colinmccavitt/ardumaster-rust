@@ -9,8 +9,7 @@
 //! suffix, and the three-line Multi final-gain report.
 //!
 //! Multi `do_post_test_gcs_announcements` is a no-op. Heli GCS is out
-//! of scope. Logging (`Log_AutoTune*`), `target_angle_*` /
-//! `angle_lim_*`, and the twitching helpers stay leftover.
+//! of scope. Logging leftover lives in [`crate::autotune_log`].
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 

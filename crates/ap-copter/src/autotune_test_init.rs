@@ -8,7 +8,8 @@
 //!
 //! `max_rate_step_bf_*` / `max_angle_step_bf_*` stay attitude-control
 //! reads. The LPF object itself stays leftover — this tick records
-//! `set_cutoff_frequency` and `reset`. GCS leftover lives in [`crate::autotune_gcs`]. Logging stays leftover.
+//! `set_cutoff_frequency` and `reset`. GCS leftover lives in [`crate::autotune_gcs`].
+//! Logging leftover lives in [`crate::autotune_log`].
 //! PosHold lean is [`crate::autotune_poshold`]. Heli
 //! `test_init` is out of scope.
 //!
@@ -73,6 +74,24 @@ pub fn target_angle_min_rp_cd(lean_angle_max_cd: f32) -> f32 {
 #[must_use]
 pub fn target_angle_min_y_cd(lean_angle_max_cd: f32) -> f32 {
     lean_angle_max_cd * AUTOTUNE_TARGET_ANGLE_MIN_Y_SCALE
+}
+
+/// `AUTOTUNE_ANGLE_ABORT_RP_SCALE`.
+pub const AUTOTUNE_ANGLE_ABORT_RP_SCALE: f32 = 2.5 / 3.0;
+
+/// `AUTOTUNE_ANGLE_NEG_RP_SCALE`.
+pub const AUTOTUNE_ANGLE_NEG_RP_SCALE: f32 = 1.0 / 5.0;
+
+/// `angle_lim_max_rp_cd()` — `lean_angle_max_cd * 2.5/3`.
+#[must_use]
+pub fn angle_lim_max_rp_cd(lean_angle_max_cd: f32) -> f32 {
+    lean_angle_max_cd * AUTOTUNE_ANGLE_ABORT_RP_SCALE
+}
+
+/// `angle_lim_neg_rpy_cd()` — `lean_angle_max_cd * 1/5`.
+#[must_use]
+pub fn angle_lim_neg_rpy_cd(lean_angle_max_cd: f32) -> f32 {
+    lean_angle_max_cd * AUTOTUNE_ANGLE_NEG_RP_SCALE
 }
 
 /// Attitude-control reads `test_init` consumes.

@@ -1,13 +1,13 @@
 //! Multi `test_init` leftover, upstream `AC_AutoTune_Multi::test_init`.
 
 use ap_copter::autotune_test_init::{
-    target_angle_max_rp_cd, target_angle_max_y_cd, target_angle_min_rp_cd, target_angle_min_y_cd,
-    test_init, TestInitView, AUTOTUNE_FILT_D_HZ_DEFAULT, AUTOTUNE_LEAN_ANGLE_MAX_CD_DEFAULT,
-    AUTOTUNE_MAX_ANGLE_STEP_RAD_DEFAULT, AUTOTUNE_MAX_RATE_STEP_RAD_DEFAULT,
-    AUTOTUNE_RATE_FILT_D_SCALE,
+    angle_lim_max_rp_cd, angle_lim_neg_rpy_cd, target_angle_max_rp_cd, target_angle_max_y_cd,
+    target_angle_min_rp_cd, target_angle_min_y_cd, test_init, TestInitView,
+    AUTOTUNE_ANGLE_ABORT_RP_SCALE, AUTOTUNE_ANGLE_NEG_RP_SCALE, AUTOTUNE_FILT_D_HZ_DEFAULT,
+    AUTOTUNE_LEAN_ANGLE_MAX_CD_DEFAULT, AUTOTUNE_MAX_ANGLE_STEP_RAD_DEFAULT,
+    AUTOTUNE_MAX_RATE_STEP_RAD_DEFAULT, AUTOTUNE_RATE_FILT_D_SCALE,
     AUTOTUNE_TARGET_ANGLE_MAX_RP_SCALE, AUTOTUNE_TARGET_ANGLE_MAX_Y_SCALE,
-    AUTOTUNE_TARGET_ANGLE_MIN_RP_SCALE, AUTOTUNE_TARGET_ANGLE_MIN_Y_SCALE,
-    AUTOTUNE_YAW_STEP_SCALE,
+    AUTOTUNE_TARGET_ANGLE_MIN_RP_SCALE, AUTOTUNE_TARGET_ANGLE_MIN_Y_SCALE, AUTOTUNE_YAW_STEP_SCALE,
 };
 use ap_copter::mode_autotune::{
     AxisType, TuneType, AUTOTUNE_TARGET_MIN_RATE_RLLPIT_CDS, AUTOTUNE_TARGET_MIN_RATE_YAW_CDS,
@@ -61,8 +61,8 @@ fn roll_rate_tune_seats_rp_targets_and_zeros_accumulators() {
 fn pitch_uses_pitch_step_reads() {
     let mut view = TestInitView::typical();
     view.axis = AxisType::Pitch;
-    view.max_rate_step_pitch_rad = AUTOTUNE_TARGET_MIN_RATE_RLLPIT_CDS / 100.0
-        * (core::f32::consts::PI / 180.0);
+    view.max_rate_step_pitch_rad =
+        AUTOTUNE_TARGET_MIN_RATE_RLLPIT_CDS / 100.0 * (core::f32::consts::PI / 180.0);
     view.max_angle_step_pitch_rad = 0.209_439_51;
     let out = test_init(&view);
     almost(out.angle_abort, 1_500.0);
@@ -80,9 +80,11 @@ fn yaw_uses_fixed_filt_and_three_quarter_step() {
     view.axis = AxisType::Yaw;
     let out = test_init(&view);
     almost(out.angle_abort, 3_000.0);
-    let expected_rate = (degrees(AUTOTUNE_MAX_RATE_STEP_RAD_DEFAULT * AUTOTUNE_YAW_STEP_SCALE)
-        * 100.0)
-        .clamp(AUTOTUNE_TARGET_MIN_RATE_YAW_CDS, AUTOTUNE_TARGET_RATE_YAW_CDS);
+    let expected_rate =
+        (degrees(AUTOTUNE_MAX_RATE_STEP_RAD_DEFAULT * AUTOTUNE_YAW_STEP_SCALE) * 100.0).clamp(
+            AUTOTUNE_TARGET_MIN_RATE_YAW_CDS,
+            AUTOTUNE_TARGET_RATE_YAW_CDS,
+        );
     almost(out.target_rate, expected_rate);
     let expected_angle = (degrees(AUTOTUNE_MAX_ANGLE_STEP_RAD_DEFAULT * AUTOTUNE_YAW_STEP_SCALE)
         * 100.0)
@@ -190,4 +192,19 @@ fn small_lean_max_shrinks_yaw_twitch() {
     let out = test_init(&view);
     almost(out.angle_abort, 1_200.0);
     almost(out.target_angle, 1_200.0);
+}
+
+#[test]
+fn angle_lim_scales_match_upstream() {
+    almost(AUTOTUNE_ANGLE_ABORT_RP_SCALE, 2.5 / 3.0);
+    almost(AUTOTUNE_ANGLE_NEG_RP_SCALE, 1.0 / 5.0);
+}
+
+#[test]
+fn angle_lim_helpers_scale_lean_max() {
+    let lean = AUTOTUNE_LEAN_ANGLE_MAX_CD_DEFAULT;
+    almost(angle_lim_max_rp_cd(lean), 2_500.0);
+    almost(angle_lim_neg_rpy_cd(lean), 600.0);
+    almost(angle_lim_max_rp_cd(4_500.0), 3_750.0);
+    almost(angle_lim_neg_rpy_cd(4_500.0), 900.0);
 }
