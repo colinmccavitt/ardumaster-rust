@@ -2,18 +2,23 @@
 //!
 //! Tracked as **COP-012**. The table is the leftover: every `FAST_TASK` and
 //! `SCHED_TASK` row with its rate, budget, priority, and compile gate.
-//! [`rc_loop`] is the first scheduled callback — `read_radio()` then
-//! `rc().read_mode_switch()`. Fast-task bodies, `throttle_loop`, and the
-//! rest of `Copter.cpp` / `system.cpp` stay later leftovers.
+//! [`rc_loop`] is the first scheduled callback. The first Copter-owned
+//! fast-loop leftovers are [`run_rate_controller_main`],
+//! [`motors_output_main`], and [`read_ahrs`] — INS `update` lives on
+//! `ap-ins`. `throttle_loop` and the rest of `Copter.cpp` / `system.cpp`
+//! stay later leftovers.
 
 use ap_hal::time::Clock;
-use ap_scheduler::scheduler::{LOOP_RATE, RunStats, Scheduler, Task};
+use ap_scheduler::scheduler::{RunStats, Scheduler, Task, LOOP_RATE};
 
+use crate::attitude::RateControllerMainLeftover;
 use crate::aux::AirMode;
 use crate::radio::{
     read_radio, ReadRadioInputs, ReadRadioLeftover, ThrottleFailsafeInputs, ThrottleZeroInputs,
     FS_THR_VALUE_COPTER_DEFAULT,
 };
+
+pub use crate::attitude::run_rate_controller_main;
 
 /// `AP_Scheduler::FAST_TASK_PRI0` — every `FAST_TASK_CLASS` row uses this.
 pub const FAST_TASK_PRI0: u8 = 0;
@@ -35,6 +40,15 @@ pub const RC_LOOP_MAX_TIME_MICROS: u16 = 130;
 
 /// `rc_loop` scheduler priority (lower is higher priority).
 pub const RC_LOOP_PRIORITY: u8 = 3;
+
+/// `ARMING_DELAY_SEC` — motors stay interlocked-off this long after arm.
+pub const ARMING_DELAY_SEC: f32 = 2.0;
+
+/// `ARMING_DELAY_SEC * 1.0e3f` as the leftover compares it to `millis()`.
+pub const ARMING_DELAY_MS: u32 = 2_000;
+
+/// `Mode::Number::THROW` — clears the arming delay so a toss can spool.
+pub const MODE_THROW: u8 = 18;
 
 /// Fast versus rate-limited scheduler row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +112,10 @@ const fn sched(
 pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
     fast("AP_InertialSensor::update", None),
     fast("run_rate_controller_main", None),
-    fast("run_custom_controller", Some("AC_CUSTOMCONTROL_MULTI_ENABLED")),
+    fast(
+        "run_custom_controller",
+        Some("AC_CUSTOMCONTROL_MULTI_ENABLED"),
+    ),
     fast("heli_update_autorotation", Some("HELI_FRAME")),
     fast("motors_output_main", None),
     fast("read_AHRS", None),
@@ -111,7 +128,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
     fast("update_rangefinder_terrain_offset", None),
     fast("AP_Mount::update_fast", Some("HAL_MOUNT_ENABLED")),
     fast("Log_Video_Stabilisation", Some("HAL_LOGGING_ENABLED")),
-    sched("rc_loop", RC_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY, None),
+    sched(
+        "rc_loop",
+        RC_LOOP_RATE_HZ,
+        RC_LOOP_MAX_TIME_MICROS,
+        RC_LOOP_PRIORITY,
+        None,
+    ),
     sched("throttle_loop", 50.0, 75, 6, None),
     sched("fence_check", 25.0, 100, 7, Some("AP_FENCE_ENABLED")),
     sched("AP_GPS::update", 50.0, 200, 9, None),
@@ -133,9 +156,27 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
         30,
         Some("AP_COPTER_AHRS_AUTO_TRIM_ENABLED"),
     ),
-    sched("read_rangefinder", 20.0, 100, 33, Some("AP_RANGEFINDER_ENABLED")),
-    sched("AP_Proximity::update", 200.0, 50, 36, Some("HAL_PROXIMITY_ENABLED")),
-    sched("AP_Beacon::update", 400.0, 50, 39, Some("AP_BEACON_ENABLED")),
+    sched(
+        "read_rangefinder",
+        20.0,
+        100,
+        33,
+        Some("AP_RANGEFINDER_ENABLED"),
+    ),
+    sched(
+        "AP_Proximity::update",
+        200.0,
+        50,
+        36,
+        Some("HAL_PROXIMITY_ENABLED"),
+    ),
+    sched(
+        "AP_Beacon::update",
+        400.0,
+        50,
+        39,
+        Some("AP_BEACON_ENABLED"),
+    ),
     sched("update_altitude", 10.0, 100, 42, None),
     sched("run_nav_updates", 50.0, 100, 45, None),
     sched("update_throttle_hover", 100.0, 90, 48, None),
@@ -146,7 +187,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
         51,
         Some("MODE_SMARTRTL_ENABLED"),
     ),
-    sched("AC_Sprayer::update", 3.0, 90, 54, Some("HAL_SPRAYER_ENABLED")),
+    sched(
+        "AC_Sprayer::update",
+        3.0,
+        90,
+        54,
+        Some("HAL_SPRAYER_ENABLED"),
+    ),
     sched("three_hz_loop", 3.0, 75, 57, None),
     sched(
         "AP_ServoRelayEvents::update_events",
@@ -155,7 +202,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
         60,
         Some("AP_SERVORELAYEVENTS_ENABLED"),
     ),
-    sched("update_precland", 400.0, 50, 69, Some("AC_PRECLAND_ENABLED")),
+    sched(
+        "update_precland",
+        400.0,
+        50,
+        69,
+        Some("AC_PRECLAND_ENABLED"),
+    ),
     sched("check_dynamic_flight", 50.0, 75, 72, Some("HELI_FRAME")),
     sched(
         "loop_rate_logging",
@@ -181,7 +234,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
     sched("GCS::update_receive", 400.0, 180, 102, None),
     sched("GCS::update_send", 400.0, 550, 105, None),
     sched("AP_Mount::update", 50.0, 75, 108, Some("HAL_MOUNT_ENABLED")),
-    sched("AP_Camera::update", 50.0, 75, 111, Some("AP_CAMERA_ENABLED")),
+    sched(
+        "AP_Camera::update",
+        50.0,
+        75,
+        111,
+        Some("AP_CAMERA_ENABLED"),
+    ),
     sched(
         "ten_hz_logging_loop",
         10.0,
@@ -232,11 +291,29 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
         141,
         Some("AP_COPTER_ADVANCED_FAILSAFE_ENABLED"),
     ),
-    sched("terrain_update", 10.0, 100, 144, Some("AP_TERRAIN_AVAILABLE")),
+    sched(
+        "terrain_update",
+        10.0,
+        100,
+        144,
+        Some("AP_TERRAIN_AVAILABLE"),
+    ),
     sched("AP_Winch::update", 50.0, 50, 150, Some("AP_WINCH_ENABLED")),
-    sched("userhook_FastLoop", 100.0, 75, 153, Some("USERHOOK_FASTLOOP")),
+    sched(
+        "userhook_FastLoop",
+        100.0,
+        75,
+        153,
+        Some("USERHOOK_FASTLOOP"),
+    ),
     sched("userhook_50Hz", 50.0, 75, 156, Some("USERHOOK_50HZLOOP")),
-    sched("userhook_MediumLoop", 10.0, 75, 159, Some("USERHOOK_MEDIUMLOOP")),
+    sched(
+        "userhook_MediumLoop",
+        10.0,
+        75,
+        159,
+        Some("USERHOOK_MEDIUMLOOP"),
+    ),
     sched("userhook_SlowLoop", 3.3, 75, 162, Some("USERHOOK_SLOWLOOP")),
     sched(
         "userhook_SuperSlowLoop",
@@ -245,7 +322,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
         165,
         Some("USERHOOK_SUPERSLOWLOOP"),
     ),
-    sched("AP_Button::update", 5.0, 100, 168, Some("HAL_BUTTON_ENABLED")),
+    sched(
+        "AP_Button::update",
+        5.0,
+        100,
+        168,
+        Some("HAL_BUTTON_ENABLED"),
+    ),
     sched(
         "update_dynamic_notch_at_specified_rate_main",
         LOOP_RATE,
@@ -255,8 +338,8 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
     ),
 ];
 
-/// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after this
-/// table + `rc_loop` slice.
+/// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
+/// table, `rc_loop`, and the first Copter FAST_TASK bodies.
 pub const REMAINING: &[&str] = &[
     "Copter::throttle_loop",
     "Copter::update_batt_compass",
@@ -269,10 +352,14 @@ pub const REMAINING: &[&str] = &[
     "Copter::init_simple_bearing",
     "Copter::update_simple_mode",
     "Copter::update_super_simple_bearing",
-    "Copter::read_AHRS",
     "Copter::update_altitude",
     "Copter::get_wp_distance_m",
-    "Copter::motors_output_main",
+    "Copter::read_inertia",
+    "Copter::check_ekf_reset",
+    "Copter::update_flight_mode",
+    "Copter::update_home_from_EKF",
+    "Copter::update_land_and_crash_detectors",
+    "Copter::update_rangefinder_terrain_offset",
     "Copter::run_nav_updates",
     "Copter::auto_disarm_check",
     "Copter::standby_update",
@@ -376,18 +463,217 @@ pub fn rc_loop(radio: &ReadRadioInputs, mode: ModeSwitchReadInputs) -> RcLoopLef
     }
 }
 
-/// Per-callback accounting for the first scheduled leftover.
+/// What `Copter::read_AHRS` asked AHRS to do.
+///
+/// The whole leftover is the `true`: INS already ran as the first
+/// `FAST_TASK`, so a second `ins.update()` here would consume the
+/// same samples twice. Passing `false` would be a different function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadAhrsLeftover {
+    /// Always `ahrs.update(true)`.
+    pub skip_ins_update: bool,
+}
+
+/// `Copter::read_AHRS`.
+#[must_use]
+pub const fn read_ahrs() -> ReadAhrsLeftover {
+    ReadAhrsLeftover {
+        skip_ins_update: true,
+    }
+}
+
+/// Inputs to `Copter::motors_output`.
+///
+/// Advanced-failsafe `should_crash_vehicle` is compiled out of this
+/// leftover (`AP_COPTER_ADVANCED_FAILSAFE_ENABLED`). Stock multicopter
+/// walks the arming-delay / interlock / drive / push path every tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotorsOutputInputs {
+    /// `full_push` — the default `motors_output()` argument is `true`.
+    pub full_push: bool,
+    /// `ap.in_arming_delay` on entry.
+    pub in_arming_delay: bool,
+    /// `motors->armed()`.
+    pub armed: bool,
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `arm_time_ms` — when the vehicle last armed.
+    pub arm_time_ms: u32,
+    /// `flightmode->mode_number()`.
+    pub mode_number: u8,
+    /// `ap.using_interlock`.
+    pub using_interlock: bool,
+    /// `ap.motor_interlock_switch`.
+    pub motor_interlock_switch: bool,
+    /// `SRV_Channels::get_emergency_stop()`.
+    pub emergency_stop: bool,
+    /// `motors->get_interlock()` on entry.
+    pub motors_interlock: bool,
+    /// `ap.motor_test`.
+    pub motor_test: bool,
+}
+
+/// Which PWM push `motors_output` took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotorsOutputPush {
+    /// `full_push` — `AP::srv().push()`, servos included.
+    Srv,
+    /// Rate-thread path — `hal.rcout->push()`, motors only.
+    Rcout,
+}
+
+/// Who wrote the motor demands this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotorsOutputDrive {
+    /// `ap.motor_test` — `motor_test_output()`.
+    MotorTest,
+    /// `flightmode->output_to_motors()`.
+    FlightMode,
+}
+
+/// Interlock edge that wants a `LogEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterlockEdge {
+    /// No change.
+    None,
+    /// Off → on. `LogEvent::MOTORS_INTERLOCK_ENABLED`.
+    Enabled,
+    /// On → off. `LogEvent::MOTORS_INTERLOCK_DISABLED`.
+    Disabled,
+}
+
+/// What `Copter::motors_output` asked motors / SRV leftovers to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MotorsOutputLeftover {
+    /// After the delay-clear test.
+    pub in_arming_delay: bool,
+    /// Always: `SRV_Channels::calc_pwm()`.
+    pub calc_pwm: bool,
+    /// Always: `AP::srv().cork()`.
+    pub cork: bool,
+    /// Always: `SRV_Channels::output_ch_all()`.
+    pub output_ch_all: bool,
+    /// Armed, not in delay, interlock switch (if used) on, e-stop off.
+    pub interlock: bool,
+    /// Log the interlock transition, if any.
+    pub interlock_edge: InterlockEdge,
+    /// Motor-test versus flight-mode output.
+    pub drive: MotorsOutputDrive,
+    /// `srv.push()` versus `hal.rcout->push()`.
+    pub push: MotorsOutputPush,
+}
+
+/// `Copter::motors_output`.
+///
+/// The interlock formula uses the *cleared* arming-delay flag. A port
+/// that computed interlock from the entry flag would keep motors locked
+/// out for one extra loop after the two-second delay expired — and a
+/// THROW mode that is supposed to spool immediately would wait too.
+///
+/// `calc_pwm` / cork / `output_ch_all` always run, even when the
+/// interlock is off. Folding them behind the interlock would drop
+/// passthrough aux channels on a disarmed vehicle.
+#[must_use]
+pub fn motors_output(inputs: &MotorsOutputInputs) -> MotorsOutputLeftover {
+    let mut in_arming_delay = inputs.in_arming_delay;
+    if in_arming_delay
+        && (!inputs.armed
+            || inputs.now_ms.wrapping_sub(inputs.arm_time_ms) > ARMING_DELAY_MS
+            || inputs.mode_number == MODE_THROW)
+    {
+        in_arming_delay = false;
+    }
+
+    let interlock = inputs.armed
+        && !in_arming_delay
+        && (!inputs.using_interlock || inputs.motor_interlock_switch)
+        && !inputs.emergency_stop;
+
+    let interlock_edge = if !inputs.motors_interlock && interlock {
+        InterlockEdge::Enabled
+    } else if inputs.motors_interlock && !interlock {
+        InterlockEdge::Disabled
+    } else {
+        InterlockEdge::None
+    };
+
+    MotorsOutputLeftover {
+        in_arming_delay,
+        calc_pwm: true,
+        cork: true,
+        output_ch_all: true,
+        interlock,
+        interlock_edge,
+        drive: if inputs.motor_test {
+            MotorsOutputDrive::MotorTest
+        } else {
+            MotorsOutputDrive::FlightMode
+        },
+        push: if inputs.full_push {
+            MotorsOutputPush::Srv
+        } else {
+            MotorsOutputPush::Rcout
+        },
+    }
+}
+
+/// What `Copter::motors_output_main` asked `motors_output` to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotorsOutputMainLeftover {
+    /// Rate thread owns `motors_output`.
+    Skipped,
+    /// Main thread ran `motors_output()` (`full_push = true`).
+    Ran(MotorsOutputLeftover),
+}
+
+/// `Copter::motors_output_main`.
+///
+/// The default `full_push` is forced on here. The rate thread is the
+/// only caller that passes `false`, and it does not go through this
+/// leftover.
+#[must_use]
+pub fn motors_output_main(
+    using_rate_thread: bool,
+    inputs: &MotorsOutputInputs,
+) -> MotorsOutputMainLeftover {
+    if using_rate_thread {
+        return MotorsOutputMainLeftover::Skipped;
+    }
+    let mut main = *inputs;
+    main.full_push = true;
+    MotorsOutputMainLeftover::Ran(motors_output(&main))
+}
+
+/// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
+    /// Upstream `Copter::run_rate_controller_main`.
+    pub run_rate_controller_main: u32,
+    /// Upstream `Copter::motors_output_main`.
+    pub motors_output_main: u32,
+    /// Upstream `Copter::read_AHRS`.
+    pub read_ahrs: u32,
     /// Upstream `Copter::rc_loop`.
     pub rc_loop: u32,
 }
 
-/// Vehicle state the first scheduler leftover carries between ticks.
+/// Vehicle state the wired leftovers carry between ticks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CopterVehicleLoop {
     /// Per-callback tick counts.
     pub ticks: VehicleLoopTicks,
+    /// `using_rate_thread` — skips the rate run and `motors_output_main`.
+    pub using_rate_thread: bool,
+    /// `AP::scheduler().get_last_loop_time_s()`.
+    pub last_loop_time_s: f32,
+    /// Leftover from the latest `run_rate_controller_main` tick.
+    pub last_rate: Option<RateControllerMainLeftover>,
+    /// Inputs for `motors_output`.
+    pub motors: MotorsOutputInputs,
+    /// Leftover from the latest `motors_output_main` tick.
+    pub last_motors: Option<MotorsOutputMainLeftover>,
+    /// Leftover from the latest `read_AHRS` tick.
+    pub last_ahrs: Option<ReadAhrsLeftover>,
     /// Inputs for the `read_radio` half of `rc_loop`.
     pub radio: ReadRadioInputs,
     /// Inputs for the `read_mode_switch` half of `rc_loop`.
@@ -402,6 +688,12 @@ impl CopterVehicleLoop {
     pub fn typical() -> Self {
         Self {
             ticks: VehicleLoopTicks::default(),
+            using_rate_thread: false,
+            last_loop_time_s: 1.0 / f32::from(COPTER_LOOP_RATE_HZ),
+            last_rate: None,
+            motors: typical_motors_output(),
+            last_motors: None,
+            last_ahrs: None,
             radio: typical_radio_frame(),
             mode_switch: ModeSwitchReadInputs {
                 has_valid_input: true,
@@ -443,9 +735,88 @@ pub fn typical_radio_frame() -> ReadRadioInputs {
     }
 }
 
+/// Disarmed, not in the arming delay, flight-mode drive, full push.
+#[must_use]
+pub fn typical_motors_output() -> MotorsOutputInputs {
+    MotorsOutputInputs {
+        full_push: true,
+        in_arming_delay: false,
+        armed: false,
+        now_ms: 1_000,
+        arm_time_ms: 0,
+        mode_number: 0,
+        using_interlock: false,
+        motor_interlock_switch: false,
+        emergency_stop: false,
+        motors_interlock: false,
+        motor_test: false,
+    }
+}
+
+fn task_run_rate_controller_main(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.run_rate_controller_main =
+        vehicle.ticks.run_rate_controller_main.saturating_add(1);
+    vehicle.last_rate = Some(run_rate_controller_main(
+        vehicle.last_loop_time_s,
+        vehicle.using_rate_thread,
+    ));
+}
+
+fn task_motors_output_main(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.motors_output_main = vehicle.ticks.motors_output_main.saturating_add(1);
+    let leftover = motors_output_main(vehicle.using_rate_thread, &vehicle.motors);
+    if let MotorsOutputMainLeftover::Ran(out) = leftover {
+        vehicle.motors.in_arming_delay = out.in_arming_delay;
+        vehicle.motors.motors_interlock = out.interlock;
+        vehicle.motors.full_push = true;
+    }
+    vehicle.last_motors = Some(leftover);
+}
+
+fn task_read_ahrs(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.read_ahrs = vehicle.ticks.read_ahrs.saturating_add(1);
+    vehicle.last_ahrs = Some(read_ahrs());
+}
+
 fn task_rc_loop(vehicle: &mut CopterVehicleLoop) {
     vehicle.ticks.rc_loop = vehicle.ticks.rc_loop.saturating_add(1);
     vehicle.last_rc = Some(rc_loop(&vehicle.radio, vehicle.mode_switch));
+}
+
+/// First Copter-owned FAST_TASK, in upstream table form.
+#[must_use]
+pub fn copter_run_rate_controller_main_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_run_rate_controller_main,
+        name: "run_rate_controller_main",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// `motors_output_main` FAST_TASK row.
+#[must_use]
+pub fn copter_motors_output_main_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_motors_output_main,
+        name: "motors_output_main",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// `read_AHRS` FAST_TASK row.
+#[must_use]
+pub fn copter_read_ahrs_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_read_ahrs,
+        name: "read_AHRS",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
 }
 
 /// The first scheduled Copter callback, in upstream table form.
@@ -458,6 +829,16 @@ pub fn copter_rc_loop_task() -> Task<CopterVehicleLoop> {
         max_time_micros: RC_LOOP_MAX_TIME_MICROS,
         priority: RC_LOOP_PRIORITY,
     }
+}
+
+/// First Copter-owned always-on FAST_TASK leftovers, table order.
+#[must_use]
+pub fn copter_first_fast_tasks() -> [Task<CopterVehicleLoop>; 3] {
+    [
+        copter_run_rate_controller_main_task(),
+        copter_motors_output_main_task(),
+        copter_read_ahrs_task(),
+    ]
 }
 
 /// Advance one scheduler tick and run the leftover pass.

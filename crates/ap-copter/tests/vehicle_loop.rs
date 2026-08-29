@@ -2,13 +2,15 @@
 
 use ap_copter::radio::ReadRadioLeftover;
 use ap_copter::vehicle_loop::{
-    always_on_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks, rc_loop,
-    read_mode_switch, run_scheduler_tick, CopterVehicleLoop, ModeSwitchReadInputs,
-    ModeSwitchReadLeftover, TaskKind, COPTER_LOOP_RATE_HZ, FAST_TASK_PRI0, MASK_LOG_PM,
+    always_on_tasks, copter_first_fast_tasks, copter_rc_loop_task, first_scheduled_task,
+    get_scheduler_tasks, motors_output, motors_output_main, rc_loop, read_ahrs, read_mode_switch,
+    run_scheduler_tick, CopterVehicleLoop, InterlockEdge, ModeSwitchReadInputs,
+    ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover, MotorsOutputPush,
+    TaskKind, ARMING_DELAY_MS, COPTER_LOOP_RATE_HZ, FAST_TASK_PRI0, MASK_LOG_PM, MODE_THROW,
     RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING, SCHEDULER_TASKS,
 };
 use ap_hal::time::{Clock, Micros, Millis};
-use ap_scheduler::scheduler::{LOOP_RATE, Scheduler};
+use ap_scheduler::scheduler::{Scheduler, LOOP_RATE};
 use core::cell::Cell;
 
 struct StepClock {
@@ -81,9 +83,13 @@ fn throttle_loop_is_the_fifty_hz_row() {
 #[test]
 fn remaining_leftovers_keep_later_callbacks() {
     assert!(REMAINING.contains(&"Copter::throttle_loop"));
-    assert!(REMAINING.contains(&"Copter::read_AHRS"));
+    assert!(REMAINING.contains(&"Copter::read_inertia"));
     assert!(REMAINING.contains(&"Copter::init_ardupilot"));
     assert!(!REMAINING.iter().any(|name| *name == "Copter::rc_loop"));
+    assert!(!REMAINING.iter().any(|name| *name == "Copter::read_AHRS"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::motors_output_main"));
 }
 
 #[test]
@@ -139,4 +145,149 @@ fn scheduler_runs_rc_loop_on_the_first_tick() {
     let leftover = vehicle.last_rc.expect("rc_loop ran");
     assert!(matches!(leftover.radio, ReadRadioLeftover::Frame { .. }));
     assert_eq!(leftover.mode_switch, ModeSwitchReadLeftover::Read);
+}
+
+#[test]
+fn read_ahrs_always_skips_ins_update() {
+    let leftover = read_ahrs();
+    assert!(leftover.skip_ins_update);
+}
+
+#[test]
+fn motors_output_main_skips_when_the_rate_thread_owns_it() {
+    let vehicle = CopterVehicleLoop::typical();
+    assert_eq!(
+        motors_output_main(true, &vehicle.motors),
+        MotorsOutputMainLeftover::Skipped
+    );
+}
+
+#[test]
+fn motors_output_main_forces_full_push() {
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.motors.full_push = false;
+    vehicle.motors.armed = true;
+    let MotorsOutputMainLeftover::Ran(out) = motors_output_main(false, &vehicle.motors) else {
+        panic!("main thread must run motors_output");
+    };
+    assert_eq!(out.push, MotorsOutputPush::Srv);
+    assert!(out.interlock);
+    assert_eq!(out.drive, MotorsOutputDrive::FlightMode);
+}
+
+#[test]
+fn motors_output_clears_arming_delay_on_disarm_timeout_or_throw() {
+    let mut inputs = CopterVehicleLoop::typical().motors;
+    inputs.in_arming_delay = true;
+    inputs.armed = true;
+    inputs.arm_time_ms = 0;
+    inputs.now_ms = ARMING_DELAY_MS;
+    // `>` not `>=` — exactly 2.0 s still holds the delay.
+    let held = motors_output(&inputs);
+    assert!(held.in_arming_delay);
+    assert!(!held.interlock);
+
+    inputs.now_ms = ARMING_DELAY_MS + 1;
+    assert!(!motors_output(&inputs).in_arming_delay);
+
+    inputs.now_ms = 0;
+    inputs.armed = false;
+    assert!(!motors_output(&inputs).in_arming_delay);
+
+    inputs.armed = true;
+    inputs.mode_number = MODE_THROW;
+    assert!(!motors_output(&inputs).in_arming_delay);
+}
+
+#[test]
+fn motors_output_interlock_needs_armed_cleared_delay_and_no_estop() {
+    let mut inputs = CopterVehicleLoop::typical().motors;
+    inputs.armed = true;
+    inputs.using_interlock = true;
+    inputs.motor_interlock_switch = false;
+    let blocked = motors_output(&inputs);
+    assert!(!blocked.interlock);
+    assert_eq!(blocked.interlock_edge, InterlockEdge::None);
+
+    inputs.motor_interlock_switch = true;
+    inputs.emergency_stop = true;
+    assert!(!motors_output(&inputs).interlock);
+
+    inputs.emergency_stop = false;
+    let on = motors_output(&inputs);
+    assert!(on.interlock);
+    assert_eq!(on.interlock_edge, InterlockEdge::Enabled);
+    assert!(on.calc_pwm && on.cork && on.output_ch_all);
+
+    inputs.motors_interlock = true;
+    inputs.armed = false;
+    let off = motors_output(&inputs);
+    assert!(!off.interlock);
+    assert_eq!(off.interlock_edge, InterlockEdge::Disabled);
+}
+
+#[test]
+fn motors_output_motor_test_beats_flight_mode_and_rcout_when_not_full_push() {
+    let mut inputs = CopterVehicleLoop::typical().motors;
+    inputs.motor_test = true;
+    inputs.full_push = false;
+    let out = motors_output(&inputs);
+    assert_eq!(out.drive, MotorsOutputDrive::MotorTest);
+    assert_eq!(out.push, MotorsOutputPush::Rcout);
+}
+
+#[test]
+fn scheduler_runs_first_fast_tasks_every_loop() {
+    let tasks = copter_first_fast_tasks();
+    let mut last = [0u16; 3];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.motors.armed = true;
+    vehicle.motors.in_arming_delay = true;
+    vehicle.motors.arm_time_ms = 0;
+    vehicle.motors.now_ms = ARMING_DELAY_MS + 1;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+
+    assert_eq!(stats.tasks_run, 3);
+    assert_eq!(vehicle.ticks.run_rate_controller_main, 1);
+    assert_eq!(vehicle.ticks.motors_output_main, 1);
+    assert_eq!(vehicle.ticks.read_ahrs, 1);
+    let rate = vehicle.last_rate.expect("rate leftover");
+    assert!(rate.set_pos_control_dt && rate.set_attitude_control_dt);
+    assert!(rate.set_motors_dt && rate.run_rate_controller && rate.reset_rate_target);
+    assert!((rate.dt_s - 0.0025).abs() < 1e-6);
+    let MotorsOutputMainLeftover::Ran(motors) = vehicle.last_motors.expect("motors leftover")
+    else {
+        panic!("motors_output_main ran");
+    };
+    assert!(!motors.in_arming_delay);
+    assert!(motors.interlock);
+    assert_eq!(motors.interlock_edge, InterlockEdge::Enabled);
+    assert!(vehicle.last_ahrs.expect("ahrs leftover").skip_ins_update);
+}
+
+#[test]
+fn scheduler_fast_tasks_respect_the_rate_thread() {
+    let tasks = copter_first_fast_tasks();
+    let mut last = [0u16; 3];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.using_rate_thread = true;
+    vehicle.motors.armed = true;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+
+    assert_eq!(stats.tasks_run, 3);
+    let rate = vehicle.last_rate.expect("rate leftover");
+    assert!(!rate.set_motors_dt);
+    assert!(!rate.run_rate_controller);
+    assert!(rate.reset_rate_target);
+    assert_eq!(
+        vehicle.last_motors.expect("motors leftover"),
+        MotorsOutputMainLeftover::Skipped
+    );
+    assert!(vehicle.last_ahrs.expect("ahrs leftover").skip_ins_update);
 }
