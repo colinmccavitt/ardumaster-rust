@@ -26,19 +26,40 @@
 //!
 //! # This slice
 //!
-//! `calculate_path` — the static time-solver that turns snap / jerk / accel /
-//! speed / length into the five numbers a 23-segment track is built from.
-//! The segment kinematics are already here. `calculate_track`,
-//! `advance_target_along_track`, the arc handling and the speed-change
-//! logic are the rest of the file.
+//! `add_segments` and `calculate_track` — turn origin, destination and the
+//! kinematic limits into a 23-segment track. `calculate_path` already
+//! produces the five durations; this slice lays them into the array and
+//! seats the 3-D chord (straight or the arc's NE geometry).
+//!
+//! `advance_target_along_track`, speed-change (`set_speed_max`, origin /
+//! dest speed), arc projection and the `move_*` helpers are the rest of
+//! the file.
 
-use crate::scalar::{is_negative, is_positive, is_zero, safe_sqrt, sq, Real};
+use crate::control::kinematic_limit;
+use crate::scalar::{
+    is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi, Real,
+};
+use crate::vector2::Vector2f;
+use crate::vector3::Vector3f;
 
 /// Segments in a full track, upstream `segments_max`.
 ///
 /// Segment 0 holds the initial state; 1–7 accelerate; 8–14 change speed; 15
 /// is constant velocity; 16–22 decelerate.
 pub const SEGMENTS_MAX: usize = 23;
+
+/// Initial / empty-path index, upstream `SEG_INIT`.
+pub const SEG_INIT: usize = 0;
+/// Constant-accel hold of the accel half, upstream `SEG_ACCEL_MAX`.
+pub const SEG_ACCEL_MAX: usize = 4;
+/// Last accel-half segment, upstream `SEG_ACCEL_END`.
+pub const SEG_ACCEL_END: usize = 7;
+/// Last of the seven speed-change slots, upstream `SEG_SPEED_CHANGE_END`.
+pub const SEG_SPEED_CHANGE_END: usize = 14;
+/// Constant-velocity cruise, upstream `SEG_CONST` / `SEG_DECEL_START`.
+pub const SEG_CONST: usize = 15;
+/// Last decel-half segment, upstream `SEG_DECEL_END`.
+pub const SEG_DECEL_END: usize = 22;
 
 /// What the jerk is doing across a segment, upstream `SCurve::SegmentType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -348,6 +369,117 @@ impl SegmentTrack {
         });
     }
 
+    /// Rise, hold, fall — one jerk pulse. Upstream `add_segments_jerk`.
+    pub fn add_segments_jerk(&mut self, tj: f32, jm: f32, tcj: f32) {
+        self.add_segment_incr_jerk(tj, jm);
+        self.add_segment_const_jerk(tcj, jm);
+        self.add_segment_decr_jerk(tj, jm);
+    }
+
+    fn segment_mut(&mut self, i: usize) -> Option<&mut Segment> {
+        self.segments.get_mut(i)
+    }
+
+    /// Lay a full 23-segment track of length `length`, upstream `add_segments`.
+    ///
+    /// The init segment (index 0) must already be there — [`SCurve::init`]
+    /// puts it in. A zero length leaves the track untouched.
+    ///
+    /// `calculate_path` is asked for half the length because the accel and
+    /// decel halves are mirrors. The seven speed-change slots stay empty
+    /// here; `set_speed_max` (later leftover) rewrites them. `t15` is the
+    /// cruise that fills whatever of `length` the two halves did not use.
+    ///
+    /// The accel-end and decel-end accel (and the decel-end vel) are forced
+    /// to zero after the sums: floating-point drift would otherwise leave
+    /// a path that never quite stops, and [`valid`] rejects that.
+    pub fn add_segments(
+        &mut self,
+        snap_max: f32,
+        jerk_max: f32,
+        accel_max: f32,
+        vel_max: f32,
+        length: f32,
+    ) {
+        if is_zero(length) {
+            return;
+        }
+        if self.num_segs == 0 {
+            self.add_segment(Segment::default());
+        }
+
+        let p = calculate_path(snap_max, jerk_max, 0.0, accel_max, vel_max, length * 0.5);
+
+        self.add_segments_jerk(p.tj, p.jm, p.t2);
+        self.add_segment_const_jerk(p.t4, 0.0);
+        self.add_segments_jerk(p.tj, -p.jm, p.t6);
+
+        if let Some(s) = self.segment_mut(SEG_ACCEL_END) {
+            s.end_accel = 0.0;
+        }
+
+        for _ in 0..7 {
+            self.add_segment_const_jerk(0.0, 0.0);
+        }
+
+        let (end_pos, end_vel) = self
+            .segment(SEG_SPEED_CHANGE_END)
+            .map(|s| (s.end_pos, s.end_vel))
+            .unwrap_or((0.0, 0.0));
+        let t15 = cpp_max(0.0, (length - 2.0 * end_pos) / end_vel);
+        self.add_segment_const_jerk(t15, 0.0);
+
+        self.add_segments_jerk(p.tj, -p.jm, p.t6);
+        self.add_segment_const_jerk(p.t4, 0.0);
+        self.add_segments_jerk(p.tj, p.jm, p.t2);
+
+        if let Some(s) = self.segment_mut(SEG_DECEL_END) {
+            s.end_accel = 0.0;
+            s.end_vel = 0.0;
+        }
+    }
+
+    /// True when the 23-segment array is a usable path, upstream `valid`.
+    ///
+    /// Every stored number must be finite, velocity never negative, time
+    /// and position never go backwards, and the last segment must finish
+    /// at zero acceleration — otherwise the vehicle would keep thrusting
+    /// after the path said it was done.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        if self.num_segs != SEGMENTS_MAX {
+            return false;
+        }
+        for i in 0..self.num_segs {
+            let Some(s) = self.segments.get(i) else {
+                return false;
+            };
+            if !s.jerk_ref.is_finite()
+                || !s.end_time.is_finite()
+                || !s.end_accel.is_finite()
+                || !s.end_vel.is_finite()
+                || is_negative(s.end_vel)
+                || !s.end_pos.is_finite()
+            {
+                return false;
+            }
+            if i >= 1 {
+                let Some(prev) = self.segments.get(i - 1) else {
+                    return false;
+                };
+                if is_negative(s.end_time - prev.end_time)
+                    || is_negative(s.end_pos - prev.end_pos)
+                {
+                    return false;
+                }
+            }
+        }
+        match self.segments.get(self.num_segs - 1) {
+            Some(last) if is_zero(last.end_accel) => true,
+            _ => false,
+        }
+    }
+
     /// Evaluate the track at a time, upstream
     /// `get_jerk_accel_vel_pos_at_time`.
     ///
@@ -637,6 +769,300 @@ pub fn calculate_path(
         };
     }
     out
+}
+
+/// Circular-arc geometry in the NE plane, upstream's anonymous `arc` struct.
+///
+/// The scalar S-curve still runs on path length. Projecting that motion
+/// onto this circle is a later leftover (`project_scurve_onto_track`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Arc {
+    /// Signed central angle, radians. Upstream: +CCW, −CW, 0 = straight.
+    pub angle_rad: f32,
+    /// Horizontal arc length `R · |θ|`.
+    pub length_ne: f32,
+    /// Arc radius in the NE plane.
+    pub radius_ne: f32,
+    /// Circle centre relative to the start point, NE.
+    pub center_ne: Vector2f,
+}
+
+/// A snap-limited 3-D track between two points, upstream `SCurve`.
+///
+/// This slice builds the track. Advancing along it, changing speed mid-leg,
+/// and projecting the scalar path onto an arc are later leftovers.
+#[derive(Debug, Clone)]
+pub struct SCurve {
+    snap_max: f32,
+    jerk_max: f32,
+    accel_max: f32,
+    accel_z_max: f32,
+    vel_max: f32,
+    time: f32,
+    track: SegmentTrack,
+    is_arc_segment: bool,
+    seg_delta: Vector3f,
+    seg_length: f32,
+    arc: Arc,
+}
+
+impl Default for SCurve {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SCurve {
+    /// An empty path: one init segment, no motion.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut s = Self {
+            snap_max: 0.0,
+            jerk_max: 0.0,
+            accel_max: 0.0,
+            accel_z_max: 0.0,
+            vel_max: 0.0,
+            time: 0.0,
+            track: SegmentTrack::new(),
+            is_arc_segment: false,
+            seg_delta: Vector3f::zero(),
+            seg_length: 0.0,
+            arc: Arc::default(),
+        };
+        s.init();
+        s
+    }
+
+    /// Clear the path and put the empty init segment in, upstream `init`.
+    ///
+    /// `accel_z_max` is left alone: that is what the C++ does.
+    pub fn init(&mut self) {
+        self.snap_max = 0.0;
+        self.jerk_max = 0.0;
+        self.accel_max = 0.0;
+        self.vel_max = 0.0;
+        self.time = 0.0;
+        self.track = SegmentTrack::new();
+        self.track.add_segment(Segment::default());
+        self.is_arc_segment = false;
+        self.seg_delta = Vector3f::zero();
+        self.seg_length = 0.0;
+        self.arc = Arc::default();
+    }
+
+    /// Build a track from `origin` to `destination`, upstream `calculate_track`.
+    ///
+    /// Origin and destination are NED offsets from the EKF origin. An arc
+    /// smaller than one degree is treated as a straight chord — below that
+    /// the circle centre is a numerical fiction. Invalid limits (non-positive
+    /// snap, jerk, accel or speed) leave a zero-length path rather than a
+    /// track that would divide by zero. A path that fails [`SegmentTrack::valid`]
+    /// is thrown away the same way.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "matches upstream calculate_track's argument list"
+    )]
+    pub fn calculate_track(
+        &mut self,
+        origin: Vector3f,
+        destination: Vector3f,
+        arc_ang_rad: f32,
+        mut speed_xy: f32,
+        mut speed_up: f32,
+        mut speed_down: f32,
+        mut accel_xy: f32,
+        mut accel_z: f32,
+        mut accel_c: f32,
+        snap_maximum: f32,
+        jerk_maximum: f32,
+    ) {
+        self.init();
+
+        speed_xy = speed_xy.abs();
+        speed_up = speed_up.abs();
+        speed_down = speed_down.abs();
+        accel_xy = accel_xy.abs();
+        accel_z = accel_z.abs();
+
+        self.seg_delta = destination - origin;
+        if self.seg_delta.is_zero() || is_zero(self.seg_delta.length_squared()) {
+            self.seg_delta = Vector3f::zero();
+            return;
+        }
+
+        let chord = self.seg_delta.xy();
+        let chord_length = chord.length();
+        if !is_positive(chord_length) || wrap_pi(arc_ang_rad).abs() < radians(1.0) {
+            self.set_straight(chord_length);
+        } else {
+            self.is_arc_segment = true;
+            self.arc.angle_rad = arc_ang_rad;
+            self.arc.radius_ne =
+                (chord_length / (2.0 * Real::sin(self.arc.angle_rad * 0.5).abs())).abs();
+            let center_offset = safe_sqrt(sq(self.arc.radius_ne) - sq(chord_length * 0.5));
+            let turn_dir = if is_negative(self.arc.angle_rad) {
+                -1.0
+            } else {
+                1.0
+            };
+            let center_side = if is_positive(wrap_pi(self.arc.angle_rad.abs())) {
+                1.0
+            } else {
+                -1.0
+            };
+            if !is_zero(self.arc.radius_ne) && !is_zero(chord_length) {
+                self.arc.center_ne = chord * 0.5
+                    + Vector2f::new(-chord.y, chord.x)
+                        * (center_side * turn_dir * center_offset / chord_length);
+                self.arc.length_ne = self.arc.radius_ne * self.arc.angle_rad.abs();
+                self.seg_length = safe_sqrt(sq(self.seg_delta.z) + sq(self.arc.length_ne));
+                accel_c = if is_positive(accel_c) {
+                    accel_c
+                } else {
+                    accel_xy
+                };
+                speed_xy = cpp_min(speed_xy, safe_sqrt(accel_c * self.arc.radius_ne));
+            } else {
+                self.set_straight(chord_length);
+            }
+        }
+
+        if is_zero(self.seg_length) {
+            self.seg_delta = Vector3f::zero();
+            return;
+        }
+
+        self.snap_max = snap_maximum;
+        self.jerk_max = jerk_maximum;
+        self.set_kinematic_limits(
+            origin,
+            destination,
+            speed_xy,
+            speed_up,
+            speed_down,
+            accel_xy,
+            accel_z,
+        );
+
+        if !is_positive(self.snap_max)
+            || !is_positive(self.jerk_max)
+            || !is_positive(self.accel_max)
+            || !is_positive(self.vel_max)
+        {
+            return;
+        }
+
+        self.track.add_segments(
+            self.snap_max,
+            self.jerk_max,
+            self.accel_max,
+            self.vel_max,
+            self.seg_length,
+        );
+
+        if !self.track.valid() {
+            self.init();
+        }
+    }
+
+    fn set_straight(&mut self, chord_length: f32) {
+        self.is_arc_segment = false;
+        self.arc.angle_rad = 0.0;
+        self.arc.length_ne = chord_length;
+        self.arc.radius_ne = 0.0;
+        self.arc.center_ne = Vector2f::zero();
+        self.seg_length = self.seg_delta.length();
+    }
+
+    /// Speed and accel along the track from the 3-D direction.
+    /// Upstream `set_kinematic_limits`.
+    fn set_kinematic_limits(
+        &mut self,
+        origin: Vector3f,
+        destination: Vector3f,
+        speed_xy: f32,
+        speed_up: f32,
+        speed_down: f32,
+        accel_xy: f32,
+        accel_z: f32,
+    ) {
+        let direction = destination - origin;
+        self.vel_max = kinematic_limit(direction, speed_xy, speed_up, speed_down);
+        self.accel_max = kinematic_limit(direction, accel_xy, accel_z, accel_z);
+        self.accel_z_max = accel_z;
+    }
+
+    /// The 23-segment array, or the lone init segment on an empty path.
+    #[must_use]
+    pub const fn track(&self) -> &SegmentTrack {
+        &self.track
+    }
+
+    /// Displacement origin → destination, NED.
+    #[must_use]
+    pub const fn seg_delta(&self) -> Vector3f {
+        self.seg_delta
+    }
+
+    /// Scalar path length (straight 3-D length, or arc-length ⊕ Δz).
+    #[must_use]
+    pub const fn seg_length(&self) -> f32 {
+        self.seg_length
+    }
+
+    /// True when [`calculate_track`] stored a circular NE arc.
+    #[must_use]
+    pub const fn is_arc_segment(&self) -> bool {
+        self.is_arc_segment
+    }
+
+    /// Arc geometry last computed by [`calculate_track`].
+    #[must_use]
+    pub const fn arc(&self) -> Arc {
+        self.arc
+    }
+
+    /// Speed limit along the track after kinematic limiting.
+    #[must_use]
+    pub const fn vel_max(&self) -> f32 {
+        self.vel_max
+    }
+
+    /// Accel limit along the track after kinematic limiting.
+    #[must_use]
+    pub const fn accel_max(&self) -> f32 {
+        self.accel_max
+    }
+
+    /// Vertical accel limit stored by [`set_kinematic_limits`].
+    #[must_use]
+    pub const fn accel_z_max(&self) -> f32 {
+        self.accel_z_max
+    }
+
+    /// Snap limit last passed to [`calculate_track`].
+    #[must_use]
+    pub const fn snap_max(&self) -> f32 {
+        self.snap_max
+    }
+
+    /// Jerk limit last passed to [`calculate_track`].
+    #[must_use]
+    pub const fn jerk_max(&self) -> f32 {
+        self.jerk_max
+    }
+
+    /// Elapsed path time. Advanced by a later leftover.
+    #[must_use]
+    pub const fn time(&self) -> f32 {
+        self.time
+    }
+
+    /// True when the 23-segment array is a usable path, upstream `valid`.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        self.track.valid()
+    }
 }
 
 #[cfg(test)]
@@ -942,5 +1368,245 @@ epsilon would accept a drift, which is the failure"
                 }
             }
         }
+    }
+
+    fn init_track() -> SegmentTrack {
+        let mut track = SegmentTrack::new();
+        track.add_segment(Segment::default());
+        track
+    }
+
+    /// A zero length is a no-op: the init segment stays alone.
+    #[test]
+    fn add_segments_of_zero_length_changes_nothing() {
+        let mut track = init_track();
+        track.add_segments(100.0, 8.0, 5.0, 15.0, 0.0);
+        assert_eq!(track.len(), 1);
+        assert!(!track.valid());
+    }
+
+    /// A long cruise fills all 23 slots, finishes at rest, and the last
+    /// stored position is the path length — that is the whole point of
+    /// asking `calculate_path` for half and putting a cruise in the middle.
+    #[test]
+    fn add_segments_builds_a_full_track() {
+        let length = 200.0;
+        let mut track = init_track();
+        track.add_segments(100.0, 8.0, 5.0, 15.0, length);
+        assert_eq!(track.len(), SEGMENTS_MAX);
+        assert!(track.valid(), "long cruise must be a valid path");
+
+        let last = track.segment(SEG_DECEL_END).expect("decel end");
+        assert!(is_zero(last.end_accel), "accel {}", last.end_accel);
+        assert!(is_zero(last.end_vel), "vel {}", last.end_vel);
+        assert!(
+            (last.end_pos - length).abs() < 0.05,
+            "end_pos {} against length {length}",
+            last.end_pos
+        );
+
+        let cruise = track.segment(SEG_CONST).expect("cruise");
+        let speed_end = track.segment(SEG_SPEED_CHANGE_END).expect("speed-change end");
+        assert!(
+            cruise.end_time > speed_end.end_time,
+            "a 200 m cruise at 15 m/s must spend time at constant speed"
+        );
+    }
+
+    /// A short hop never reaches cruise, but it is still 23 segments and
+    /// still valid — the empty slots are zero-duration copies.
+    #[test]
+    fn add_segments_short_hop_is_still_twenty_three() {
+        let length = 2.0;
+        let mut track = init_track();
+        track.add_segments(100.0, 40.0, 10.0, 20.0, length);
+        assert_eq!(track.len(), SEGMENTS_MAX);
+        assert!(track.valid());
+        let last = track.segment(SEG_DECEL_END).expect("decel end");
+        assert!(is_zero(last.end_vel));
+        assert!(
+            (last.end_pos - length).abs() < 0.05,
+            "end_pos {} against length {length}",
+            last.end_pos
+        );
+    }
+
+    /// The evaluator on a built track agrees with the stored endpoints
+    /// and finishes at rest.
+    #[test]
+    fn add_segments_evaluates_to_rest_at_the_end() {
+        let mut track = init_track();
+        track.add_segments(100.0, 8.0, 5.0, 15.0, 80.0);
+        let last = track.segment(SEG_DECEL_END).expect("decel end");
+        let at_end = track.javp_at_time(last.end_time);
+        assert!(at_end.vel.abs() < 1e-3, "vel {}", at_end.vel);
+        assert!(at_end.accel.abs() < 1e-3, "accel {}", at_end.accel);
+        assert!((at_end.pos - last.end_pos).abs() < 1e-3);
+    }
+
+    /// Equal origin and destination leave a zero-length path.
+    #[test]
+    fn calculate_track_equal_points_is_empty() {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::zero(),
+            0.0,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(!s.valid());
+        assert_eq!(s.track().len(), 1);
+        assert!(is_zero(s.seg_length()));
+        assert!(s.seg_delta().is_zero());
+    }
+
+    /// A 100 m east leg is a straight 23-segment track whose length is
+    /// the chord.
+    #[test]
+    fn calculate_track_straight_horizontal() {
+        let mut s = SCurve::new();
+        let dest = Vector3f::new(100.0, 0.0, 0.0);
+        s.calculate_track(
+            Vector3f::zero(),
+            dest,
+            0.0,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.valid());
+        assert!(!s.is_arc_segment());
+        assert!((s.seg_length() - 100.0).abs() < 1e-5);
+        assert_eq!(s.seg_delta(), dest);
+        assert_eq!(s.vel_max(), 15.0);
+        assert_eq!(s.accel_max(), 5.0);
+        let last = s.track().segment(SEG_DECEL_END).expect("decel end");
+        assert!((last.end_pos - 100.0).abs() < 0.05);
+    }
+
+    /// An arc smaller than one degree is a straight chord. Below that
+    /// the circle centre is a numerical fiction.
+    #[test]
+    fn calculate_track_tiny_arc_is_straight() {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(50.0, 0.0, 0.0),
+            radians(0.5),
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.valid());
+        assert!(!s.is_arc_segment());
+        assert!(is_zero(s.arc().angle_rad));
+        assert!(is_zero(s.arc().radius_ne));
+    }
+
+    /// A 90° arc stores the circle (radius = chord / √2) and still
+    /// builds a valid scalar track of the arc length. Projection onto
+    /// the circle is the later leftover.
+    #[test]
+    fn calculate_track_arc_sets_radius() {
+        let mut s = SCurve::new();
+        let dest = Vector3f::new(100.0, 0.0, 0.0);
+        s.calculate_track(
+            Vector3f::zero(),
+            dest,
+            core::f32::consts::FRAC_PI_2,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.is_arc_segment());
+        let want_r = 100.0 / core::f32::consts::SQRT_2;
+        assert!(
+            (s.arc().radius_ne - want_r).abs() < 1e-3,
+            "radius {} against {want_r}",
+            s.arc().radius_ne
+        );
+        let want_len = want_r * core::f32::consts::FRAC_PI_2;
+        assert!((s.arc().length_ne - want_len).abs() < 1e-3);
+        assert!((s.seg_length() - want_len).abs() < 1e-3);
+        assert!(s.valid());
+        let last = s.track().segment(SEG_DECEL_END).expect("decel end");
+        assert!((last.end_pos - s.seg_length()).abs() < 0.05);
+    }
+
+    /// Non-positive snap / jerk / accel / speed leave the init-only path.
+    /// Upstream logs INTERNAL_ERROR; we skip the log.
+    #[test]
+    fn calculate_track_rejects_non_positive_limits() {
+        for (snap, jerk, accel, speed) in [
+            (0.0, 8.0, 5.0, 15.0),
+            (100.0, 0.0, 5.0, 15.0),
+            (100.0, 8.0, 0.0, 15.0),
+            (100.0, 8.0, 5.0, 0.0),
+        ] {
+            let mut s = SCurve::new();
+            s.calculate_track(
+                Vector3f::zero(),
+                Vector3f::new(40.0, 0.0, 0.0),
+                0.0,
+                speed,
+                5.0,
+                5.0,
+                accel,
+                accel,
+                accel,
+                snap,
+                jerk,
+            );
+            assert!(!s.valid(), "snap={snap} jerk={jerk} accel={accel} speed={speed}");
+            assert_eq!(s.track().len(), 1);
+        }
+    }
+
+    /// Straight up (NED −Z) uses the climb speed / accel, not the
+    /// horizontal ones. That is `kinematic_limit` on a vertical direction.
+    #[test]
+    fn calculate_track_vertical_uses_climb_limit() {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(0.0, 0.0, -20.0),
+            0.0,
+            15.0,
+            3.0,
+            4.0,
+            5.0,
+            2.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.valid());
+        assert!(!s.is_arc_segment());
+        assert!((s.seg_length() - 20.0).abs() < 1e-5);
+        assert_eq!(s.vel_max(), 3.0);
+        assert_eq!(s.accel_max(), 2.0);
+        assert_eq!(s.accel_z_max(), 2.0);
     }
 }
