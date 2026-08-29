@@ -1,12 +1,13 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run leftover, upstream `ArduCopter/mode_guided.cpp`.
+//! pos_control_run / set_angle leftover, upstream `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
 //! to a coordinate, hold a velocity, or take an attitude. The first slice
 //! owns the enter and the Location dest setter. The second owns the `run`
-//! dispatcher and the velocity setter. This slice owns `pos_control_run`.
-//! The remaining `*_run` bodies, accel / angle setters, Guided-NoGPS, and
-//! Follow are later slices.
+//! dispatcher and the velocity setter. The third owns `pos_control_run`.
+//! This slice owns `set_angle` (and `angle_control_start`). The remaining
+//! `*_run` bodies, the accel setter, Guided-NoGPS, and Follow are later
+//! slices.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -97,6 +98,21 @@
 //! `MIN(wp_nav margin, 0.5 * |pos.z|)`. `input_pos_NED_m` gets that
 //! margin and the terrain D (zero when not terrain). Controllers
 //! and `input_thrust_vector_heading` always run on the fly path.
+
+//! # `set_angle` starts Angle, then forks thrust vs climb
+//!
+//! Not already Angle calls `angle_control_start`: D limits only, D init
+//! only when inactive, NE never. The start seeds a yaw-only quat that
+//! `set_angle` immediately overwrites. Already Angle and switching from
+//! thrust to climb is the other D-init path — an `else if`, so a start
+//! that also happens to be a thrust-to-climb does not take it. Climb to
+//! thrust does not re-init D.
+//!
+//! The unused vertical channel is zeroed. `to_euler` always runs; the
+//! log write is compiled out when logging is off. There is no
+//! `log_request` gate (unlike the velocity setter).
+
+use ap_math::quaternion::Quaternion;
 
 /// `Mode::Number::GUIDED`.
 pub const MODE_NUMBER_GUIDED: u8 = 4;
@@ -1036,7 +1052,11 @@ pub fn guided_pos_control_run(view: &GuidedPosControlView) -> GuidedPosControl {
             crate::auto_yaw::YawMode::Rate | crate::auto_yaw::YawMode::AngleRate
         );
 
-    let terrain_d_m = if view.terrain_alt { view.terrain_d_m } else { 0.0 };
+    let terrain_d_m = if view.terrain_alt {
+        view.terrain_d_m
+    } else {
+        0.0
+    };
     let terrain_margin_m = if view.terrain_alt {
         let half_abs_z = 0.5 * view.pos_target_ned_m[2].abs();
         if view.wp_terrain_margin_m < half_abs_z {
@@ -1054,5 +1074,227 @@ pub fn guided_pos_control_run(view: &GuidedPosControlView) -> GuidedPosControl {
             terrain_d_m,
             terrain_margin_m,
         },
+    }
+}
+
+/// Vehicle view `ModeGuided::angle_control_start` reads.
+///
+/// Unlike [`guided_init`]'s `pva_control_start`, Angle start writes only
+/// the vertical limits and only inits D when it is inactive. NE is left
+/// alone — a GCS that was already flying VelAccel must not have its
+/// horizontal controller reset just because the next command is an
+/// attitude.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedAngleStartView {
+    /// `pos_control->D_is_active()`.
+    pub d_is_active: bool,
+    /// `wp_nav->get_default_speed_down_ms()`.
+    pub default_speed_down_ms: f32,
+    /// `wp_nav->get_default_speed_up_ms()`.
+    pub default_speed_up_ms: f32,
+    /// `wp_nav->get_accel_D_mss()`.
+    pub accel_d_mss: f32,
+    /// `attitude_control->get_att_target_euler_rad().z`.
+    pub att_target_yaw_rad: f32,
+    /// `millis()` stamped into `guided_angle_state.update_time_ms`.
+    pub now_ms: u32,
+}
+
+impl GuidedAngleStartView {
+    /// After [`guided_init`]: D is already active, wpnav defaults, north.
+    #[must_use]
+    pub const fn after_init() -> Self {
+        Self {
+            d_is_active: true,
+            default_speed_down_ms: WP_SPD_DOWN_DEFAULT_MS,
+            default_speed_up_ms: WP_SPD_UP_DEFAULT_MS,
+            accel_d_mss: WP_ACC_Z_DEFAULT_MSS,
+            att_target_yaw_rad: 0.0,
+            now_ms: 2_000,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::angle_control_start` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedAngleStart {
+    /// Always [`GuidedSubMode::Angle`].
+    pub submode: GuidedSubMode,
+    /// Vertical max / correction descent speed.
+    pub d_speed_down_ms: f32,
+    /// Vertical max / correction climb speed.
+    pub d_speed_up_ms: f32,
+    /// Vertical max / correction accel.
+    pub d_accel_mss: f32,
+    /// `D_init_controller` ran because D was inactive.
+    pub init_d: bool,
+    /// Always false. Angle start does not touch NE.
+    pub init_ne: bool,
+    /// Seeded `from_euler(0, 0, att_target_yaw)`. `set_angle` overwrites
+    /// this immediately; the seed is the leftover of a start with no
+    /// attitude yet.
+    pub attitude_quat: [f32; 4],
+    /// `guided_angle_state.ang_vel_body` after start. Always zero.
+    pub ang_vel_body: [f32; 3],
+    /// `guided_angle_state.climb_rate_ms` after start. Always zero.
+    pub climb_rate_ms: f32,
+    /// `guided_angle_state.update_time_ms` after start.
+    pub update_time_ms: u32,
+}
+
+/// Upstream `ModeGuided::angle_control_start`.
+///
+/// D limits always. D init only when inactive. NE never. The seeded
+/// quat is yaw-only; `use_thrust` / `thrust_norm` are not written.
+#[must_use]
+pub fn guided_angle_control_start(view: &GuidedAngleStartView) -> GuidedAngleStart {
+    let q = Quaternion::from_euler(0.0, 0.0, view.att_target_yaw_rad);
+    GuidedAngleStart {
+        submode: GuidedSubMode::Angle,
+        d_speed_down_ms: view.default_speed_down_ms,
+        d_speed_up_ms: view.default_speed_up_ms,
+        d_accel_mss: view.accel_d_mss,
+        init_d: !view.d_is_active,
+        init_ne: false,
+        attitude_quat: [q.q1, q.q2, q.q3, q.q4],
+        ang_vel_body: [0.0, 0.0, 0.0],
+        climb_rate_ms: 0.0,
+        update_time_ms: view.now_ms,
+    }
+}
+
+/// Vehicle view `ModeGuided::set_angle` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedSetAngleView {
+    /// `guided_mode` before the call.
+    pub submode: GuidedSubMode,
+    /// `guided_angle_state.use_thrust` before the call.
+    pub already_use_thrust: bool,
+    /// `pos_control->D_is_active()`. Consulted only when start runs.
+    pub d_is_active: bool,
+    /// `wp_nav->get_default_speed_down_ms()`. Used only when start runs.
+    pub default_speed_down_ms: f32,
+    /// `wp_nav->get_default_speed_up_ms()`. Used only when start runs.
+    pub default_speed_up_ms: f32,
+    /// `wp_nav->get_accel_D_mss()`. Used only when start runs.
+    pub accel_d_mss: f32,
+    /// Current attitude-target yaw, used only by start's seed quat.
+    pub att_target_yaw_rad: f32,
+    /// Commanded attitude quaternion, scalar-first (`q1..q4`).
+    pub attitude_quat: [f32; 4],
+    /// Commanded body-frame angular velocity, rad/s.
+    pub ang_vel_body: [f32; 3],
+    /// `climb_rate_ms_or_thrust` argument.
+    pub climb_rate_ms_or_thrust: f32,
+    /// `use_thrust` argument.
+    pub use_thrust: bool,
+    /// `millis()` stamped into `guided_angle_state.update_time_ms`.
+    pub now_ms: u32,
+    /// `HAL_LOGGING_ENABLED`. There is no `log_request` gate.
+    pub logging_enabled: bool,
+}
+
+impl GuidedSetAngleView {
+    /// After [`guided_init`]: VelAccel, D already active, climb-rate command.
+    #[must_use]
+    pub const fn after_init() -> Self {
+        Self {
+            submode: GuidedSubMode::VelAccel,
+            already_use_thrust: false,
+            d_is_active: true,
+            default_speed_down_ms: WP_SPD_DOWN_DEFAULT_MS,
+            default_speed_up_ms: WP_SPD_UP_DEFAULT_MS,
+            accel_d_mss: WP_ACC_Z_DEFAULT_MSS,
+            att_target_yaw_rad: 0.0,
+            attitude_quat: [1.0, 0.0, 0.0, 0.0],
+            ang_vel_body: [0.1, -0.05, 0.2],
+            climb_rate_ms_or_thrust: 1.5,
+            use_thrust: false,
+            now_ms: 2_000,
+            logging_enabled: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::set_angle` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedSetAngle {
+    /// Always [`GuidedSubMode::Angle`].
+    pub submode: GuidedSubMode,
+    /// `angle_control_start` ran because the submode was not Angle.
+    pub started_angle: bool,
+    /// `D_init_controller` ran. Start-when-inactive, or the
+    /// already-Angle thrust-to-climb switch. Not both: the switch is
+    /// an `else if`.
+    pub init_d: bool,
+    /// D limits written by start. `None` when already Angle.
+    pub d_speed_down_ms: Option<f32>,
+    /// D climb limit written by start. `None` when already Angle.
+    pub d_speed_up_ms: Option<f32>,
+    /// D accel written by start. `None` when already Angle.
+    pub d_accel_mss: Option<f32>,
+    /// `guided_angle_state.attitude_quat` after the call.
+    pub attitude_quat: [f32; 4],
+    /// `guided_angle_state.ang_vel_body` after the call.
+    pub ang_vel_body: [f32; 3],
+    /// `guided_angle_state.use_thrust` after the call.
+    pub use_thrust: bool,
+    /// `guided_angle_state.thrust_norm` after the call. Zero on climb.
+    pub thrust_norm: f32,
+    /// `guided_angle_state.climb_rate_ms` after the call. Zero on thrust.
+    pub climb_rate_ms: f32,
+    /// `guided_angle_state.update_time_ms` after the call.
+    pub update_time_ms: u32,
+    /// `attitude_quat.to_euler()` leftover, written even when logging
+    /// is compiled out.
+    pub euler_rad: [f32; 3],
+    /// `Log_Write_Guided_Attitude_Target` ran.
+    pub logged: bool,
+}
+
+/// Upstream `ModeGuided::set_angle`.
+///
+/// Not-Angle starts Angle. Already-Angle and switching from thrust to
+/// climb re-inits D. Climb-to-thrust does not. The unused vertical
+/// channel is zeroed. The euler conversion always runs; the log write
+/// is compiled out when logging is off. There is no `log_request`.
+#[must_use]
+pub fn guided_set_angle(view: &GuidedSetAngleView) -> GuidedSetAngle {
+    let started_angle = view.submode != GuidedSubMode::Angle;
+    let init_d = if started_angle {
+        !view.d_is_active
+    } else {
+        !view.use_thrust && view.already_use_thrust
+    };
+
+    let (thrust_norm, climb_rate_ms) = if view.use_thrust {
+        (view.climb_rate_ms_or_thrust, 0.0)
+    } else {
+        (0.0, view.climb_rate_ms_or_thrust)
+    };
+
+    let q = Quaternion::new(
+        view.attitude_quat[0],
+        view.attitude_quat[1],
+        view.attitude_quat[2],
+        view.attitude_quat[3],
+    );
+    let (roll_rad, pitch_rad, yaw_rad) = q.to_euler();
+
+    GuidedSetAngle {
+        submode: GuidedSubMode::Angle,
+        started_angle,
+        init_d,
+        d_speed_down_ms: started_angle.then_some(view.default_speed_down_ms),
+        d_speed_up_ms: started_angle.then_some(view.default_speed_up_ms),
+        d_accel_mss: started_angle.then_some(view.accel_d_mss),
+        attitude_quat: view.attitude_quat,
+        ang_vel_body: view.ang_vel_body,
+        use_thrust: view.use_thrust,
+        thrust_norm,
+        climb_rate_ms,
+        update_time_ms: view.now_ms,
+        euler_rad: [roll_rad, pitch_rad, yaw_rad],
+        logged: view.logging_enabled,
     }
 }

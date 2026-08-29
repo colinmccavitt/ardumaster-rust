@@ -1,13 +1,14 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run leftovers, upstream `ArduCopter/mode_guided.cpp`.
+//! pos_control_run / set_angle leftovers, upstream `ArduCopter/mode_guided.cpp`.
 
 use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_guided::{
-    guided_init, guided_mode_flags, guided_pos_control_run, guided_run, guided_set_destination,
-    guided_set_vel_accel, guided_set_velocity, guided_timeout_ms, option_is_enabled,
-    set_yaw_state_rad, use_wpnav_for_position_control, GuidedInitView, GuidedOption,
-    GuidedPosControlExit, GuidedPosControlView, GuidedRunBody, GuidedRunView, GuidedSetDestFail,
-    GuidedSetDestView, GuidedSetVelView, GuidedSubMode, GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S,
+    guided_angle_control_start, guided_init, guided_mode_flags, guided_pos_control_run, guided_run,
+    guided_set_angle, guided_set_destination, guided_set_vel_accel, guided_set_velocity,
+    guided_timeout_ms, option_is_enabled, set_yaw_state_rad, use_wpnav_for_position_control,
+    GuidedAngleStartView, GuidedInitView, GuidedOption, GuidedPosControlExit, GuidedPosControlView,
+    GuidedRunBody, GuidedRunView, GuidedSetAngleView, GuidedSetDestFail, GuidedSetDestView,
+    GuidedSetVelView, GuidedSubMode, GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S,
     GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW, MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS,
     WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS, WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS,
     WP_SPD_UP_DEFAULT_MS,
@@ -661,4 +662,183 @@ fn pos_run_zero_guid_timeout_still_floors_to_100ms() {
         GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
         other => panic!("expected Flew, got {other:?}"),
     }
+}
+
+#[test]
+fn angle_start_after_init_does_not_reinit_active_d() {
+    let view = GuidedAngleStartView::after_init();
+    let out = guided_angle_control_start(&view);
+    assert_eq!(out.submode, GuidedSubMode::Angle);
+    assert!(!out.init_d);
+    assert!(!out.init_ne);
+    assert_eq!(
+        out.d_speed_down_ms.to_bits(),
+        WP_SPD_DOWN_DEFAULT_MS.to_bits()
+    );
+    assert_eq!(out.d_speed_up_ms.to_bits(), WP_SPD_UP_DEFAULT_MS.to_bits());
+    assert_eq!(out.d_accel_mss.to_bits(), WP_ACC_Z_DEFAULT_MSS.to_bits());
+    assert_eq!(out.ang_vel_body, [0.0, 0.0, 0.0]);
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.update_time_ms, 2_000);
+    assert_eq!(out.attitude_quat, [1.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn angle_start_inits_d_only_when_inactive() {
+    let mut view = GuidedAngleStartView::after_init();
+    view.d_is_active = false;
+    let out = guided_angle_control_start(&view);
+    assert!(out.init_d);
+    assert!(!out.init_ne);
+}
+
+#[test]
+fn angle_start_uses_the_callers_d_limits_not_the_constants() {
+    let view = GuidedAngleStartView {
+        d_is_active: true,
+        default_speed_down_ms: 0.8,
+        default_speed_up_ms: 1.2,
+        accel_d_mss: 2.0,
+        att_target_yaw_rad: 0.0,
+        now_ms: 500,
+    };
+    let out = guided_angle_control_start(&view);
+    assert_eq!(out.d_speed_down_ms.to_bits(), 0.8f32.to_bits());
+    assert_eq!(out.d_speed_up_ms.to_bits(), 1.2f32.to_bits());
+    assert_eq!(out.d_accel_mss.to_bits(), 2.0f32.to_bits());
+}
+
+#[test]
+fn angle_start_seeds_a_yaw_only_quat() {
+    let mut view = GuidedAngleStartView::after_init();
+    view.att_target_yaw_rad = core::f32::consts::FRAC_PI_2;
+    let out = guided_angle_control_start(&view);
+    let q = ap_math::quaternion::Quaternion::from_euler(0.0, 0.0, view.att_target_yaw_rad);
+    assert_eq!(out.attitude_quat, [q.q1, q.q2, q.q3, q.q4]);
+    assert!((out.attitude_quat[0] - core::f32::consts::FRAC_1_SQRT_2).abs() < 1.0e-5);
+}
+
+#[test]
+fn set_angle_after_init_starts_angle_and_stores_climb() {
+    let view = GuidedSetAngleView::after_init();
+    let out = guided_set_angle(&view);
+    assert_eq!(out.submode, GuidedSubMode::Angle);
+    assert!(out.started_angle);
+    assert!(!out.init_d);
+    assert_eq!(out.d_speed_down_ms, Some(WP_SPD_DOWN_DEFAULT_MS));
+    assert_eq!(out.d_speed_up_ms, Some(WP_SPD_UP_DEFAULT_MS));
+    assert_eq!(out.d_accel_mss, Some(WP_ACC_Z_DEFAULT_MSS));
+    assert_eq!(out.attitude_quat, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(out.ang_vel_body, [0.1, -0.05, 0.2]);
+    assert!(!out.use_thrust);
+    assert_eq!(out.thrust_norm.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.climb_rate_ms.to_bits(), 1.5f32.to_bits());
+    assert_eq!(out.update_time_ms, 2_000);
+    assert!(out.logged);
+}
+
+#[test]
+fn set_angle_start_inits_d_when_inactive() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.d_is_active = false;
+    let out = guided_set_angle(&view);
+    assert!(out.started_angle);
+    assert!(out.init_d);
+}
+
+#[test]
+fn already_in_angle_does_not_restart() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.submode = GuidedSubMode::Angle;
+    let out = guided_set_angle(&view);
+    assert!(!out.started_angle);
+    assert!(!out.init_d);
+    assert_eq!(out.d_speed_down_ms, None);
+    assert_eq!(out.d_speed_up_ms, None);
+    assert_eq!(out.d_accel_mss, None);
+    assert_eq!(out.submode, GuidedSubMode::Angle);
+}
+
+#[test]
+fn already_in_angle_thrust_to_climb_reinits_d() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.submode = GuidedSubMode::Angle;
+    view.already_use_thrust = true;
+    view.use_thrust = false;
+    view.climb_rate_ms_or_thrust = 0.8;
+    let out = guided_set_angle(&view);
+    assert!(!out.started_angle);
+    assert!(out.init_d);
+    assert!(!out.use_thrust);
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.8f32.to_bits());
+    assert_eq!(out.thrust_norm.to_bits(), 0.0f32.to_bits());
+}
+
+#[test]
+fn already_in_angle_climb_to_thrust_does_not_reinit_d() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.submode = GuidedSubMode::Angle;
+    view.already_use_thrust = false;
+    view.use_thrust = true;
+    view.climb_rate_ms_or_thrust = 0.4;
+    let out = guided_set_angle(&view);
+    assert!(!out.started_angle);
+    assert!(!out.init_d);
+    assert!(out.use_thrust);
+    assert_eq!(out.thrust_norm.to_bits(), 0.4f32.to_bits());
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+}
+
+#[test]
+fn already_in_angle_thrust_to_thrust_does_not_reinit_d() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.submode = GuidedSubMode::Angle;
+    view.already_use_thrust = true;
+    view.use_thrust = true;
+    view.d_is_active = false;
+    let out = guided_set_angle(&view);
+    assert!(!out.started_angle);
+    assert!(!out.init_d);
+}
+
+#[test]
+fn start_plus_climb_does_not_take_the_thrust_switch() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.already_use_thrust = true;
+    view.use_thrust = false;
+    view.d_is_active = true;
+    let out = guided_set_angle(&view);
+    assert!(out.started_angle);
+    assert!(!out.init_d);
+}
+
+#[test]
+fn set_angle_thrust_zeroes_climb() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.use_thrust = true;
+    view.climb_rate_ms_or_thrust = 0.55;
+    let out = guided_set_angle(&view);
+    assert!(out.use_thrust);
+    assert_eq!(out.thrust_norm.to_bits(), 0.55f32.to_bits());
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+}
+
+#[test]
+fn set_angle_always_converts_euler_even_when_logging_is_off() {
+    let mut view = GuidedSetAngleView::after_init();
+    view.logging_enabled = false;
+    let q = ap_math::quaternion::Quaternion::from_euler(0.3, -0.2, 1.1);
+    view.attitude_quat = [q.q1, q.q2, q.q3, q.q4];
+    let out = guided_set_angle(&view);
+    assert!(!out.logged);
+    let (roll, pitch, yaw) = q.to_euler();
+    assert!((out.euler_rad[0] - roll).abs() < 1.0e-5);
+    assert!((out.euler_rad[1] - pitch).abs() < 1.0e-5);
+    assert!((out.euler_rad[2] - yaw).abs() < 1.0e-5);
+}
+
+#[test]
+fn set_angle_has_no_log_request_gate() {
+    let view = GuidedSetAngleView::after_init();
+    assert!(guided_set_angle(&view).logged);
 }
