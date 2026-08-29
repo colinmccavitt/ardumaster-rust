@@ -7,8 +7,9 @@
 //!
 //! ADR-0004 forbids the fence / AHRS / beacon singletons.
 //! [`FenceNeContext`] injects those reads. The vertical fence tail stays
-//! [`crate::avoid::Avoid::adjust_velocity_z`]. `limit_accel_NEU_cm` and the
-//! OA path planner stay later leftovers.
+//! [`crate::avoid::Avoid::adjust_velocity_z`]. Accel-jerk limiting is
+//! [`crate::avoid::Avoid::limit_accel_neu_cm`]. The OA path planner stays
+//! a later leftover.
 
 use ap_fence::{TYPE_CIRCLE, TYPE_POLYGON};
 use ap_math::polygon::polygon_outside;
@@ -139,7 +140,7 @@ impl Avoid {
     /// Horizontal + vertical fence leftover, upstream `adjust_velocity_fence`.
     ///
     /// Circle / polygon / polyfence circles / beacon NE, then
-    /// [`Avoid::adjust_velocity_z`]. `limit_accel_NEU_cm` stays later.
+    /// [`Avoid::adjust_velocity_z`]. Accel-jerk limiting is `limit_accel_neu_cm`.
     #[must_use]
     pub fn adjust_velocity_fence(
         &self,

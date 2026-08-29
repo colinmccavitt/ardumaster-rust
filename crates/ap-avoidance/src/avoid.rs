@@ -1,11 +1,12 @@
 //! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, the
 //! horizontal leftover (`limit_velocity_NE` plus proximity-backed STOP),
 //! the full `adjust_velocity` leftover (NE / body proximity + Z +
-//! NEU backup mix), and fence NE (`adjust_velocity_fence`).
+//! NEU backup mix), fence NE (`adjust_velocity_fence`), and
+//! accel-jerk limiting (`limit_accel_NEU_cm`).
 //!
 //! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity`,
 //! `adjust_velocity_NED_m`, `adjust_velocity_z`, `limit_velocity_NE`,
-//! `adjust_velocity_proximity`) and
+//! `adjust_velocity_proximity`, `limit_accel_NEU_cm`) and
 //! `ArduCopter/mode.cpp` (`Mode::get_avoidance_adjusted_climbrate_ms`).
 
 use ap_fence::{TYPE_ALT_MAX, TYPE_ALT_MIN};
@@ -37,6 +38,14 @@ pub const BACKUP_SPEED_MAX_NE_MS_DEFAULT: f32 = 0.75;
 pub const MARGIN_M_DEFAULT: f32 = 2.0;
 /// Default `AVOID_BACKUP_DZ`, m. Upstream `AP_GROUPINFO` default.
 pub const BACKUP_DEADZONE_M_DEFAULT: f32 = 0.10;
+/// Default `AVOID_ACCEL_MAX`, m/s/s. Upstream `AP_GROUPINFO` default.
+pub const ACCEL_MAX_MSS_DEFAULT: f32 = 3.0;
+/// Stored avoidance velocity is reset after this idle gap.
+/// Upstream `AC_AVOID_ACCEL_TIMEOUT_MS`.
+pub const ACCEL_TIMEOUT_MS: u32 = 200;
+/// Limiting is still "active" within this window of the last change.
+/// Upstream `AC_AVOID_ACTIVE_LIMIT_TIMEOUT_MS`.
+pub const ACTIVE_LIMIT_TIMEOUT_MS: u32 = 500;
 
 /// Slide around the obstacle. Upstream `BEHAVIOR_SLIDE`. Copter default.
 pub const BEHAVIOR_SLIDE: u8 = 0;
@@ -161,10 +170,24 @@ pub struct AdjustVelocityNeLeftover {
     pub backing_up: bool,
 }
 
+/// Leftover of one `AC_Avoid::limit_accel_NEU_cm` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LimitAccelNeuLeftover {
+    /// Velocity after jerk limiting, NEU cm/s.
+    pub modified_vel_neu_cms: Vector3f,
+    /// Accel demand exceeded `AVOID_ACCEL_MAX` and was pulled back.
+    pub limited: bool,
+    /// Early-return: identical velocities, zero accel cap, or non-positive `dt`.
+    pub skipped: bool,
+    /// Prev-vel reset because avoidance had been idle longer than [`ACCEL_TIMEOUT_MS`].
+    pub prev_reset: bool,
+}
+
 /// Injected leftovers for the full `AC_Avoid::adjust_velocity` leftover.
 ///
-/// ADR-0004 forbids the fence / proximity / AHRS / beacon singletons.
-/// `limit_accel_NEU_cm` stays later.
+/// ADR-0004 forbids the fence / proximity / AHRS / beacon / HAL singletons.
+/// [`AdjustVelocityContext::now_ms`] is the leftover of `AP_HAL::millis()`
+/// inside `limit_accel_NEU_cm`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdjustVelocityContext {
     /// Leftover of `AP::proximity()` / AHRS yaw inside the proximity arm.
@@ -173,6 +196,8 @@ pub struct AdjustVelocityContext {
     pub vertical: AdjustVelocityZContext,
     /// Leftover of fence / beacon NE inside `adjust_velocity_fence`.
     pub fence_ne: FenceNeContext,
+    /// Leftover of `AP_HAL::millis()` for `limit_accel_NEU_cm`.
+    pub now_ms: u32,
 }
 
 impl Default for AdjustVelocityContext {
@@ -181,6 +206,7 @@ impl Default for AdjustVelocityContext {
             proximity: ProximityStopContext::default(),
             vertical: AdjustVelocityZContext::default(),
             fence_ne: FenceNeContext::default(),
+            now_ms: 0,
         }
     }
 }
@@ -189,10 +215,10 @@ impl Default for AdjustVelocityContext {
 ///
 /// Proximity (earth → body → earth) plus [`Avoid::adjust_velocity_fence`]
 /// (circle / polygon / beacon NE and the vertical fence tail), then the
-/// NE / U backup mix. `limit_accel_NEU_cm` stays later.
+/// NE / U backup mix, then [`Avoid::limit_accel_neu_cm`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdjustVelocityLeftover {
-    /// Desired NEU velocity after proximity, Z, and backup mix, cm/s.
+    /// Desired NEU velocity after proximity, Z, backup mix, and accel limit, cm/s.
     pub desired_vel_neu_cms: Vector3f,
     /// Combined backup after `AVOID_BACKUP_SPD` / `AVOID_BACKZ_SPD`, cm/s.
     pub backup_vel_neu_cms: Vector3f,
@@ -206,6 +232,8 @@ pub struct AdjustVelocityLeftover {
     pub limit_min_alt: bool,
     /// Vertical ceiling limit was armed.
     pub limit_max_alt: bool,
+    /// [`Avoid::limit_accel_neu_cm`] pulled back the avoidance accel.
+    pub accel_limited: bool,
 }
 
 impl AdjustVelocityLeftover {
@@ -221,7 +249,7 @@ impl AdjustVelocityLeftover {
 }
 
 /// `AC_Avoid` enable bitmask, vertical leftover, NE / proximity leftover,
-/// and the full `adjust_velocity` leftover.
+/// the full `adjust_velocity` leftover, and accel-jerk limiter state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Avoid {
     /// `AVOID_ENABLE` bitmask. Upstream `_enabled`.
@@ -238,6 +266,12 @@ pub struct Avoid {
     proximity_enabled: bool,
     /// `AVOID_BACKUP_DZ`, m. Upstream `_backup_deadzone_m`.
     backup_deadzone_m: f32,
+    /// `AVOID_ACCEL_MAX`, m/s/s. Upstream `_accel_max_mss`.
+    accel_max_mss: f32,
+    /// Leftover of `_last_limit_time` (`AP_HAL::millis()`).
+    last_limit_time_ms: u32,
+    /// Leftover of `_prev_avoid_vel_neu_cms`.
+    prev_avoid_vel_neu_cms: Vector3f,
 }
 
 impl Default for Avoid {
@@ -258,6 +292,13 @@ impl Avoid {
             behavior: BEHAVIOR_SLIDE,
             proximity_enabled: true,
             backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
+            accel_max_mss: ACCEL_MAX_MSS_DEFAULT,
+            last_limit_time_ms: 0,
+            prev_avoid_vel_neu_cms: Vector3f {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
         }
     }
 
@@ -272,6 +313,13 @@ impl Avoid {
             behavior: BEHAVIOR_SLIDE,
             proximity_enabled: true,
             backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
+            accel_max_mss: ACCEL_MAX_MSS_DEFAULT,
+            last_limit_time_ms: 0,
+            prev_avoid_vel_neu_cms: Vector3f {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
         }
     }
 
@@ -356,6 +404,81 @@ impl Avoid {
     /// Set `AVOID_BACKUP_DZ`.
     pub fn set_backup_deadzone_m(&mut self, deadzone_m: f32) {
         self.backup_deadzone_m = deadzone_m;
+    }
+
+    /// `AVOID_ACCEL_MAX`.
+    #[must_use]
+    pub const fn accel_max_mss(&self) -> f32 {
+        self.accel_max_mss
+    }
+
+    /// Set `AVOID_ACCEL_MAX`.
+    pub fn set_accel_max_mss(&mut self, accel_max_mss: f32) {
+        self.accel_max_mss = accel_max_mss;
+    }
+
+    /// Leftover of `_last_limit_time`.
+    #[must_use]
+    pub const fn last_limit_time_ms(&self) -> u32 {
+        self.last_limit_time_ms
+    }
+
+    /// Leftover of `_prev_avoid_vel_neu_cms`.
+    #[must_use]
+    pub const fn prev_avoid_vel_neu_cms(&self) -> Vector3f {
+        self.prev_avoid_vel_neu_cms
+    }
+
+    /// Upstream `AC_Avoid::limits_active`. `now_ms` is `AP_HAL::millis()`.
+    #[must_use]
+    pub const fn limits_active(&self, now_ms: u32) -> bool {
+        now_ms.wrapping_sub(self.last_limit_time_ms) < ACTIVE_LIMIT_TIMEOUT_MS
+    }
+
+    /// Limit acceleration so avoidance velocity changes stay controlled.
+    ///
+    /// Upstream `AC_Avoid::limit_accel_NEU_cm`. `now_ms` is the leftover of
+    /// `AP_HAL::millis()`.
+    pub fn limit_accel_neu_cm(
+        &mut self,
+        original_vel_neu_cms: Vector3f,
+        mut modified_vel_neu_cms: Vector3f,
+        dt: f32,
+        now_ms: u32,
+    ) -> LimitAccelNeuLeftover {
+        if original_vel_neu_cms == modified_vel_neu_cms
+            || is_zero(self.accel_max_mss)
+            || !is_positive(dt)
+        {
+            return LimitAccelNeuLeftover {
+                modified_vel_neu_cms,
+                limited: false,
+                skipped: true,
+                prev_reset: false,
+            };
+        }
+
+        let prev_reset = now_ms.wrapping_sub(self.last_limit_time_ms) > ACCEL_TIMEOUT_MS;
+        if prev_reset {
+            self.prev_avoid_vel_neu_cms = original_vel_neu_cms;
+        }
+
+        let accel_neu_cmss = (modified_vel_neu_cms - self.prev_avoid_vel_neu_cms) / dt;
+        let accel_max_cmss = self.accel_max_mss * 100.0;
+        let limited = accel_neu_cmss.length() > accel_max_cmss;
+        if limited {
+            let accel_direction_neu = accel_neu_cmss.normalized_or_zero();
+            modified_vel_neu_cms =
+                accel_direction_neu * accel_max_cmss * dt + self.prev_avoid_vel_neu_cms;
+        }
+
+        self.prev_avoid_vel_neu_cms = modified_vel_neu_cms;
+        LimitAccelNeuLeftover {
+            modified_vel_neu_cms,
+            limited,
+            skipped: false,
+            prev_reset,
+        }
     }
 
     /// Speed whose stopping distance is exactly `distance`.
@@ -698,10 +821,10 @@ impl Avoid {
     /// Disabled is identity. The proximity arm rotates earth NE through
     /// body (obstacles are body-frame) and back. The fence arm is
     /// [`Avoid::adjust_velocity_fence`] (circle / polygon / beacon NE
-    /// plus [`Avoid::adjust_velocity_z`]). `limit_accel_NEU_cm` stays later.
+    /// plus [`Avoid::adjust_velocity_z`]), then [`Avoid::limit_accel_neu_cm`].
     #[must_use]
     pub fn adjust_velocity(
-        &self,
+        &mut self,
         desired_vel_neu_cms: Vector3f,
         k_p: f32,
         accel_cmss: f32,
@@ -719,9 +842,11 @@ impl Avoid {
                 proximity_limited: false,
                 limit_min_alt: false,
                 limit_max_alt: false,
+                accel_limited: false,
             };
         }
 
+        let desired_vel_original_neu_cms = desired_vel_neu_cms;
         let accel_limited_cmss = accel_cmss.min(ACCEL_CMSS_MAX);
         let prox = self.adjust_velocity_proximity(
             k_p,
@@ -820,6 +945,12 @@ impl Avoid {
             }
         }
 
+        let accel = self.limit_accel_neu_cm(desired_vel_original_neu_cms, desired, dt, ctx.now_ms);
+        desired = accel.modified_vel_neu_cms;
+        if desired_vel_original_neu_cms != desired {
+            self.last_limit_time_ms = ctx.now_ms;
+        }
+
         AdjustVelocityLeftover {
             desired_vel_neu_cms: desired,
             backup_vel_neu_cms: backup,
@@ -828,6 +959,7 @@ impl Avoid {
             proximity_limited: prox.limited,
             limit_min_alt: fence.limit_min_alt,
             limit_max_alt: fence.limit_max_alt,
+            accel_limited: accel.limited,
         }
     }
 
@@ -837,7 +969,7 @@ impl Avoid {
     /// leaves the leftover in NEU cm/s ([`AdjustVelocityLeftover::desired_vel_ned_ms`]).
     #[must_use]
     pub fn adjust_velocity_ned_m(
-        &self,
+        &mut self,
         desired_vel_ned_ms: Vector3f,
         k_p: f32,
         accel_mss: f32,

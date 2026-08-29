@@ -1,8 +1,9 @@
 //! Full `AC_Avoid::adjust_velocity` leftover: NE / body proximity, vertical
 //! fence tail, and NEU backup mix. Tracked as **COP-026**.
 //!
-//! Fence NE is in `adjust_velocity_fence`. `limit_accel_NEU_cm` and the OA
-//! path planner stay later leftovers.
+//! Fence NE is in `adjust_velocity_fence`. `limit_accel_NEU_cm` is tested
+//! in `limit_accel_neu`. These cases keep `AVOID_ACCEL_MAX` at zero so the
+//! earlier leftovers stay visible. The OA path planner stays later.
 
 use ap_avoidance::{
     AdjustVelocityContext, AdjustVelocityLeftover, AdjustVelocityZContext, Avoid,
@@ -57,7 +58,7 @@ fn alt_min_ctx(veh_alt_u_m: f32, safe_alt_min_m: f32) -> AdjustVelocityZContext 
 
 #[test]
 fn adjust_velocity_disabled_is_identity() {
-    let off = Avoid::from_params(DISABLED, BACKUP_SPEED_MAX_U_MS_DEFAULT);
+    let mut off = Avoid::from_params(DISABLED, BACKUP_SPEED_MAX_U_MS_DEFAULT);
     let leftover = off.adjust_velocity(
         Vector3f::new(500.0, 80.0, 40.0),
         0.0,
@@ -79,7 +80,7 @@ fn adjust_velocity_disabled_is_identity() {
 
 #[test]
 fn adjust_velocity_ned_m_converts_through_neu_cms() {
-    let off = Avoid::from_params(DISABLED, BACKUP_SPEED_MAX_U_MS_DEFAULT);
+    let mut off = Avoid::from_params(DISABLED, BACKUP_SPEED_MAX_U_MS_DEFAULT);
     let leftover = off.adjust_velocity_ned_m(
         Vector3f::new(5.0, 0.8, -0.4),
         0.0,
@@ -150,6 +151,7 @@ fn find_max_quadrant_velocity_3d_keeps_max_up_and_min_down() {
 #[test]
 fn adjust_velocity_mixes_capped_ne_backup() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_behavior(BEHAVIOR_STOP);
     let leftover: AdjustVelocityLeftover = avoid.adjust_velocity(
         Vector3f::new(500.0, 0.0, 0.0),
@@ -178,6 +180,7 @@ fn adjust_velocity_mixes_capped_ne_backup() {
 #[test]
 fn adjust_velocity_yaw_rotates_through_body_frame() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_behavior(BEHAVIOR_STOP);
     // Earth +X, yaw +90° → body -Y. Obstacle on body +X does not face travel.
     let leftover = avoid.adjust_velocity(
@@ -231,6 +234,7 @@ fn adjust_velocity_yaw_rotates_through_body_frame() {
 #[test]
 fn adjust_velocity_applies_ceiling_and_mixes_u_backup() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_enabled(STOP_AT_FENCE);
     let leftover = avoid.adjust_velocity(
         Vector3f::new(0.0, 0.0, 200.0),
@@ -256,6 +260,7 @@ fn adjust_velocity_applies_ceiling_and_mixes_u_backup() {
 #[test]
 fn adjust_velocity_applies_floor_and_mixes_u_backup() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_enabled(STOP_AT_FENCE);
     let leftover = avoid.adjust_velocity(
         Vector3f::new(0.0, 0.0, -200.0),
@@ -281,6 +286,7 @@ fn adjust_velocity_applies_floor_and_mixes_u_backup() {
 #[test]
 fn adjust_velocity_combines_proximity_ne_and_fence_z() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_behavior(BEHAVIOR_STOP);
     let leftover = avoid.adjust_velocity(
         Vector3f::new(500.0, 0.0, 200.0),
@@ -307,6 +313,7 @@ fn adjust_velocity_combines_proximity_ne_and_fence_z() {
 #[test]
 fn adjust_velocity_ned_m_ceiling_flips_down_positive() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_enabled(STOP_AT_FENCE);
     let leftover = avoid.adjust_velocity_ned_m(
         Vector3f::new(0.0, 0.0, -2.0),

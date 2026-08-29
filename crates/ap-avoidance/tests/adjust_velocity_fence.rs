@@ -1,6 +1,8 @@
 //! Circle / polygon / beacon fence NE leftover. Tracked as **COP-026**.
 //!
-//! `limit_accel_NEU_cm` and the OA path planner stay later leftovers.
+//! `limit_accel_NEU_cm` is on `Avoid`; these cases keep `AVOID_ACCEL_MAX`
+//! at zero so the fence-NE leftover stays visible. The OA path planner
+//! stays later.
 
 use ap_avoidance::{
     AdjustVelocityContext, AdjustVelocityZContext, Avoid, FenceCircle, FenceNeContext,
@@ -349,6 +351,7 @@ fn exclusion_circle_slide_limits_toward_center() {
 #[test]
 fn adjust_velocity_wires_circle_fence_ne() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_enabled(STOP_AT_FENCE);
     avoid.set_behavior(BEHAVIOR_SLIDE);
     let leftover = avoid.adjust_velocity(
@@ -372,6 +375,7 @@ fn adjust_velocity_wires_circle_fence_ne() {
 #[test]
 fn adjust_velocity_keeps_proximity_when_fence_ne_idle() {
     let mut avoid = Avoid::new();
+    avoid.set_accel_max_mss(0.0);
     avoid.set_behavior(BEHAVIOR_STOP);
     let leftover = avoid.adjust_velocity(
         Vector3f::new(500.0, 0.0, 0.0),

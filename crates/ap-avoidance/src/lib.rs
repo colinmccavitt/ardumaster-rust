@@ -23,19 +23,23 @@
 //! beacon). [`FenceNeContext`] is the leftover of `AP::fence()`,
 //! `ahrs.get_relative_position_NE_*`, and `AP::beacon()->get_boundary_points`.
 //!
-//! ADR-0004 forbids the fence / AHRS / proximity / beacon singletons.
+//! The fifth leftover is accel-jerk limiting: [`Avoid::limit_accel_neu_cm`].
+//! It sits at the end of [`Avoid::adjust_velocity`] the same way
+//! `AC_Avoid::limit_accel_NEU_cm` does. [`AdjustVelocityContext::now_ms`]
+//! is the leftover of `AP_HAL::millis()`.
+//!
+//! ADR-0004 forbids the fence / AHRS / proximity / beacon / HAL singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
 //! `get_alt_in_alt_*_frame_m`, and `ahrs.get_hgt_ctrl_limit` /
 //! `get_relative_position_D_origin_float`. [`ProximityStopContext`] is
 //! the leftover of `AP::proximity()->get_obstacle` /
 //! `closest_point_from_segment_to_obstacle` and the AHRS 2-D yaw
-//! rotation. Accel-jerk limiting and the OA path planner stay later
-//! leftovers.
+//! rotation. The OA path planner stays a later leftover.
 //!
 //! # What this crate does not own
 //!
-//! `limit_accel_NEU_cm`, BendyRuler / Dijkstra, the OA database, and
-//! lean-angle avoidance in non-GPS modes.
+//! BendyRuler / Dijkstra, the OA database, and lean-angle avoidance
+//! in non-GPS modes.
 
 #![no_std]
 
@@ -45,7 +49,8 @@ pub mod fence_ne;
 pub use avoid::{
     get_avoidance_adjusted_climbrate_ms, AdjustVelocityContext, AdjustVelocityLeftover,
     AdjustVelocityNeLeftover, AdjustVelocityZContext, AdjustVelocityZLeftover, Avoid,
-    ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX, AVOID_DEFAULT,
+    LimitAccelNeuLeftover, ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX,
+    ACCEL_MAX_MSS_DEFAULT, ACCEL_TIMEOUT_MS, ACTIVE_LIMIT_TIMEOUT_MS, AVOID_DEFAULT,
     BACKUP_DEADZONE_M_DEFAULT, BACKUP_SPEED_MAX_NE_MS_DEFAULT, BACKUP_SPEED_MAX_U_MS_DEFAULT,
     BEHAVIOR_SLIDE, BEHAVIOR_STOP, DISABLED, MARGIN_M_DEFAULT, STOP_AT_BEACON_FENCE, STOP_AT_FENCE,
     USE_PROXIMITY_SENSOR,
