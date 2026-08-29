@@ -26,17 +26,19 @@
 //!
 //! # This slice
 //!
-//! `advance_target_along_track` — the per-tick stepper's time pointer and
-//! the finished / fast-waypoint gate. Time on this, previous and next
-//! legs is advanced here. The 3-D `move_*` helpers and
-//! `project_scurve_onto_track` stay leftovers; this slice records which
-//! projections the caller still needs.
+//! `set_speed_max` — rewrite the 23-segment path when the speed limit
+//! changes mid-leg, including the seven speed-change slots that
+//! `add_segments` left empty. `set_origin_speed_max` and
+//! `set_destination_speed_max` sit next to it: they are the spline-join
+//! entry / exit speeds, and the time-zero path of `set_speed_max` calls
+//! both.
 //!
-//! Speed-change (`set_speed_max`, origin / dest speed) is the rest of
-//! the file.
+//! The 3-D `move_*` helpers and `project_scurve_onto_track` stay leftovers.
 
-use crate::control::kinematic_limit;
-use crate::scalar::{is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi, Real};
+use crate::control::{kinematic_limit, kinematic_limit_xyz};
+use crate::scalar::{
+    is_equal, is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi, Real,
+};
 use crate::vector2::Vector2f;
 use crate::vector3::Vector3f;
 
@@ -380,6 +382,61 @@ impl SegmentTrack {
         self.segments.get_mut(i)
     }
 
+    /// Resume appending at `index`. Upstream's `uint8_t &index` write
+    /// pointer: the next `add_segment_*` overwrites from here.
+    fn resume_at(&mut self, index: usize) {
+        self.num_segs = index.min(SEGMENTS_MAX);
+    }
+
+    /// Stamp slots `from..=to` as zero-jerk copies of one end state.
+    /// The empty speed-change / no-decel fills in `set_speed_max`.
+    fn stamp_zero_jerk(
+        &mut self,
+        from: usize,
+        to_inclusive: usize,
+        end_time: f32,
+        end_vel: f32,
+        end_pos: f32,
+    ) {
+        let seg = Segment {
+            jerk_ref: 0.0,
+            seg_type: SegmentType::ConstantJerk,
+            end_time,
+            end_accel: 0.0,
+            end_vel,
+            end_pos,
+        };
+        let last = to_inclusive.min(SEGMENTS_MAX.saturating_sub(1));
+        for i in from..=last {
+            if let Some(slot) = self.segments.get_mut(i) {
+                *slot = seg;
+            }
+        }
+    }
+
+    /// Stretch cruise so the path ends at `pend`. Upstream's `dP` / `t15`
+    /// loop after a speed rewrite.
+    fn add_cruise_slack(&mut self, pend: f32) {
+        let Some(last) = self.segment(SEG_DECEL_END) else {
+            return;
+        };
+        let Some(cruise) = self.segment(SEG_CONST) else {
+            return;
+        };
+        let dp = cpp_max(0.0, pend - last.end_pos);
+        let t15 = if is_positive(cruise.end_vel) {
+            dp / cruise.end_vel
+        } else {
+            0.0
+        };
+        for i in SEG_CONST..=SEG_DECEL_END {
+            if let Some(s) = self.segment_mut(i) {
+                s.end_time += t15;
+                s.end_pos += dp;
+            }
+        }
+    }
+
     /// Lay a full 23-segment track of length `length`, upstream `add_segments`.
     ///
     /// The init segment (index 0) must already be there — [`SCurve::init`]
@@ -387,7 +444,7 @@ impl SegmentTrack {
     ///
     /// `calculate_path` is asked for half the length because the accel and
     /// decel halves are mirrors. The seven speed-change slots stay empty
-    /// here; `set_speed_max` (later leftover) rewrites them. `t15` is the
+    /// here; [`SCurve::set_speed_max`] rewrites them. `t15` is the
     /// cruise that fills whatever of `length` the two halves did not use.
     ///
     /// The accel-end and decel-end accel (and the decel-end vel) are forced
@@ -809,8 +866,9 @@ pub struct AdvanceTargetLeftover {
 
 /// A snap-limited 3-D track between two points, upstream `SCurve`.
 ///
-/// This slice advances time along the track. Changing speed mid-leg
-/// and projecting the scalar path onto an arc are later leftovers.
+/// Speed mid-leg and origin / dest speed are in this slice. Projecting
+/// the scalar path onto an arc (`project_scurve_onto_track` / `move_*`)
+/// stays a later leftover.
 #[derive(Debug, Clone)]
 pub struct SCurve {
     snap_max: f32,
@@ -1195,6 +1253,477 @@ impl SCurve {
             }
         }
         leftover
+    }
+
+    /// Change the speed limit and rebuild the path, upstream `set_speed_max`.
+    ///
+    /// Segment accelerations are frozen after [`calculate_track`]; only the
+    /// velocity profile is rewritten. A zero-length path, a zero new
+    /// speed, or a speed that is already the limit is a no-op. Once the
+    /// time pointer is in the decel half the new limit is stored but the
+    /// segments are left alone — there is no room left to change speed.
+    ///
+    /// At time zero the whole 23-segment array is rebuilt from the
+    /// remaining length, then origin / dest speed are reapplied so a
+    /// spline join survives the change. Mid-path the seven speed-change
+    /// slots (8–14) take the new cruise, and the decel half is rebuilt
+    /// to still stop at the original end position.
+    pub fn set_speed_max(&mut self, speed_xy: f32, speed_up: f32, speed_down: f32) {
+        let speed_xy = speed_xy.abs();
+        let speed_up = speed_up.abs();
+        let speed_down = speed_down.abs();
+
+        if self.track.len() != SEGMENTS_MAX {
+            return;
+        }
+
+        let track_speed_max = kinematic_limit_xyz(
+            self.arc.length_ne,
+            self.seg_delta.z,
+            speed_xy,
+            speed_up,
+            speed_down,
+        );
+
+        if is_equal(self.vel_max, track_speed_max) {
+            return;
+        }
+        if is_zero(track_speed_max) {
+            return;
+        }
+        self.vel_max = track_speed_max;
+
+        let Some(const_seg) = self.track.segment(SEG_CONST) else {
+            return;
+        };
+        if self.time >= const_seg.end_time {
+            return;
+        }
+
+        let pend = self
+            .track
+            .segment(SEG_DECEL_END)
+            .map(|s| s.end_pos)
+            .unwrap_or(0.0);
+        let mut vend = cpp_min(
+            self.vel_max,
+            self.track
+                .segment(SEG_DECEL_END)
+                .map(|s| s.end_vel)
+                .unwrap_or(0.0),
+        );
+
+        if is_zero(self.time) {
+            let vstart = cpp_min(
+                self.vel_max,
+                self.track
+                    .segment(SEG_INIT)
+                    .map(|s| s.end_vel)
+                    .unwrap_or(0.0),
+            );
+            self.track.resume_at(SEG_INIT);
+            self.track.add_segment(Segment::default());
+            self.track.add_segments(
+                self.snap_max,
+                self.jerk_max,
+                self.accel_max,
+                self.vel_max,
+                pend,
+            );
+            self.set_origin_speed_max(vstart);
+            self.set_destination_speed_max(vend);
+            return;
+        }
+
+        let Some(accel_end) = self.track.segment(SEG_ACCEL_END) else {
+            return;
+        };
+        let Some(speed_change_end) = self.track.segment(SEG_SPEED_CHANGE_END) else {
+            return;
+        };
+
+        if self.time >= accel_end.end_time && self.time <= speed_change_end.end_time {
+            // In the speed-change phase: slide those seven slots back
+            // onto the accel half so there is room for another change.
+            if let Some(s) = self.track.segment_mut(SEG_INIT) {
+                s.seg_type = SegmentType::ConstantJerk;
+                s.jerk_ref = 0.0;
+                s.end_time = accel_end.end_time;
+                s.end_accel = accel_end.end_accel;
+                s.end_vel = accel_end.end_vel;
+                s.end_pos = accel_end.end_pos;
+            }
+            for i in (SEG_INIT + 1)..=SEG_ACCEL_END {
+                if let Some(src) = self.track.segment(i + 7) {
+                    if let Some(dst) = self.track.segment_mut(i) {
+                        *dst = src;
+                    }
+                }
+            }
+            if let Some(new_accel_end) = self.track.segment(SEG_ACCEL_END) {
+                self.track.stamp_zero_jerk(
+                    SEG_ACCEL_END + 1,
+                    SEG_SPEED_CHANGE_END,
+                    new_accel_end.end_time,
+                    new_accel_end.end_vel,
+                    new_accel_end.end_pos,
+                );
+            }
+        } else if self.time > speed_change_end.end_time && self.time <= const_seg.end_time {
+            // In cruise: collapse accel + speed-change onto the current
+            // position so the new change starts from here.
+            if let Some(s) = self.track.segment_mut(SEG_INIT) {
+                s.seg_type = SegmentType::ConstantJerk;
+                s.jerk_ref = 0.0;
+                s.end_time = speed_change_end.end_time;
+                s.end_accel = 0.0;
+                s.end_vel = speed_change_end.end_vel;
+                s.end_pos = speed_change_end.end_pos;
+            }
+            let now = self.track.javp_at_time(self.time);
+            self.track.stamp_zero_jerk(
+                SEG_INIT + 1,
+                SEG_SPEED_CHANGE_END,
+                self.time,
+                now.vel,
+                now.pos,
+            );
+        }
+
+        // Shorten the constant-accel hold if we are still in it and the
+        // new speed is below what the original accel half reached.
+        if let (Some(accel_max_seg), Some(accel_max_prev), Some(accel_end_now)) = (
+            self.track.segment(SEG_ACCEL_MAX),
+            self.track.segment(SEG_ACCEL_MAX - 1),
+            self.track.segment(SEG_ACCEL_END),
+        ) {
+            if self.time <= accel_max_seg.end_time
+                && is_positive(accel_max_seg.end_time - accel_max_prev.end_time)
+                && self.vel_max < accel_end_now.end_vel
+                && is_positive(accel_max_seg.end_accel)
+            {
+                let vstart = self
+                    .track
+                    .segment(SEG_INIT)
+                    .map(|s| s.end_vel)
+                    .unwrap_or(0.0);
+                let vmin = accel_end_now.end_vel
+                    - accel_max_seg.end_accel
+                        * (accel_max_seg.end_time - cpp_max(self.time, accel_max_prev.end_time));
+                let target = cpp_max(vmin, self.vel_max);
+                let p = calculate_path(
+                    self.snap_max,
+                    self.jerk_max,
+                    vstart,
+                    self.accel_max,
+                    target,
+                    pend * 0.5,
+                );
+                self.track.resume_at(SEG_INIT + 1);
+                self.track.add_segments_jerk(p.tj, p.jm, p.t2);
+                self.track.add_segment_const_jerk(p.t4, 0.0);
+                self.track.add_segments_jerk(p.tj, -p.jm, p.t6);
+                if let Some(s) = self.track.segment_mut(SEG_ACCEL_END) {
+                    s.end_accel = 0.0;
+                }
+                if let Some(ae) = self.track.segment(SEG_ACCEL_END) {
+                    self.track.stamp_zero_jerk(
+                        SEG_ACCEL_END + 1,
+                        SEG_CONST,
+                        ae.end_time,
+                        ae.end_vel,
+                        ae.end_pos,
+                    );
+                }
+                let p2 = calculate_path(
+                    self.snap_max,
+                    self.jerk_max,
+                    0.0,
+                    self.accel_max,
+                    target,
+                    pend * 0.5,
+                );
+                self.track.resume_at(SEG_CONST + 1);
+                self.track.add_segments_jerk(p2.tj, -p2.jm, p2.t6);
+                self.track.add_segment_const_jerk(p2.t4, 0.0);
+                self.track.add_segments_jerk(p2.tj, p2.jm, p2.t2);
+                self.scrub_decel_end();
+                self.track.add_cruise_slack(pend);
+            }
+        }
+
+        // Speed-change slots 8–14: empty first, then a velocity
+        // adjustment if the new cruise differs from accel-end.
+        if let Some(ae) = self.track.segment(SEG_ACCEL_END) {
+            self.track.stamp_zero_jerk(
+                SEG_ACCEL_END + 1,
+                SEG_SPEED_CHANGE_END,
+                ae.end_time,
+                ae.end_vel,
+                ae.end_pos,
+            );
+        }
+
+        if let (Some(ae), Some(cruise)) = (
+            self.track.segment(SEG_ACCEL_END),
+            self.track.segment(SEG_CONST),
+        ) {
+            if !is_equal(self.vel_max, ae.end_vel) {
+                let l = cruise.end_pos - ae.end_pos;
+                let jerk_time = cpp_min(
+                    Real::powf(
+                        ((self.vel_max - ae.end_vel).abs() * core::f32::consts::PI)
+                            / (4.0 * self.snap_max),
+                        1.0 / 3.0,
+                    ),
+                    self.jerk_max * core::f32::consts::PI / (2.0 * self.snap_max),
+                );
+                let mut jm = 0.0;
+                let mut tj = 0.0;
+                let mut t2 = 0.0;
+                let mut t4 = 0.0;
+                let mut t6 = 0.0;
+                if self.vel_max < ae.end_vel && jerk_time * 12.0 < l / ae.end_vel {
+                    let p = calculate_path(
+                        self.snap_max,
+                        self.jerk_max,
+                        self.vel_max,
+                        self.accel_max,
+                        ae.end_vel,
+                        l * 0.5,
+                    );
+                    // C++ passes t6, t4, t2 — the t2 / t6 outputs swap.
+                    jm = -p.jm;
+                    tj = p.tj;
+                    t2 = p.t6;
+                    t4 = p.t4;
+                    t6 = p.t2;
+                } else if self.vel_max > ae.end_vel && l / (jerk_time * 12.0) > ae.end_vel {
+                    let vm = cpp_min(self.vel_max, l / (jerk_time * 12.0));
+                    let p = calculate_path(
+                        self.snap_max,
+                        self.jerk_max,
+                        ae.end_vel,
+                        self.accel_max,
+                        vm,
+                        l * 0.5,
+                    );
+                    jm = p.jm;
+                    tj = p.tj;
+                    t2 = p.t2;
+                    t4 = p.t4;
+                    t6 = p.t6;
+                }
+                if !is_zero(jm) && !is_negative(t2) && !is_negative(t4) && !is_negative(t6) {
+                    self.track.resume_at(SEG_ACCEL_END + 1);
+                    self.track.add_segments_jerk(tj, jm, t2);
+                    self.track.add_segment_const_jerk(t4, 0.0);
+                    self.track.add_segments_jerk(tj, -jm, t6);
+                    if let Some(s) = self.track.segment_mut(SEG_SPEED_CHANGE_END) {
+                        s.end_accel = 0.0;
+                    }
+                }
+            }
+        }
+
+        vend = cpp_min(
+            vend,
+            self.track
+                .segment(SEG_SPEED_CHANGE_END)
+                .map(|s| s.end_vel)
+                .unwrap_or(0.0),
+        );
+        self.track.resume_at(SEG_CONST);
+        self.track.add_segment_const_jerk(0.0, 0.0);
+        let speed_end_vel = self
+            .track
+            .segment(SEG_SPEED_CHANGE_END)
+            .map(|s| s.end_vel)
+            .unwrap_or(0.0);
+        if vend < speed_end_vel {
+            let cruise_vel = self
+                .track
+                .segment(SEG_CONST)
+                .map(|s| s.end_vel)
+                .unwrap_or(0.0);
+            let cruise_pos = self
+                .track
+                .segment(SEG_CONST)
+                .map(|s| s.end_pos)
+                .unwrap_or(0.0);
+            let p = calculate_path(
+                self.snap_max,
+                self.jerk_max,
+                vend,
+                self.accel_max,
+                cruise_vel,
+                pend - cruise_pos,
+            );
+            self.track.add_segments_jerk(p.tj, -p.jm, p.t6);
+            self.track.add_segment_const_jerk(p.t4, 0.0);
+            self.track.add_segments_jerk(p.tj, p.jm, p.t2);
+        } else if let Some(cruise) = self.track.segment(SEG_CONST) {
+            self.track.stamp_zero_jerk(
+                SEG_CONST + 1,
+                SEG_DECEL_END,
+                cruise.end_time,
+                cruise.end_vel,
+                cruise.end_pos,
+            );
+            self.track.resume_at(SEG_DECEL_END + 1);
+        }
+
+        self.scrub_decel_end();
+        self.track.add_cruise_slack(pend);
+
+        if !self.track.valid() {
+            self.init();
+        }
+    }
+
+    fn scrub_decel_end(&mut self) {
+        if let Some(s) = self.track.segment_mut(SEG_DECEL_END) {
+            s.end_accel = 0.0;
+            s.end_vel = cpp_max(0.0, s.end_vel);
+        }
+    }
+
+    /// Set the speed at the origin, upstream `set_origin_speed_max`.
+    ///
+    /// Returns the speed the path will actually start at, which is never
+    /// above the request and never above the accel-half cruise. A
+    /// zero-length path returns zero. Used to join a spline: the vehicle
+    /// is already moving when this leg begins.
+    pub fn set_origin_speed_max(&mut self, speed: f32) -> f32 {
+        if self.track.len() != SEGMENTS_MAX {
+            return 0.0;
+        }
+        let speed = speed.abs();
+        let Some(init) = self.track.segment(SEG_INIT) else {
+            return 0.0;
+        };
+        if is_equal(init.end_vel, speed) {
+            return speed;
+        }
+        let vm = self
+            .track
+            .segment(SEG_ACCEL_END)
+            .map(|s| s.end_vel)
+            .unwrap_or(0.0);
+        let speed = cpp_min(speed, vm);
+
+        let p = calculate_path(
+            self.snap_max,
+            self.jerk_max,
+            speed,
+            self.accel_max,
+            vm,
+            self.seg_length * 0.5,
+        );
+        self.track.resume_at(SEG_INIT);
+        self.track.add_segment(Segment {
+            jerk_ref: 0.0,
+            seg_type: SegmentType::ConstantJerk,
+            end_time: 0.0,
+            end_accel: 0.0,
+            end_vel: speed,
+            end_pos: 0.0,
+        });
+        self.track.add_segments_jerk(p.tj, p.jm, p.t2);
+        self.track.add_segment_const_jerk(p.t4, 0.0);
+        self.track.add_segments_jerk(p.tj, -p.jm, p.t6);
+        if let Some(s) = self.track.segment_mut(SEG_ACCEL_END) {
+            s.end_accel = 0.0;
+        }
+
+        if let Some(ae) = self.track.segment(SEG_ACCEL_END) {
+            let dp_start = cpp_min(0.0, self.seg_length * 0.5 - ae.end_pos);
+            let dt = dp_start / ae.end_vel;
+            for i in SEG_INIT..=SEG_ACCEL_END {
+                if let Some(s) = self.track.segment_mut(i) {
+                    s.end_time += dt;
+                    s.end_pos += dp_start;
+                }
+            }
+            let ae = self.track.segment(SEG_ACCEL_END).unwrap_or(ae);
+            self.track.stamp_zero_jerk(
+                SEG_ACCEL_END + 1,
+                SEG_SPEED_CHANGE_END,
+                ae.end_time,
+                ae.end_vel,
+                ae.end_pos,
+            );
+        }
+
+        self.track.resume_at(SEG_CONST);
+        self.track.add_segment_const_jerk(0.0, 0.0);
+        let cruise_vel = self
+            .track
+            .segment(SEG_CONST)
+            .map(|s| s.end_vel)
+            .unwrap_or(0.0);
+        let p2 = calculate_path(
+            self.snap_max,
+            self.jerk_max,
+            0.0,
+            self.accel_max,
+            cruise_vel,
+            self.seg_length * 0.5,
+        );
+        self.track.add_segments_jerk(p2.tj, -p2.jm, p2.t6);
+        self.track.add_segment_const_jerk(p2.t4, 0.0);
+        self.track.add_segments_jerk(p2.tj, p2.jm, p2.t2);
+        self.scrub_decel_end();
+        self.track.add_cruise_slack(self.seg_length);
+
+        if !self.track.valid() {
+            self.init();
+            return 0.0;
+        }
+        speed
+    }
+
+    /// Set the speed at the destination, upstream `set_destination_speed_max`.
+    ///
+    /// Rebuilds only the decel half so the path leaves the waypoint at
+    /// `speed` (capped by cruise) instead of stopping. A zero-length
+    /// path is a no-op. The matching join on the next spline.
+    pub fn set_destination_speed_max(&mut self, speed: f32) {
+        if self.track.len() != SEGMENTS_MAX {
+            return;
+        }
+        let speed = speed.abs();
+        let Some(last) = self.track.segment(SEGMENTS_MAX - 1) else {
+            return;
+        };
+        if is_equal(last.end_vel, speed) {
+            return;
+        }
+        let vm = self
+            .track
+            .segment(SEG_CONST)
+            .map(|s| s.end_vel)
+            .unwrap_or(0.0);
+        let speed = cpp_min(speed, vm);
+        let p = calculate_path(
+            self.snap_max,
+            self.jerk_max,
+            speed,
+            self.accel_max,
+            vm,
+            self.seg_length * 0.5,
+        );
+        self.track.resume_at(SEG_CONST);
+        self.track.add_segment_const_jerk(0.0, 0.0);
+        self.track.add_segments_jerk(p.tj, -p.jm, p.t6);
+        self.track.add_segment_const_jerk(p.t4, 0.0);
+        self.track.add_segments_jerk(p.tj, p.jm, p.t2);
+        self.scrub_decel_end();
+        self.track.add_cruise_slack(self.seg_length);
+
+        if !self.track.valid() {
+            self.init();
+        }
     }
 
     fn segment_end_time(&self, i: usize) -> f32 {
@@ -1952,5 +2481,180 @@ epsilon would accept a drift, which is the failure"
         assert_eq!(s.time_end(), end);
         assert!(accel < cruise, "a 200 m cruise must spend time at speed");
         assert!(cruise < end);
+    }
+
+    /// Empty / half-built tracks ignore a speed change: there is no
+    /// 23-segment array to rewrite.
+    #[test]
+    fn set_speed_max_on_empty_path_is_a_noop() {
+        let mut s = SCurve::new();
+        s.set_speed_max(10.0, 5.0, 5.0);
+        assert!(!s.valid());
+        assert_eq!(s.track().len(), 1);
+        assert!(is_zero(s.vel_max()));
+    }
+
+    /// The same speed, or a zero speed, leaves the path untouched.
+    #[test]
+    fn set_speed_max_same_or_zero_leaves_the_path() {
+        let mut s = east_leg(100.0);
+        let before = s.track().segment(SEG_CONST).unwrap();
+        let vel = s.vel_max();
+        s.set_speed_max(15.0, 5.0, 5.0);
+        assert!(is_equal(s.vel_max(), vel));
+        assert_eq!(
+            s.track().segment(SEG_CONST).unwrap().end_time,
+            before.end_time
+        );
+        s.set_speed_max(0.0, 5.0, 5.0);
+        assert!(is_equal(s.vel_max(), vel));
+        assert!(s.valid());
+    }
+
+    /// Before the path starts, a new cruise rebuilds all 23 segments
+    /// and the vehicle still stops at the same place.
+    #[test]
+    fn set_speed_max_at_time_zero_rebuilds_cruise() {
+        let mut s = east_leg(200.0);
+        let pend = s.track().segment(SEG_DECEL_END).unwrap().end_pos;
+        s.set_speed_max(10.0, 5.0, 5.0);
+        assert!(s.valid());
+        assert!(is_equal(s.vel_max(), 10.0));
+        let cruise = s.track().segment(SEG_CONST).unwrap();
+        assert!(
+            (cruise.end_vel - 10.0).abs() < 0.05,
+            "cruise vel {}",
+            cruise.end_vel
+        );
+        let last = s.track().segment(SEG_DECEL_END).unwrap();
+        assert!(is_zero(last.end_accel));
+        assert!(is_zero(last.end_vel));
+        assert!((last.end_pos - pend).abs() < 0.05);
+    }
+
+    /// Mid-cruise a lower speed writes the speed-change slots and
+    /// still finishes at rest at the original end.
+    #[test]
+    fn set_speed_max_in_cruise_writes_speed_change() {
+        let mut s = east_leg(200.0);
+        let pend = s.track().segment(SEG_DECEL_END).unwrap().end_pos;
+        let mid = 0.5 * (s.time_accel_end() + s.time_decel_start());
+        s.advance_time(mid);
+        assert!(s.time() > s.time_accel_end());
+        assert!(s.time() < s.time_decel_start());
+
+        let change_before = s.track().segment(SEG_SPEED_CHANGE_END).unwrap();
+        let accel_end = s.track().segment(SEG_ACCEL_END).unwrap();
+        assert!(
+            is_equal(change_before.end_time, accel_end.end_time),
+            "speed-change slots start empty"
+        );
+
+        s.set_speed_max(8.0, 5.0, 5.0);
+        assert!(s.valid(), "rebuilt path must stay valid");
+        assert!(is_equal(s.vel_max(), 8.0));
+        let change = s.track().segment(SEG_SPEED_CHANGE_END).unwrap();
+        assert!(
+            change.end_time > accel_end.end_time + 1e-3,
+            "speed-change slots must take time: {} vs accel {}",
+            change.end_time,
+            accel_end.end_time
+        );
+        assert!(
+            (change.end_vel - 8.0).abs() < 0.15,
+            "vel {}",
+            change.end_vel
+        );
+        let last = s.track().segment(SEG_DECEL_END).unwrap();
+        assert!(is_zero(last.end_accel));
+        assert!(is_zero(last.end_vel));
+        assert!((last.end_pos - pend).abs() < 0.05);
+    }
+
+    /// Once braking has started the new limit is stored but the
+    /// segments are not rewritten — there is no room left.
+    #[test]
+    fn set_speed_max_in_decel_stores_limit_only() {
+        let mut s = east_leg(200.0);
+        let cruise_t = s.track().segment(SEG_CONST).unwrap().end_time;
+        s.advance_time(cruise_t + 0.1);
+        assert!(s.braking());
+        let const_before = s.track().segment(SEG_CONST).unwrap();
+        s.set_speed_max(8.0, 5.0, 5.0);
+        assert!(is_equal(s.vel_max(), 8.0));
+        assert!(s.valid());
+        assert_eq!(
+            s.track().segment(SEG_CONST).unwrap().end_time,
+            const_before.end_time
+        );
+    }
+
+    /// Origin speed is the start velocity, capped by cruise, and the
+    /// path still stops at the original length.
+    #[test]
+    fn set_origin_speed_max_starts_already_moving() {
+        let mut s = east_leg(100.0);
+        assert!(is_zero(s.track().segment(SEG_INIT).unwrap().end_vel));
+        let got = s.set_origin_speed_max(5.0);
+        assert!((got - 5.0).abs() < 1e-5);
+        assert!(s.valid());
+        assert!((s.track().segment(SEG_INIT).unwrap().end_vel - 5.0).abs() < 1e-4);
+        let last = s.track().segment(SEG_DECEL_END).unwrap();
+        assert!(is_zero(last.end_vel));
+        assert!((last.end_pos - 100.0).abs() < 0.05);
+        assert_eq!(s.set_origin_speed_max(5.0), 5.0, "same speed is a no-op");
+        assert_eq!(SCurve::new().set_origin_speed_max(5.0), 0.0);
+    }
+
+    /// A request above cruise is capped, and a negative request is
+    /// the same as the absolute value.
+    #[test]
+    fn set_origin_speed_max_caps_at_cruise() {
+        let mut s = east_leg(100.0);
+        let cruise = s.track().segment(SEG_ACCEL_END).unwrap().end_vel;
+        let got = s.set_origin_speed_max(100.0);
+        assert!((got - cruise).abs() < 1e-4);
+        let mut s = east_leg(100.0);
+        let got = s.set_origin_speed_max(-4.0);
+        assert!((got - 4.0).abs() < 1e-5);
+        assert!(s.valid());
+    }
+
+    /// Destination speed is the end velocity: the path no longer
+    /// stops, and the stored length is unchanged.
+    #[test]
+    fn set_destination_speed_max_leaves_moving() {
+        let mut s = east_leg(100.0);
+        assert!(is_zero(s.track().segment(SEG_DECEL_END).unwrap().end_vel));
+        s.set_destination_speed_max(5.0);
+        assert!(s.valid());
+        let last = s.track().segment(SEG_DECEL_END).unwrap();
+        assert!(
+            (last.end_vel - 5.0).abs() < 0.05,
+            "end vel {}",
+            last.end_vel
+        );
+        assert!((last.end_pos - 100.0).abs() < 0.05);
+        let before = last.end_vel;
+        s.set_destination_speed_max(5.0);
+        assert!((s.track().segment(SEG_DECEL_END).unwrap().end_vel - before).abs() < 1e-5);
+        let mut empty = SCurve::new();
+        empty.set_destination_speed_max(5.0);
+        assert_eq!(empty.track().len(), 1);
+    }
+
+    /// Time-zero `set_speed_max` reapplies origin / dest so a spline
+    /// join survives the new cruise.
+    #[test]
+    fn set_speed_max_at_rest_keeps_origin_and_dest() {
+        let mut s = east_leg(200.0);
+        assert!((s.set_origin_speed_max(4.0) - 4.0).abs() < 1e-5);
+        s.set_destination_speed_max(3.0);
+        assert!(s.valid());
+        s.set_speed_max(10.0, 5.0, 5.0);
+        assert!(s.valid());
+        assert!(is_equal(s.vel_max(), 10.0));
+        assert!((s.track().segment(SEG_INIT).unwrap().end_vel - 4.0).abs() < 0.05);
+        assert!((s.track().segment(SEG_DECEL_END).unwrap().end_vel - 3.0).abs() < 0.05);
     }
 }
