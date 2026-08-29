@@ -42,4 +42,5 @@ pub mod mode_poshold;
 pub mod mode_rtl;
 pub mod mode_stabilize;
 pub mod pilot_input;
+pub mod radio;
 pub mod stick_nav;
