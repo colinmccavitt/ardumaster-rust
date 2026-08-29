@@ -2,8 +2,8 @@
 //! `check_ekf_init_timeout`, `construct_pos_meas_using_rangefinder`,
 //! `retrieve_los_meas`.
 //!
-//! Tracked as **COP-028**. `PosVelEKF`, `run_output_prediction`,
-//! backends, and the retry state machine stay later.
+//! Tracked as **COP-028**. `run_output_prediction`, backends, and the
+//! retry state machine stay later. `PosVelEKF` is wired.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::rotations_gen::Rotation;
@@ -13,7 +13,8 @@ use ap_math::vector3::Vector3f;
 use ap_precland::{
     EstimatorInput, EstimatorType, EstimatorWorld, InertialSample, LosSample, PrecLand,
     PrecLandParams, Type, VectorFrame, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
-    EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_OUTLIER_REJECT_LIMIT, REMAINING,
+    EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
+    EKF_OUTLIER_REJECT_LIMIT, REMAINING,
 };
 
 fn almost(a: f32, b: f32) {
@@ -299,6 +300,14 @@ fn kalman_first_meas_inits_but_does_not_acquire() {
     almost(leftover.ekf_init_vel_var, EKF_INIT_VEL_VAR_NAV_VALID);
     // meas.z=2, gyro=0 → sq(2*(0.01)+0.02) = sq(0.04) = 0.0016
     almost(leftover.ekf_pos_var, 0.001_6);
+    almost(plnd.ekf_x().pos(), 0.0);
+    almost(plnd.ekf_y().pos(), 0.0);
+    almost(plnd.ekf_x().vel(), 0.0);
+    almost(plnd.ekf_y().vel(), 0.0);
+    assert_eq!(
+        plnd.ekf_x().cov(),
+        [0.001_6, 0.0, EKF_INIT_VEL_VAR_NAV_VALID]
+    );
 }
 
 #[test]
@@ -309,6 +318,9 @@ fn kalman_init_uses_wide_vel_var_when_nav_invalid() {
     let leftover = plnd.run_estimator(input);
     assert!(leftover.need_ekf_init);
     almost(leftover.ekf_init_vel_var, EKF_INIT_VEL_VAR_NAV_INVALID);
+    almost(plnd.ekf_x().vel(), 0.0);
+    almost(plnd.ekf_y().vel(), 0.0);
+    almost(plnd.ekf_x().cov()[2], EKF_INIT_VEL_VAR_NAV_INVALID);
 }
 
 #[test]
@@ -327,13 +339,17 @@ fn kalman_settle(plnd: &mut PrecLand) -> ap_precland::RunEstimatorLeftover {
     // Init-complete needs a recent fuse (`now - last_update <= 500`)
     // *and* `now - estimator_init > 2000`. A single jump to t=2001
     // trips `LANDING_TARGET_TIMEOUT_MS` and restarts init.
-    let mut mid = meas_input(1_800, Some(down_los(2)));
-    mid.world.max_nis = Some(0.5);
-    let _ = plnd.run_estimator(mid);
+    let _ = plnd.run_estimator(meas_input(1_800, Some(down_los(2))));
+    plnd.run_estimator(meas_input(EKF_INIT_TIME_MS + 1, Some(down_los(3))))
+}
 
-    let mut later = meas_input(EKF_INIT_TIME_MS + 1, Some(down_los(3)));
-    later.world.max_nis = Some(0.5);
-    plnd.run_estimator(later)
+fn tilted_los(time_ms: u32) -> LosSample {
+    LosSample {
+        time_ms,
+        vec_unit: Vector3f::new(0.6, 0.0, 0.8),
+        frame: VectorFrame::BodyFrd,
+        distance_to_target_m: 0.0,
+    }
 }
 
 #[test]
@@ -349,6 +365,11 @@ fn kalman_predict_records_del_vel_leftover() {
     almost(leftover.ekf_predict_dt, 0.01);
     almost_vec2(leftover.ekf_predict_del_vel_ne, Vector2f::new(-0.2, 0.4));
     almost(leftover.ekf_predict_accel_noise, 2.5 * 0.01);
+    // init vel is 0; predict vel' = dVel + vel = (-0.2, 0.4)
+    almost(plnd.ekf_x().vel(), -0.2);
+    almost(plnd.ekf_y().vel(), 0.4);
+    almost(plnd.ekf_x().pos(), 0.0);
+    almost(plnd.ekf_y().pos(), 0.0);
 }
 
 #[test]
@@ -357,29 +378,28 @@ fn kalman_outlier_rejects_then_accepts() {
     let _ = plnd.run_estimator(meas_input(0, Some(down_los(1))));
 
     for i in 0..EKF_OUTLIER_REJECT_LIMIT {
-        let mut input = meas_input(10 + i * 10, Some(down_los(10 + i * 10)));
-        input.world.max_nis = Some(4.0);
-        let leftover = plnd.run_estimator(input);
+        let leftover = plnd.run_estimator(meas_input(10 + i * 10, Some(tilted_los(10 + i * 10))));
         assert!(leftover.outlier_rejected);
         assert!(!leftover.need_ekf_fuse);
+        assert!(leftover.ekf_max_nis >= EKF_NIS_REJECT_THRESHOLD);
         assert_eq!(plnd.outlier_reject_count(), i + 1);
     }
 
-    let mut forced = meas_input(100, Some(down_los(100)));
-    forced.world.max_nis = Some(4.0);
-    let leftover = plnd.run_estimator(forced);
+    let leftover = plnd.run_estimator(meas_input(100, Some(tilted_los(100))));
     assert!(!leftover.outlier_rejected);
     assert!(leftover.need_ekf_fuse);
     assert_eq!(plnd.outlier_reject_count(), 0);
 }
 
 #[test]
-fn kalman_missing_nis_is_a_posvelekf_leftover() {
+fn kalman_second_good_meas_computes_nis_and_fuses() {
     let mut plnd = mavlink_inited(EstimatorType::KalmanFilter);
     let _ = plnd.run_estimator(meas_input(0, Some(down_los(1))));
     let leftover = plnd.run_estimator(meas_input(10, Some(down_los(2))));
-    assert!(leftover.need_ekf_nis);
-    assert!(!leftover.need_ekf_fuse);
+    assert!(leftover.need_ekf_predict);
+    assert!(leftover.need_ekf_fuse);
+    assert!(leftover.ekf_max_nis < EKF_NIS_REJECT_THRESHOLD);
+    assert!(!leftover.outlier_rejected);
 }
 
 #[test]
@@ -392,6 +412,25 @@ fn kalman_init_completes_after_two_seconds() {
     assert!(leftover.need_gcs_init_complete);
     assert!(plnd.estimator_target_acquired());
     assert!(leftover.need_output_prediction);
+    almost_vec2(
+        plnd.target_pos_rel_est_ne_m(),
+        Vector2f::new(plnd.ekf_x().pos(), plnd.ekf_y().pos()),
+    );
+    almost_vec2(
+        plnd.target_vel_rel_est_ne_ms(),
+        Vector2f::new(plnd.ekf_x().vel(), plnd.ekf_y().vel()),
+    );
+}
+
+#[test]
+fn kalman_init_uses_negative_inertial_nav_velocity() {
+    let mut plnd = mavlink_inited(EstimatorType::KalmanFilter);
+    let mut input = meas_input(0, Some(down_los(1)));
+    input.delayed.inertial_nav_velocity = Vector3f::new(1.0, 2.0, 0.0);
+    let leftover = plnd.run_estimator(input);
+    assert!(leftover.need_ekf_init);
+    almost(plnd.ekf_x().vel(), -1.0);
+    almost(plnd.ekf_y().vel(), -2.0);
 }
 
 #[test]
@@ -419,7 +458,7 @@ fn leftover_catalog_drops_estimator_symbols() {
     assert!(REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(REMAINING.contains(&"AC_PrecLand::target_acquired"));
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"PosVelEKF"));
+    assert!(!REMAINING.contains(&"PosVelEKF"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(REMAINING.contains(&"inertial_data_frame_s"));
 }

@@ -3,8 +3,9 @@
 //!
 //! Tracked as **COP-028**. This slice owns the estimator switch,
 //! `check_ekf_init_timeout`, `construct_pos_meas_using_rangefinder`, and
-//! `retrieve_los_meas`. [`PosVelEKF`](crate::leftover::REMAINING) predict /
-//! init / fuse, `run_output_prediction`, and the inertial ring stay later.
+//! `retrieve_los_meas`. [`PosVelEKF`](crate::PosVelEKF) predict / init /
+//! fuse / NIS run with the Kalman path. `run_output_prediction` and the
+//! inertial ring stay later.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector2::Vector2f;
@@ -88,10 +89,6 @@ pub struct EstimatorWorld {
     pub imu_pos_offset: Vector3f,
     /// Leftover of `AP::ahrs().get_relative_position_NED_origin`.
     pub relative_pos_ned: Option<Vector3f>,
-    /// Leftover of `MAX(_ekf_x.getPosNIS, _ekf_y.getPosNIS)`.
-    ///
-    /// `None` records [`RunEstimatorLeftover::need_ekf_nis`] without fusing.
-    pub max_nis: Option<f32>,
 }
 
 impl Default for EstimatorWorld {
@@ -100,7 +97,6 @@ impl Default for EstimatorWorld {
             gyro_length: 0.0,
             imu_pos_offset: Vector3f::zero(),
             relative_pos_ned: None,
-            max_nis: None,
         }
     }
 }
@@ -121,7 +117,7 @@ pub struct EstimatorInput {
     pub any_inertial_nav_invalid: bool,
     /// Current backend LOS, if `get_los_meas` would succeed.
     pub los: Option<LosSample>,
-    /// AHRS / INS / `PosVelEKF` leftovers.
+    /// AHRS / INS leftovers still needed for `xy_pos_var` and construct.
     pub world: EstimatorWorld,
 }
 
@@ -151,7 +147,7 @@ pub struct EkfInitTimeoutLeftover {
 /// What `AC_PrecLand::run_estimator` ran and asked the vehicle for.
 ///
 /// RAW_SENSOR writes `_target_pos_rel_est_ne_m` here. Kalman predict /
-/// init / fuse stay [`PosVelEKF`](crate::leftover::REMAINING) leftovers.
+/// init / fuse / NIS run on the two [`PosVelEKF`](crate::PosVelEKF)s.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RunEstimatorLeftover {
     /// `construct_pos_meas_using_rangefinder` returned true.
@@ -160,14 +156,14 @@ pub struct RunEstimatorLeftover {
     pub raw_sensor_invalid_velocity: bool,
     /// Leftover of `run_output_prediction()`.
     pub need_output_prediction: bool,
-    /// Leftover of `_ekf_x/_ekf_y.predict`.
+    /// `_ekf_x/_ekf_y.predict` ran this tick.
     pub need_ekf_predict: bool,
-    /// Leftover of `_ekf_x/_ekf_y.init` on first measurement.
+    /// `_ekf_x/_ekf_y.init` ran on first measurement.
     pub need_ekf_init: bool,
-    /// Leftover of `_ekf_x/_ekf_y.getPosNIS` when `max_nis` was `None`.
-    pub need_ekf_nis: bool,
-    /// Leftover of `_ekf_x/_ekf_y.fusePos`.
+    /// `_ekf_x/_ekf_y.fusePos` ran this tick.
     pub need_ekf_fuse: bool,
+    /// `MAX(NIS_x, NIS_y)` when a fuse-or-reject decision ran.
+    pub ekf_max_nis: f32,
     /// `max_nis` was at or above the gate and the reject counter was below 3.
     pub outlier_rejected: bool,
     /// Leftover of `GCS_SEND_TEXT(..., "PrecLand: Target Found")`.
@@ -198,8 +194,8 @@ impl Default for RunEstimatorLeftover {
             need_output_prediction: false,
             need_ekf_predict: false,
             need_ekf_init: false,
-            need_ekf_nis: false,
             need_ekf_fuse: false,
+            ekf_max_nis: 0.0,
             outlier_rejected: false,
             need_gcs_target_found: false,
             need_gcs_target_lost: false,

@@ -18,7 +18,7 @@
 //! `check_target_status`, and 25 Hz `Write_Precland`.
 //! The estimator leftover is the RAW / Kalman switch, the EKF init
 //! timeout, rangefinder NED construction, and LOS retrieve. Kalman
-//! `PosVelEKF` predict / init / fuse stay later.
+//! `PosVelEKF` predict / init / fuse / NIS run here.
 //!
 //! Copter Land's last 6% (`land_run_normal_or_precland`, `precland_run`,
 //! `precland_retry_position`) is blocked on this crate. This slice does
@@ -51,12 +51,13 @@
 //!
 //! [`leftover::REMAINING`] is the catalog: getters / target status,
 //! `run_output_prediction`, logging, the four sensor `update` paths,
-//! `PosVelEKF`, and `AC_PrecLand_StateMachine`.
+//! and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
 pub mod estimator;
 pub mod leftover;
+pub mod pos_vel_ekf;
 pub mod precland;
 
 pub use estimator::{
@@ -66,6 +67,7 @@ pub use estimator::{
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
 pub use leftover::REMAINING;
+pub use pos_vel_ekf::PosVelEKF;
 pub use precland::{
     EstimatorType, HandleMsgLeftover, InitLeftover, LandingTargetMsg, PrecLand, PrecLandParams,
     TargetState, Type, UpdateLeftover, VectorFrame, LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN,

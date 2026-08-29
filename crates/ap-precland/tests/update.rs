@@ -181,7 +181,7 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(REMAINING.contains(&"AC_PrecLand_Backend::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
-    assert!(REMAINING.contains(&"PosVelEKF"));
+    assert!(!REMAINING.contains(&"PosVelEKF"));
 }
 
 #[test]

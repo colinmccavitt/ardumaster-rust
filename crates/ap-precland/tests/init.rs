@@ -215,5 +215,5 @@ fn leftover_catalog_is_not_empty() {
     assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
     assert!(REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
-    assert!(REMAINING.contains(&"PosVelEKF"));
+    assert!(!REMAINING.contains(&"PosVelEKF"));
 }

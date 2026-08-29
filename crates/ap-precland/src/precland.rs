@@ -1,9 +1,9 @@
 //! `AC_PrecLand::init` / `update` / `handle_msg` / estimator leftovers,
 //! upstream `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. Sensor `update`, `PosVelEKF`, output
-//! prediction, getters, and the retry state machine stay in
-//! [`crate::leftover`].
+//! Tracked as **COP-028**. Sensor `update`, output prediction, getters,
+//! and the retry state machine stay in [`crate::leftover`]. Both
+//! [`PosVelEKF`](crate::PosVelEKF)s run with the Kalman path.
 
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{cd_to_rad, constrain_value, is_zero, sq};
@@ -16,6 +16,7 @@ use crate::estimator::{
     EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
+use crate::pos_vel_ekf::PosVelEKF;
 
 /// Default `PLND_LAG`, seconds. Upstream `AP_GROUPINFO` default.
 pub const LAG_S_DEFAULT: f32 = 0.02;
@@ -258,6 +259,8 @@ pub struct PrecLand {
     target_vel_rel_est_ne_ms: Vector2f,
     last_target_pos_rel_origin_ned_m: Vector3f,
     last_vehicle_pos_ned_m: Vector3f,
+    ekf_x: PosVelEKF,
+    ekf_y: PosVelEKF,
 }
 
 impl PrecLand {
@@ -299,6 +302,8 @@ impl PrecLand {
             target_vel_rel_est_ne_ms: Vector2f::zero(),
             last_target_pos_rel_origin_ned_m: Vector3f::zero(),
             last_vehicle_pos_ned_m: Vector3f::zero(),
+            ekf_x: PosVelEKF::new(),
+            ekf_y: PosVelEKF::new(),
         }
     }
 
@@ -435,8 +440,8 @@ impl PrecLand {
     /// `AC_PrecLand::run_estimator`.
     ///
     /// RAW_SENSOR writes the relative NE estimate here. Kalman predict /
-    /// init / fuse are recorded as [`RunEstimatorLeftover`] so
-    /// `PosVelEKF` can stay a later leftover.
+    /// init / fuse / NIS run on `_ekf_x` / `_ekf_y`. Output prediction
+    /// after those estimates is still a leftover.
     #[must_use]
     pub fn run_estimator(&mut self, input: EstimatorInput) -> RunEstimatorLeftover {
         let mut leftover = RunEstimatorLeftover::default();
@@ -647,6 +652,18 @@ impl PrecLand {
         self.target_acquired
     }
 
+    /// `_ekf_x` after the last Kalman tick.
+    #[must_use]
+    pub fn ekf_x(&self) -> &PosVelEKF {
+        &self.ekf_x
+    }
+
+    /// `_ekf_y` after the last Kalman tick.
+    #[must_use]
+    pub fn ekf_y(&self) -> &PosVelEKF {
+        &self.ekf_y
+    }
+
     /// `_last_update_ms` after the last accepted measurement.
     #[must_use]
     pub fn last_update_ms(&self) -> u32 {
@@ -790,6 +807,16 @@ impl PrecLand {
                 -input.delayed.corrected_vehicle_delta_velocity_ned.y,
             );
             leftover.ekf_predict_accel_noise = self.accel_noise * input.delayed.dt;
+            self.ekf_x.predict(
+                leftover.ekf_predict_dt,
+                leftover.ekf_predict_del_vel_ne.x,
+                leftover.ekf_predict_accel_noise,
+            );
+            self.ekf_y.predict(
+                leftover.ekf_predict_dt,
+                leftover.ekf_predict_del_vel_ne.y,
+                leftover.ekf_predict_accel_noise,
+            );
         }
 
         leftover.constructed_pos_meas = self.construct_pos_meas_using_rangefinder(
@@ -811,22 +838,51 @@ impl PrecLand {
                 } else {
                     EKF_INIT_VEL_VAR_NAV_INVALID
                 };
+                let (vel_x, vel_y) = if input.delayed.inertial_nav_velocity_valid {
+                    (
+                        -input.delayed.inertial_nav_velocity.x,
+                        -input.delayed.inertial_nav_velocity.y,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+                self.ekf_x.init(
+                    self.target_pos_rel_meas_ned_m.x,
+                    leftover.ekf_pos_var,
+                    vel_x,
+                    leftover.ekf_init_vel_var,
+                );
+                self.ekf_y.init(
+                    self.target_pos_rel_meas_ned_m.y,
+                    leftover.ekf_pos_var,
+                    vel_y,
+                    leftover.ekf_init_vel_var,
+                );
                 self.last_update_ms = input.now_ms;
                 self.estimator_init_ms = input.now_ms;
                 self.estimator_initialized = true;
-            } else if let Some(max_nis) = input.world.max_nis {
-                if max_nis < EKF_NIS_REJECT_THRESHOLD
+            } else {
+                let nis_x = self
+                    .ekf_x
+                    .pos_nis(self.target_pos_rel_meas_ned_m.x, leftover.ekf_pos_var);
+                let nis_y = self
+                    .ekf_y
+                    .pos_nis(self.target_pos_rel_meas_ned_m.y, leftover.ekf_pos_var);
+                leftover.ekf_max_nis = nis_x.max(nis_y);
+                if leftover.ekf_max_nis < EKF_NIS_REJECT_THRESHOLD
                     || self.outlier_reject_count >= EKF_OUTLIER_REJECT_LIMIT
                 {
                     self.outlier_reject_count = 0;
                     leftover.need_ekf_fuse = true;
+                    self.ekf_x
+                        .fuse_pos(self.target_pos_rel_meas_ned_m.x, leftover.ekf_pos_var);
+                    self.ekf_y
+                        .fuse_pos(self.target_pos_rel_meas_ned_m.y, leftover.ekf_pos_var);
                     self.last_update_ms = input.now_ms;
                 } else {
                     self.outlier_reject_count += 1;
                     leftover.outlier_rejected = true;
                 }
-            } else {
-                leftover.need_ekf_nis = true;
             }
         }
 
@@ -835,6 +891,12 @@ impl PrecLand {
         leftover.need_gcs_init_complete = timeout.need_gcs_init_complete;
 
         leftover.need_output_prediction = self.target_acquired;
+        if self.target_acquired {
+            self.target_pos_rel_est_ne_m.x = self.ekf_x.pos();
+            self.target_pos_rel_est_ne_m.y = self.ekf_y.pos();
+            self.target_vel_rel_est_ne_ms.x = self.ekf_x.vel();
+            self.target_vel_rel_est_ne_ms.y = self.ekf_y.vel();
+        }
     }
 }
 

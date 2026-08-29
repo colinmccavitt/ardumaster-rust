@@ -1,5 +1,5 @@
 //! Remaining `AC_PrecLand` leftovers after `init` + `update` +
-//! `handle_msg` + the estimator frontend.
+//! `handle_msg` + the estimator frontend + `PosVelEKF`.
 //!
 //! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init),
 //! [`PrecLand::update`](crate::PrecLand::update),
@@ -7,8 +7,9 @@
 //! [`PrecLand::run_estimator`](crate::PrecLand::run_estimator),
 //! [`PrecLand::check_ekf_init_timeout`](crate::PrecLand::check_ekf_init_timeout),
 //! [`PrecLand::construct_pos_meas_using_rangefinder`](crate::PrecLand::construct_pos_meas_using_rangefinder),
-//! and [`PrecLand::retrieve_los_meas`](crate::PrecLand::retrieve_los_meas)
-//! are the first contiguous leftovers. Everything listed here is still later.
+//! [`PrecLand::retrieve_los_meas`](crate::PrecLand::retrieve_los_meas),
+//! and [`PosVelEKF`](crate::PosVelEKF) are the first contiguous leftovers.
+//! Everything listed here is still later.
 
 /// Remaining upstream symbols this crate has not ported yet.
 ///
@@ -17,9 +18,9 @@
 /// `update` is the 400 Hz frontend (AHRS history + backend/estimator
 /// leftovers); `handle_msg` is the LANDING_TARGET dispatch; the
 /// estimator leftover is the RAW / Kalman switch, EKF init timeout,
-/// rangefinder position construction, and LOS retrieve. Getters, output
-/// prediction, both `PosVelEKF`s, the four sensor `update` paths, and
-/// the retry state machine stay here.
+/// rangefinder position construction, and LOS retrieve. Both
+/// `PosVelEKF`s are wired. Getters, output prediction, the four sensor
+/// `update` paths, and the retry state machine stay here.
 pub const REMAINING: &[&str] = &[
     // AC_PrecLand.cpp frontend after update / handle_msg / estimator
     "AC_PrecLand::get_target_position_m",
@@ -48,8 +49,7 @@ pub const REMAINING: &[&str] = &[
     "AC_PrecLand_SITL::update",
     "AC_PrecLand_SITL_Gazebo::init(irlock)",
     "AC_PrecLand_SITL_Gazebo::update",
-    // EKF + retry machine
-    "PosVelEKF",
+    // retry machine
     "AC_PrecLand_StateMachine::init",
     "AC_PrecLand_StateMachine::update",
     "AC_PrecLand_StateMachine::get_target_lost_actions",
