@@ -1,11 +1,13 @@
-//! `ModeGuided` init / set_destination leftovers, upstream `ArduCopter/mode_guided.cpp`.
+//! `ModeGuided` init / set_destination / run / set_velocity leftovers,
+//! upstream `ArduCopter/mode_guided.cpp`.
 
 use ap_copter::mode_guided::{
-    guided_init, guided_mode_flags, guided_set_destination, option_is_enabled, set_yaw_state_rad,
-    use_wpnav_for_position_control, GuidedInitView, GuidedOption, GuidedSetDestFail,
-    GuidedSetDestView, GuidedSubMode, GuidedYawAction, MODE_NUMBER_FOLLOW, MODE_NUMBER_GUIDED,
-    MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS, WP_SPD_DEFAULT_MS,
-    WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
+    guided_init, guided_mode_flags, guided_run, guided_set_destination, guided_set_vel_accel,
+    guided_set_velocity, option_is_enabled, set_yaw_state_rad, use_wpnav_for_position_control,
+    GuidedInitView, GuidedOption, GuidedRunBody, GuidedRunView, GuidedSetDestFail,
+    GuidedSetDestView, GuidedSetVelView, GuidedSubMode, GuidedYawAction, MODE_NUMBER_FOLLOW,
+    MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS,
+    WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
 };
 
 #[test]
@@ -299,4 +301,147 @@ fn yaw_rate_only_does_not_touch_the_angle() {
         set_yaw_state_rad(false, 1.0, true, 0.3, false),
         GuidedYawAction::SetRate { yaw_rate_rads: 0.3 }
     );
+}
+
+#[test]
+fn run_after_init_dispatches_velaccel() {
+    let out = guided_run(&GuidedRunView::after_init());
+    assert_eq!(out.body, GuidedRunBody::VelAccel);
+    assert!(!out.send_notification);
+    assert!(!out.mission_item_reached);
+}
+
+#[test]
+fn paused_skips_the_submode_switch() {
+    let mut view = GuidedRunView::after_wp_dest();
+    view.paused = true;
+    view.wp_reached = true;
+    let out = guided_run(&view);
+    assert_eq!(out.body, GuidedRunBody::Pause);
+    assert!(out.send_notification);
+    assert!(!out.mission_item_reached);
+}
+
+#[test]
+fn run_dispatches_each_unpaused_submode() {
+    let cases = [
+        (GuidedSubMode::TakeOff, GuidedRunBody::TakeOff),
+        (GuidedSubMode::Wp, GuidedRunBody::Wp),
+        (GuidedSubMode::Pos, GuidedRunBody::Pos),
+        (GuidedSubMode::Accel, GuidedRunBody::Accel),
+        (GuidedSubMode::VelAccel, GuidedRunBody::VelAccel),
+        (GuidedSubMode::PosVelAccel, GuidedRunBody::PosVelAccel),
+        (GuidedSubMode::Angle, GuidedRunBody::Angle),
+    ];
+    for (submode, body) in cases {
+        let mut view = GuidedRunView::after_init();
+        view.submode = submode;
+        let out = guided_run(&view);
+        assert_eq!(out.body, body);
+        assert!(!out.send_notification);
+        assert!(!out.mission_item_reached);
+    }
+}
+
+#[test]
+fn wp_reached_clears_notification_and_sends_gcs() {
+    let mut view = GuidedRunView::after_wp_dest();
+    view.wp_reached = true;
+    let out = guided_run(&view);
+    assert_eq!(out.body, GuidedRunBody::Wp);
+    assert!(!out.send_notification);
+    assert!(out.mission_item_reached);
+}
+
+#[test]
+fn wp_not_yet_reached_keeps_notification() {
+    let view = GuidedRunView::after_wp_dest();
+    let out = guided_run(&view);
+    assert_eq!(out.body, GuidedRunBody::Wp);
+    assert!(out.send_notification);
+    assert!(!out.mission_item_reached);
+}
+
+#[test]
+fn wp_reached_without_notification_does_not_send() {
+    let mut view = GuidedRunView::after_wp_dest();
+    view.send_notification = false;
+    view.wp_reached = true;
+    let out = guided_run(&view);
+    assert_eq!(out.body, GuidedRunBody::Wp);
+    assert!(!out.send_notification);
+    assert!(!out.mission_item_reached);
+}
+
+#[test]
+fn pos_path_does_not_consult_wp_reached() {
+    let mut view = GuidedRunView::after_wp_dest();
+    view.submode = GuidedSubMode::Pos;
+    view.wp_reached = true;
+    let out = guided_run(&view);
+    assert_eq!(out.body, GuidedRunBody::Pos);
+    assert!(out.send_notification);
+    assert!(!out.mission_item_reached);
+}
+
+#[test]
+fn set_velocity_zeroes_accel_and_stays_in_velaccel() {
+    let view = GuidedSetVelView::after_init();
+    let out = guided_set_velocity(&view);
+    assert_eq!(out.submode, GuidedSubMode::VelAccel);
+    assert!(!out.started_velaccel);
+    assert_eq!(out.yaw, GuidedYawAction::SetModeToDefault);
+    assert_eq!(out.pos_target_ned_m, [0.0, 0.0, 0.0]);
+    assert!(!out.terrain_alt);
+    assert_eq!(out.vel_ned_ms, [1.5, -0.5, 0.0]);
+    assert_eq!(out.accel_ned_mss, [0.0, 0.0, 0.0]);
+    assert_eq!(out.update_time_ms, 2_000);
+    assert!(out.logged);
+}
+
+#[test]
+fn set_vel_accel_keeps_the_callers_accel() {
+    let view = GuidedSetVelView::after_init();
+    let out = guided_set_vel_accel(&view);
+    assert_eq!(out.accel_ned_mss, [0.2, 0.1, 0.0]);
+    assert_eq!(out.vel_ned_ms, view.vel_ned_ms);
+    assert!(!out.started_velaccel);
+}
+
+#[test]
+fn set_velocity_from_pos_starts_velaccel() {
+    let mut view = GuidedSetVelView::after_init();
+    view.submode = GuidedSubMode::Pos;
+    let out = guided_set_velocity(&view);
+    assert_eq!(out.submode, GuidedSubMode::VelAccel);
+    assert!(out.started_velaccel);
+}
+
+#[test]
+fn set_velocity_relative_yaw_wins_over_a_rate() {
+    let mut view = GuidedSetVelView::after_init();
+    view.use_yaw = true;
+    view.yaw_rad = 0.8;
+    view.use_yaw_rate = true;
+    view.yaw_rate_rads = 0.2;
+    view.relative_yaw = true;
+    let out = guided_set_velocity(&view);
+    assert_eq!(
+        out.yaw,
+        GuidedYawAction::SetFixedYaw {
+            yaw_rad: 0.8,
+            relative: true,
+        }
+    );
+}
+
+#[test]
+fn set_velocity_skips_log_when_request_or_compile_is_off() {
+    let mut no_request = GuidedSetVelView::after_init();
+    no_request.log_request = false;
+    assert!(!guided_set_velocity(&no_request).logged);
+
+    let mut compiled_out = GuidedSetVelView::after_init();
+    compiled_out.logging_enabled = false;
+    assert!(!guided_set_velocity(&compiled_out).logged);
 }

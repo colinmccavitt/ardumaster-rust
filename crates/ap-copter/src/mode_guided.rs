@@ -1,10 +1,11 @@
-//! `ModeGuided` init / set_destination leftover, upstream `ArduCopter/mode_guided.cpp`.
+//! `ModeGuided` init / set_destination / run / set_velocity leftover,
+//! upstream `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
-//! to a coordinate, hold a velocity, or take an attitude. This first slice
-//! owns the enter and the Location dest setter. The `*_run` controllers,
-//! velocity / accel / angle setters, Guided-NoGPS, and Follow are later
-//! slices.
+//! to a coordinate, hold a velocity, or take an attitude. The first slice
+//! owns the enter and the Location dest setter. This slice owns the `run`
+//! dispatcher and the velocity setter. The `*_run` controller bodies,
+//! accel / angle setters, Guided-NoGPS, and Follow are later slices.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -50,6 +51,31 @@
 //! `set_yaw_state_rad` picks an AutoYaw setter. `use_yaw && relative`
 //! wins even when a rate was also supplied — the relative path is
 //! `set_fixed_yaw_rad` with a zero rate. That order is the leftover.
+//!
+//! # `run` is a pause gate, then a seven-way leftover
+//!
+//! `_paused` short-circuits into `pause_control_run` and never looks at
+//! the submode. A leftover pause therefore freezes the vehicle even
+//! when a dest was just accepted. The unpaused leftover is the switch:
+//! each `SubMode` calls one `*_run` body. Those bodies are later
+//! slices; this leftover records which one was chosen.
+//!
+//! WP is the only arm with a side-effect. `send_notification` (set by
+//! `set_destination`) is cleared and a mission-item-reached GCS
+//! message is sent only when the waypoint navigator reports arrival.
+//! A dest that has not been reached keeps the flag; a tick that never
+//! set it never sends.
+//!
+//! # `set_vel_NED_ms` is zero accel, then `set_vel_accel_NED_m`
+//!
+//! The thin setter does not have its own leftover. It forwards a
+//! zero acceleration. `set_vel_accel_NED_m` starts VelAccel if the
+//! submode is not already there (`velaccel_control_start` →
+//! `pva_control_start`), then `set_yaw_state_rad`, then zeroes the
+//! position target and the terrain flag, stores the velocity and
+//! acceleration, and stamps `update_time_ms`. A log write is compiled
+//! out when logging is off, and skipped when the caller passed
+//! `log_request = false`.
 
 /// `Mode::Number::GUIDED`.
 pub const MODE_NUMBER_GUIDED: u8 = 4;
@@ -622,4 +648,238 @@ pub fn guided_set_destination(view: &GuidedSetDestView) -> GuidedSetDest {
         log_dest_outside_fence: false,
         log_failed_to_set_destination: false,
     }
+}
+
+/// Which `*_run` body `ModeGuided::run` called this tick.
+///
+/// The leftover is the *choice*. The bodies themselves (`takeoff_run`,
+/// `wp_control_run`, `pause_control_run`, …) are later slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidedRunBody {
+    /// `_paused`: `pause_control_run` and return. The switch is skipped.
+    Pause,
+    /// `SubMode::TakeOff` → `takeoff_run`.
+    TakeOff,
+    /// `SubMode::WP` → `wp_control_run` (and maybe a reached-GCS).
+    Wp,
+    /// `SubMode::Pos` → `pos_control_run`.
+    Pos,
+    /// `SubMode::Accel` → `accel_control_run`.
+    Accel,
+    /// `SubMode::VelAccel` → `velaccel_control_run`.
+    VelAccel,
+    /// `SubMode::PosVelAccel` → `posvelaccel_control_run`.
+    PosVelAccel,
+    /// `SubMode::Angle` → `angle_control_run`.
+    Angle,
+}
+
+/// Vehicle view `ModeGuided::run` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuidedRunView {
+    /// `_paused` at the top of the tick.
+    pub paused: bool,
+    /// `guided_mode` at the top of the tick.
+    pub submode: GuidedSubMode,
+    /// `send_notification` at the top of the tick.
+    pub send_notification: bool,
+    /// `wp_nav->reached_wp_destination()`. Consulted only on the WP arm.
+    pub wp_reached: bool,
+}
+
+impl GuidedRunView {
+    /// After [`guided_init`]: VelAccel, not paused, no dest notification.
+    #[must_use]
+    pub const fn after_init() -> Self {
+        Self {
+            paused: false,
+            submode: GuidedSubMode::VelAccel,
+            send_notification: false,
+            wp_reached: false,
+        }
+    }
+
+    /// After a wpnav [`guided_set_destination`]: WP, notify armed.
+    #[must_use]
+    pub const fn after_wp_dest() -> Self {
+        Self {
+            paused: false,
+            submode: GuidedSubMode::Wp,
+            send_notification: true,
+            wp_reached: false,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::run` tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuidedRun {
+    /// Which `*_run` body the pause gate / switch selected.
+    pub body: GuidedRunBody,
+    /// `send_notification` after the tick.
+    pub send_notification: bool,
+    /// `gcs().send_mission_item_reached_message(0)` ran.
+    pub mission_item_reached: bool,
+}
+
+/// Upstream `ModeGuided::run`.
+///
+/// `_paused` wins over every submode. The WP arm is the only one that
+/// writes `send_notification`: it clears the flag and sends a GCS
+/// reached message only when the waypoint navigator reports arrival.
+#[must_use]
+pub const fn guided_run(view: &GuidedRunView) -> GuidedRun {
+    if view.paused {
+        return GuidedRun {
+            body: GuidedRunBody::Pause,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        };
+    }
+
+    match view.submode {
+        GuidedSubMode::TakeOff => GuidedRun {
+            body: GuidedRunBody::TakeOff,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+        GuidedSubMode::Wp => {
+            let reached = view.send_notification && view.wp_reached;
+            GuidedRun {
+                body: GuidedRunBody::Wp,
+                send_notification: view.send_notification && !view.wp_reached,
+                mission_item_reached: reached,
+            }
+        }
+        GuidedSubMode::Pos => GuidedRun {
+            body: GuidedRunBody::Pos,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+        GuidedSubMode::Accel => GuidedRun {
+            body: GuidedRunBody::Accel,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+        GuidedSubMode::VelAccel => GuidedRun {
+            body: GuidedRunBody::VelAccel,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+        GuidedSubMode::PosVelAccel => GuidedRun {
+            body: GuidedRunBody::PosVelAccel,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+        GuidedSubMode::Angle => GuidedRun {
+            body: GuidedRunBody::Angle,
+            send_notification: view.send_notification,
+            mission_item_reached: false,
+        },
+    }
+}
+
+/// Vehicle view `ModeGuided::set_vel_accel_NED_m` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedSetVelView {
+    /// `guided_mode` before the call.
+    pub submode: GuidedSubMode,
+    /// Commanded NED velocity, m/s.
+    pub vel_ned_ms: [f32; 3],
+    /// Commanded NED acceleration, m/s². [`guided_set_velocity`]
+    /// overwrites this with zeroes before the leftover.
+    pub accel_ned_mss: [f32; 3],
+    /// `millis()` stamped into `update_time_ms`.
+    pub now_ms: u32,
+    /// `use_yaw` argument.
+    pub use_yaw: bool,
+    /// `yaw_rad` argument.
+    pub yaw_rad: f32,
+    /// `use_yaw_rate` argument.
+    pub use_yaw_rate: bool,
+    /// `yaw_rate_rads` argument.
+    pub yaw_rate_rads: f32,
+    /// `relative_yaw` argument.
+    pub relative_yaw: bool,
+    /// `log_request` argument.
+    pub log_request: bool,
+    /// `HAL_LOGGING_ENABLED`. When false the log write is compiled out.
+    pub logging_enabled: bool,
+}
+
+impl GuidedSetVelView {
+    /// After [`guided_init`]: already VelAccel, logging on, no yaw.
+    #[must_use]
+    pub const fn after_init() -> Self {
+        Self {
+            submode: GuidedSubMode::VelAccel,
+            vel_ned_ms: [1.5, -0.5, 0.0],
+            accel_ned_mss: [0.2, 0.1, 0.0],
+            now_ms: 2_000,
+            use_yaw: false,
+            yaw_rad: 0.0,
+            use_yaw_rate: false,
+            yaw_rate_rads: 0.0,
+            relative_yaw: false,
+            log_request: true,
+            logging_enabled: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::set_vel_accel_NED_m` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedSetVel {
+    /// Always [`GuidedSubMode::VelAccel`].
+    pub submode: GuidedSubMode,
+    /// `velaccel_control_start` ran because the submode was not VelAccel.
+    pub started_velaccel: bool,
+    /// `set_yaw_state_rad` leftover. Always reached.
+    pub yaw: GuidedYawAction,
+    /// `guided_pos_target_ned_m` after the call. Always zero.
+    pub pos_target_ned_m: [f32; 3],
+    /// `guided_is_terrain_alt` after the call. Always false.
+    pub terrain_alt: bool,
+    /// `guided_vel_target_ned_ms` after the call.
+    pub vel_ned_ms: [f32; 3],
+    /// `guided_accel_target_ned_mss` after the call.
+    pub accel_ned_mss: [f32; 3],
+    /// `update_time_ms` after the call.
+    pub update_time_ms: u32,
+    /// `Log_Write_Guided_Position_Target` ran.
+    pub logged: bool,
+}
+
+/// Shared leftover of `set_vel_accel_NED_m`.
+#[must_use]
+pub fn guided_set_vel_accel(view: &GuidedSetVelView) -> GuidedSetVel {
+    let started_velaccel = view.submode != GuidedSubMode::VelAccel;
+    GuidedSetVel {
+        submode: GuidedSubMode::VelAccel,
+        started_velaccel,
+        yaw: set_yaw_state_rad(
+            view.use_yaw,
+            view.yaw_rad,
+            view.use_yaw_rate,
+            view.yaw_rate_rads,
+            view.relative_yaw,
+        ),
+        pos_target_ned_m: [0.0, 0.0, 0.0],
+        terrain_alt: false,
+        vel_ned_ms: view.vel_ned_ms,
+        accel_ned_mss: view.accel_ned_mss,
+        update_time_ms: view.now_ms,
+        logged: view.logging_enabled && view.log_request,
+    }
+}
+
+/// Upstream `ModeGuided::set_vel_NED_ms`.
+///
+/// The leftover is the zero acceleration. Everything else is
+/// [`guided_set_vel_accel`].
+#[must_use]
+pub fn guided_set_velocity(view: &GuidedSetVelView) -> GuidedSetVel {
+    let mut forwarded = *view;
+    forwarded.accel_ned_mss = [0.0, 0.0, 0.0];
+    guided_set_vel_accel(&forwarded)
 }
