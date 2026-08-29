@@ -1,18 +1,20 @@
-//! Remaining `AC_PrecLand` leftovers after the `init` slice.
+//! Remaining `AC_PrecLand` leftovers after `init` + `update` + `handle_msg`.
 //!
-//! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init) is
-//! the first contiguous leftover. Everything listed here is still later.
+//! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init),
+//! [`PrecLand::update`](crate::PrecLand::update), and
+//! [`PrecLand::handle_msg`](crate::PrecLand::handle_msg) are the first
+//! contiguous leftovers. Everything listed here is still later.
 
 /// Remaining upstream symbols this crate has not ported yet.
 ///
 /// Weights are the ticket's 1,133 LOC (`AC_PrecLand.cpp` + `.h`). The
 /// `init` leftover is the constructor follow-on plus backend dispatch;
-/// the rest of the frontend, both EKFs, the four sensor `update` paths,
-/// and the retry state machine stay here.
+/// `update` is the 400 Hz frontend (AHRS history + backend/estimator
+/// leftovers); `handle_msg` is the LANDING_TARGET dispatch. Getters,
+/// both EKFs, the four sensor `update` paths, and the retry state
+/// machine stay here.
 pub const REMAINING: &[&str] = &[
-    // AC_PrecLand.cpp frontend after init
-    "AC_PrecLand::update",
-    "AC_PrecLand::handle_msg",
+    // AC_PrecLand.cpp frontend after update / handle_msg
     "AC_PrecLand::get_target_position_m",
     "AC_PrecLand::get_target_position_measurement_NED_m",
     "AC_PrecLand::get_target_position_relative_NE_m",

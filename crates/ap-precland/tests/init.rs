@@ -1,7 +1,7 @@
 //! `AC_PrecLand::init` leftover.
 //!
-//! Tracked as **COP-028**. Estimator, `update`, and the retry state
-//! machine stay later.
+//! Tracked as **COP-028**. Estimator, sensor backends, and the retry
+//! state machine stay later.
 
 use ap_math::rotations_gen::Rotation;
 use ap_math::scalar::is_equal;
@@ -207,7 +207,9 @@ fn leftover_catalog_is_not_empty() {
         REMAINING.len() > 10,
         "first stub must not claim the 1,133-loc ticket is done"
     );
-    assert!(REMAINING.contains(&"AC_PrecLand::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::handle_msg"));
+    assert!(REMAINING.contains(&"AC_PrecLand::run_estimator"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(REMAINING.contains(&"PosVelEKF"));
 }

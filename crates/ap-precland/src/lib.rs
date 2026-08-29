@@ -1,11 +1,18 @@
 //! Precision landing leftovers, upstream `libraries/AC_PrecLand`.
+//!
 //! Tracked as **COP-028**.
 //!
-//! This crate owns the first real `AC_PrecLand` leftover: [`PrecLand::init`].
-//! That is the constructor's follow-on: constrain `PLND_LAG`, size the
-//! inertial history ring, pick a sensor backend from `PLND_TYPE`, run that
-//! backend's `init()`, and rotate the body-frame approach vector by
-//! `PLND_ORIENT`.
+//! This crate owns the first two real `AC_PrecLand` leftovers:
+//! [`PrecLand::init`] and [`PrecLand::update`], plus the thin
+//! [`PrecLand::handle_msg`] dispatch. `init` is the constructor's
+//! follow-on: constrain `PLND_LAG`, size the inertial history ring,
+//! pick a sensor backend from `PLND_TYPE`, run that backend's `init()`,
+//! and rotate the body-frame approach vector by `PLND_ORIENT`.
+//! `update` is the 400 Hz frontend: early-return when there is no
+//! backend or no inertial ring, convert the rangefinder argument
+//! from centimetres to metres, then record leftovers for the AHRS
+//! history push, `_backend->update()`, `run_estimator`,
+//! `check_target_status`, and 25 Hz `Write_Precland`.
 //!
 //! Copter Land's last 6% (`land_run_normal_or_precland`, `precland_run`,
 //! `precland_retry_position`) is blocked on this crate. This slice does
@@ -26,11 +33,19 @@
 //! `AP::sitl()`. ADR-0004 forbids those drivers and the SITL singleton;
 //! [`InitLeftover`] records the leftover.
 //!
+//! # `update` argument units
+//!
+//! The header names the first argument `rangefinder_alt_m`. The `.cpp`
+//! parameter is `rangefinder_alt_cm` and multiplies by `0.01f`. Copter's
+//! caller (`precision_landing.cpp`) passes
+//! `rangefinder_state.alt_glitch_protected_m * 100`. This port takes
+//! centimetres and converts, matching the body, not the header name.
+//!
 //! # What this crate does not own yet
 //!
-//! [`leftover::REMAINING`] is the catalog: `update`, the estimator /
-//! EKF, LOS construction, output prediction, logging, the four sensor
-//! `update` paths, `PosVelEKF`, and `AC_PrecLand_StateMachine`.
+//! [`leftover::REMAINING`] is the catalog: getters / target status, the
+//! estimator / EKF, LOS construction, output prediction, logging, the
+//! four sensor `update` paths, `PosVelEKF`, and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
@@ -39,8 +54,8 @@ pub mod precland;
 
 pub use leftover::REMAINING;
 pub use precland::{
-    EstimatorType, InitLeftover, PrecLand, PrecLandParams, TargetState, Type, VectorFrame,
-    LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN, OPTION_DISABLED, OPTION_FAST_DESCEND,
-    OPTION_MOVING_TARGET, OPTION_PRECLAND_AFTER_REPOSITION, ORIENT_DEFAULT_COPTER,
-    XY_MAX_DIST_DESC_M_DEFAULT,
+    EstimatorType, HandleMsgLeftover, InitLeftover, LandingTargetMsg, PrecLand, PrecLandParams,
+    TargetState, Type, UpdateLeftover, VectorFrame, LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN,
+    LOG_INTERVAL_MS, OPTION_DISABLED, OPTION_FAST_DESCEND, OPTION_MOVING_TARGET,
+    OPTION_PRECLAND_AFTER_REPOSITION, ORIENT_DEFAULT_COPTER, XY_MAX_DIST_DESC_M_DEFAULT,
 };
