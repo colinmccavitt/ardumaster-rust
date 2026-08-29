@@ -26,13 +26,13 @@
 //!
 //! # This slice
 //!
-//! The segment kinematics and the segment array — building a track from
-//! segments and evaluating jerk, acceleration, velocity and position at any
-//! time within it. `calculate_track`, `advance_target_along_track`, the arc
-//! handling and the speed-change logic are the rest of the file and are their
-//! own slice.
+//! `calculate_path` — the static time-solver that turns snap / jerk / accel /
+//! speed / length into the five numbers a 23-segment track is built from.
+//! The segment kinematics are already here. `calculate_track`,
+//! `advance_target_along_track`, the arc handling and the speed-change
+//! logic are the rest of the file.
 
-use crate::scalar::{is_positive, sq, Real};
+use crate::scalar::{is_negative, is_positive, is_zero, safe_sqrt, sq, Real};
 
 /// Segments in a full track, upstream `segments_max`.
 ///
@@ -428,6 +428,217 @@ impl SegmentTrack {
     }
 }
 
+/// Segment durations for a trigonometric S-curve, upstream
+/// `SCurve::calculate_path`.
+///
+/// `tj` is the raised-cosine jerk rise (and fall) time. `t2` is the
+/// constant-jerk stretch that holds `Jm` after the rise. `t4` is the
+/// constant-acceleration stretch. `t6` is the mirror of `t2` on the way
+/// back down. `jm` is the jerk the profile actually uses — it can be
+/// smaller than the caller's limit when the path is too short to reach it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PathTimes {
+    /// Jerk the profile will use, m/s³.
+    pub jm: f32,
+    /// Raised-cosine jerk rise time, seconds.
+    pub tj: f32,
+    /// Constant-jerk hold after the rise, seconds.
+    pub t2: f32,
+    /// Constant-acceleration hold, seconds.
+    pub t4: f32,
+    /// Constant-jerk hold on the way down, seconds.
+    pub t6: f32,
+}
+
+/// C++ `MIN` / `MAX` macros: a strict `<` / `>` ternary, not IEEE minNum.
+///
+/// A NaN comparison is false, so `MIN(finite, NaN)` returns the NaN and
+/// `MIN(NaN, finite)` returns the finite value. `f32::min` does the other
+/// thing, and that would hide a cubic that overflowed.
+#[inline]
+fn cpp_min(a: f32, b: f32) -> f32 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+#[inline]
+fn cpp_max(a: f32, b: f32) -> f32 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+/// The `t4` closed form shared by solutions 2 and 7. Upstream writes this
+/// expression twice; both copies are the same polynomial.
+///
+/// Two roots of the distance-under-constant-accel quadratic, then the
+/// speed-limit cap, then a floor at zero so a numerical undershoot cannot
+/// schedule a negative hold.
+fn t4_for_speed_change(am: f32, jm: f32, v0: f32, vm: f32, tj: f32, length: f32) -> f32 {
+    let disc = (am * am * am * am) * (1.0 / 4.0)
+        + (jm * jm) * (v0 * v0)
+        + (am * am) * (jm * jm) * (tj * tj) * (1.0 / 4.0)
+        + am * (jm * jm) * length * 2.0
+        - (am * am) * jm * v0
+        + (am * am * am) * jm * tj * (1.0 / 2.0)
+        - am * (jm * jm) * v0 * tj;
+    let root = safe_sqrt(disc);
+    let t4_a = ((am * am) * (-3.0 / 2.0) + root - jm * v0 - am * jm * tj * (3.0 / 2.0)) / (am * jm);
+    let t4_b = ((am * am) * (-3.0 / 2.0) - root - jm * v0 - am * jm * tj * (3.0 / 2.0)) / (am * jm);
+    let t4_c = -(v0 - vm + am * tj + (am * am) / jm) / am;
+    cpp_max(cpp_min(t4_c, cpp_max(t4_a, t4_b)), 0.0)
+}
+
+/// Cardano reduction of the short-path cubic that solution 5 solves for `Am`.
+///
+/// The two cube-root terms are the same value added twice in the C++ — once
+/// as `p / u` and once as `u` — which is the `u + p/u` form of a depressed
+/// cubic whose roots multiply to `p`.
+fn am_for_short_path(am: f32, jm: f32, v0: f32, vm: f32, tj: f32, length: f32) -> f32 {
+    let span = safe_sqrt((v0 * -4.0 + vm * 4.0 + jm * (tj * tj)) / jm);
+    let from_vel = cpp_max(
+        jm * (tj + span) * (-1.0 / 2.0),
+        jm * (tj - span) * (-1.0 / 2.0),
+    );
+    let p = (jm * jm) * (tj * tj) * (1.0 / 9.0) - jm * v0 * (2.0 / 3.0);
+    let q_body = -(jm * jm) * length * (1.0 / 2.0) + (jm * jm * jm) * (tj * tj * tj) * (8.0 / 27.0)
+        - jm * tj * ((jm * jm) * (tj * tj) + jm * v0 * 2.0) * (1.0 / 3.0)
+        + (jm * jm) * v0 * tj;
+    let cbrt_arg = safe_sqrt(Real::powf(q_body, 2.0) - Real::powf(p, 3.0))
+        + (jm * jm) * length * (1.0 / 2.0)
+        - (jm * jm * jm) * (tj * tj * tj) * (8.0 / 27.0)
+        + jm * tj * ((jm * jm) * (tj * tj) + jm * v0 * 2.0) * (1.0 / 3.0)
+        - (jm * jm) * v0 * tj;
+    let u = Real::powf(cbrt_arg, 1.0 / 3.0);
+    let from_cubic = jm * tj * (-2.0 / 3.0) + p * 1.0 / u + u;
+    cpp_min(cpp_min(am, from_vel), from_cubic)
+}
+
+/// Segment times for a snap-limited path of length `length` starting at
+/// speed `v0`, upstream `SCurve::calculate_path`.
+///
+/// `sm` is snap, `jm` jerk, `am` acceleration, `vm` speed — every limit
+/// the vehicle is allowed. Returns zeros when the inputs cannot make a
+/// path: non-positive limits, a start already at or above `vm`, or a
+/// length too short to accelerate at all.
+///
+/// The four solutions (0 / 2 / 5 / 7) are which of `t2`, `t4`, `t6` are
+/// live. A short hop from rest never reaches the jerk or accel limits and
+/// is all raised-cosine (`t2 = t4 = t6 = 0`). A long cruise uses every
+/// segment (`t2`, `t4`, `t6` all positive).
+///
+/// Invalid outputs — NaN, infinity, or a negative duration — are zeroed
+/// the same way upstream's `INTERNAL_ERROR` path is, except `tj` is left
+/// alone: that is what the C++ does.
+#[must_use]
+pub fn calculate_path(
+    sm: f32,
+    mut jm: f32,
+    v0: f32,
+    mut am: f32,
+    vm: f32,
+    length: f32,
+) -> PathTimes {
+    if !is_positive(sm)
+        || !is_positive(jm)
+        || !is_positive(am)
+        || !is_positive(vm)
+        || !is_positive(length)
+    {
+        return PathTimes::default();
+    }
+    if v0 >= vm {
+        return PathTimes::default();
+    }
+
+    // C++ `Jm * M_PI / (2.0f * Sm)`: left-associative, `M_PI` is double.
+    let mut tj = jm * core::f32::consts::PI / (2.0 * sm);
+    let at = cpp_min(
+        cpp_min(am, (vm - v0) / (2.0 * tj)),
+        (length - 4.0 * v0 * tj) / (4.0 * sq(tj)),
+    );
+    if !is_positive(at) {
+        return PathTimes::default();
+    }
+
+    let (t2, t4, t6);
+    if at.abs() < jm * tj {
+        if is_zero(v0) {
+            // No closed form for a non-zero start on this branch, so from
+            // rest we shrink `tj` until snap, speed and accel all fit.
+            tj = cpp_min(
+                cpp_min(
+                    cpp_min(
+                        tj,
+                        Real::powf((length * core::f32::consts::PI) / (8.0 * sm), 1.0 / 4.0),
+                    ),
+                    Real::powf((vm * core::f32::consts::PI) / (4.0 * sm), 1.0 / 3.0),
+                ),
+                safe_sqrt((am * core::f32::consts::PI) / (2.0 * sm)),
+            );
+            // C++ `2.0f * Sm * tj / M_PI`.
+            jm = 2.0 * sm * tj / core::f32::consts::PI;
+            am = jm * tj;
+        } else {
+            // Speed change: keep `tj`, drop `Jm` so the small `At` fits.
+            am = at;
+            jm = am / tj;
+        }
+        if vm <= v0 + 2.0 * am * tj || length <= 4.0 * v0 * tj + 4.0 * am * sq(tj) {
+            // solution 0 — t6 t4 t2 = 0 0 0
+            t2 = 0.0;
+            t4 = 0.0;
+            t6 = 0.0;
+        } else {
+            // solution 2 — t6 t4 t2 = 0 1 0
+            t2 = 0.0;
+            t4 = t4_for_speed_change(am, jm, v0, vm, tj, length);
+            t6 = 0.0;
+        }
+    } else if vm < v0 + am * tj + (am * am) / jm
+        || length
+            < 1.0 / (jm * jm) * (am * am * am + am * jm * (v0 * 2.0 + am * tj * 2.0))
+                + v0 * tj * 2.0
+                + am * (tj * tj)
+    {
+        // solution 5 — t6 t4 t2 = 1 0 1
+        am = am_for_short_path(am, jm, v0, vm, tj, length);
+        t2 = am / jm - tj;
+        t4 = 0.0;
+        t6 = t2;
+    } else {
+        // solution 7 — t6 t4 t2 = 1 1 1
+        t2 = am / jm - tj;
+        t4 = t4_for_speed_change(am, jm, v0, vm, tj, length);
+        t6 = t2;
+    }
+
+    let out = PathTimes { jm, tj, t2, t4, t6 };
+    if !out.jm.is_finite()
+        || is_negative(out.jm)
+        || !out.tj.is_finite()
+        || is_negative(out.tj)
+        || !out.t2.is_finite()
+        || is_negative(out.t2)
+        || !out.t4.is_finite()
+        || is_negative(out.t4)
+        || !out.t6.is_finite()
+        || is_negative(out.t6)
+    {
+        // Upstream zeroes Jm/t2/t4/t6 and leaves tj as computed.
+        return PathTimes {
+            tj: out.tj,
+            ..PathTimes::default()
+        };
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -646,6 +857,90 @@ epsilon would accept a drift, which is the failure"
         while t < 3.0 {
             assert!(track.javp_at_time(t).pos >= 0.0);
             t += 0.01;
+        }
+    }
+    /// Non-positive limits cannot make a path. Upstream logs INTERNAL_ERROR
+    /// and returns zeros; we skip the log and return the same zeros.
+    #[test]
+    fn calculate_path_rejects_non_positive_limits() {
+        for (sm, jm, am, vm, length) in [
+            (0.0, 8.0, 5.0, 10.0, 50.0),
+            (100.0, 0.0, 5.0, 10.0, 50.0),
+            (100.0, 8.0, 0.0, 10.0, 50.0),
+            (100.0, 8.0, 5.0, 0.0, 50.0),
+            (100.0, 8.0, 5.0, 10.0, 0.0),
+            (-1.0, 8.0, 5.0, 10.0, 50.0),
+        ] {
+            assert_eq!(
+                calculate_path(sm, jm, 0.0, am, vm, length),
+                PathTimes::default()
+            );
+        }
+    }
+
+    /// Already at or above cruise: there is no speed change to schedule.
+    #[test]
+    fn calculate_path_is_empty_when_already_at_cruise() {
+        assert_eq!(
+            calculate_path(100.0, 8.0, 10.0, 5.0, 10.0, 50.0),
+            PathTimes::default()
+        );
+        assert_eq!(
+            calculate_path(100.0, 8.0, 15.0, 5.0, 10.0, 50.0),
+            PathTimes::default()
+        );
+    }
+
+    /// A long cruise from rest uses every segment: rise, hold jerk, hold
+    /// accel, and the mirror on the way down.
+    #[test]
+    fn a_long_cruise_from_rest_uses_every_segment() {
+        let p = calculate_path(100.0, 8.0, 0.0, 5.0, 15.0, 200.0);
+        assert!(is_positive(p.jm), "jm {}", p.jm);
+        assert!(is_positive(p.tj), "tj {}", p.tj);
+        assert!(is_positive(p.t2), "t2 {}", p.t2);
+        assert!(is_positive(p.t4), "t4 {}", p.t4);
+        assert!(is_positive(p.t6), "t6 {}", p.t6);
+        assert_eq!(p.t2, p.t6, "solution 7 mirrors t2 and t6");
+    }
+
+    /// A short hop from rest never reaches the jerk or accel limits, so
+    /// the constant-jerk and constant-accel holds stay at zero.
+    #[test]
+    fn a_short_hop_from_rest_is_all_raised_cosine() {
+        let p = calculate_path(100.0, 40.0, 0.0, 10.0, 20.0, 1.0);
+        assert!(is_positive(p.jm) || p == PathTimes::default());
+        if p != PathTimes::default() {
+            assert_eq!(p.t2, 0.0);
+            assert_eq!(p.t4, 0.0);
+            assert_eq!(p.t6, 0.0);
+            assert!(is_positive(p.tj));
+        }
+    }
+
+    /// Durations the solver returns are never negative. A negative hold
+    /// would walk the vehicle backwards along its own track.
+    #[test]
+    fn calculate_path_never_returns_a_negative_duration() {
+        for sm in [10.0, 100.0, 400.0] {
+            for jm in [1.0, 8.0, 40.0] {
+                for v0 in [0.0, 5.0] {
+                    for am in [1.0, 5.0] {
+                        for vm in [5.0, 15.0] {
+                            for length in [1.0, 50.0, 200.0] {
+                                let p = calculate_path(sm, jm, v0, am, vm, length);
+                                assert!(
+                                    p.jm >= 0.0
+                                        && p.tj >= 0.0
+                                        && p.t2 >= 0.0
+                                        && p.t4 >= 0.0
+                                        && p.t6 >= 0.0
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
