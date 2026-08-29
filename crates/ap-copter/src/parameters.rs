@@ -15,8 +15,9 @@
 //! Multi leftover). After `COMPASS_` the next leftover is the stock
 //! `INS` `GOBJECT`. After `INS` the next leftover is the
 //! `WP_` / `LOIT_` / `CIRCLE_` `GOBJECTPTR` group (`CIRCLE_` is
-//! `MODE_CIRCLE_ENABLED`). Later groups, G2, `load_parameters`
-//! conversions, and the rest of the enum stay later.
+//! `MODE_CIRCLE_ENABLED`). After `CIRCLE_` the next leftover is the
+//! stock `ATC_` `GOBJECT` (`GOBJECTVARPTR`). Later groups, G2,
+//! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -815,7 +816,7 @@ pub fn for_each_ins_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_attitude_control` — next leftover after `CIRCLE_`. Not this leftover.
+/// `Parameters::k_param_attitude_control` — next `GOBJECT`, prefix `ATC_`.
 pub const K_PARAM_ATTITUDE_CONTROL: u16 = 102;
 
 /// Stock `WP_` / `LOIT_` / `CIRCLE_` leftover catalog.
@@ -847,6 +848,35 @@ pub fn find_wp_loit_circle_gobject_var(name: &str) -> Option<&'static VarInfoSpe
 /// Walk the `WP_` leftover as `ParamInfo` rows.
 pub fn for_each_wp_loit_circle_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in WP_LOIT_CIRCLE_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_pos_control` — next leftover after `ATC_`. Not this leftover.
+pub const K_PARAM_POS_CONTROL: u16 = 103;
+
+/// Stock `ATC_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `CIRCLE_`. Upstream is
+/// `GOBJECTVARPTR`. Nested `AC_AttitudeControl` `var_info` is not this
+/// leftover. `PSC` stays later. Heli `IM_` is not a row of this leftover.
+pub const ATC_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("ATC_", K_PARAM_ATTITUDE_CONTROL)];
+
+/// First (only) row of the `ATC_` leftover.
+#[must_use]
+pub fn atc_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    ATC_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `ATC_` leftover by group prefix.
+#[must_use]
+pub fn find_atc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    ATC_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `ATC_` leftover as `ParamInfo` rows.
+pub fn for_each_atc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in ATC_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
