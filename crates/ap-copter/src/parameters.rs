@@ -55,7 +55,9 @@
 //! next leftover is the stock `PLND_` `GOBJECT`
 //! (`AC_PRECLAND_ENABLED`). After `PLND_` the
 //! next leftover is the stock `ADSB_` `GOBJECT`
-//! (`HAL_ADSB_ENABLED`). Later groups, G2,
+//! (`HAL_ADSB_ENABLED`). After `ADSB_` the
+//! next leftover is the stock `AVD_` `GOBJECT`
+//! (`AP_ADSB_AVOIDANCE_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1629,7 +1631,7 @@ pub fn for_each_plnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_avoidance_adsb` — next leftover after `ADSB_`. Not this leftover.
+/// `Parameters::k_param_avoidance_adsb` — next `GOBJECT`, prefix `AVD_`.
 pub const K_PARAM_AVOIDANCE_ADSB: u16 = 96;
 
 /// Stock `ADSB_` leftover catalog.
@@ -1657,6 +1659,38 @@ pub fn find_adsb_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `ADSB_` leftover as `ParamInfo` rows.
 pub fn for_each_adsb_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in ADSB_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_notify` — next leftover after `AVD_`. Not this leftover.
+pub const K_PARAM_NOTIFY: u16 = 73;
+
+/// Stock `AVD_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `ADSB_`. Upstream is
+/// `GOBJECT`. `AVD_` is `AP_ADSB_AVOIDANCE_ENABLED`. Nested `AP_Avoidance_Copter`
+/// `var_info` is not this leftover. `NTF_` stays later. Heli `H_` / `IM_`
+/// are not rows of this leftover.
+pub const AVD_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("AVD_", K_PARAM_AVOIDANCE_ADSB)];
+
+/// First (only) row of the `AVD_` leftover.
+#[must_use]
+pub fn avd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    AVD_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `AVD_` leftover by group prefix.
+#[must_use]
+pub fn find_avd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    AVD_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `AVD_` leftover as `ParamInfo` rows.
+pub fn for_each_avd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in AVD_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
