@@ -1,11 +1,16 @@
-//! `AC_Avoid` enable bits and the fence-aware climb-rate leftover.
+//! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, and the
+//! first horizontal leftover: `limit_velocity_NE` plus proximity-backed
+//! STOP.
 //!
-//! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity_z`)
-//! and `ArduCopter/mode.cpp` (`Mode::get_avoidance_adjusted_climbrate_ms`).
+//! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity_z`,
+//! `limit_velocity_NE`, `adjust_velocity_proximity` STOP arm) and
+//! `ArduCopter/mode.cpp` (`Mode::get_avoidance_adjusted_climbrate_ms`).
 
 use ap_fence::{TYPE_ALT_MAX, TYPE_ALT_MIN};
 use ap_math::control::sqrt_controller;
-use ap_math::scalar::{is_negative, is_positive, is_zero, safe_sqrt};
+use ap_math::scalar::{is_negative, is_positive, is_zero, safe_sqrt, sq};
+use ap_math::vector2::Vector2f;
+use ap_math::vector3::Vector3f;
 
 /// Avoidance disabled. Upstream `AC_AVOID_DISABLED`.
 pub const DISABLED: u8 = 0;
@@ -22,6 +27,17 @@ pub const AVOID_DEFAULT: u8 = STOP_AT_FENCE | USE_PROXIMITY_SENSOR;
 pub const ACCEL_CMSS_MAX: f32 = 100.0;
 /// Default `AVOID_BACKZ_SPD`, m/s. Upstream `AP_GROUPINFO` default.
 pub const BACKUP_SPEED_MAX_U_MS_DEFAULT: f32 = 0.75;
+/// Default `AVOID_BACKUP_SPD`, m/s. Upstream `AP_GROUPINFO` default.
+pub const BACKUP_SPEED_MAX_NE_MS_DEFAULT: f32 = 0.75;
+/// Default `AVOID_MARGIN`, m. Upstream `AP_GROUPINFO` default.
+pub const MARGIN_M_DEFAULT: f32 = 2.0;
+/// Default `AVOID_BACKUP_DZ`, m. Upstream `AP_GROUPINFO` default.
+pub const BACKUP_DEADZONE_M_DEFAULT: f32 = 0.10;
+
+/// Slide around the obstacle. Upstream `BEHAVIOR_SLIDE`. Copter default.
+pub const BEHAVIOR_SLIDE: u8 = 0;
+/// Stop before the obstacle. Upstream `BEHAVIOR_STOP`.
+pub const BEHAVIOR_STOP: u8 = 1;
 
 /// Injected leftovers of the fence / AHRS reads inside `adjust_velocity_z`.
 ///
@@ -76,13 +92,88 @@ pub struct AdjustVelocityZLeftover {
     pub limit_max_alt: bool,
 }
 
-/// `AC_Avoid` enable bitmask and the vertical leftover.
+/// Injected leftovers of `AP::proximity()` / AHRS inside
+/// `adjust_velocity_proximity`.
+///
+/// ADR-0004 forbids those singletons. [`ProximityStopContext::obstacle_neu_cm`]
+/// is the leftover of `get_obstacle`. [`ProximityStopContext::intersect_limit_neu_cm`]
+/// is the leftover of `closest_point_from_segment_to_obstacle` on the
+/// projected stopping-point segment. Both are body-frame NEU centimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProximityStopContext {
+    /// Leftover of `AP::proximity()` non-null.
+    pub proximity_present: bool,
+    /// Leftover of `_proximity_alt_enabled`.
+    pub proximity_alt_enabled: bool,
+    /// Leftover of `get_obstacle_count()`.
+    pub obstacle_count: u8,
+    /// Leftover of `_ahrs.earth_to_body2D` / `body_to_earth2D` yaw, radians.
+    pub yaw_rad: f32,
+    /// Leftover of `get_obstacle`. `None` is an invalid reading.
+    pub obstacle_neu_cm: Option<Vector3f>,
+    /// Leftover of `closest_point_from_segment_to_obstacle`. `None` means
+    /// the stopping-point segment does not intersect this obstacle.
+    pub intersect_limit_neu_cm: Option<Vector3f>,
+}
+
+impl Default for ProximityStopContext {
+    fn default() -> Self {
+        Self {
+            proximity_present: false,
+            proximity_alt_enabled: true,
+            obstacle_count: 0,
+            yaw_rad: 0.0,
+            obstacle_neu_cm: None,
+            intersect_limit_neu_cm: None,
+        }
+    }
+}
+
+/// Leftover of one `AC_Avoid::adjust_velocity_proximity` call (STOP / SLIDE).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProximityStopLeftover {
+    /// Desired NEU velocity after the proximity arm, earth frame, cm/s.
+    pub desired_vel_neu_cms: Vector3f,
+    /// Backup NEU velocity, earth frame, cm/s. Upstream `backup_vel_neu_cms`.
+    pub backup_vel_neu_cms: Vector3f,
+    /// Body-frame stopping point plus margin. Zero when desired vel is zero.
+    pub stopping_point_plus_margin_neu_cm: Vector3f,
+    /// STOP armed and zeroed the body-frame velocity (`limit_distance <= margin`).
+    pub stopped: bool,
+    /// `limit_velocity_NE` / `limit_velocity_NEU` changed the body-frame velocity.
+    pub limited: bool,
+}
+
+/// NE leftover of `AC_Avoid::adjust_velocity` with only the proximity arm.
+///
+/// Fence / beacon / `limit_accel_NEU_cm` / vertical mix stay later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdjustVelocityNeLeftover {
+    /// Desired NEU velocity after proximity + NE backup mix, cm/s.
+    pub desired_vel_neu_cms: Vector3f,
+    /// Horizontal backup after `AVOID_BACKUP_SPD` length limit, cm/s.
+    pub backup_vel_ne_cms: Vector2f,
+    /// Upstream `backing_up` for the NE axes.
+    pub backing_up: bool,
+}
+
+/// `AC_Avoid` enable bitmask, vertical leftover, and NE / proximity leftover.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Avoid {
     /// `AVOID_ENABLE` bitmask. Upstream `_enabled`.
     enabled: u8,
     /// `AVOID_BACKZ_SPD`, m/s. Upstream `_backup_speed_max_u_ms`.
     backup_speed_max_u_ms: f32,
+    /// `AVOID_BACKUP_SPD`, m/s. Upstream `_backup_speed_max_ne_ms`.
+    backup_speed_max_ne_ms: f32,
+    /// `AVOID_MARGIN`, m. Upstream `_margin_m`.
+    margin_m: f32,
+    /// `AVOID_BEHAVE`. Upstream `_behavior`.
+    behavior: u8,
+    /// Runtime proximity enable. Upstream `_proximity_enabled`.
+    proximity_enabled: bool,
+    /// `AVOID_BACKUP_DZ`, m. Upstream `_backup_deadzone_m`.
+    backup_deadzone_m: f32,
 }
 
 impl Default for Avoid {
@@ -92,21 +183,31 @@ impl Default for Avoid {
 }
 
 impl Avoid {
-    /// Param defaults: `AC_AVOID_DEFAULT` and `AVOID_BACKZ_SPD` 0.75.
+    /// Param defaults: `AC_AVOID_DEFAULT`, Copter SLIDE, and backup 0.75.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             enabled: AVOID_DEFAULT,
             backup_speed_max_u_ms: BACKUP_SPEED_MAX_U_MS_DEFAULT,
+            backup_speed_max_ne_ms: BACKUP_SPEED_MAX_NE_MS_DEFAULT,
+            margin_m: MARGIN_M_DEFAULT,
+            behavior: BEHAVIOR_SLIDE,
+            proximity_enabled: true,
+            backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
         }
     }
 
-    /// Seed from `AVOID_ENABLE` / `AVOID_BACKZ_SPD`.
+    /// Seed from `AVOID_ENABLE` / `AVOID_BACKZ_SPD`. Other params stay defaults.
     #[must_use]
     pub const fn from_params(enabled: u8, backup_speed_max_u_ms: f32) -> Self {
         Self {
             enabled,
             backup_speed_max_u_ms,
+            backup_speed_max_ne_ms: BACKUP_SPEED_MAX_NE_MS_DEFAULT,
+            margin_m: MARGIN_M_DEFAULT,
+            behavior: BEHAVIOR_SLIDE,
+            proximity_enabled: true,
+            backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
         }
     }
 
@@ -138,6 +239,61 @@ impl Avoid {
         self.backup_speed_max_u_ms = speed_ms;
     }
 
+    /// `AVOID_BACKUP_SPD`.
+    #[must_use]
+    pub const fn backup_speed_max_ne_ms(&self) -> f32 {
+        self.backup_speed_max_ne_ms
+    }
+
+    /// Set `AVOID_BACKUP_SPD`.
+    pub fn set_backup_speed_max_ne_ms(&mut self, speed_ms: f32) {
+        self.backup_speed_max_ne_ms = speed_ms;
+    }
+
+    /// `AVOID_MARGIN`.
+    #[must_use]
+    pub const fn margin_m(&self) -> f32 {
+        self.margin_m
+    }
+
+    /// Set `AVOID_MARGIN`.
+    pub fn set_margin_m(&mut self, margin_m: f32) {
+        self.margin_m = margin_m;
+    }
+
+    /// `AVOID_BEHAVE`.
+    #[must_use]
+    pub const fn behavior(&self) -> u8 {
+        self.behavior
+    }
+
+    /// Set `AVOID_BEHAVE`.
+    pub fn set_behavior(&mut self, behavior: u8) {
+        self.behavior = behavior;
+    }
+
+    /// `proximity_avoidance_enable`.
+    pub fn proximity_avoidance_enable(&mut self, on_off: bool) {
+        self.proximity_enabled = on_off;
+    }
+
+    /// `_proximity_enabled && (_enabled & AC_AVOID_USE_PROXIMITY_SENSOR)`.
+    #[must_use]
+    pub const fn proximity_avoidance_enabled(&self) -> bool {
+        self.proximity_enabled && (self.enabled & USE_PROXIMITY_SENSOR) > 0
+    }
+
+    /// `AVOID_BACKUP_DZ`.
+    #[must_use]
+    pub const fn backup_deadzone_m(&self) -> f32 {
+        self.backup_deadzone_m
+    }
+
+    /// Set `AVOID_BACKUP_DZ`.
+    pub fn set_backup_deadzone_m(&mut self, deadzone_m: f32) {
+        self.backup_deadzone_m = deadzone_m;
+    }
+
     /// Speed whose stopping distance is exactly `distance`.
     ///
     /// Upstream `AC_Avoid::get_max_speed`. `kP == 0` is the linear
@@ -149,6 +305,327 @@ impl Avoid {
             safe_sqrt(2.0 * distance * accel)
         } else {
             sqrt_controller(distance, k_p, accel, dt)
+        }
+    }
+
+    /// Distance required to stop, given current speed.
+    ///
+    /// Upstream `AC_Avoid::get_stopping_distance` (copied from
+    /// `AC_PosControl`). Units follow the caller — Copter uses cm.
+    #[must_use]
+    pub fn get_stopping_distance(k_p: f32, accel_cmss: f32, speed_cms: f32) -> f32 {
+        if accel_cmss <= 0.0 || is_zero(speed_cms) {
+            return 0.0;
+        }
+        if k_p <= 0.0 {
+            return 0.5 * sq(speed_cms) / accel_cmss;
+        }
+        if speed_cms < accel_cmss / k_p {
+            speed_cms / k_p
+        } else {
+            accel_cmss / (2.0 * k_p * k_p) + (speed_cms * speed_cms) / (2.0 * accel_cmss)
+        }
+    }
+
+    /// Limit the NE component along `limit_direction_ne`.
+    ///
+    /// Upstream `AC_Avoid::limit_velocity_NE`. `limit_direction_ne` is a
+    /// unit vector. Callers that already measured a distance pass that
+    /// distance as `limit_distance_cm`.
+    #[must_use]
+    pub fn limit_velocity_ne(
+        k_p: f32,
+        accel_cmss: f32,
+        desired_vel_ne_cms: Vector2f,
+        limit_direction_ne: Vector2f,
+        limit_distance_cm: f32,
+        dt: f32,
+    ) -> Vector2f {
+        let max_speed = Self::get_max_speed(k_p, accel_cmss, limit_distance_cm, dt);
+        let speed = desired_vel_ne_cms.dot(limit_direction_ne);
+        if speed > max_speed {
+            desired_vel_ne_cms + limit_direction_ne * (max_speed - speed)
+        } else {
+            desired_vel_ne_cms
+        }
+    }
+
+    /// Limit NEU velocity toward an obstacle, leaving a `margin`.
+    ///
+    /// Upstream `AC_Avoid::limit_velocity_NEU`. Unit-agnostic: vel,
+    /// obstacle, margin, and accel must share a base unit.
+    #[must_use]
+    pub fn limit_velocity_neu(
+        k_p: f32,
+        accel_cmss: f32,
+        desired_vel_neu_cms: Vector3f,
+        obstacle_vector_neu: Vector3f,
+        margin: f32,
+        k_p_z: f32,
+        accel_z_cmss: f32,
+        dt: f32,
+    ) -> Vector3f {
+        if desired_vel_neu_cms.is_zero() {
+            return desired_vel_neu_cms;
+        }
+        let Some(vel_dir) = desired_vel_neu_cms.normalized() else {
+            return desired_vel_neu_cms;
+        };
+        let margin_vector_neu = vel_dir * margin;
+        let mut out = desired_vel_neu_cms;
+        let limit_direction_ne = obstacle_vector_neu.xy();
+        if !limit_direction_ne.is_zero() {
+            let distance_from_fence_xy =
+                (limit_direction_ne.length() - margin_vector_neu.xy().length()).max(0.0);
+            if let Some(dir) = limit_direction_ne.normalized() {
+                let velocity_ne = Self::limit_velocity_ne(
+                    k_p,
+                    accel_cmss,
+                    Vector2f::new(out.x, out.y),
+                    dir,
+                    distance_from_fence_xy,
+                    dt,
+                );
+                out.x = velocity_ne.x;
+                out.y = velocity_ne.y;
+            }
+        }
+
+        if is_zero(out.z) || is_zero(obstacle_vector_neu.z) {
+            return out;
+        }
+        if is_positive(out.z) != is_positive(obstacle_vector_neu.z) {
+            return out;
+        }
+
+        let velocity_original_u = out.z;
+        let speed_u = out.z.abs();
+        let dist_u = (obstacle_vector_neu.z.abs() - margin_vector_neu.z.abs()).max(0.0);
+        out.z = if is_zero(dist_u) {
+            0.0
+        } else {
+            Self::get_max_speed(k_p_z, accel_z_cmss, dist_u, dt).min(speed_u)
+        };
+        if is_negative(velocity_original_u) {
+            out.z = -out.z;
+        }
+        out
+    }
+
+    /// Proximity-backed STOP / SLIDE leftover.
+    ///
+    /// Upstream `AC_Avoid::adjust_velocity_proximity` for one injected
+    /// obstacle. Fence / beacon / OA planner stay later. AHRS 2-D yaw
+    /// rotation is the leftover of `earth_to_body2D` / `body_to_earth2D`.
+    #[must_use]
+    pub fn adjust_velocity_proximity(
+        &self,
+        k_p: f32,
+        accel_cmss: f32,
+        desired_vel_neu_cms: Vector3f,
+        k_p_z: f32,
+        accel_z_cmss: f32,
+        dt: f32,
+        ctx: ProximityStopContext,
+    ) -> ProximityStopLeftover {
+        let identity = ProximityStopLeftover {
+            desired_vel_neu_cms,
+            backup_vel_neu_cms: Vector3f::zero(),
+            stopping_point_plus_margin_neu_cm: Vector3f::zero(),
+            stopped: false,
+            limited: false,
+        };
+        if !self.proximity_avoidance_enabled() || !ctx.proximity_alt_enabled {
+            return identity;
+        }
+        if !ctx.proximity_present || ctx.obstacle_count == 0 {
+            return identity;
+        }
+
+        let desired_vel_body_ne = earth_to_body2d(
+            Vector2f::new(desired_vel_neu_cms.x, desired_vel_neu_cms.y),
+            ctx.yaw_rad,
+        );
+        let mut safe_vel_neu = Vector3f::new(
+            desired_vel_body_ne.x,
+            desired_vel_body_ne.y,
+            desired_vel_neu_cms.z,
+        );
+        let safe_vel_orig = safe_vel_neu;
+        let margin_cm = (self.margin_m * 100.0).max(0.0);
+
+        let mut stopping_point = Vector3f::zero();
+        if !desired_vel_neu_cms.is_zero() {
+            let speed_cms = safe_vel_neu.length();
+            if !is_zero(speed_cms) {
+                let stop = Self::get_stopping_distance(k_p, accel_cmss, speed_cms);
+                stopping_point = safe_vel_neu * ((2.0 + margin_cm + stop) / speed_cms);
+            }
+        }
+
+        let Some(vector_to_obstacle) = ctx.obstacle_neu_cm else {
+            return identity;
+        };
+        let dist_to_boundary_cm = vector_to_obstacle.length();
+        if is_zero(dist_to_boundary_cm) {
+            return identity;
+        }
+
+        let mut backup_body_ne = Vector2f::zero();
+        let mut backup_u = 0.0_f32;
+        if is_negative(dist_to_boundary_cm - margin_cm) {
+            let breach_dist_cm = margin_cm - dist_to_boundary_cm;
+            let deadzone_cm = self.backup_deadzone_m.max(0.0) * 100.0;
+            if breach_dist_cm > deadzone_cm {
+                if let Some(n) = vector_to_obstacle.normalized() {
+                    let margin_vector = n * breach_dist_cm;
+                    backup_body_ne = backup_velocity_ne(
+                        k_p,
+                        accel_cmss,
+                        margin_vector.xy().length(),
+                        vector_to_obstacle.xy(),
+                        dt,
+                    );
+                    backup_u = backup_velocity_u(k_p_z, accel_z_cmss, margin_vector.z, dt);
+                }
+            }
+        }
+
+        let mut stopped = false;
+        let mut limited = false;
+        if !desired_vel_neu_cms.is_zero() {
+            match self.behavior {
+                BEHAVIOR_STOP => {
+                    if let Some(limit_direction) = ctx.intersect_limit_neu_cm {
+                        let limit_distance_cm = limit_direction.length();
+                        if is_zero(limit_distance_cm) {
+                            return identity;
+                        }
+                        if limit_distance_cm <= margin_cm {
+                            safe_vel_neu = Vector3f::zero();
+                            stopped = true;
+                        } else {
+                            let limited_vel = Self::limit_velocity_neu(
+                                k_p,
+                                accel_cmss,
+                                safe_vel_neu,
+                                limit_direction,
+                                margin_cm,
+                                k_p_z,
+                                accel_z_cmss,
+                                dt,
+                            );
+                            limited = limited_vel != safe_vel_neu;
+                            safe_vel_neu = limited_vel;
+                        }
+                    }
+                }
+                _ => {
+                    let limit_distance_cm = vector_to_obstacle.length();
+                    if !is_zero(limit_distance_cm) {
+                        let limited_vel = Self::limit_velocity_neu(
+                            k_p,
+                            accel_cmss,
+                            safe_vel_neu,
+                            vector_to_obstacle,
+                            margin_cm,
+                            k_p_z,
+                            accel_z_cmss,
+                            dt,
+                        );
+                        limited = limited_vel != safe_vel_neu;
+                        safe_vel_neu = limited_vel;
+                    }
+                }
+            }
+        }
+
+        if safe_vel_neu == safe_vel_orig && backup_body_ne.is_zero() && is_zero(backup_u) {
+            return ProximityStopLeftover {
+                desired_vel_neu_cms,
+                backup_vel_neu_cms: Vector3f::zero(),
+                stopping_point_plus_margin_neu_cm: stopping_point,
+                stopped: false,
+                limited: false,
+            };
+        }
+
+        let safe_vel_ne =
+            body_to_earth2d(Vector2f::new(safe_vel_neu.x, safe_vel_neu.y), ctx.yaw_rad);
+        let backup_ne = body_to_earth2d(backup_body_ne, ctx.yaw_rad);
+        ProximityStopLeftover {
+            desired_vel_neu_cms: Vector3f::new(safe_vel_ne.x, safe_vel_ne.y, safe_vel_neu.z),
+            backup_vel_neu_cms: Vector3f::new(backup_ne.x, backup_ne.y, backup_u),
+            stopping_point_plus_margin_neu_cm: stopping_point,
+            stopped,
+            limited,
+        }
+    }
+
+    /// NE leftover of `AC_Avoid::adjust_velocity` (proximity arm only).
+    ///
+    /// Disabled is identity. Fence / beacon / `adjust_velocity_z` /
+    /// `limit_accel_NEU_cm` stay later leftovers.
+    #[must_use]
+    pub fn adjust_velocity_ne(
+        &self,
+        desired_vel_neu_cms: Vector3f,
+        k_p: f32,
+        accel_cmss: f32,
+        k_p_z: f32,
+        accel_z_cmss: f32,
+        dt: f32,
+        ctx: ProximityStopContext,
+    ) -> AdjustVelocityNeLeftover {
+        if self.enabled == DISABLED {
+            return AdjustVelocityNeLeftover {
+                desired_vel_neu_cms,
+                backup_vel_ne_cms: Vector2f::zero(),
+                backing_up: false,
+            };
+        }
+
+        let accel_limited_cmss = accel_cmss.min(ACCEL_CMSS_MAX);
+        let prox = self.adjust_velocity_proximity(
+            k_p,
+            accel_limited_cmss,
+            desired_vel_neu_cms,
+            k_p_z,
+            accel_z_cmss,
+            dt,
+            ctx,
+        );
+
+        let mut desired = prox.desired_vel_neu_cms;
+        let mut backup = prox.backup_vel_neu_cms;
+        let mut backing_up = false;
+        let backup_speed_max_ne_cms = self.backup_speed_max_ne_ms * 100.0;
+        if !backup.xy().is_zero() && is_positive(backup_speed_max_ne_cms) {
+            backing_up = true;
+            let mut xy = backup.xy();
+            xy.limit_length(backup_speed_max_ne_cms);
+            backup.x = xy.x;
+            backup.y = xy.y;
+            if !is_zero(backup.x) {
+                desired.x = if is_positive(backup.x) {
+                    desired.x.max(backup.x)
+                } else {
+                    desired.x.min(backup.x)
+                };
+            }
+            if !is_zero(backup.y) {
+                desired.y = if is_positive(backup.y) {
+                    desired.y.max(backup.y)
+                } else {
+                    desired.y.min(backup.y)
+                };
+            }
+        }
+
+        AdjustVelocityNeLeftover {
+            desired_vel_neu_cms: desired,
+            backup_vel_ne_cms: backup.xy(),
+            backing_up,
         }
     }
 
@@ -258,6 +735,51 @@ fn apply_backup(climb_rate_cms: f32, backup_speed_cms: f32) -> f32 {
     } else {
         climb_rate_cms.max(backup_speed_cms)
     }
+}
+
+/// Leftover of `ahrs.earth_to_body2D`.
+fn earth_to_body2d(ef: Vector2f, yaw_rad: f32) -> Vector2f {
+    let mut v = ef;
+    v.rotate(-yaw_rad);
+    v
+}
+
+/// Leftover of `ahrs.body_to_earth2D`.
+fn body_to_earth2d(bf: Vector2f, yaw_rad: f32) -> Vector2f {
+    let mut v = bf;
+    v.rotate(yaw_rad);
+    v
+}
+
+/// Horizontal arm of `calc_backup_velocity_2D` for one obstacle.
+fn backup_velocity_ne(
+    k_p: f32,
+    accel_cmss: f32,
+    back_distance_cm: f32,
+    limit_direction: Vector2f,
+    dt: f32,
+) -> Vector2f {
+    if limit_direction.is_zero() {
+        return Vector2f::zero();
+    }
+    let Some(dir) = limit_direction.normalized() else {
+        return Vector2f::zero();
+    };
+    let back_speed_cms = Avoid::get_max_speed(k_p, 0.4 * accel_cmss, back_distance_cm.abs(), dt);
+    dir * (-back_speed_cms)
+}
+
+/// Vertical arm of `calc_backup_velocity_3D` for one obstacle.
+fn backup_velocity_u(k_p_z: f32, accel_z_cmss: f32, back_distance_u_cm: f32, dt: f32) -> f32 {
+    if is_zero(back_distance_u_cm) {
+        return 0.0;
+    }
+    let mut back_speed_z_cms =
+        Avoid::get_max_speed(k_p_z, 0.4 * accel_z_cmss, back_distance_u_cm.abs(), dt);
+    if is_positive(back_distance_u_cm) {
+        back_speed_z_cms = -back_speed_z_cms;
+    }
+    back_speed_z_cms
 }
 
 /// Copter `Mode::get_avoidance_adjusted_climbrate_ms` leftover.
