@@ -1,14 +1,14 @@
-//! AC_Fence type bits, enable leftover, and circle / alt-max checks.
+//! AC_Fence type bits, enable leftover, and circle / alt-max / alt-min checks.
 //!
 //! Tracked as **COP-025**. Polygon EEPROM / `AC_PolyFence_loader` is not
 //! in this slice.
 
 use ap_fence::{
-    Action, CheckAltMaxContext, CheckCircleContext, Fence, MinAltState, ALT_MAX_BACKUP_DISTANCE_M,
-    ALT_MAX_DEFAULT_M, ARMING_FENCES, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M,
-    CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE,
-    FENCE_TYPE_DEFAULT_ROVER, MARGIN_DEFAULT_M, TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE,
-    TYPE_POLYGON,
+    Action, CheckAltMaxContext, CheckAltMinContext, CheckCircleContext, Fence, MinAltState,
+    ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M, ALT_MIN_DEFAULT_M,
+    ARMING_FENCES, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M, CIRCLE_RADIUS_DEFAULT_M,
+    FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE, FENCE_TYPE_DEFAULT_ROVER,
+    MARGIN_DEFAULT_M, TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
 };
 use ap_math::location::AltFrame;
 use ap_math::scalar::is_equal;
@@ -21,6 +21,13 @@ fn enable_circle_and_alt(fence: &mut Fence) {
     fence.set_configured_fences(TYPE_ALT_MAX | TYPE_CIRCLE);
     let leftover = fence.enable(true, TYPE_ALT_MAX | TYPE_CIRCLE, true);
     assert_eq!(leftover.changed_mask, TYPE_ALT_MAX | TYPE_CIRCLE);
+}
+
+fn enable_alt_min(fence: &mut Fence) {
+    fence.set_configured_fences(TYPE_ALT_MIN);
+    fence.set_alt_min_m(20.0);
+    let leftover = fence.enable(true, TYPE_ALT_MIN, true);
+    assert_eq!(leftover.changed_mask, TYPE_ALT_MIN);
 }
 
 #[test]
@@ -399,4 +406,157 @@ fn get_margin_ne_uses_xy_only_when_positive() {
     almost(fence.get_margin_ne_m(), 5.0);
     fence.set_margin_ne_m(0.0);
     almost(fence.get_margin_ne_m(), MARGIN_DEFAULT_M);
+}
+
+#[test]
+fn alt_min_above_floor_is_not_a_breach() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    let leftover = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(50.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 1_001,
+    });
+    assert!(leftover.enabled);
+    assert!(leftover.need_alt_in_frame);
+    assert!(!leftover.need_home_alt);
+    assert!(!leftover.newly_breached);
+    almost(leftover.breach_distance_m, 20.0 - 50.0);
+    almost(leftover.safe_relhome_alt_min_m, 20.0 - MARGIN_DEFAULT_M);
+    almost(fence.get_safe_alt_min_m(), 20.0 + MARGIN_DEFAULT_M);
+}
+
+#[test]
+fn alt_min_below_floor_records_a_new_breach_and_backup() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    let leftover = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(10.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 1_001,
+    });
+    assert!(leftover.newly_breached);
+    assert!(leftover.recorded_breach);
+    assert!(leftover.need_gcs_fence_status);
+    almost(leftover.breach_distance_m, 10.0);
+    almost(leftover.backup_alt_m, 10.0 - ALT_MIN_BACKUP_DISTANCE_M);
+    assert_eq!(fence.get_breaches(), TYPE_ALT_MIN);
+    assert_eq!(fence.get_breach_count(), 1);
+    assert_eq!(fence.get_breach_time(), 1_001);
+}
+
+#[test]
+fn alt_min_unavailable_is_a_fresh_breach_without_record() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    let leftover = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: None,
+        home_alt_amsl_m: 0.0,
+        now_ms: 1_001,
+    });
+    assert!(leftover.newly_breached);
+    assert!(leftover.alt_unavailable);
+    assert!(!leftover.recorded_breach);
+    assert!(!leftover.need_gcs_fence_status);
+    assert_eq!(fence.get_breaches(), 0);
+    assert_eq!(fence.get_breach_count(), 0);
+}
+
+#[test]
+fn alt_min_absolute_frame_is_a_home_alt_leftover() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    fence.set_alt_min_type(AltFrame::Absolute);
+    let leftover = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(50.0),
+        home_alt_amsl_m: 10.0,
+        now_ms: 1_001,
+    });
+    assert!(leftover.need_home_alt);
+    almost(leftover.safe_relhome_alt_min_m, 20.0 - 10.0 - MARGIN_DEFAULT_M);
+}
+
+#[test]
+fn alt_min_already_breached_does_not_re_fire_until_backup() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    let first = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(10.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 1_001,
+    });
+    assert!(first.newly_breached);
+    almost(first.backup_alt_m, -10.0);
+
+    let still = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(5.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 2_000,
+    });
+    assert!(!still.newly_breached);
+    assert!(!still.recorded_breach);
+    assert_eq!(fence.get_breach_count(), 1);
+
+    let backup = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(-10.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 3_000,
+    });
+    assert!(backup.newly_breached);
+    assert!(backup.recorded_breach);
+    assert!(!backup.need_gcs_fence_status);
+    almost(backup.backup_alt_m, -10.0 - ALT_MIN_BACKUP_DISTANCE_M);
+    assert_eq!(fence.get_breach_count(), 2);
+}
+
+#[test]
+fn alt_min_margin_and_clear_on_climb() {
+    let mut fence = Fence::new();
+    enable_alt_min(&mut fence);
+    assert!(
+        fence
+            .check_fence_alt_min(CheckAltMinContext {
+                alt_u_m: Some(10.0),
+                home_alt_amsl_m: 0.0,
+                now_ms: 1_001,
+            })
+            .newly_breached
+    );
+
+    let margin = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(21.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 2_000,
+    });
+    assert!(!margin.newly_breached);
+    assert!(margin.cleared_breach);
+    assert!(margin.margin_breached);
+    almost(margin.backup_alt_m, 0.0);
+    assert_eq!(fence.get_breaches() & TYPE_ALT_MIN, 0);
+    assert_eq!(fence.get_margin_breaches() & TYPE_ALT_MIN, TYPE_ALT_MIN);
+
+    let clear = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(50.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 3_000,
+    });
+    assert!(!clear.margin_breached);
+    assert_eq!(fence.get_margin_breaches() & TYPE_ALT_MIN, 0);
+}
+
+#[test]
+fn alt_min_disabled_does_not_clear_or_record() {
+    let mut fence = Fence::new();
+    fence.set_alt_min_m(20.0);
+    let leftover = fence.check_fence_alt_min(CheckAltMinContext {
+        alt_u_m: Some(10.0),
+        home_alt_amsl_m: 0.0,
+        now_ms: 1_001,
+    });
+    assert!(!leftover.enabled);
+    assert!(!leftover.newly_breached);
+    assert!(!leftover.need_alt_in_frame);
+    assert_eq!(fence.get_breaches(), 0);
+    almost(fence.alt_min_m(), 20.0);
+    almost(ALT_MIN_DEFAULT_M, -10.0);
 }

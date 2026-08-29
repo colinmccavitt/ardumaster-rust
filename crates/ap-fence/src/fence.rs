@@ -1,4 +1,4 @@
-//! `AC_Fence` type bits, enable leftover, and circle / alt-max checks.
+//! `AC_Fence` type bits, enable leftover, and circle / alt-max / alt-min checks.
 
 use ap_math::location::AltFrame;
 use ap_math::scalar::{is_positive, is_zero};
@@ -35,6 +35,8 @@ pub const CIRCLE_RADIUS_DEFAULT_M: f32 = 300.0;
 pub const MARGIN_DEFAULT_M: f32 = 2.0;
 /// After an alt-max breach, rebuild the backup this many metres higher.
 pub const ALT_MAX_BACKUP_DISTANCE_M: f32 = 20.0;
+/// After an alt-min breach, rebuild the backup this many metres lower.
+pub const ALT_MIN_BACKUP_DISTANCE_M: f32 = 20.0;
 /// Copter / Sub circle backup step. Upstream `AC_FENCE_CIRCLE_RADIUS_BACKUP_DISTANCE`.
 pub const CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M: f32 = 20.0;
 /// Plane circle backup step.
@@ -242,6 +244,58 @@ pub struct CheckAltMaxLeftover {
     pub cleared_breach: bool,
 }
 
+/// Inputs [`Fence::check_fence_alt_min`] reads from AHRS / location.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckAltMinContext {
+    /// `get_alt_in_alt_min_frame_m`. `None` is a fresh breach without
+    /// `record_breach`.
+    pub alt_u_m: Option<f32>,
+    /// Leftover of `ahrs.get_home().get_alt_m(ABSOLUTE)` when the min
+    /// frame is [`AltFrame::Absolute`].
+    pub home_alt_amsl_m: f32,
+    /// `AP_HAL::millis()` leftover of `record_breach`.
+    pub now_ms: u32,
+}
+
+impl Default for CheckAltMinContext {
+    fn default() -> Self {
+        Self {
+            alt_u_m: Some(0.0),
+            home_alt_amsl_m: 0.0,
+            now_ms: 1_001,
+        }
+    }
+}
+
+/// Alt-min leftover, upstream `AC_Fence::check_fence_alt_min`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckAltMinLeftover {
+    /// Fresh breach (or backup-fence re-breach), or alt unavailable.
+    pub newly_breached: bool,
+    /// Whether the type bit was in [`Fence::get_enabled_fences`].
+    pub enabled: bool,
+    /// Altitude frame was unavailable. Returns true without `record_breach`.
+    pub alt_unavailable: bool,
+    /// Leftover of `get_alt_in_alt_min_frame_m`.
+    pub need_alt_in_frame: bool,
+    /// Leftover of home AMSL when [`Fence::alt_min_type`] is Absolute.
+    pub need_home_alt: bool,
+    /// `_alt_min_breach_distance_m` after the call.
+    pub breach_distance_m: f32,
+    /// `_safe_relhome_alt_min_m` after the call.
+    pub safe_relhome_alt_min_m: f32,
+    /// `_alt_min_backup_m` after the call.
+    pub backup_alt_m: f32,
+    /// Leftover of `record_breach`.
+    pub recorded_breach: bool,
+    /// Leftover of `GCS_SEND_MESSAGE(MSG_FENCE_STATUS)`.
+    pub need_gcs_fence_status: bool,
+    /// Margin bit set this call.
+    pub margin_breached: bool,
+    /// `clear_breach` ran because the vehicle climbed back above the floor.
+    pub cleared_breach: bool,
+}
+
 /// Geofence state. Upstream `AC_Fence` without the poly loader.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fence {
@@ -251,18 +305,23 @@ pub struct Fence {
     poly_fence_count: u8,
     action: Action,
     alt_max_m: f32,
+    alt_min_m: f32,
     circle_radius_m: f32,
     margin_m: f32,
     margin_ne_m: f32,
     alt_max_type: AltFrame,
+    alt_min_type: AltFrame,
     circle_backup_step_m: f32,
     alt_max_backup_m: f32,
+    alt_min_backup_m: f32,
     circle_radius_backup_m: f32,
     alt_max_breach_distance_m: f32,
+    alt_min_breach_distance_m: f32,
     circle_breach_distance_m: f32,
     circle_breach_direction: Vector2f,
     home_distance_m: f32,
     safe_relhome_alt_max_m: f32,
+    safe_relhome_alt_min_m: f32,
     breached_fences: u8,
     breached_fence_margins: u8,
     breach_time_ms: u32,
@@ -306,18 +365,23 @@ impl Fence {
             poly_fence_count: 0,
             action: Action::default_param(),
             alt_max_m: ALT_MAX_DEFAULT_M,
+            alt_min_m: ALT_MIN_DEFAULT_M,
             circle_radius_m: CIRCLE_RADIUS_DEFAULT_M,
             margin_m: MARGIN_DEFAULT_M,
             margin_ne_m: 0.0,
             alt_max_type: AltFrame::AboveHome,
+            alt_min_type: AltFrame::AboveHome,
             circle_backup_step_m: CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M,
             alt_max_backup_m: 0.0,
+            alt_min_backup_m: 0.0,
             circle_radius_backup_m: 0.0,
             alt_max_breach_distance_m: 0.0,
+            alt_min_breach_distance_m: 0.0,
             circle_breach_distance_m: 0.0,
             circle_breach_direction: Vector2f::zero(),
             home_distance_m: 0.0,
             safe_relhome_alt_max_m: 0.0,
+            safe_relhome_alt_min_m: 0.0,
             breached_fences: 0,
             breached_fence_margins: 0,
             breach_time_ms: 0,
@@ -442,6 +506,34 @@ impl Fence {
     /// Set `FENCE_ALT_MAX_TP`.
     pub fn set_alt_max_type(&mut self, frame: AltFrame) {
         self.alt_max_type = frame;
+    }
+
+    /// `get_safe_alt_min_m` — `_alt_min_m + _margin_m`.
+    #[must_use]
+    pub fn get_safe_alt_min_m(&self) -> f32 {
+        self.alt_min_m + self.margin_m
+    }
+
+    /// `_alt_min_m`.
+    #[must_use]
+    pub const fn alt_min_m(&self) -> f32 {
+        self.alt_min_m
+    }
+
+    /// Set `FENCE_ALT_MIN`.
+    pub fn set_alt_min_m(&mut self, alt_m: f32) {
+        self.alt_min_m = alt_m;
+    }
+
+    /// `FENCE_ALT_MIN_TP`.
+    #[must_use]
+    pub const fn alt_min_type(&self) -> AltFrame {
+        self.alt_min_type
+    }
+
+    /// Set `FENCE_ALT_MIN_TP`.
+    pub fn set_alt_min_type(&mut self, frame: AltFrame) {
+        self.alt_min_type = frame;
     }
 
     /// `get_margin_ne_m` — `FENCE_MARGIN_XY` when positive, else `FENCE_MARGIN`.
@@ -764,6 +856,118 @@ impl Fence {
             recorded_breach: false,
             need_gcs_fence_status: false,
             margin_breached: (self.breached_fence_margins & TYPE_ALT_MAX) != 0,
+            cleared_breach,
+        }
+    }
+
+    /// `AC_Fence::check_fence_alt_min` leftover.
+    pub fn check_fence_alt_min(&mut self, ctx: CheckAltMinContext) -> CheckAltMinLeftover {
+        if self.get_enabled_fences() & TYPE_ALT_MIN == 0 {
+            return CheckAltMinLeftover {
+                newly_breached: false,
+                enabled: false,
+                alt_unavailable: false,
+                need_alt_in_frame: false,
+                need_home_alt: false,
+                breach_distance_m: self.alt_min_breach_distance_m,
+                safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+                backup_alt_m: self.alt_min_backup_m,
+                recorded_breach: false,
+                need_gcs_fence_status: false,
+                margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
+                cleared_breach: false,
+            };
+        }
+
+        let Some(curr_alt_u_m) = ctx.alt_u_m else {
+            return CheckAltMinLeftover {
+                newly_breached: true,
+                enabled: true,
+                alt_unavailable: true,
+                need_alt_in_frame: true,
+                need_home_alt: false,
+                breach_distance_m: self.alt_min_breach_distance_m,
+                safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+                backup_alt_m: self.alt_min_backup_m,
+                recorded_breach: false,
+                need_gcs_fence_status: false,
+                margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
+                cleared_breach: false,
+            };
+        };
+
+        self.alt_min_breach_distance_m = self.alt_min_m - curr_alt_u_m;
+
+        let need_home_alt = self.alt_min_type == AltFrame::Absolute;
+        if need_home_alt {
+            self.safe_relhome_alt_min_m = self.alt_min_m - ctx.home_alt_amsl_m - self.margin_m;
+        } else {
+            self.safe_relhome_alt_min_m = self.alt_min_m - self.margin_m;
+        }
+
+        if curr_alt_u_m <= self.alt_min_m {
+            let already = (self.breached_fences & TYPE_ALT_MIN) != 0;
+            let backup_hit =
+                !is_zero(self.alt_min_backup_m) && curr_alt_u_m <= self.alt_min_backup_m;
+            if !already || backup_hit {
+                let gcs = self.record_breach(TYPE_ALT_MIN, ctx.now_ms);
+                self.alt_min_backup_m = curr_alt_u_m - ALT_MIN_BACKUP_DISTANCE_M;
+                return CheckAltMinLeftover {
+                    newly_breached: true,
+                    enabled: true,
+                    alt_unavailable: false,
+                    need_alt_in_frame: true,
+                    need_home_alt,
+                    breach_distance_m: self.alt_min_breach_distance_m,
+                    safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+                    backup_alt_m: self.alt_min_backup_m,
+                    recorded_breach: true,
+                    need_gcs_fence_status: gcs,
+                    margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
+                    cleared_breach: false,
+                };
+            }
+            return CheckAltMinLeftover {
+                newly_breached: false,
+                enabled: true,
+                alt_unavailable: false,
+                need_alt_in_frame: true,
+                need_home_alt,
+                breach_distance_m: self.alt_min_breach_distance_m,
+                safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+                backup_alt_m: self.alt_min_backup_m,
+                recorded_breach: false,
+                need_gcs_fence_status: false,
+                margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
+                cleared_breach: false,
+            };
+        }
+
+        if curr_alt_u_m <= self.get_safe_alt_min_m() {
+            self.record_margin_breach(TYPE_ALT_MIN, ctx.now_ms);
+        } else {
+            self.clear_margin_breach(TYPE_ALT_MIN);
+        }
+
+        let mut cleared_breach = false;
+        if self.breached_fences & TYPE_ALT_MIN != 0 {
+            self.clear_breach(TYPE_ALT_MIN);
+            self.alt_min_backup_m = 0.0;
+            cleared_breach = true;
+        }
+
+        CheckAltMinLeftover {
+            newly_breached: false,
+            enabled: true,
+            alt_unavailable: false,
+            need_alt_in_frame: true,
+            need_home_alt,
+            breach_distance_m: self.alt_min_breach_distance_m,
+            safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+            backup_alt_m: self.alt_min_backup_m,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
             cleared_breach,
         }
     }
