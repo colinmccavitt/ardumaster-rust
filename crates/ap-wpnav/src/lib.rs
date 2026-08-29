@@ -38,9 +38,12 @@
 //!
 //! Horizontal loiter is [`loiter`] (**COP-011**):
 //! [`Loiter::init_target_m`] / [`Loiter::init_target`] then
-//! [`Loiter::update`].
+//! [`Loiter::update`], plus
+//! [`Loiter::set_pilot_desired_acceleration_rad`].
 //! Horizontal circle is [`circle`] (**COP-011**):
-//! [`Circle::init`] / [`Circle::init_ned_m`] then [`Circle::update_ms`].
+//! [`Circle::init`] / [`Circle::init_ned_m`] then [`Circle::update_ms`],
+//! plus [`Circle::set_center`] and
+//! [`Circle::get_closest_point_on_circle_ned_m`].
 //!
 //! # What this crate does not own
 //!
@@ -60,14 +63,15 @@ pub mod loiter;
 pub mod wpnav;
 
 pub use circle::{
-    Circle, CircleOption, InitCircleContext, InitCircleLeftover, UpdateCircleContext,
-    UpdateCircleLeftover, CIRCLE_ACTIVE_TIMEOUT_MS, CIRCLE_ANGULAR_ACCEL_MIN,
-    CIRCLE_DEFAULT_OPTIONS, CIRCLE_RADIUS_MAX_M, CIRCLE_RADIUS_M_DEFAULT, CIRCLE_RATE_DEFAULT,
+    Circle, CircleOption, ClosestPointOnCircle, InitCircleContext, InitCircleLeftover,
+    SetCenterLeftover, UpdateCircleContext, UpdateCircleLeftover, CIRCLE_ACTIVE_TIMEOUT_MS,
+    CIRCLE_ANGULAR_ACCEL_MIN, CIRCLE_DEFAULT_OPTIONS, CIRCLE_RADIUS_MAX_M, CIRCLE_RADIUS_M_DEFAULT,
+    CIRCLE_RATE_DEFAULT,
 };
 pub use loiter::{
-    InitTargetContext, InitTargetLeftover, Loiter, LoiterOption, UpdateLoiterContext,
-    UpdateLoiterLeftover, LOITER_ACCEL_MAX_DEFAULT_MSS, LOITER_ACTIVE_TIMEOUT_MS,
-    LOITER_BRAKE_ACCEL_DEFAULT_MSS, LOITER_BRAKE_JERK_DEFAULT_MSSS,
+    AngleGains, InitTargetContext, InitTargetLeftover, Loiter, LoiterOption, PilotAccelContext,
+    ShapingConfig, UpdateLoiterContext, UpdateLoiterLeftover, LOITER_ACCEL_MAX_DEFAULT_MSS,
+    LOITER_ACTIVE_TIMEOUT_MS, LOITER_BRAKE_ACCEL_DEFAULT_MSS, LOITER_BRAKE_JERK_DEFAULT_MSSS,
     LOITER_BRAKE_START_DELAY_DEFAULT_S, LOITER_DEFAULT_OPTIONS, LOITER_POS_CORRECTION_MAX_M,
     LOITER_SPEED_DEFAULT_MS, LOITER_SPEED_MIN_MS, LOITER_VEL_CORRECTION_MAX_MS,
 };

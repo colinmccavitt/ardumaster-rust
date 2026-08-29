@@ -261,6 +261,7 @@ version = "0.1.0"
 name = "ap-wpnav"
 version = "0.1.0"
 dependencies = [
+ "ap-control",
  "ap-math",
  "libm",
 ]

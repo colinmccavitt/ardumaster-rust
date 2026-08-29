@@ -19,17 +19,27 @@
 //! stay on COP-009; this records that they must run. Terrain-database
 //! height is a leftover (`UpdateCircleContext::terrain_u_m`).
 //!
+//! Remaining leftovers on this slice: [`Circle::set_center`] (Location to
+//! NED, with the pos-estimate fallback) and
+//! [`Circle::get_closest_point_on_circle_ned_m`].
+//!
 //! # What this module does not own
 //!
-//! `set_center(Location)`, closest-point-on-circle, and parameter
-//! conversion stay on a later COP-011 slice. [`crate::loiter`] already
-//! owns init / update; its remaining leftover is pilot-accel shaping.
+//! `convert_parameters` is AP_Param glue and stays on the param crate.
+//! PosControl passthroughs (`get_roll_rad`, `get_pitch_rad`,
+//! `get_thrust_vector`, distance / bearing) stay on COP-009. Terrain
+//! height is already a leftover on [`UpdateCircleContext::terrain_u_m`].
+//! [`crate::loiter`] owns AC_Loiter including pilot-accel shaping.
 
-use ap_math::location::get_bearing_rad;
+use ap_math::location::{get_bearing_rad, Location};
 use ap_math::scalar::{
-    constrain_value, is_equal, is_positive, is_zero, radians, safe_sqrt, wrap_2pi, wrap_pi, Real,
+    constrain_value, is_equal, is_positive, is_zero, rad_to_cd, radians, safe_sqrt, wrap_2pi,
+    wrap_pi, Real,
 };
+use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
+
+use crate::wpnav::{GetVectorNedContext, WpNav};
 
 /// Default circle radius, metres. Upstream `AC_CIRCLE_RADIUS_M_DEFAULT`.
 pub const CIRCLE_RADIUS_M_DEFAULT: f32 = 10.0;
@@ -160,6 +170,26 @@ pub struct UpdateCircleLeftover {
     pub climb_rate_ms: f32,
 }
 
+/// Leftover of one `set_center(Location)`. The LOGGER_WRITE_ERROR call
+/// stays on the vehicle logger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetCenterLeftover {
+    /// Conversion failed: `FAILED_CIRCLE_INIT` would be logged.
+    pub need_nav_error_log: bool,
+    /// Conversion failed: center was seated on the PosControl estimate.
+    pub used_pos_estimate_fallback: bool,
+}
+
+/// Closest point on the circle to a stopping point. Upstream
+/// `get_closest_point_on_circle_NED_m`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosestPointOnCircle {
+    /// Edge (or center, when radius is zero) in NED metres.
+    pub point_ned_m: Vector3f,
+    /// 3D distance from the stopping point to that edge, metres.
+    pub dist_to_edge_m: f32,
+}
+
 /// Circle-mode controller. Upstream `AC_Circle`.
 ///
 /// Construction matches the C++ constructor plus BSS-zeroed internals:
@@ -278,6 +308,122 @@ impl Circle {
     pub fn set_center_ned_m(&mut self, center_ned_m: Vector3f, is_terrain_alt: bool) {
         self.center_ned_m = center_ned_m;
         self.is_terrain_alt = is_terrain_alt;
+    }
+
+    /// Location wrapper. Upstream `set_center`.
+    ///
+    /// Horizontal / altitude conversion is leftover of
+    /// [`WpNav::get_vector_ned_m`]. Failure seats the PosControl estimate
+    /// and records the nav-error log leftover.
+    pub fn set_center(
+        &mut self,
+        center: Location,
+        vec_ctx: GetVectorNedContext,
+        pos_estimate_ned_m: Vector3f,
+    ) -> SetCenterLeftover {
+        match WpNav::get_vector_ned_m(center, vec_ctx) {
+            Some((ned, is_terrain_alt)) => {
+                self.set_center_ned_m(ned, is_terrain_alt);
+                SetCenterLeftover {
+                    need_nav_error_log: false,
+                    used_pos_estimate_fallback: false,
+                }
+            }
+            None => {
+                self.set_center_ned_m(pos_estimate_ned_m, false);
+                SetCenterLeftover {
+                    need_nav_error_log: true,
+                    used_pos_estimate_fallback: true,
+                }
+            }
+        }
+    }
+
+    /// Circle center in NEU centimetres. Upstream `get_center_NEU_cm`.
+    pub fn get_center_neu_cm(&self) -> Vector3f {
+        Vector3f::new(
+            self.center_ned_m.x,
+            self.center_ned_m.y,
+            -self.center_ned_m.z,
+        ) * 100.0
+    }
+
+    /// Radius in centimetres. Upstream `get_radius_cm`.
+    pub fn get_radius_cm(&self) -> f32 {
+        self.get_radius_m() * 100.0
+    }
+
+    /// Centimetre wrapper. Upstream `set_radius_cm`.
+    pub fn set_radius_cm(&mut self, radius_cm: f32) {
+        self.set_radius_m(radius_cm * 0.01);
+    }
+
+    /// Desired yaw, centidegrees. Upstream `get_yaw_cd`.
+    pub fn get_yaw_cd(&self) -> f32 {
+        rad_to_cd(self.yaw_rad)
+    }
+
+    /// Closest point on the circle to a stopping point. Upstream
+    /// `get_closest_point_on_circle_NED_m`.
+    pub fn get_closest_point_on_circle_ned_m(
+        &self,
+        stopping_point_ned_m: Vector3f,
+        cos_yaw: f32,
+        sin_yaw: f32,
+    ) -> ClosestPointOnCircle {
+        let vec_from_center_ned_m = stopping_point_ned_m - self.center_ned_m;
+        if !is_positive(self.radius_m) {
+            return ClosestPointOnCircle {
+                point_ned_m: self.center_ned_m,
+                dist_to_edge_m: 0.0,
+            };
+        }
+
+        if vec_from_center_ned_m.length_squared() < 0.5 * 0.5 {
+            let point_ned_m = Vector3f::new(
+                self.center_ned_m.x - self.radius_m * cos_yaw,
+                self.center_ned_m.y - self.radius_m * sin_yaw,
+                self.center_ned_m.z,
+            );
+            return ClosestPointOnCircle {
+                point_ned_m,
+                dist_to_edge_m: (stopping_point_ned_m - point_ned_m).length(),
+            };
+        }
+
+        let dist_to_center_m_xy =
+            Vector2f::new(vec_from_center_ned_m.x, vec_from_center_ned_m.y).length();
+        let point_ned_m = Vector3f::new(
+            self.center_ned_m.x + vec_from_center_ned_m.x / dist_to_center_m_xy * self.radius_m,
+            self.center_ned_m.y + vec_from_center_ned_m.y / dist_to_center_m_xy * self.radius_m,
+            self.center_ned_m.z,
+        );
+        ClosestPointOnCircle {
+            point_ned_m,
+            dist_to_edge_m: (stopping_point_ned_m - point_ned_m).length(),
+        }
+    }
+
+    /// Centimetre wrapper. Upstream `get_closest_point_on_circle_NEU_cm`.
+    pub fn get_closest_point_on_circle_neu_cm(
+        &self,
+        stopping_point_neu_cm: Vector3f,
+        cos_yaw: f32,
+        sin_yaw: f32,
+    ) -> (Vector3f, f32) {
+        let stopping_point_ned_m = Vector3f::new(
+            stopping_point_neu_cm.x * 0.01,
+            stopping_point_neu_cm.y * 0.01,
+            -stopping_point_neu_cm.z * 0.01,
+        );
+        let closest =
+            self.get_closest_point_on_circle_ned_m(stopping_point_ned_m, cos_yaw, sin_yaw);
+        let result_neu_cm = Vector3f::new(
+            closest.point_ned_m.x,
+            closest.point_ned_m.y,
+            -closest.point_ned_m.z,
+        ) * 100.0;
+        (result_neu_cm, closest.dist_to_edge_m * 100.0)
     }
 
     /// Upstream `center_is_terrain_alt`.

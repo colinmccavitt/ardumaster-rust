@@ -17,17 +17,31 @@
 //! `NE_update_controller` stay on COP-009; this records that they
 //! must run. Fence/obstacle velocity adjust stays on COP-026.
 //!
+//! Pilot-accel shaping is [`Loiter::set_pilot_desired_acceleration_rad`]:
+//! leftover of `lean_angles_rad_to_accel_NED_mss`, the brake-timer reset,
+//! `command_model_rate_predictor`, then the coordinated-turn feed-forward.
+//! The COP-009 helpers stay as free functions; this owns the loiter state
+//! they write.
+//!
 //! # What this module does not own
 //!
-//! Pilot-accel shaping (`set_pilot_desired_acceleration_rad`) is a later
-//! COP-011 slice. [`crate::circle`] owns AC_Circle init / update.
-//! [`crate::wpnav`] is COP-010 and is not rewritten here.
+//! `convert_parameters` is AP_Param glue and stays on the param crate.
+//! PosControl passthroughs (`get_stopping_point_NE_m`, `get_roll_rad`,
+//! `get_pitch_rad`, `get_thrust_vector`, distance / bearing) stay on
+//! COP-009. [`crate::circle`] owns AC_Circle. [`crate::wpnav`] is COP-010.
 
+use ap_control::attitude_controller::{command_model_rate_predictor, Vector2Pair};
+use ap_control::pos_control_ne::lean_angles_to_accel_ned;
 use ap_math::control::{angle_rad_to_accel_mss, sqrt_controller};
 use ap_math::scalar::{
-    constrain_value, is_negative, is_positive, is_zero, radians, Real, GRAVITY_MSS,
+    cd_to_rad, constrain_value, is_negative, is_positive, is_zero, rad_to_cd, radians, wrap_pi,
+    Real, GRAVITY_MSS,
 };
 use ap_math::vector2::Vector2f;
+use ap_math::vector3::Vector3f;
+
+pub use ap_control::attitude_controller::ShapingConfig;
+pub use ap_control::attitude_error::AngleGains;
 
 /// Default horizontal loiter speed, m/s. Upstream `LOITER_SPEED_DEFAULT_MS`
 /// (Copter / QuadPlane, not trad heli).
@@ -171,6 +185,62 @@ pub struct UpdateLoiterLeftover {
     pub accel_desired_ne_mss: Vector2f,
 }
 
+/// Caller-supplied leftovers `set_pilot_desired_acceleration_rad` reads
+/// from AttitudeControl, PosControl, AHRS, and HAL. ADR-0004 forbids
+/// those singletons.
+#[derive(Debug, Clone, Copy)]
+pub struct PilotAccelContext {
+    /// `_attitude_control.get_dt_s()`.
+    pub dt_s: f32,
+    /// `_ahrs.yaw`.
+    pub yaw_rad: f32,
+    /// `AP_HAL::millis` written to `_brake_timer_ms` when sticks are off
+    /// centre.
+    pub now_ms: u32,
+    /// `_pos_control.get_vel_desired_NED_ms()` for coordinated-turn FF.
+    pub vel_desired_ned_ms: Vector3f,
+    /// `_attitude_control.get_attitude_target_ang_vel().z`.
+    pub target_ang_vel_z_rads: f32,
+    /// Attitude command-model tunables. COP-009.
+    pub shaping: ShapingConfig,
+    /// Angle P / accel limits for the no-FF predictor branch. COP-009.
+    pub angle_gains: AngleGains,
+}
+
+impl Default for PilotAccelContext {
+    fn default() -> Self {
+        Self {
+            dt_s: 0.0025,
+            yaw_rad: 0.0,
+            now_ms: 0,
+            vel_desired_ned_ms: Vector3f::zero(),
+            target_ang_vel_z_rads: 0.0,
+            shaping: ShapingConfig {
+                input_tc: 0.15,
+                rate_y_tc: 0.15,
+                rate_bf_ff_enabled: false,
+                ang_vel_roll_max_degs: 0.0,
+                ang_vel_pitch_max_degs: 0.0,
+                ang_vel_yaw_max_degs: 0.0,
+                accel_roll_max_radss: 0.0,
+                accel_pitch_max_radss: 0.0,
+                accel_yaw_max_radss: 0.0,
+                rate_rp_tc: 0.15,
+                slew_yaw_max_rads: 0.0,
+            },
+            angle_gains: AngleGains {
+                angle_p_roll: 4.5,
+                angle_p_pitch: 4.5,
+                angle_p_yaw: 4.5,
+                accel_roll_max_radss: 0.0,
+                accel_pitch_max_radss: 0.0,
+                accel_yaw_max_radss: 0.0,
+                use_sqrt_controller: false,
+            },
+        }
+    }
+}
+
 /// Horizontal loiter controller. Upstream `AC_Loiter`.
 ///
 /// Construction matches the C++ constructor plus BSS-zeroed internals:
@@ -284,6 +354,22 @@ impl Loiter {
         (self.options & (option as i8)) != 0
     }
 
+    /// Write `LOITER_OPTIONS` (tests and a later param slice).
+    pub fn set_options(&mut self, options: i8) {
+        self.options = options;
+    }
+
+    /// Timestamp leftover of the last off-centre pilot accel, milliseconds.
+    pub fn brake_timer_ms(&self) -> u32 {
+        self.brake_timer_ms
+    }
+
+    /// Pilot-requested NE acceleration. Upstream
+    /// `get_pilot_desired_acceleration_NE_mss`.
+    pub fn get_pilot_desired_acceleration_ne_mss(&self) -> Vector2f {
+        self.desired_accel_ne_mss
+    }
+
     /// Maximum pilot-commanded lean angle, radians. Upstream
     /// `get_angle_max_rad`.
     pub fn get_angle_max_rad(
@@ -296,6 +382,16 @@ impl Loiter {
         } else {
             radians(self.angle_max_deg).min(pos_lean_angle_max_rad)
         }
+    }
+
+    /// Maximum pilot-commanded lean angle, centidegrees. Upstream
+    /// `get_angle_max_cd`.
+    pub fn get_angle_max_cd(
+        &self,
+        attitude_lean_angle_max_rad: f32,
+        pos_lean_angle_max_rad: f32,
+    ) -> f32 {
+        rad_to_cd(self.get_angle_max_rad(attitude_lean_angle_max_rad, pos_lean_angle_max_rad))
     }
 
     /// Floor horizontal loiter speed. Upstream `set_speed_max_NE_ms`.
@@ -328,6 +424,76 @@ impl Loiter {
             need_ne_relax_velocity_controller: false,
             pos_desired_ne_m: Some(position_ne_m),
         }
+    }
+
+    /// Pilot desired acceleration from Euler angles in radians. Upstream
+    /// `set_pilot_desired_acceleration_rad`.
+    pub fn set_pilot_desired_acceleration_rad(
+        &mut self,
+        euler_roll_angle_rad: f32,
+        euler_pitch_angle_rad: f32,
+        ctx: PilotAccelContext,
+    ) {
+        let desired_euler_rad =
+            Vector3f::new(euler_roll_angle_rad, euler_pitch_angle_rad, ctx.yaw_rad);
+        self.desired_accel_ne_mss = lean_angles_to_accel_ned(desired_euler_rad).xy();
+
+        if !self.desired_accel_ne_mss.is_zero() {
+            self.brake_timer_ms = ctx.now_ms;
+        }
+
+        let angle_error_euler_rad = Vector2f::new(
+            wrap_pi(euler_roll_angle_rad - self.predicted_euler_angle_rad.x),
+            wrap_pi(euler_pitch_angle_rad - self.predicted_euler_angle_rad.y),
+        );
+        let predicted = command_model_rate_predictor(
+            angle_error_euler_rad,
+            Vector2Pair {
+                ang_vel: self.predicted_euler_rate,
+                ang_accel: self.predicted_euler_accel,
+            },
+            &ctx.shaping,
+            &ctx.angle_gains,
+            ctx.dt_s,
+        );
+        self.predicted_euler_rate = predicted.ang_vel;
+        self.predicted_euler_accel = predicted.ang_accel;
+        self.predicted_euler_angle_rad += self.predicted_euler_rate * ctx.dt_s;
+
+        let predicted_euler_rad = Vector3f::new(
+            self.predicted_euler_angle_rad.x,
+            self.predicted_euler_angle_rad.y,
+            ctx.yaw_rad,
+        );
+        self.predicted_accel_ne_mss = lean_angles_to_accel_ned(predicted_euler_rad).xy();
+
+        if self.loiter_option_is_set(LoiterOption::CoordinatedTurnEnabled) {
+            let turn_accel_ne_mss = Vector2f::new(
+                -ctx.vel_desired_ned_ms.y * ctx.target_ang_vel_z_rads,
+                ctx.vel_desired_ned_ms.x * ctx.target_ang_vel_z_rads,
+            );
+            self.desired_accel_ne_mss += turn_accel_ne_mss;
+            self.predicted_accel_ne_mss += turn_accel_ne_mss;
+        }
+    }
+
+    /// Centidegree wrapper. Upstream `set_pilot_desired_acceleration_cd`.
+    pub fn set_pilot_desired_acceleration_cd(
+        &mut self,
+        euler_roll_angle_cd: f32,
+        euler_pitch_angle_cd: f32,
+        ctx: PilotAccelContext,
+    ) {
+        self.set_pilot_desired_acceleration_rad(
+            cd_to_rad(euler_roll_angle_cd),
+            cd_to_rad(euler_pitch_angle_cd),
+            ctx,
+        );
+    }
+
+    /// Centre the sticks. Upstream `clear_pilot_desired_acceleration`.
+    pub fn clear_pilot_desired_acceleration(&mut self, ctx: PilotAccelContext) {
+        self.set_pilot_desired_acceleration_rad(0.0, 0.0, ctx);
     }
 
     /// Re-init from the current PosControl leftover. Upstream `init_target`.
