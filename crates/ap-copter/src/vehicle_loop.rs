@@ -21,7 +21,9 @@
 //! GCS helper. [`update_rangefinder_terrain_offset`] is the next FAST_TASK
 //! leftover after the land/crash detectors. [`auto_disarm_check`],
 //! [`standby_update`], and [`lost_vehicle_check`] are the next always-on
-//! scheduled leftovers from `motors.cpp` / `standby.cpp`. Later
+//! scheduled leftovers from `motors.cpp` / `standby.cpp`. [`takeoff_check`]
+//! is the next always-on scheduled leftover after those. [`update_auto_armed`]
+//! is the `throttle_loop` callee leftover from `system.cpp`. Later
 //! `Copter.cpp` / `system.cpp` leftovers stay later.
 
 use ap_hal::time::Clock;
@@ -167,6 +169,24 @@ pub const LOST_VEHICLE_CHECK_MAX_TIME_MICROS: u16 = 50;
 
 /// `lost_vehicle_check` scheduler priority (lower is higher priority).
 pub const LOST_VEHICLE_CHECK_PRIORITY: u8 = 99;
+
+/// `takeoff_check` scheduler rate (`SCHED_TASK(..., 50, ...)`).
+pub const TAKEOFF_CHECK_RATE_HZ: f32 = 50.0;
+
+/// `takeoff_check` expected budget, microseconds.
+pub const TAKEOFF_CHECK_MAX_TIME_MICROS: u16 = 50;
+
+/// `takeoff_check` scheduler priority (lower is higher priority).
+pub const TAKEOFF_CHECK_PRIORITY: u8 = 91;
+
+/// CPU-overload GCS warning period while spool-up stays blocked.
+pub const TAKEOFF_CHECK_WARNING_MS: u32 = 2_000;
+
+/// `avg_load > 95.0f` fails the takeoff CPU check.
+pub const TAKEOFF_CHECK_AVG_LOAD_MAX: f32 = 95.0;
+
+/// `peak_load > 99.5f` fails the takeoff CPU check.
+pub const TAKEOFF_CHECK_PEAK_LOAD_MAX: f32 = 99.5;
 
 /// `AUTO_DISARMING_DELAY` — `DISARM_DELAY` default, seconds.
 pub const AUTO_DISARMING_DELAY: i16 = 10;
@@ -570,12 +590,11 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 /// `update_land_and_crash_detectors`, and `update_rangefinder_terrain_offset`,
 /// the logging / 3 Hz / 1 Hz leftovers, simple-mode, `update_altitude`,
 /// `get_wp_distance_m`, `run_nav_updates`, `auto_disarm_check`,
-/// `standby_update`, and `lost_vehicle_check`.
+/// `standby_update`, `lost_vehicle_check`, `takeoff_check`, and
+/// `update_auto_armed`.
 pub const REMAINING: &[&str] = &[
-    "Copter::takeoff_check",
     "Copter::init_ardupilot",
     "Copter::startup_INS_ground",
-    "Copter::update_auto_armed",
     "Copter::allocate_motors",
 ];
 
@@ -790,10 +809,9 @@ pub fn read_inertia(current_loc: Location, inputs: &ReadInertiaInputs) -> ReadIn
 /// What `Copter::throttle_loop` asked later leftovers to do.
 ///
 /// Stock multicopter (`FRAME_CONFIG != HELI_FRAME`): the two heli calls
-/// stay compiled out. The four always-on callees (`update_throttle_mix`,
-/// `update_auto_armed`, `update_ground_effect_detector`,
-/// `update_ekf_terrain_height_stable`) remain later leftovers — this
-/// leftover is the call order, not their bodies.
+/// stay compiled out. [`update_auto_armed`] is published below; mix,
+/// ground-effect, and EKF terrain remain later leftovers — this leftover
+/// is the call order, not those remaining bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThrottleLoopLeftover {
     /// Always: `update_throttle_mix()`.
@@ -816,6 +834,8 @@ pub struct ThrottleLoopLeftover {
 /// auto-armed ahead of mix would flip the 50 Hz order those two leftovers
 /// see. The heli pair is compiled out of this leftover, not skipped at
 /// runtime — a runtime `if heli` would be a different function.
+/// [`update_auto_armed`] still runs after mix; this leftover only
+/// records that the call happens.
 #[must_use]
 pub const fn throttle_loop() -> ThrottleLoopLeftover {
     ThrottleLoopLeftover {
@@ -2321,6 +2341,185 @@ pub const fn lost_vehicle_check(inputs: LostVehicleCheckInputs) -> LostVehicleCh
     }
 }
 
+/// Inputs to `Copter::takeoff_check`.
+///
+/// `motors_takeoff_check` stays a later leftover — this leftover takes
+/// its bool. System-load numbers come from `hal.util->get_system_load`;
+/// when that call fails the leftover treats load as adequate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TakeoffCheckInputs {
+    /// `AP_HAL::millis()`.
+    pub now_ms: u32,
+    /// `motors->get_spoolup_block()`.
+    pub spoolup_block: bool,
+    /// `ap.land_complete`.
+    pub land_complete: bool,
+    /// `motors_takeoff_check(g2.takeoff_rpm_min, g2.takeoff_rpm_max)`.
+    pub motor_check_passed: bool,
+    /// `hal.util->get_system_load(...)` returned true.
+    pub system_load_available: bool,
+    /// Average CPU load percent from `get_system_load`.
+    pub avg_load: f32,
+    /// Peak CPU load percent from `get_system_load`.
+    pub peak_load: f32,
+    /// `takeoff_check_warning_ms` before this call.
+    pub warning_ms: u32,
+}
+
+/// Which `takeoff_check` branch ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeoffCheckPath {
+    /// Spool-up is not blocked — reset the warning timers and return.
+    Unblocked,
+    /// Blocked but airborne — clear the block immediately.
+    NotLanded,
+    /// Motor + CPU checks passed — clear the block.
+    ChecksPassed,
+    /// Still blocked; maybe warn about CPU load.
+    Blocked,
+}
+
+/// What `Copter::takeoff_check` asked later leftovers to do.
+///
+/// Compiled in only for `HAL_WITH_ESC_TELEM && FRAME_CONFIG != HELI_FRAME`.
+/// A port that ran this on a heli or without ESC telem would block a
+/// frame that never compiled the check. An unblocked spool resets both
+/// warning timers so the next arm starts a fresh 2 s window. Airborne
+/// clears the block without waiting for RPM / CPU — a port that kept
+/// the block in the air would refuse a go-around. CPU warn uses
+/// `now - warning_ms > 2000` (strict `>`), and only fires for load,
+/// not for a failed motor check (`motors_takeoff_check` owns that).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TakeoffCheckLeftover {
+    /// Which branch ran.
+    pub path: TakeoffCheckPath,
+    /// `motors->get_spoolup_block()` after this call.
+    pub spoolup_block: bool,
+    /// `takeoff_check_warning_ms` / `takeoff_check_state.warning_ms`.
+    pub warning_ms: u32,
+    /// `gcs().send_text(..., "Takeoff blocked: CPU overload")`.
+    pub gcs_cpu_overload: bool,
+}
+
+/// `avg_load > 95` or `peak_load > 99.5` after a successful load read.
+#[must_use]
+pub const fn takeoff_check_load_adequate(
+    system_load_available: bool,
+    avg_load: f32,
+    peak_load: f32,
+) -> bool {
+    if !system_load_available {
+        return true;
+    }
+    avg_load <= TAKEOFF_CHECK_AVG_LOAD_MAX && peak_load <= TAKEOFF_CHECK_PEAK_LOAD_MAX
+}
+
+/// `Copter::takeoff_check`.
+#[must_use]
+pub const fn takeoff_check(inputs: TakeoffCheckInputs) -> TakeoffCheckLeftover {
+    if !inputs.spoolup_block {
+        return TakeoffCheckLeftover {
+            path: TakeoffCheckPath::Unblocked,
+            spoolup_block: false,
+            warning_ms: inputs.now_ms,
+            gcs_cpu_overload: false,
+        };
+    }
+    if !inputs.land_complete {
+        return TakeoffCheckLeftover {
+            path: TakeoffCheckPath::NotLanded,
+            spoolup_block: false,
+            warning_ms: inputs.warning_ms,
+            gcs_cpu_overload: false,
+        };
+    }
+    let load_adequate = takeoff_check_load_adequate(
+        inputs.system_load_available,
+        inputs.avg_load,
+        inputs.peak_load,
+    );
+    if inputs.motor_check_passed && load_adequate {
+        return TakeoffCheckLeftover {
+            path: TakeoffCheckPath::ChecksPassed,
+            spoolup_block: false,
+            warning_ms: inputs.warning_ms,
+            gcs_cpu_overload: false,
+        };
+    }
+    let elapsed = inputs.now_ms.wrapping_sub(inputs.warning_ms);
+    let warn = elapsed > TAKEOFF_CHECK_WARNING_MS;
+    TakeoffCheckLeftover {
+        path: TakeoffCheckPath::Blocked,
+        spoolup_block: true,
+        warning_ms: if warn {
+            inputs.now_ms
+        } else {
+            inputs.warning_ms
+        },
+        gcs_cpu_overload: warn && !load_adequate,
+    }
+}
+
+/// Inputs to `Copter::update_auto_armed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateAutoArmedInputs {
+    /// `ap.auto_armed` before this call.
+    pub auto_armed: bool,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `flightmode->has_manual_throttle()`.
+    pub has_manual_throttle: bool,
+    /// `ap.throttle_zero`.
+    pub throttle_zero: bool,
+    /// `rc().has_valid_input()`.
+    pub has_valid_input: bool,
+    /// `ap.using_interlock`.
+    pub using_interlock: bool,
+    /// `motors->get_spool_state() == THROTTLE_UNLIMITED`.
+    pub spool_throttle_unlimited: bool,
+    /// `flightmode->mode_number() == Mode::Number::THROW`.
+    pub throw_mode: bool,
+}
+
+/// What `Copter::update_auto_armed` asked later leftovers to do.
+///
+/// Disarmed motors clear the flag and return immediately — a port that
+/// also ran the throttle-zero check would still clear, but would skip
+/// the early return the leftover uses. Manual-throttle + throttle-zero
+/// only clears when RC is valid; a radio-loss tick must not drop
+/// `auto_armed`. The interlock arm path requires `THROTTLE_UNLIMITED`,
+/// not merely armed + throttle — spooling-up stays not-auto-armed.
+/// THROW only auto-arms on the *non*-interlock path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateAutoArmedLeftover {
+    /// `ap.auto_armed` after this call.
+    pub auto_armed: bool,
+}
+
+/// `Copter::update_auto_armed`.
+#[must_use]
+pub const fn update_auto_armed(inputs: UpdateAutoArmedInputs) -> UpdateAutoArmedLeftover {
+    if inputs.auto_armed {
+        if !inputs.motors_armed {
+            return UpdateAutoArmedLeftover { auto_armed: false };
+        }
+        if inputs.has_manual_throttle && inputs.throttle_zero && inputs.has_valid_input {
+            return UpdateAutoArmedLeftover { auto_armed: false };
+        }
+        return UpdateAutoArmedLeftover { auto_armed: true };
+    }
+    if inputs.motors_armed && inputs.using_interlock {
+        if !inputs.throttle_zero && inputs.spool_throttle_unlimited {
+            return UpdateAutoArmedLeftover { auto_armed: true };
+        }
+    } else if inputs.motors_armed && !inputs.using_interlock {
+        if !inputs.throttle_zero || inputs.throw_mode {
+            return UpdateAutoArmedLeftover { auto_armed: true };
+        }
+    }
+    UpdateAutoArmedLeftover { auto_armed: false }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -2368,6 +2567,10 @@ pub struct VehicleLoopTicks {
     pub standby_update: u32,
     /// Upstream `Copter::lost_vehicle_check`.
     pub lost_vehicle_check: u32,
+    /// Upstream `Copter::takeoff_check`.
+    pub takeoff_check: u32,
+    /// Upstream `Copter::update_auto_armed`.
+    pub update_auto_armed: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -2461,6 +2664,14 @@ pub struct CopterVehicleLoop {
     pub lost_vehicle: LostVehicleCheckInputs,
     /// Leftover from the latest `lost_vehicle_check` tick.
     pub last_lost_vehicle: Option<LostVehicleCheckLeftover>,
+    /// Inputs for `takeoff_check`.
+    pub takeoff_check: TakeoffCheckInputs,
+    /// Leftover from the latest `takeoff_check` tick.
+    pub last_takeoff_check: Option<TakeoffCheckLeftover>,
+    /// Inputs for `update_auto_armed`.
+    pub auto_armed: UpdateAutoArmedInputs,
+    /// Leftover from the latest `update_auto_armed` tick.
+    pub last_auto_armed: Option<UpdateAutoArmedLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -2531,6 +2742,10 @@ impl CopterVehicleLoop {
             last_standby: None,
             lost_vehicle: typical_lost_vehicle(),
             last_lost_vehicle: None,
+            takeoff_check: typical_takeoff_check(),
+            last_takeoff_check: None,
+            auto_armed: typical_auto_armed(),
+            last_auto_armed: None,
         }
     }
 }
@@ -2576,6 +2791,36 @@ pub const fn typical_auto_disarm() -> AutoDisarmCheckInputs {
         throttle_mid: 500,
         throttle_deadzone: 100,
         land_complete: true,
+    }
+}
+
+/// Disarmed, landed, spool-up not blocked, no load reading.
+#[must_use]
+pub const fn typical_takeoff_check() -> TakeoffCheckInputs {
+    TakeoffCheckInputs {
+        now_ms: 1_000,
+        spoolup_block: false,
+        land_complete: true,
+        motor_check_passed: true,
+        system_load_available: false,
+        avg_load: 0.0,
+        peak_load: 0.0,
+        warning_ms: 1_000,
+    }
+}
+
+/// Disarmed, not auto-armed, no interlock, throttle at zero.
+#[must_use]
+pub const fn typical_auto_armed() -> UpdateAutoArmedInputs {
+    UpdateAutoArmedInputs {
+        auto_armed: false,
+        motors_armed: false,
+        has_manual_throttle: false,
+        throttle_zero: true,
+        has_valid_input: true,
+        using_interlock: false,
+        spool_throttle_unlimited: false,
+        throw_mode: false,
     }
 }
 
@@ -2713,6 +2958,19 @@ fn task_rc_loop(vehicle: &mut CopterVehicleLoop) {
 fn task_throttle_loop(vehicle: &mut CopterVehicleLoop) {
     vehicle.ticks.throttle_loop = vehicle.ticks.throttle_loop.saturating_add(1);
     vehicle.last_throttle = Some(throttle_loop());
+    vehicle.ticks.update_auto_armed = vehicle.ticks.update_auto_armed.saturating_add(1);
+    let leftover = update_auto_armed(vehicle.auto_armed);
+    vehicle.auto_armed.auto_armed = leftover.auto_armed;
+    vehicle.ap.auto_armed = leftover.auto_armed;
+    vehicle.last_auto_armed = Some(leftover);
+}
+
+fn task_takeoff_check(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.takeoff_check = vehicle.ticks.takeoff_check.saturating_add(1);
+    let leftover = takeoff_check(vehicle.takeoff_check);
+    vehicle.takeoff_check.spoolup_block = leftover.spoolup_block;
+    vehicle.takeoff_check.warning_ms = leftover.warning_ms;
+    vehicle.last_takeoff_check = Some(leftover);
 }
 
 fn task_update_flight_mode(vehicle: &mut CopterVehicleLoop) {
@@ -3143,6 +3401,18 @@ pub fn copter_lost_vehicle_check_task() -> Task<CopterVehicleLoop> {
         rate_hz: LOST_VEHICLE_CHECK_RATE_HZ,
         max_time_micros: LOST_VEHICLE_CHECK_MAX_TIME_MICROS,
         priority: LOST_VEHICLE_CHECK_PRIORITY,
+    }
+}
+
+/// `takeoff_check` scheduled row (`50` Hz).
+#[must_use]
+pub fn copter_takeoff_check_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_takeoff_check,
+        name: "takeoff_check",
+        rate_hz: TAKEOFF_CHECK_RATE_HZ,
+        max_time_micros: TAKEOFF_CHECK_MAX_TIME_MICROS,
+        priority: TAKEOFF_CHECK_PRIORITY,
     }
 }
 
