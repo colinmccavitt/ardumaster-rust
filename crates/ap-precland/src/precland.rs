@@ -2,8 +2,9 @@
 //! output-prediction leftovers, upstream
 //! `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. Sensor `update`, logging, the inertial ring,
-//! and the retry state machine stay in [`crate::leftover`]. Both
+//! Tracked as **COP-028**. IRLock / SITL `update`, logging, the inertial
+//! ring, and the retry state machine stay in [`crate::leftover`].
+//! [`crate::MavlinkBackend`] is the first real sensor path. Both
 //! [`PosVelEKF`](crate::PosVelEKF)s run with the Kalman path.
 //! `run_output_prediction` writes the lag-compensated output the
 //! getters read.
@@ -21,6 +22,7 @@ use crate::estimator::{
     EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
+use crate::backend::{MavlinkBackend, MavlinkHandleMsgLeftover};
 use crate::pos_vel_ekf::PosVelEKF;
 use crate::prediction::{
     OutputPredictionLeftover, OutputPredictionWorld, LANDING_TARGET_LOST_DIST_THRESH_M,
@@ -174,10 +176,11 @@ pub struct InitLeftover {
 
 /// What `AC_PrecLand::update` ran and what it asked the vehicle for.
 ///
-/// The 400 Hz body is a dispatcher. AHRS history, `_backend->update()`,
-/// `run_estimator`, `check_target_status`, and `Write_Precland` stay
-/// later leftovers. This slice owns the early-return, the cm→m convert,
-/// the `_enabled` gate, and the 25 Hz log cadence.
+/// The 400 Hz body is a dispatcher. AHRS history, IRLock / SITL
+/// `_backend->update()`, `run_estimator`, `check_target_status`, and
+/// `Write_Precland` stay later leftovers. MAVLink `update` (stale-LOS
+/// expiry) runs here. This slice also owns the early-return, the cm→m
+/// convert, the `_enabled` gate, and the 25 Hz log cadence.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UpdateLeftover {
     /// `true` when `_backend == nullptr || _inertial_history == nullptr`.
@@ -189,8 +192,11 @@ pub struct UpdateLeftover {
     pub rangefinder_alt_valid: bool,
     /// Leftover of the AHRS snapshot + `_inertial_history->push_force`.
     pub need_inertial_push: bool,
-    /// Leftover of `_backend->update()` when `_backend && _enabled`.
+    /// Leftover of IRLock / SITL `_backend->update()` when enabled.
+    /// `false` for MAVLink: that `update` ran here.
     pub need_backend_update: bool,
+    /// `true` when MAVLink `update` ran (`_backend && _enabled`).
+    pub backend_updated: bool,
     /// Leftover of `run_estimator` (same gate as backend update).
     pub need_run_estimator: bool,
     /// Leftover of `check_target_status`. Always true when not skipped.
@@ -202,7 +208,8 @@ pub struct UpdateLeftover {
 /// LANDING_TARGET fields `handle_msg` forwards to the backend.
 ///
 /// Frontend `AC_PrecLand::handle_msg` does not inspect the packet.
-/// [`AC_PrecLand_MAVLink::handle_msg`] is the leftover that will.
+/// [`crate::MavlinkBackend::handle_msg`] consumes it when the type is
+/// MAVLink. Other backends inherit the empty default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LandingTargetMsg {
     /// `mavlink_landing_target_t.frame`.
@@ -243,12 +250,15 @@ impl Default for LandingTargetMsg {
 pub struct HandleMsgLeftover {
     /// `true` when `_backend == nullptr`.
     pub skipped: bool,
-    /// Leftover of `_backend->handle_msg(packet, timestamp_ms)`.
+    /// Leftover of a non-MAVLink `_backend->handle_msg`. Always
+    /// `false` now: MAVLink overrides it and the base default is empty.
     pub need_backend_handle_msg: bool,
     /// Caller timestamp. Upstream `timestamp_ms`.
     pub timestamp_ms: u32,
-    /// Packet forwarded to the backend leftover.
+    /// Packet forwarded to the backend.
     pub packet: LandingTargetMsg,
+    /// MAVLink leftover when the chosen backend is MAVLink.
+    pub mavlink: Option<MavlinkHandleMsgLeftover>,
 }
 
 /// Precision landing frontend, upstream `AC_PrecLand`.
@@ -267,6 +277,7 @@ pub struct PrecLand {
     accel_noise: f32,
     backend: Option<Type>,
     backend_healthy: bool,
+    mavlink: MavlinkBackend,
     current_target_state: TargetState,
     inertial_buffer_size: u16,
     inertial_history_ready: bool,
@@ -319,6 +330,7 @@ impl PrecLand {
             accel_noise: params.accel_noise,
             backend: None,
             backend_healthy: false,
+            mavlink: MavlinkBackend::new(),
             current_target_state: TargetState::NeverSeen,
             inertial_buffer_size: 0,
             inertial_history_ready: false,
@@ -389,7 +401,8 @@ impl PrecLand {
             Type::Mavlink => {
                 self.backend = Some(Type::Mavlink);
                 // AC_PrecLand_MAVLink::init
-                self.backend_healthy = true;
+                self.mavlink.init();
+                self.backend_healthy = self.mavlink.healthy();
             }
             Type::Irlock => {
                 self.backend = Some(Type::Irlock);
@@ -433,6 +446,7 @@ impl PrecLand {
                 rangefinder_alt_valid,
                 need_inertial_push: false,
                 need_backend_update: false,
+                backend_updated: false,
                 need_run_estimator: false,
                 need_check_target_status: false,
                 need_write_precland: false,
@@ -441,7 +455,17 @@ impl PrecLand {
 
         let rangefinder_alt_m = rangefinder_alt_cm * 0.01;
 
-        let need_backend_update = self.enabled;
+        let mut need_backend_update = false;
+        let mut backend_updated = false;
+        if self.enabled {
+            if self.backend == Some(Type::Mavlink) {
+                self.mavlink.update(now_ms);
+                backend_updated = true;
+            } else {
+                // IRLock / SITL / SITL-Gazebo leftover.
+                need_backend_update = true;
+            }
+        }
         let need_write_precland = now_ms.wrapping_sub(self.last_log_ms) > LOG_INTERVAL_MS;
         if need_write_precland {
             self.last_log_ms = now_ms;
@@ -453,29 +477,39 @@ impl PrecLand {
             rangefinder_alt_valid,
             need_inertial_push: true,
             need_backend_update,
-            need_run_estimator: need_backend_update,
+            backend_updated,
+            need_run_estimator: self.enabled,
             need_check_target_status: true,
             need_write_precland,
         }
     }
 
     /// `AC_PrecLand::handle_msg`. Forwards the packet when a backend
-    /// exists. `AC_PrecLand_MAVLink::handle_msg` stays later.
+    /// exists. MAVLink consumes it; other backends inherit the empty
+    /// default.
     #[must_use]
-    pub fn handle_msg(&self, packet: LandingTargetMsg, timestamp_ms: u32) -> HandleMsgLeftover {
+    pub fn handle_msg(&mut self, packet: LandingTargetMsg, timestamp_ms: u32) -> HandleMsgLeftover {
         if self.backend.is_none() {
             return HandleMsgLeftover {
                 skipped: true,
                 need_backend_handle_msg: false,
                 timestamp_ms,
                 packet,
+                mavlink: None,
             };
         }
+        let mavlink = if self.backend == Some(Type::Mavlink) {
+            Some(self.mavlink.handle_msg(packet, timestamp_ms))
+        } else {
+            // AC_PrecLand_Backend::handle_msg default is empty.
+            None
+        };
         HandleMsgLeftover {
             skipped: false,
-            need_backend_handle_msg: true,
+            need_backend_handle_msg: false,
             timestamp_ms,
             packet,
+            mavlink,
         }
     }
 
@@ -641,6 +675,37 @@ impl PrecLand {
     #[must_use]
     pub fn backend(&self) -> Option<Type> {
         self.backend
+    }
+
+    /// Upstream `_backend->get_los_meas` for the MAVLink path.
+    #[must_use]
+    pub fn backend_los_meas(&self) -> Option<(Vector3f, VectorFrame)> {
+        if self.backend == Some(Type::Mavlink) {
+            self.mavlink.get_los_meas()
+        } else {
+            None
+        }
+    }
+
+    /// Snapshot [`crate::estimator::LosSample`] from the MAVLink backend.
+    #[must_use]
+    pub fn backend_los_sample(&self) -> Option<LosSample> {
+        if self.backend == Some(Type::Mavlink) {
+            self.mavlink.los_sample()
+        } else {
+            None
+        }
+    }
+
+    /// Upstream `_backend->distance_to_target()`. `0` when unknown or
+    /// when the backend is not MAVLink.
+    #[must_use]
+    pub fn distance_to_target(&self) -> f32 {
+        if self.backend == Some(Type::Mavlink) {
+            self.mavlink.distance_to_target()
+        } else {
+            0.0
+        }
     }
 
     /// Inertial history length after `init`.

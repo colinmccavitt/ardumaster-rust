@@ -64,7 +64,8 @@ impl Default for InertialSample {
 }
 
 /// Backend LOS snapshot `retrieve_los_meas` reads.
-/// `_backend->update()` / `get_los_meas` stay later leftovers.
+/// MAVLink fills this via [`crate::MavlinkBackend::los_sample`].
+/// IRLock / SITL `update` stay later leftovers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LosSample {
     /// `_backend->los_meas_time_ms()`.

@@ -1,6 +1,7 @@
 //! Remaining `AC_PrecLand` leftovers after `init` + `update` +
 //! `handle_msg` + the estimator frontend + `PosVelEKF` + output
-//! prediction and the getters / target-status leftover.
+//! prediction and the getters / target-status leftover + the Backend
+//! / MAVLink sensor path.
 //!
 //! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init),
 //! [`PrecLand::update`](crate::PrecLand::update),
@@ -11,25 +12,22 @@
 //! [`PrecLand::retrieve_los_meas`](crate::PrecLand::retrieve_los_meas),
 //! [`PosVelEKF`](crate::PosVelEKF),
 //! [`PrecLand::run_output_prediction`](crate::PrecLand::run_output_prediction),
-//! and the public getters / `check_target_status` leftover are the
-//! contiguous leftovers so far. Everything listed here is still later.
+//! [`Backend`](crate::Backend), and [`MavlinkBackend`](crate::MavlinkBackend)
+//! are the contiguous leftovers so far. Everything listed here is
+//! still later.
 
 /// Remaining upstream symbols this crate has not ported yet.
 ///
 /// Weights are the ticket's 1,133 LOC (`AC_PrecLand.cpp` + `.h`). The
-/// output-prediction leftover writes `_target_*_out_*` and the getters
-/// that Copter Land reads. Logging, the inertial ring, the four sensor
-/// `update` paths, and the retry state machine stay here.
+/// Backend getters and MAVLink `LANDING_TARGET` path write `_los_meas`.
+/// Logging, the inertial ring, IRLock / SITL drivers, and the retry
+/// state machine stay here.
 pub const REMAINING: &[&str] = &[
     "AC_PrecLand::Write_Precland",
     // inertial history consumed by update / estimator / prediction
     "inertial_data_frame_s",
     "ObjectArray<inertial_data_frame_s>",
-    // backends
-    "AC_PrecLand_Backend::update",
-    "AC_PrecLand_Backend::handle_msg",
-    "AC_PrecLand_MAVLink::update",
-    "AC_PrecLand_MAVLink::handle_msg",
+    // remaining backends (IRLock / SITL talk to forbidden drivers)
     "AC_PrecLand_IRLock::init(irlock)",
     "AC_PrecLand_IRLock::update",
     "AC_PrecLand_SITL::init(AP::sitl)",

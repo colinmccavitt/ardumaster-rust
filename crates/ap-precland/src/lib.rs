@@ -8,16 +8,19 @@
 //! ([`PrecLand::run_estimator`], [`PrecLand::check_ekf_init_timeout`],
 //! [`PrecLand::construct_pos_meas_using_rangefinder`],
 //! [`PrecLand::retrieve_los_meas`]), Kalman [`PosVelEKF`],
-//! [`PrecLand::run_output_prediction`], and the getters /
-//! `check_target_status` leftover. `init` is the constructor's
-//! follow-on: constrain `PLND_LAG`, size the inertial history ring,
-//! pick a sensor backend from `PLND_TYPE`, run that backend's `init()`,
-//! and rotate the body-frame approach vector by `PLND_ORIENT`.
+//! [`PrecLand::run_output_prediction`], the getters /
+//! `check_target_status` leftover, [`Backend`] LOS getters, and the
+//! first real sensor path ([`MavlinkBackend`]). `init` is the
+//! constructor's follow-on: constrain `PLND_LAG`, size the inertial
+//! history ring, pick a sensor backend from `PLND_TYPE`, run that
+//! backend's `init()`, and rotate the body-frame approach vector by
+//! `PLND_ORIENT`.
 //! `update` is the 400 Hz frontend: early-return when there is no
 //! backend or no inertial ring, convert the rangefinder argument
 //! from centimetres to metres, then record leftovers for the AHRS
-//! history push, `_backend->update()`, `run_estimator`,
-//! `check_target_status`, and 25 Hz `Write_Precland`.
+//! history push, IRLock / SITL `_backend->update()`, `run_estimator`,
+//! `check_target_status`, and 25 Hz `Write_Precland`. MAVLink
+//! `update` (stale-LOS expiry) runs here.
 //! The estimator leftover is the RAW / Kalman switch, the EKF init
 //! timeout, rangefinder NED construction, and LOS retrieve. Kalman
 //! `PosVelEKF` predict / init / fuse / NIS run here.
@@ -54,16 +57,21 @@
 //! # What this crate does not own yet
 //!
 //! [`leftover::REMAINING`] is the catalog: logging, the inertial ring,
-//! the four sensor `update` paths, and `AC_PrecLand_StateMachine`.
+//! IRLock / SITL / SITL-Gazebo `update`, and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
+pub mod backend;
 pub mod estimator;
 pub mod leftover;
 pub mod pos_vel_ekf;
 pub mod precland;
 pub mod prediction;
 
+pub use backend::{
+    Backend, MavlinkBackend, MavlinkHandleMsgLeftover, LOS_MEAS_TIMEOUT_MS, MAV_FRAME_BODY_FRD,
+    MAV_FRAME_LOCAL_FRD,
+};
 pub use estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
     RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,

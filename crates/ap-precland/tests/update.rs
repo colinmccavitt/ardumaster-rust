@@ -1,7 +1,8 @@
 //! `AC_PrecLand::update` / `handle_msg` leftover.
 //!
-//! Tracked as **COP-028**. Estimator, inertial history, backends, and
-//! the retry state machine stay later.
+//! Tracked as **COP-028**. Estimator, inertial history, IRLock / SITL,
+//! and the retry state machine stay later. MAVLink `update` /
+//! `handle_msg` run in this crate.
 
 use ap_math::scalar::is_equal;
 use ap_precland::{
@@ -33,6 +34,7 @@ fn update_skips_before_init() {
     almost(leftover.rangefinder_alt_m, 0.0);
     assert!(!leftover.need_inertial_push);
     assert!(!leftover.need_backend_update);
+    assert!(!leftover.backend_updated);
     assert!(!leftover.need_run_estimator);
     assert!(!leftover.need_check_target_status);
     assert!(!leftover.need_write_precland);
@@ -61,6 +63,7 @@ fn update_converts_cm_and_gates_on_enabled() {
     assert!(leftover.rangefinder_alt_valid);
     assert!(leftover.need_inertial_push);
     assert!(!leftover.need_backend_update);
+    assert!(!leftover.backend_updated);
     assert!(!leftover.need_run_estimator);
     assert!(leftover.need_check_target_status);
     // `0 - 0 > 40` is false. First tick does not log.
@@ -71,7 +74,8 @@ fn update_converts_cm_and_gates_on_enabled() {
     assert!(!leftover.skipped);
     almost(leftover.rangefinder_alt_m, 2.5);
     assert!(!leftover.rangefinder_alt_valid);
-    assert!(leftover.need_backend_update);
+    assert!(!leftover.need_backend_update);
+    assert!(leftover.backend_updated);
     assert!(leftover.need_run_estimator);
     assert!(leftover.need_check_target_status);
 }
@@ -81,9 +85,11 @@ fn update_set_enabled_opens_the_estimator_gate() {
     let mut plnd = mavlink_inited(false);
     let first = plnd.update(100.0, true, 0);
     assert!(!first.need_backend_update);
+    assert!(!first.backend_updated);
     plnd.set_enabled(true);
     let second = plnd.update(100.0, true, 0);
-    assert!(second.need_backend_update);
+    assert!(!second.need_backend_update);
+    assert!(second.backend_updated);
     assert!(second.need_run_estimator);
 }
 
@@ -120,7 +126,7 @@ fn update_skip_does_not_advance_log_clock() {
 
 #[test]
 fn handle_msg_skips_without_backend() {
-    let plnd = PrecLand::new();
+    let mut plnd = PrecLand::new();
     let packet = LandingTargetMsg {
         frame: 12,
         position_valid: 1,
@@ -139,13 +145,14 @@ fn handle_msg_skips_without_backend() {
             need_backend_handle_msg: false,
             timestamp_ms: 1_234,
             packet,
+            mavlink: None,
         }
     );
 }
 
 #[test]
 fn handle_msg_dispatches_when_backend_exists() {
-    let plnd = mavlink_inited(true);
+    let mut plnd = mavlink_inited(true);
     let packet = LandingTargetMsg {
         frame: 20,
         position_valid: 0,
@@ -158,9 +165,12 @@ fn handle_msg_dispatches_when_backend_exists() {
     };
     let leftover = plnd.handle_msg(packet, 9_001);
     assert!(!leftover.skipped);
-    assert!(leftover.need_backend_handle_msg);
+    assert!(!leftover.need_backend_handle_msg);
     assert_eq!(leftover.timestamp_ms, 9_001);
     assert_eq!(leftover.packet, packet);
+    let mav = leftover.mavlink.expect("MAVLink leftover");
+    assert!(mav.accepted);
+    assert!(plnd.backend_los_meas().is_some());
 }
 
 #[test]
@@ -178,8 +188,9 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(!REMAINING.contains(&"AC_PrecLand::check_target_status"));
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"AC_PrecLand_Backend::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
+    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }
@@ -192,6 +203,7 @@ fn update_leftover_partial_eq() {
         rangefinder_alt_valid: true,
         need_inertial_push: true,
         need_backend_update: true,
+        backend_updated: false,
         need_run_estimator: true,
         need_check_target_status: true,
         need_write_precland: false,
