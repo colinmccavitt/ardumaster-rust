@@ -32,7 +32,7 @@
 //!
 //! The armed-stabilizing mixer leftover lives in [`armed`]. Failed-motor
 //! detection lives in [`failed_motor`]. The matrix `output_to_motors`
-//! pass stays leftover.
+//! pass lives in [`output_to_motors`]. Setup helpers stay leftover.
 
 use ap_math::scalar::{is_zero, radians, Real};
 
@@ -42,6 +42,7 @@ pub mod current_limit;
 pub mod failed_motor;
 mod frames;
 pub mod output;
+pub mod output_to_motors;
 pub mod spool;
 pub mod throttle;
 pub mod thrust_linearization;

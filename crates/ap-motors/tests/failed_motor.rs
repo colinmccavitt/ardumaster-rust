@@ -56,10 +56,11 @@ fn settled(thrusts: &[f32], frame_type: u8) -> FailedMotorInputs {
 }
 
 #[test]
-fn leftover_catalog_drops_failed_motor_and_keeps_pwm_pass() {
+fn leftover_catalog_drops_failed_motor_and_pwm_pass() {
     assert!(!REMAINING.contains(&"check_for_failed_motor"));
-    assert!(REMAINING.contains(&"output_to_motors"));
+    assert!(!REMAINING.contains(&"output_to_motors"));
     assert!(!REMAINING.contains(&"output_armed_stabilizing"));
+    assert!(REMAINING.contains(&"set_throttle_factor"));
 }
 
 #[test]

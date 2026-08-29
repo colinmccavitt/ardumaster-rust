@@ -13,7 +13,8 @@
 //!
 //! `check_for_failed_motor` is called at the end of the upstream
 //! function; that leftover lives in [`crate::failed_motor`]. The matrix
-//! `output_to_motors` that turns `_thrust_rpyt_out` into PWM stays leftover.
+//! `output_to_motors` that turns `_thrust_rpyt_out` into PWM lives in
+//! [`crate::output_to_motors`].
 
 use ap_math::scalar::{constrain_value, is_positive, is_zero};
 
@@ -23,13 +24,12 @@ use crate::{MotorMatrix, MAX_NUM_MOTORS};
 /// Default `MOT_YAW_HEADROOM`, upstream `AP_MOTORS_YAW_HEADROOM_DEFAULT`.
 pub const YAW_HEADROOM_DEFAULT: i16 = 200;
 
-/// Remaining COP-005 leftovers after the mixer and failed-motor slices.
+/// Remaining COP-005 leftovers after the mixer, failed-motor, and PWM slices.
 ///
-/// Frame tables, the factor model, this mixer, and
-/// `check_for_failed_motor` are on the crate. The matrix
-/// `output_to_motors` pass and the leftover setup helpers are not.
+/// Frame tables, the factor model, this mixer,
+/// `check_for_failed_motor`, and `output_to_motors` are on the crate.
+/// The leftover setup helpers are not.
 pub const REMAINING: &[&str] = &[
-    "output_to_motors",
     "set_throttle_factor",
     "set_frame_class_and_type",
     "disable_yaw_torque",
@@ -306,10 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn remaining_names_the_pwm_pass_leftover() {
+    fn remaining_names_the_setup_helpers() {
         assert!(!REMAINING.contains(&"check_for_failed_motor"));
-        assert!(REMAINING.contains(&"output_to_motors"));
+        assert!(!REMAINING.contains(&"output_to_motors"));
         assert!(!REMAINING.contains(&"output_armed_stabilizing"));
         assert!(!REMAINING.contains(&"setup_motors"));
+        assert!(REMAINING.contains(&"set_throttle_factor"));
     }
 }
