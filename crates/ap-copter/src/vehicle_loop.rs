@@ -10,7 +10,11 @@
 //! lives on `ap-ins`. [`update_flight_mode`] and
 //! [`update_land_and_crash_detectors`] are the next Copter-owned FAST_TASK
 //! leftovers after `check_ekf_reset` / `update_home_from_EKF`, which stay
-//! later. The rest of `Copter.cpp` / `system.cpp` stay later leftovers.
+//! later. [`loop_rate_logging`], [`ten_hz_logging_loop`], and
+//! [`twentyfive_hz_logging`] are the `HAL_LOGGING_ENABLED` scheduled
+//! leftovers; [`three_hz_loop`], [`ap_value`], and [`one_hz_loop`] sit
+//! next to them in `Copter.cpp`. Simple-mode, `update_altitude`, and
+//! `system.cpp` stay later leftovers.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -65,6 +69,128 @@ pub const UPDATE_BATT_COMPASS_MAX_TIME_MICROS: u16 = 120;
 
 /// `update_batt_compass` scheduler priority (lower is higher priority).
 pub const UPDATE_BATT_COMPASS_PRIORITY: u8 = 15;
+
+/// `loop_rate_logging` rate, Hz. Upstream `SCHED_TASK(..., LOOP_RATE, 50, 75)`.
+pub const LOOP_RATE_LOGGING_RATE_HZ: f32 = LOOP_RATE;
+
+/// `loop_rate_logging` expected budget, microseconds.
+pub const LOOP_RATE_LOGGING_MAX_TIME_MICROS: u16 = 50;
+
+/// `loop_rate_logging` scheduler priority (lower is higher priority).
+pub const LOOP_RATE_LOGGING_PRIORITY: u8 = 75;
+
+/// `ten_hz_logging_loop` rate, Hz. Upstream `SCHED_TASK(..., 10, 350, 114)`.
+pub const TEN_HZ_LOGGING_RATE_HZ: f32 = 10.0;
+
+/// `ten_hz_logging_loop` expected budget, microseconds.
+pub const TEN_HZ_LOGGING_MAX_TIME_MICROS: u16 = 350;
+
+/// `ten_hz_logging_loop` scheduler priority (lower is higher priority).
+pub const TEN_HZ_LOGGING_PRIORITY: u8 = 114;
+
+/// `twentyfive_hz_logging` rate, Hz. Upstream `SCHED_TASK(..., 25, 110, 117)`.
+pub const TWENTYFIVE_HZ_LOGGING_RATE_HZ: f32 = 25.0;
+
+/// `twentyfive_hz_logging` expected budget, microseconds.
+pub const TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS: u16 = 110;
+
+/// `twentyfive_hz_logging` scheduler priority (lower is higher priority).
+pub const TWENTYFIVE_HZ_LOGGING_PRIORITY: u8 = 117;
+
+/// `three_hz_loop` rate, Hz. Upstream `SCHED_TASK(three_hz_loop, 3, 75, 57)`.
+pub const THREE_HZ_LOOP_RATE_HZ: f32 = 3.0;
+
+/// `three_hz_loop` expected budget, microseconds.
+pub const THREE_HZ_LOOP_MAX_TIME_MICROS: u16 = 75;
+
+/// `three_hz_loop` scheduler priority (lower is higher priority).
+pub const THREE_HZ_LOOP_PRIORITY: u8 = 57;
+
+/// `one_hz_loop` rate, Hz. Upstream `SCHED_TASK(one_hz_loop, 1, 100, 81)`.
+pub const ONE_HZ_LOOP_RATE_HZ: f32 = 1.0;
+
+/// `one_hz_loop` expected budget, microseconds.
+pub const ONE_HZ_LOOP_MAX_TIME_MICROS: u16 = 100;
+
+/// `one_hz_loop` scheduler priority (lower is higher priority).
+pub const ONE_HZ_LOOP_PRIORITY: u8 = 81;
+
+/// `MASK_LOG_ATTITUDE_FAST` — Copter `defines.h`.
+pub const MASK_LOG_ATTITUDE_FAST: u32 = 1 << 0;
+
+/// `MASK_LOG_ATTITUDE_MED` — Copter `defines.h`.
+pub const MASK_LOG_ATTITUDE_MED: u32 = 1 << 1;
+
+/// `MASK_LOG_GPS` — Copter `defines.h`.
+pub const MASK_LOG_GPS: u32 = 1 << 2;
+
+/// `MASK_LOG_CTUN` — Copter `defines.h`.
+pub const MASK_LOG_CTUN: u32 = 1 << 4;
+
+/// `MASK_LOG_NTUN` — Copter `defines.h`.
+pub const MASK_LOG_NTUN: u32 = 1 << 5;
+
+/// `MASK_LOG_RCIN` — Copter `defines.h`.
+pub const MASK_LOG_RCIN: u32 = 1 << 6;
+
+/// `MASK_LOG_IMU` — Copter `defines.h`.
+pub const MASK_LOG_IMU: u32 = 1 << 7;
+
+/// `MASK_LOG_CMD` — Copter `defines.h`.
+pub const MASK_LOG_CMD: u32 = 1 << 8;
+
+/// `MASK_LOG_CURRENT` — Copter `defines.h`.
+pub const MASK_LOG_CURRENT: u32 = 1 << 9;
+
+/// `MASK_LOG_RCOUT` — Copter `defines.h`.
+pub const MASK_LOG_RCOUT: u32 = 1 << 10;
+
+/// `MASK_LOG_OPTFLOW` — Copter `defines.h`.
+pub const MASK_LOG_OPTFLOW: u32 = 1 << 11;
+
+/// `MASK_LOG_PID` — Copter `defines.h`.
+pub const MASK_LOG_PID: u32 = 1 << 12;
+
+/// `MASK_LOG_COMPASS` — Copter `defines.h`.
+pub const MASK_LOG_COMPASS: u32 = 1 << 13;
+
+/// `MASK_LOG_CAMERA` — Copter `defines.h`.
+pub const MASK_LOG_CAMERA: u32 = 1 << 15;
+
+/// `MASK_LOG_MOTBATT` — Copter `defines.h`.
+pub const MASK_LOG_MOTBATT: u32 = 1 << 17;
+
+/// `MASK_LOG_IMU_FAST` — Copter `defines.h`.
+pub const MASK_LOG_IMU_FAST: u32 = 1 << 18;
+
+/// `MASK_LOG_IMU_RAW` — Copter `defines.h`.
+pub const MASK_LOG_IMU_RAW: u32 = 1 << 19;
+
+/// `MASK_LOG_FTN_FAST` — Copter `defines.h`.
+pub const MASK_LOG_FTN_FAST: u32 = 1 << 21;
+
+/// `MASK_LOG_ANY` — low 16 bits only. `MOTBATT` / `IMU_FAST` sit above it.
+pub const MASK_LOG_ANY: u32 = 0xFFFF;
+
+/// Packed `Copter::ap` bool count. Upstream `sizeof(ap)` on a 1-byte `bool`.
+pub const AP_STATE_BOOL_COUNT: usize = 27;
+
+/// `DEFAULT_LOG_BITMASK` from Copter `config.h` (stock multicopter).
+pub const DEFAULT_LOG_BITMASK: u32 = MASK_LOG_ATTITUDE_MED
+    | MASK_LOG_GPS
+    | MASK_LOG_PM
+    | MASK_LOG_CTUN
+    | MASK_LOG_NTUN
+    | MASK_LOG_RCIN
+    | MASK_LOG_IMU
+    | MASK_LOG_CMD
+    | MASK_LOG_CURRENT
+    | MASK_LOG_RCOUT
+    | MASK_LOG_OPTFLOW
+    | MASK_LOG_PID
+    | MASK_LOG_COMPASS
+    | MASK_LOG_CAMERA
+    | MASK_LOG_MOTBATT;
 
 /// `ARMING_DELAY_SEC` — motors stay interlocked-off this long after arm.
 pub const ARMING_DELAY_SEC: f32 = 2.0;
@@ -364,16 +490,11 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 ];
 
 /// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
-/// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, and the first
+/// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, the first
 /// Copter FAST_TASK bodies including `update_flight_mode` and
-/// `update_land_and_crash_detectors`.
+/// `update_land_and_crash_detectors`, and the logging / 3 Hz / 1 Hz
+/// leftovers.
 pub const REMAINING: &[&str] = &[
-    "Copter::loop_rate_logging",
-    "Copter::ten_hz_logging_loop",
-    "Copter::twentyfive_hz_logging",
-    "Copter::three_hz_loop",
-    "Copter::ap_value",
-    "Copter::one_hz_loop",
     "Copter::init_simple_bearing",
     "Copter::update_simple_mode",
     "Copter::update_super_simple_bearing",
@@ -938,6 +1059,437 @@ pub const fn update_batt_compass(inputs: UpdateBattCompassInputs) -> UpdateBattC
     }
 }
 
+/// `Copter::should_log` / `AP_Logger::should_log` first reject.
+///
+/// Armed / download / backend-count checks stay later. This leftover is
+/// the bitmask test the logging loops still *call* into: a zero overlap
+/// must not emit.
+#[must_use]
+pub const fn should_log(log_bitmask: u32, mask: u32) -> bool {
+    (mask & log_bitmask) != 0
+}
+
+/// Packed `Copter::ap` bools.
+///
+/// Upstream comments the bit index of each field. [`ap_value`] walks
+/// them in that order — reordering a field would change the logged
+/// `AP_STATE` bitmask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ApState {
+    /// Bit 0.
+    pub unused1: bool,
+    /// Bit 1. Was `simple_mode` byte 1.
+    pub unused_was_simple_mode_byte1: bool,
+    /// Bit 2. Was `simple_mode` byte 2.
+    pub unused_was_simple_mode_byte2: bool,
+    /// Bit 3. RC input pre-arm checks passed.
+    pub pre_arm_rc_check: bool,
+    /// Bit 4. All pre-arm checks passed.
+    pub pre_arm_check: bool,
+    /// Bit 5. Auto missions wait for throttle.
+    pub auto_armed: bool,
+    /// Bit 6. Was `log_started`.
+    pub unused_log_started: bool,
+    /// Bit 7. Land detector has landed.
+    pub land_complete: bool,
+    /// Bit 8. Fresh PWM this radio frame.
+    pub new_radio_frame: bool,
+    /// Bit 9. Was `usb_connected`.
+    pub unused_usb_connected: bool,
+    /// Bit 10. Was `receiver_present`.
+    pub unused_receiver_present: bool,
+    /// Bit 11. Compassmot calibration running.
+    pub compass_mot: bool,
+    /// Bit 12. Motor test running.
+    pub motor_test: bool,
+    /// Bit 13. `init_ardupilot` finished.
+    pub initialised: bool,
+    /// Bit 14. Softer land detector.
+    pub land_complete_maybe: bool,
+    /// Bit 15. Throttle stick at zero, debounced.
+    pub throttle_zero: bool,
+    /// Bit 16. Was `system_time_set`.
+    pub system_time_set_unused: bool,
+    /// Bit 17. GPS glitch affecting nav.
+    pub gps_glitching: bool,
+    /// Bit 18. Aux motor-interlock in use.
+    pub using_interlock: bool,
+    /// Bit 19. Pilot overriding land position.
+    pub land_repo_active: bool,
+    /// Bit 20. Pilot requesting interlock enable.
+    pub motor_interlock_switch: bool,
+    /// Bit 21. Armed but waiting to spool.
+    pub in_arming_delay: bool,
+    /// Bit 22. Parameters finished initialising.
+    pub initialised_params: bool,
+    /// Bit 23. Was `compass_init_location`.
+    pub unused_compass_init_location: bool,
+    /// Bit 24. Was aux-switch RC override.
+    pub unused2_aux_switch_rc_override_allowed: bool,
+    /// Bit 25. Armed from the airmode switch.
+    pub armed_with_airmode_switch: bool,
+    /// Bit 26. PrecLand active.
+    pub prec_land_active: bool,
+}
+
+impl ApState {
+    /// `sizeof(ap)` bools in declaration order.
+    #[must_use]
+    pub const fn bits(self) -> [bool; AP_STATE_BOOL_COUNT] {
+        [
+            self.unused1,
+            self.unused_was_simple_mode_byte1,
+            self.unused_was_simple_mode_byte2,
+            self.pre_arm_rc_check,
+            self.pre_arm_check,
+            self.auto_armed,
+            self.unused_log_started,
+            self.land_complete,
+            self.new_radio_frame,
+            self.unused_usb_connected,
+            self.unused_receiver_present,
+            self.compass_mot,
+            self.motor_test,
+            self.initialised,
+            self.land_complete_maybe,
+            self.throttle_zero,
+            self.system_time_set_unused,
+            self.gps_glitching,
+            self.using_interlock,
+            self.land_repo_active,
+            self.motor_interlock_switch,
+            self.in_arming_delay,
+            self.initialised_params,
+            self.unused_compass_init_location,
+            self.unused2_aux_switch_rc_override_allowed,
+            self.armed_with_airmode_switch,
+            self.prec_land_active,
+        ]
+    }
+}
+
+/// `Copter::ap_value`.
+///
+/// Walks the packed `ap` bools in declaration order. A port that packed
+/// the live flags into a hand-built mask would drift the moment a
+/// reserved / unused slot flipped — the log message is the byte walk.
+#[must_use]
+pub const fn ap_value(ap: ApState) -> u32 {
+    let bits = ap.bits();
+    let mut ret = 0u32;
+    let mut i = 0;
+    while i < AP_STATE_BOOL_COUNT {
+        if bits[i] {
+            ret |= 1u32 << i;
+        }
+        i += 1;
+    }
+    ret
+}
+
+/// Inputs to `Copter::loop_rate_logging`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopRateLoggingInputs {
+    /// `LOG_BITMASK`.
+    pub log_bitmask: u32,
+    /// `flightmode->logs_attitude()` — Stabilize / Acro write ATT themselves.
+    pub logs_attitude: bool,
+    /// `using_rate_thread` — Rate / PID / notch live on the rate thread.
+    pub using_rate_thread: bool,
+}
+
+/// What `Copter::loop_rate_logging` asked later leftovers to write.
+///
+/// Harmonic-notch FTN is compiled out of this leftover
+/// (`AP_INERTIALSENSOR_HARMONICNOTCH_ENABLED`). Stock multicopter still
+/// always writes SPOL — that is not a `should_log` branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopRateLoggingLeftover {
+    /// `Log_Write_Attitude()` — ATT_FAST and the mode is not already logging.
+    pub write_attitude: bool,
+    /// `Log_Write_Rate()` — same gate, and no rate thread.
+    pub write_rate: bool,
+    /// `Log_Write_PIDS()` — same gate, and no rate thread.
+    pub write_pids: bool,
+    /// `ins.write_notch_log_messages()` — compiled out.
+    pub write_notch: bool,
+    /// `ins.Write_IMU()` — IMU_FAST.
+    pub write_imu: bool,
+    /// Always: `motors->Log_Write_SPOL()`.
+    pub write_spol: bool,
+}
+
+/// `Copter::loop_rate_logging`.
+///
+/// ATT_FAST attitude / rate / PID share one gate. Folding Rate/PID
+/// behind a second bitmask test would drop them on a vehicle that set
+/// ATT_FAST but not PID — `Log_Write_PIDS` does that check itself.
+/// SPOL is not gated; a port that hid it behind ATT_FAST would lose
+/// spool traces on a MED-only bitmask.
+#[must_use]
+pub const fn loop_rate_logging(inputs: LoopRateLoggingInputs) -> LoopRateLoggingLeftover {
+    let att_fast = should_log(inputs.log_bitmask, MASK_LOG_ATTITUDE_FAST) && !inputs.logs_attitude;
+    LoopRateLoggingLeftover {
+        write_attitude: att_fast,
+        write_rate: att_fast && !inputs.using_rate_thread,
+        write_pids: att_fast && !inputs.using_rate_thread,
+        write_notch: false,
+        write_imu: should_log(inputs.log_bitmask, MASK_LOG_IMU_FAST),
+        write_spol: true,
+    }
+}
+
+/// Inputs to `Copter::ten_hz_logging_loop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TenHzLoggingInputs {
+    /// `LOG_BITMASK`.
+    pub log_bitmask: u32,
+    /// `flightmode->logs_attitude()`.
+    pub logs_attitude: bool,
+    /// `using_rate_thread`.
+    pub using_rate_thread: bool,
+    /// `flightmode->requires_position()`.
+    pub requires_position: bool,
+    /// `landing_with_GPS()`.
+    pub landing_with_gps: bool,
+    /// `flightmode->has_manual_throttle()`.
+    pub has_manual_throttle: bool,
+}
+
+/// What `Copter::ten_hz_logging_loop` asked later leftovers to write.
+///
+/// Heli always-write motors, RSSI, proximity, beacon, winch, and mount
+/// are compiled out. Stock multicopter still always writes AHRS
+/// attitude — that is not a `should_log` branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TenHzLoggingLeftover {
+    /// Always: `ahrs.Write_Attitude(att_target_euler_rad * RAD_TO_DEG)`.
+    pub write_ahrs_attitude: bool,
+    /// `Log_Write_Attitude()` — ATT_MED, not ATT_FAST, mode not already logging.
+    pub write_attitude: bool,
+    /// `Log_Write_Rate()` — same ATT_MED gate, and no rate thread.
+    pub write_rate: bool,
+    /// `Log_Write_PIDS()` — not ATT_FAST, mode not already logging, no rate thread.
+    pub write_pids: bool,
+    /// `Log_Write_EKF_POS()` — not ATT_FAST (the 25 Hz leftover owns that).
+    pub write_ekf_pos: bool,
+    /// `motors->Log_Write()` — MOTBATT (heli always-write compiled out).
+    pub write_motors: bool,
+    /// `logger.Write_RCIN()` — RCIN.
+    pub write_rcin: bool,
+    /// `logger.Write_RSSI()` — compiled out (`AP_RSSI_ENABLED`).
+    pub write_rssi: bool,
+    /// `logger.Write_RCOUT()` — RCOUT.
+    pub write_rcout: bool,
+    /// `pos_control->write_log()` — NTUN and a position / auto-throttle mode.
+    pub write_ntun: bool,
+    /// `ins.Write_Vibration()` — IMU or IMU_FAST or IMU_RAW.
+    pub write_vibration: bool,
+    /// `g2.proximity.log()` — compiled out.
+    pub write_proximity: bool,
+    /// `g2.beacon.log()` — compiled out.
+    pub write_beacon: bool,
+    /// `g2.winch.write_log()` — compiled out.
+    pub write_winch: bool,
+    /// `camera_mount.write_log()` — compiled out.
+    pub write_mount: bool,
+}
+
+/// `Copter::ten_hz_logging_loop`.
+///
+/// AHRS attitude is written first, even when every bitmask is clear.
+/// Folding it behind ATT_MED would drop the 10 Hz target on a FAST-only
+/// vehicle — FAST already wrote ATT at loop rate, but the AHRS view of
+/// the target still belongs here.
+///
+/// PID at 10 Hz is the *not*-FAST path. FAST + PID logs at loop rate
+/// instead; a port that also wrote PID here would double the rate.
+///
+/// NTUN needs a position or auto-throttle mode. Stabilize with NTUN
+/// set still refuses — the leftover is `requires_position ||
+/// landing_with_GPS || !has_manual_throttle`.
+#[must_use]
+pub const fn ten_hz_logging_loop(inputs: TenHzLoggingInputs) -> TenHzLoggingLeftover {
+    let att_fast = should_log(inputs.log_bitmask, MASK_LOG_ATTITUDE_FAST);
+    let att_med = should_log(inputs.log_bitmask, MASK_LOG_ATTITUDE_MED);
+    let write_attitude = att_med && !att_fast && !inputs.logs_attitude;
+    let write_ntun = should_log(inputs.log_bitmask, MASK_LOG_NTUN)
+        && (inputs.requires_position || inputs.landing_with_gps || !inputs.has_manual_throttle);
+    TenHzLoggingLeftover {
+        write_ahrs_attitude: true,
+        write_attitude,
+        write_rate: write_attitude && !inputs.using_rate_thread,
+        write_pids: !att_fast && !inputs.logs_attitude && !inputs.using_rate_thread,
+        write_ekf_pos: !att_fast,
+        write_motors: should_log(inputs.log_bitmask, MASK_LOG_MOTBATT),
+        write_rcin: should_log(inputs.log_bitmask, MASK_LOG_RCIN),
+        write_rssi: false,
+        write_rcout: should_log(inputs.log_bitmask, MASK_LOG_RCOUT),
+        write_ntun,
+        write_vibration: should_log(inputs.log_bitmask, MASK_LOG_IMU)
+            || should_log(inputs.log_bitmask, MASK_LOG_IMU_FAST)
+            || should_log(inputs.log_bitmask, MASK_LOG_IMU_RAW),
+        write_proximity: false,
+        write_beacon: false,
+        write_winch: false,
+        write_mount: false,
+    }
+}
+
+/// Inputs to `Copter::twentyfive_hz_logging`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwentyfiveHzLoggingInputs {
+    /// `LOG_BITMASK`.
+    pub log_bitmask: u32,
+}
+
+/// What `Copter::twentyfive_hz_logging` asked later leftovers to write.
+///
+/// Gyro-FFT FTN is compiled out (`HAL_GYROFFT_ENABLED`). EKF-POS moves
+/// here only when ATT_FAST already claimed the 10 Hz slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TwentyfiveHzLoggingLeftover {
+    /// `Log_Write_EKF_POS()` — ATT_FAST.
+    pub write_ekf_pos: bool,
+    /// `ins.Write_IMU()` — IMU and not IMU_FAST (loop-rate leftover owns FAST).
+    pub write_imu: bool,
+    /// `gyro_fft.write_log_messages()` — compiled out.
+    pub write_gyro_fft: bool,
+}
+
+/// `Copter::twentyfive_hz_logging`.
+///
+/// IMU_FAST already wrote IMU at loop rate. Folding the 25 Hz IMU
+/// write in anyway would double the rate. EKF-POS is the ATT_FAST
+/// counterpart of the 10 Hz leftover — a port that wrote it in both
+/// would double that too.
+#[must_use]
+pub const fn twentyfive_hz_logging(
+    inputs: TwentyfiveHzLoggingInputs,
+) -> TwentyfiveHzLoggingLeftover {
+    TwentyfiveHzLoggingLeftover {
+        write_ekf_pos: should_log(inputs.log_bitmask, MASK_LOG_ATTITUDE_FAST),
+        write_imu: should_log(inputs.log_bitmask, MASK_LOG_IMU)
+            && !should_log(inputs.log_bitmask, MASK_LOG_IMU_FAST),
+        write_gyro_fft: false,
+    }
+}
+
+/// What `Copter::three_hz_loop` asked later leftovers to do.
+///
+/// Transmitter tuning is compiled out (`AP_RC_TRANSMITTER_TUNING_ENABLED`).
+/// The three failsafe checks and low-alt avoidance stay later leftovers
+/// — this leftover is the call order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreeHzLoopLeftover {
+    /// Always: `failsafe_gcs_check()`.
+    pub failsafe_gcs_check: bool,
+    /// Always: `failsafe_terrain_check()`.
+    pub failsafe_terrain_check: bool,
+    /// Always: `failsafe_deadreckon_check()`.
+    pub failsafe_deadreckon_check: bool,
+    /// `tuning()` — compiled out.
+    pub tuning: bool,
+    /// Always: `low_alt_avoidance()`.
+    pub low_alt_avoidance: bool,
+}
+
+/// `Copter::three_hz_loop`.
+///
+/// GCS, then terrain, then dead-reckon, then low-alt avoidance.
+/// Folding dead-reckon ahead of terrain would let a missing-terrain
+/// vehicle also raise the dead-reckon flag on the same 3 Hz tick the
+/// terrain leftover had not yet published.
+#[must_use]
+pub const fn three_hz_loop() -> ThreeHzLoopLeftover {
+    ThreeHzLoopLeftover {
+        failsafe_gcs_check: true,
+        failsafe_terrain_check: true,
+        failsafe_deadreckon_check: true,
+        tuning: false,
+        low_alt_avoidance: true,
+    }
+}
+
+/// Inputs to `Copter::one_hz_loop`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneHzLoopInputs {
+    /// `LOG_BITMASK`.
+    pub log_bitmask: u32,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `using_rate_thread`.
+    pub using_rate_thread: bool,
+    /// `ap.land_complete`.
+    pub land_complete: bool,
+}
+
+/// What `Copter::one_hz_loop` asked later leftovers to do.
+///
+/// ADS-B flying, custom-control notch, and the rate-thread spawn are
+/// compiled out. Disarmed-only frame / throttle-range updates stay
+/// behind `!armed` — folding them onto an armed vehicle would let a
+/// mid-flight `FRAME_CLASS` write retune the mixer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneHzLoopLeftover {
+    /// `Log_Write_Data(AP_STATE, ap_value())` — `MASK_LOG_ANY`.
+    pub log_ap_state: bool,
+    /// `update_using_interlock()` — disarmed only.
+    pub update_using_interlock: bool,
+    /// `motors->set_frame_class_and_type` — disarmed only.
+    pub set_frame_class_and_type: bool,
+    /// `motors->update_throttle_range()` — disarmed, not heli.
+    pub update_throttle_range: bool,
+    /// Always: `AP::srv().enable_aux_servos()`.
+    pub enable_aux_servos: bool,
+    /// Always: `terrain_logging()` (`HAL_LOGGING_ENABLED`).
+    pub terrain_logging: bool,
+    /// `adsb.set_is_flying` — compiled out.
+    pub adsb_set_is_flying: bool,
+    /// Always: `AP_Notify::flags.flying = !land_complete`.
+    pub notify_flying: bool,
+    /// The `flying` flag that notify saw.
+    pub flying: bool,
+    /// `attitude_control->set_notch_sample_rate` — no rate thread.
+    pub attitude_notch_sample_rate: bool,
+    /// Always: `pos_control` D-accel PID notch sample rate.
+    pub pos_control_notch_sample_rate: bool,
+    /// `custom_control.set_notch_sample_rate` — compiled out.
+    pub custom_control_notch_sample_rate: bool,
+    /// Rate-thread spawn — compiled out.
+    pub start_rate_thread: bool,
+}
+
+/// `Copter::one_hz_loop`.
+///
+/// AP_STATE is logged from [`ap_value`] when any low-16 bitmask bit is
+/// set. `MOTBATT` (bit 17) alone is not `MASK_LOG_ANY` — a port that
+/// treated "any log bit" as the full 32-bit mask would emit AP_STATE
+/// on a MOTBATT-only vehicle.
+///
+/// Frame class / throttle range run only while disarmed. Aux servos
+/// and the flying notify still run armed — folding those behind
+/// `!armed` would freeze aux assignment and the notify flag in flight.
+#[must_use]
+pub const fn one_hz_loop(inputs: OneHzLoopInputs) -> OneHzLoopLeftover {
+    let disarmed = !inputs.motors_armed;
+    OneHzLoopLeftover {
+        log_ap_state: should_log(inputs.log_bitmask, MASK_LOG_ANY),
+        update_using_interlock: disarmed,
+        set_frame_class_and_type: disarmed,
+        update_throttle_range: disarmed,
+        enable_aux_servos: true,
+        terrain_logging: true,
+        adsb_set_is_flying: false,
+        notify_flying: true,
+        flying: !inputs.land_complete,
+        attitude_notch_sample_rate: !inputs.using_rate_thread,
+        pos_control_notch_sample_rate: true,
+        custom_control_notch_sample_rate: false,
+        start_rate_thread: false,
+    }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -959,6 +1511,16 @@ pub struct VehicleLoopTicks {
     pub update_land_and_crash_detectors: u32,
     /// Upstream `Copter::update_batt_compass`.
     pub update_batt_compass: u32,
+    /// Upstream `Copter::loop_rate_logging`.
+    pub loop_rate_logging: u32,
+    /// Upstream `Copter::ten_hz_logging_loop`.
+    pub ten_hz_logging_loop: u32,
+    /// Upstream `Copter::twentyfive_hz_logging`.
+    pub twentyfive_hz_logging: u32,
+    /// Upstream `Copter::three_hz_loop`.
+    pub three_hz_loop: u32,
+    /// Upstream `Copter::one_hz_loop`.
+    pub one_hz_loop: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -1002,6 +1564,28 @@ pub struct CopterVehicleLoop {
     pub batt_compass: UpdateBattCompassInputs,
     /// Leftover from the latest `update_batt_compass` tick.
     pub last_batt_compass: Option<UpdateBattCompassLeftover>,
+    /// `LOG_BITMASK` for the logging leftovers.
+    pub log_bitmask: u32,
+    /// `flightmode->logs_attitude()`.
+    pub logs_attitude: bool,
+    /// `flightmode->requires_position()`.
+    pub requires_position: bool,
+    /// `landing_with_GPS()`.
+    pub landing_with_gps: bool,
+    /// `flightmode->has_manual_throttle()`.
+    pub has_manual_throttle: bool,
+    /// Packed `ap` bools for [`ap_value`].
+    pub ap: ApState,
+    /// Leftover from the latest `loop_rate_logging` tick.
+    pub last_loop_rate_logging: Option<LoopRateLoggingLeftover>,
+    /// Leftover from the latest `ten_hz_logging_loop` tick.
+    pub last_ten_hz_logging: Option<TenHzLoggingLeftover>,
+    /// Leftover from the latest `twentyfive_hz_logging` tick.
+    pub last_twentyfive_hz_logging: Option<TwentyfiveHzLoggingLeftover>,
+    /// Leftover from the latest `three_hz_loop` tick.
+    pub last_three_hz: Option<ThreeHzLoopLeftover>,
+    /// Leftover from the latest `one_hz_loop` tick.
+    pub last_one_hz: Option<OneHzLoopLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -1036,6 +1620,17 @@ impl CopterVehicleLoop {
                 compass_available: true,
             },
             last_batt_compass: None,
+            log_bitmask: DEFAULT_LOG_BITMASK,
+            logs_attitude: false,
+            requires_position: true,
+            landing_with_gps: false,
+            has_manual_throttle: false,
+            ap: ApState::default(),
+            last_loop_rate_logging: None,
+            last_ten_hz_logging: None,
+            last_twentyfive_hz_logging: None,
+            last_three_hz: None,
+            last_one_hz: None,
         }
     }
 }
@@ -1161,6 +1756,49 @@ fn task_update_land_and_crash_detectors(vehicle: &mut CopterVehicleLoop) {
 fn task_update_batt_compass(vehicle: &mut CopterVehicleLoop) {
     vehicle.ticks.update_batt_compass = vehicle.ticks.update_batt_compass.saturating_add(1);
     vehicle.last_batt_compass = Some(update_batt_compass(vehicle.batt_compass));
+}
+
+fn task_loop_rate_logging(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.loop_rate_logging = vehicle.ticks.loop_rate_logging.saturating_add(1);
+    vehicle.last_loop_rate_logging = Some(loop_rate_logging(LoopRateLoggingInputs {
+        log_bitmask: vehicle.log_bitmask,
+        logs_attitude: vehicle.logs_attitude,
+        using_rate_thread: vehicle.using_rate_thread,
+    }));
+}
+
+fn task_ten_hz_logging_loop(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.ten_hz_logging_loop = vehicle.ticks.ten_hz_logging_loop.saturating_add(1);
+    vehicle.last_ten_hz_logging = Some(ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: vehicle.log_bitmask,
+        logs_attitude: vehicle.logs_attitude,
+        using_rate_thread: vehicle.using_rate_thread,
+        requires_position: vehicle.requires_position,
+        landing_with_gps: vehicle.landing_with_gps,
+        has_manual_throttle: vehicle.has_manual_throttle,
+    }));
+}
+
+fn task_twentyfive_hz_logging(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.twentyfive_hz_logging = vehicle.ticks.twentyfive_hz_logging.saturating_add(1);
+    vehicle.last_twentyfive_hz_logging = Some(twentyfive_hz_logging(TwentyfiveHzLoggingInputs {
+        log_bitmask: vehicle.log_bitmask,
+    }));
+}
+
+fn task_three_hz_loop(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.three_hz_loop = vehicle.ticks.three_hz_loop.saturating_add(1);
+    vehicle.last_three_hz = Some(three_hz_loop());
+}
+
+fn task_one_hz_loop(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.one_hz_loop = vehicle.ticks.one_hz_loop.saturating_add(1);
+    vehicle.last_one_hz = Some(one_hz_loop(OneHzLoopInputs {
+        log_bitmask: vehicle.log_bitmask,
+        motors_armed: vehicle.motors.armed,
+        using_rate_thread: vehicle.using_rate_thread,
+        land_complete: vehicle.flight_mode.land_complete,
+    }));
 }
 
 /// First Copter-owned FAST_TASK, in upstream table form.
@@ -1307,6 +1945,82 @@ pub fn copter_next_fast_tasks() -> [Task<CopterVehicleLoop>; 2] {
 #[must_use]
 pub fn copter_next_scheduled_tasks() -> [Task<CopterVehicleLoop>; 1] {
     [copter_update_batt_compass_task()]
+}
+
+/// `loop_rate_logging` scheduled row (`LOOP_RATE`).
+#[must_use]
+pub fn copter_loop_rate_logging_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_loop_rate_logging,
+        name: "loop_rate_logging",
+        rate_hz: LOOP_RATE_LOGGING_RATE_HZ,
+        max_time_micros: LOOP_RATE_LOGGING_MAX_TIME_MICROS,
+        priority: LOOP_RATE_LOGGING_PRIORITY,
+    }
+}
+
+/// `ten_hz_logging_loop` scheduled row.
+#[must_use]
+pub fn copter_ten_hz_logging_loop_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_ten_hz_logging_loop,
+        name: "ten_hz_logging_loop",
+        rate_hz: TEN_HZ_LOGGING_RATE_HZ,
+        max_time_micros: TEN_HZ_LOGGING_MAX_TIME_MICROS,
+        priority: TEN_HZ_LOGGING_PRIORITY,
+    }
+}
+
+/// `twentyfive_hz_logging` scheduled row.
+#[must_use]
+pub fn copter_twentyfive_hz_logging_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_twentyfive_hz_logging,
+        name: "twentyfive_hz_logging",
+        rate_hz: TWENTYFIVE_HZ_LOGGING_RATE_HZ,
+        max_time_micros: TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS,
+        priority: TWENTYFIVE_HZ_LOGGING_PRIORITY,
+    }
+}
+
+/// `three_hz_loop` scheduled row.
+#[must_use]
+pub fn copter_three_hz_loop_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_three_hz_loop,
+        name: "three_hz_loop",
+        rate_hz: THREE_HZ_LOOP_RATE_HZ,
+        max_time_micros: THREE_HZ_LOOP_MAX_TIME_MICROS,
+        priority: THREE_HZ_LOOP_PRIORITY,
+    }
+}
+
+/// `one_hz_loop` scheduled row.
+#[must_use]
+pub fn copter_one_hz_loop_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_one_hz_loop,
+        name: "one_hz_loop",
+        rate_hz: ONE_HZ_LOOP_RATE_HZ,
+        max_time_micros: ONE_HZ_LOOP_MAX_TIME_MICROS,
+        priority: ONE_HZ_LOOP_PRIORITY,
+    }
+}
+
+/// `HAL_LOGGING_ENABLED` scheduled leftovers, table order.
+#[must_use]
+pub fn copter_logging_tasks() -> [Task<CopterVehicleLoop>; 3] {
+    [
+        copter_loop_rate_logging_task(),
+        copter_ten_hz_logging_loop_task(),
+        copter_twentyfive_hz_logging_task(),
+    ]
+}
+
+/// Next always-on Copter-owned scheduled leftovers after the logging trio.
+#[must_use]
+pub fn copter_periodic_loop_tasks() -> [Task<CopterVehicleLoop>; 2] {
+    [copter_three_hz_loop_task(), copter_one_hz_loop_task()]
 }
 
 /// Advance one scheduler tick and run the leftover pass.

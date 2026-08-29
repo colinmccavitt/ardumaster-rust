@@ -2,16 +2,26 @@
 
 use ap_copter::radio::ReadRadioLeftover;
 use ap_copter::vehicle_loop::{
-    always_on_tasks, copter_first_fast_tasks, copter_first_scheduled_tasks, copter_next_fast_tasks,
-    copter_next_scheduled_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks,
-    motors_output, motors_output_main, rc_loop, read_ahrs, read_inertia, read_mode_switch,
-    run_scheduler_tick, throttle_loop, update_batt_compass, update_flight_mode,
-    update_land_and_crash_detectors, CopterVehicleLoop, EkfResetMethod, InterlockEdge,
-    ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover,
-    MotorsOutputPush, TaskKind, UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS,
-    COPTER_LOOP_RATE_HZ, FAST_TASK_PRI0, MASK_LOG_PM, MODE_THROW, RC_LOOP_MAX_TIME_MICROS,
-    RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING, SCHEDULER_TASKS, THROTTLE_LOOP_MAX_TIME_MICROS,
-    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
+    always_on_tasks, ap_value, copter_first_fast_tasks, copter_first_scheduled_tasks,
+    copter_logging_tasks, copter_next_fast_tasks, copter_next_scheduled_tasks,
+    copter_periodic_loop_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks,
+    loop_rate_logging, motors_output, motors_output_main, one_hz_loop, rc_loop, read_ahrs,
+    read_inertia, read_mode_switch, run_scheduler_tick, should_log, ten_hz_logging_loop,
+    three_hz_loop, throttle_loop, twentyfive_hz_logging, update_batt_compass, update_flight_mode,
+    update_land_and_crash_detectors, ApState, CopterVehicleLoop, EkfResetMethod, InterlockEdge,
+    LoopRateLoggingInputs, ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive,
+    MotorsOutputMainLeftover, MotorsOutputPush, OneHzLoopInputs, TaskKind, TenHzLoggingInputs,
+    TwentyfiveHzLoggingInputs, UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS,
+    COPTER_LOOP_RATE_HZ, DEFAULT_LOG_BITMASK, FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS,
+    LOOP_RATE_LOGGING_PRIORITY, MASK_LOG_ANY, MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED,
+    MASK_LOG_IMU, MASK_LOG_IMU_FAST, MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW,
+    ONE_HZ_LOOP_MAX_TIME_MICROS, ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ,
+    RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING, SCHEDULER_TASKS,
+    TEN_HZ_LOGGING_MAX_TIME_MICROS, TEN_HZ_LOGGING_PRIORITY, TEN_HZ_LOGGING_RATE_HZ,
+    THREE_HZ_LOOP_MAX_TIME_MICROS, THREE_HZ_LOOP_PRIORITY, THREE_HZ_LOOP_RATE_HZ,
+    THROTTLE_LOOP_MAX_TIME_MICROS, THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ,
+    TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS, TWENTYFIVE_HZ_LOGGING_PRIORITY,
+    TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
     UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
 };
 use ap_hal::time::{Clock, Micros, Millis};
@@ -110,6 +120,22 @@ fn remaining_leftovers_keep_later_callbacks() {
         .any(|name| *name == "Copter::update_batt_compass"));
     assert!(REMAINING.contains(&"Copter::check_ekf_reset"));
     assert!(REMAINING.contains(&"Copter::update_home_from_EKF"));
+    assert!(REMAINING.contains(&"Copter::init_simple_bearing"));
+    assert!(REMAINING.contains(&"Copter::update_altitude"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::loop_rate_logging"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::ten_hz_logging_loop"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::twentyfive_hz_logging"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::three_hz_loop"));
+    assert!(!REMAINING.iter().any(|name| *name == "Copter::ap_value"));
+    assert!(!REMAINING.iter().any(|name| *name == "Copter::one_hz_loop"));
 }
 
 #[test]
@@ -528,4 +554,395 @@ fn scheduler_runs_update_batt_compass_every_fortieth_tick() {
     let leftover = vehicle.last_batt_compass.expect("update_batt_compass ran");
     assert!(leftover.battery_read);
     assert!(leftover.compass_read);
+}
+
+#[test]
+fn loop_rate_logging_is_the_loop_rate_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "loop_rate_logging")
+        .expect("loop_rate_logging");
+    assert!(task.rate_hz == LOOP_RATE);
+    assert_eq!(task.max_time_micros, LOOP_RATE_LOGGING_MAX_TIME_MICROS);
+    assert_eq!(task.priority, LOOP_RATE_LOGGING_PRIORITY);
+    assert_eq!(task.gate, Some("HAL_LOGGING_ENABLED"));
+}
+
+#[test]
+fn ten_hz_logging_is_the_ten_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "ten_hz_logging_loop")
+        .expect("ten_hz_logging_loop");
+    assert!(task.rate_hz == TEN_HZ_LOGGING_RATE_HZ);
+    assert_eq!(task.max_time_micros, TEN_HZ_LOGGING_MAX_TIME_MICROS);
+    assert_eq!(task.priority, TEN_HZ_LOGGING_PRIORITY);
+}
+
+#[test]
+fn twentyfive_hz_logging_is_the_twentyfive_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "twentyfive_hz_logging")
+        .expect("twentyfive_hz_logging");
+    assert!(task.rate_hz == TWENTYFIVE_HZ_LOGGING_RATE_HZ);
+    assert_eq!(task.max_time_micros, TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS);
+    assert_eq!(task.priority, TWENTYFIVE_HZ_LOGGING_PRIORITY);
+}
+
+#[test]
+fn three_hz_loop_is_the_three_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "three_hz_loop")
+        .expect("three_hz_loop");
+    assert!(task.rate_hz == THREE_HZ_LOOP_RATE_HZ);
+    assert_eq!(task.max_time_micros, THREE_HZ_LOOP_MAX_TIME_MICROS);
+    assert_eq!(task.priority, THREE_HZ_LOOP_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn one_hz_loop_is_the_one_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "one_hz_loop")
+        .expect("one_hz_loop");
+    assert!(task.rate_hz == ONE_HZ_LOOP_RATE_HZ);
+    assert_eq!(task.max_time_micros, ONE_HZ_LOOP_MAX_TIME_MICROS);
+    assert_eq!(task.priority, ONE_HZ_LOOP_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn loop_rate_logging_always_writes_spol_and_skips_att_on_default_bitmask() {
+    let leftover = loop_rate_logging(LoopRateLoggingInputs {
+        log_bitmask: DEFAULT_LOG_BITMASK,
+        logs_attitude: false,
+        using_rate_thread: false,
+    });
+    assert!(leftover.write_spol);
+    assert!(!leftover.write_attitude);
+    assert!(!leftover.write_rate);
+    assert!(!leftover.write_pids);
+    assert!(!leftover.write_notch);
+    assert!(!leftover.write_imu);
+}
+
+#[test]
+fn loop_rate_logging_writes_att_rate_pid_when_fast_and_mode_does_not() {
+    let leftover = loop_rate_logging(LoopRateLoggingInputs {
+        log_bitmask: MASK_LOG_ATTITUDE_FAST | MASK_LOG_IMU_FAST,
+        logs_attitude: false,
+        using_rate_thread: false,
+    });
+    assert!(leftover.write_attitude);
+    assert!(leftover.write_rate);
+    assert!(leftover.write_pids);
+    assert!(leftover.write_imu);
+    assert!(leftover.write_spol);
+}
+
+#[test]
+fn loop_rate_logging_skips_rate_and_pid_on_the_rate_thread() {
+    let leftover = loop_rate_logging(LoopRateLoggingInputs {
+        log_bitmask: MASK_LOG_ATTITUDE_FAST,
+        logs_attitude: false,
+        using_rate_thread: true,
+    });
+    assert!(leftover.write_attitude);
+    assert!(!leftover.write_rate);
+    assert!(!leftover.write_pids);
+    assert!(leftover.write_spol);
+}
+
+#[test]
+fn loop_rate_logging_skips_att_when_the_mode_already_logs_it() {
+    let leftover = loop_rate_logging(LoopRateLoggingInputs {
+        log_bitmask: MASK_LOG_ATTITUDE_FAST,
+        logs_attitude: true,
+        using_rate_thread: false,
+    });
+    assert!(!leftover.write_attitude);
+    assert!(!leftover.write_rate);
+    assert!(!leftover.write_pids);
+    assert!(leftover.write_spol);
+}
+
+#[test]
+fn ten_hz_logging_always_writes_ahrs_attitude() {
+    let leftover = ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: 0,
+        logs_attitude: true,
+        using_rate_thread: true,
+        requires_position: false,
+        landing_with_gps: false,
+        has_manual_throttle: true,
+    });
+    assert!(leftover.write_ahrs_attitude);
+    assert!(!leftover.write_attitude);
+    assert!(!leftover.write_rate);
+    assert!(!leftover.write_pids);
+    assert!(leftover.write_ekf_pos);
+    assert!(!leftover.write_motors);
+    assert!(!leftover.write_rcin);
+    assert!(!leftover.write_rssi);
+    assert!(!leftover.write_ntun);
+    assert!(!leftover.write_proximity);
+}
+
+#[test]
+fn ten_hz_logging_default_bitmask_writes_med_att_and_ntun_for_position_modes() {
+    let leftover = ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: DEFAULT_LOG_BITMASK,
+        logs_attitude: false,
+        using_rate_thread: false,
+        requires_position: true,
+        landing_with_gps: false,
+        has_manual_throttle: false,
+    });
+    assert!(leftover.write_ahrs_attitude);
+    assert!(leftover.write_attitude);
+    assert!(leftover.write_rate);
+    assert!(leftover.write_pids);
+    assert!(leftover.write_ekf_pos);
+    assert!(leftover.write_motors);
+    assert!(leftover.write_rcin);
+    assert!(leftover.write_rcout);
+    assert!(leftover.write_ntun);
+    assert!(leftover.write_vibration);
+    assert!(!leftover.write_rssi);
+    assert!(!leftover.write_mount);
+}
+
+#[test]
+fn ten_hz_logging_skips_med_att_when_fast_is_set() {
+    let leftover = ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: DEFAULT_LOG_BITMASK | MASK_LOG_ATTITUDE_FAST,
+        logs_attitude: false,
+        using_rate_thread: false,
+        requires_position: true,
+        landing_with_gps: false,
+        has_manual_throttle: false,
+    });
+    assert!(!leftover.write_attitude);
+    assert!(!leftover.write_rate);
+    assert!(!leftover.write_pids);
+    assert!(!leftover.write_ekf_pos);
+}
+
+#[test]
+fn ten_hz_logging_ntun_refuses_manual_throttle_without_position() {
+    let leftover = ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: MASK_LOG_NTUN,
+        logs_attitude: false,
+        using_rate_thread: false,
+        requires_position: false,
+        landing_with_gps: false,
+        has_manual_throttle: true,
+    });
+    assert!(!leftover.write_ntun);
+
+    let landing = ten_hz_logging_loop(TenHzLoggingInputs {
+        log_bitmask: MASK_LOG_NTUN,
+        logs_attitude: false,
+        using_rate_thread: false,
+        requires_position: false,
+        landing_with_gps: true,
+        has_manual_throttle: true,
+    });
+    assert!(landing.write_ntun);
+}
+
+#[test]
+fn twentyfive_hz_logging_moves_ekf_pos_when_att_fast() {
+    let leftover = twentyfive_hz_logging(TwentyfiveHzLoggingInputs {
+        log_bitmask: MASK_LOG_ATTITUDE_FAST | MASK_LOG_IMU,
+    });
+    assert!(leftover.write_ekf_pos);
+    assert!(leftover.write_imu);
+    assert!(!leftover.write_gyro_fft);
+}
+
+#[test]
+fn twentyfive_hz_logging_skips_imu_when_fast_already_wrote_it() {
+    let leftover = twentyfive_hz_logging(TwentyfiveHzLoggingInputs {
+        log_bitmask: MASK_LOG_IMU | MASK_LOG_IMU_FAST,
+    });
+    assert!(!leftover.write_ekf_pos);
+    assert!(!leftover.write_imu);
+}
+
+#[test]
+fn three_hz_loop_runs_stock_multicopter_callees() {
+    let leftover = three_hz_loop();
+    assert!(leftover.failsafe_gcs_check);
+    assert!(leftover.failsafe_terrain_check);
+    assert!(leftover.failsafe_deadreckon_check);
+    assert!(!leftover.tuning);
+    assert!(leftover.low_alt_avoidance);
+}
+
+#[test]
+fn ap_value_walks_packed_bools_in_declaration_order() {
+    assert_eq!(ap_value(ApState::default()), 0);
+
+    let mut ap = ApState::default();
+    ap.land_complete = true;
+    assert_eq!(ap_value(ap), 1 << 7);
+
+    ap.auto_armed = true;
+    assert_eq!(ap_value(ap), (1 << 5) | (1 << 7));
+
+    ap.prec_land_active = true;
+    assert_eq!(ap_value(ap), (1 << 5) | (1 << 7) | (1 << 26));
+}
+
+#[test]
+fn one_hz_loop_logs_ap_state_only_for_low_sixteen_bits() {
+    let any = one_hz_loop(OneHzLoopInputs {
+        log_bitmask: MASK_LOG_ATTITUDE_MED,
+        motors_armed: false,
+        using_rate_thread: false,
+        land_complete: false,
+    });
+    assert!(any.log_ap_state);
+    assert!(any.update_using_interlock);
+    assert!(any.set_frame_class_and_type);
+    assert!(any.update_throttle_range);
+    assert!(any.enable_aux_servos);
+    assert!(any.terrain_logging);
+    assert!(!any.adsb_set_is_flying);
+    assert!(any.notify_flying);
+    assert!(any.flying);
+    assert!(any.attitude_notch_sample_rate);
+    assert!(any.pos_control_notch_sample_rate);
+    assert!(!any.start_rate_thread);
+
+    let motbatt_only = one_hz_loop(OneHzLoopInputs {
+        log_bitmask: MASK_LOG_MOTBATT,
+        motors_armed: true,
+        using_rate_thread: true,
+        land_complete: true,
+    });
+    assert!(!motbatt_only.log_ap_state);
+    assert!(!motbatt_only.update_using_interlock);
+    assert!(!motbatt_only.set_frame_class_and_type);
+    assert!(!motbatt_only.update_throttle_range);
+    assert!(motbatt_only.enable_aux_servos);
+    assert!(!motbatt_only.flying);
+    assert!(!motbatt_only.attitude_notch_sample_rate);
+    assert!(motbatt_only.pos_control_notch_sample_rate);
+    assert_eq!(should_log(MASK_LOG_MOTBATT, MASK_LOG_ANY), false);
+}
+
+#[test]
+fn scheduler_runs_loop_rate_logging_every_loop() {
+    let tasks = copter_logging_tasks();
+    let mut last = [0u16; 3];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.log_bitmask = MASK_LOG_ATTITUDE_FAST;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.loop_rate_logging, 1);
+    assert_eq!(vehicle.ticks.ten_hz_logging_loop, 0);
+    assert_eq!(vehicle.ticks.twentyfive_hz_logging, 0);
+    let leftover = vehicle
+        .last_loop_rate_logging
+        .expect("loop_rate_logging ran");
+    assert!(leftover.write_attitude);
+    assert!(leftover.write_spol);
+}
+
+#[test]
+fn scheduler_runs_twentyfive_hz_logging_every_sixteenth_tick() {
+    let tasks = copter_logging_tasks();
+    let mut last = [0u16; 3];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.log_bitmask = MASK_LOG_ATTITUDE_FAST | MASK_LOG_IMU;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..15 {
+        let _ = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(vehicle.ticks.twentyfive_hz_logging, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert!(stats.tasks_run >= 2);
+    assert_eq!(vehicle.ticks.loop_rate_logging, 16);
+    assert_eq!(vehicle.ticks.twentyfive_hz_logging, 1);
+    let leftover = vehicle
+        .last_twentyfive_hz_logging
+        .expect("twentyfive_hz_logging ran");
+    assert!(leftover.write_ekf_pos);
+    assert!(leftover.write_imu);
+}
+
+#[test]
+fn scheduler_runs_ten_hz_logging_every_fortieth_tick() {
+    let tasks = copter_logging_tasks();
+    let mut last = [0u16; 3];
+    let mut vehicle = CopterVehicleLoop::typical();
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..39 {
+        let _ = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(vehicle.ticks.ten_hz_logging_loop, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert!(stats.tasks_run >= 2);
+    assert_eq!(vehicle.ticks.loop_rate_logging, 40);
+    assert_eq!(vehicle.ticks.ten_hz_logging_loop, 1);
+    let leftover = vehicle
+        .last_ten_hz_logging
+        .expect("ten_hz_logging_loop ran");
+    assert!(leftover.write_ahrs_attitude);
+    assert!(leftover.write_attitude);
+    assert!(leftover.write_ntun);
+}
+
+#[test]
+fn scheduler_runs_three_hz_then_one_hz() {
+    let tasks = copter_periodic_loop_tasks();
+    let mut last = [0u16; 2];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.flight_mode.land_complete = true;
+    vehicle.motors.armed = true;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..132 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.three_hz_loop, 0);
+        assert_eq!(vehicle.ticks.one_hz_loop, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.three_hz_loop, 1);
+    assert_eq!(vehicle.ticks.one_hz_loop, 0);
+    let three = vehicle.last_three_hz.expect("three_hz_loop ran");
+    assert!(three.failsafe_gcs_check);
+    assert!(three.low_alt_avoidance);
+
+    for _ in 0..266 {
+        let _ = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(vehicle.ticks.one_hz_loop, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(vehicle.ticks.one_hz_loop, 1);
+    assert!(stats.tasks_run >= 1);
+    let one = vehicle.last_one_hz.expect("one_hz_loop ran");
+    assert!(one.log_ap_state);
+    assert!(!one.update_using_interlock);
+    assert!(!one.flying);
 }
