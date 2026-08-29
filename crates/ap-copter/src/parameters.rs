@@ -30,7 +30,9 @@
 //! (`AP_SIM_ENABLED`). After `SIM_` the
 //! next leftover is the stock `BARO` `GOBJECT`. After `BARO` the
 //! next leftover is the stock `GPS` `GOBJECT`. After `GPS` the
-//! next leftover is the stock `SCHED_` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `SCHED_` `GOBJECT`. After `SCHED_` the
+//! next leftover is the stock `AVOID_` `GOBJECT`
+//! (`AP_AVOIDANCE_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1199,14 +1201,14 @@ pub fn for_each_gps_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_avoid` — next leftover after `SCHED_`. Not this leftover.
+/// `Parameters::k_param_avoid` — next `GOBJECT`, prefix `AVOID_`.
 pub const K_PARAM_AVOID: u16 = 95;
 
 /// Stock `SCHED_` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `GPS`. Nested
-/// `AP_Scheduler` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `AP_Scheduler` `var_info` is not this leftover. `AVOID_` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const SCHED_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("SCHED_", K_PARAM_SCHEDULER)];
 
 /// First (only) row of the `SCHED_` leftover.
@@ -1226,6 +1228,38 @@ pub fn find_sched_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `SCHED_` leftover as `ParamInfo` rows.
 pub fn for_each_sched_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in SCHED_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_rally` — next leftover after `AVOID_`. Not this leftover.
+pub const K_PARAM_RALLY: u16 = 45;
+
+/// Stock `AVOID_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `SCHED_`. `AVOID_` is
+/// `AP_AVOIDANCE_ENABLED` and a stock multicopter compiles it in. Nested
+/// `AC_Avoid` `var_info` is not this leftover. `RALLY_` stays later.
+/// Heli `IM_` is not a row of this leftover.
+pub const AVOID_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("AVOID_", K_PARAM_AVOID)];
+
+/// First (only) row of the `AVOID_` leftover.
+#[must_use]
+pub fn avoid_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    AVOID_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `AVOID_` leftover by group prefix.
+#[must_use]
+pub fn find_avoid_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    AVOID_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `AVOID_` leftover as `ParamInfo` rows.
+pub fn for_each_avoid_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in AVOID_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
