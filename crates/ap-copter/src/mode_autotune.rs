@@ -5,8 +5,9 @@
 //! Multi `updating_*` math now lives in [`crate::autotune_update_gains`].
 //! Sequencing (`next_tune_type` / next-axis / backoff) lives in
 //! [`crate::autotune_next`]. Multi load/save leftover lives in
-//! [`crate::autotune_load_save`]. The rest of the Multi library stays for a
-//! later slice. What this file owns is `init`
+//! [`crate::autotune_load_save`]. Multi `test_init` leftover lives in
+//! [`crate::autotune_test_init`]. PosHold lean, GCS, and the rest of
+//! the Multi library stay for a later slice. What this file owns is `init`
 //! (from-mode / throttle / flying gates, Loiter-or-PosHold, TuneMode /
 //! first-axis), `run` (Copter land/disarm wrapper, TuneMode dispatch,
 //! pilot override, and the level / execute / abort loop), and the Multi
