@@ -13,6 +13,11 @@
 //! the NE slice of `AC_Avoid::adjust_velocity` with only that proximity
 //! arm compiled in.
 //!
+//! The third leftover is the full path: [`Avoid::adjust_velocity`] and
+//! [`Avoid::adjust_velocity_ned_m`]. Those run proximity (earth → body →
+//! earth), the vertical fence tail, and the NE / U backup mix.
+//! [`AdjustVelocityContext`] injects the fence / proximity / AHRS reads.
+//!
 //! ADR-0004 forbids the fence / AHRS / proximity singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
 //! `get_alt_in_alt_*_frame_m`, and `ahrs.get_hgt_ctrl_limit` /
@@ -32,9 +37,10 @@
 pub mod avoid;
 
 pub use avoid::{
-    get_avoidance_adjusted_climbrate_ms, AdjustVelocityNeLeftover, AdjustVelocityZContext,
-    AdjustVelocityZLeftover, Avoid, ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX,
-    AVOID_DEFAULT, BACKUP_DEADZONE_M_DEFAULT, BACKUP_SPEED_MAX_NE_MS_DEFAULT,
-    BACKUP_SPEED_MAX_U_MS_DEFAULT, BEHAVIOR_SLIDE, BEHAVIOR_STOP, DISABLED, MARGIN_M_DEFAULT,
-    STOP_AT_BEACON_FENCE, STOP_AT_FENCE, USE_PROXIMITY_SENSOR,
+    get_avoidance_adjusted_climbrate_ms, AdjustVelocityContext, AdjustVelocityLeftover,
+    AdjustVelocityNeLeftover, AdjustVelocityZContext, AdjustVelocityZLeftover, Avoid,
+    ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX, AVOID_DEFAULT,
+    BACKUP_DEADZONE_M_DEFAULT, BACKUP_SPEED_MAX_NE_MS_DEFAULT, BACKUP_SPEED_MAX_U_MS_DEFAULT,
+    BEHAVIOR_SLIDE, BEHAVIOR_STOP, DISABLED, MARGIN_M_DEFAULT, STOP_AT_BEACON_FENCE, STOP_AT_FENCE,
+    USE_PROXIMITY_SENSOR,
 };

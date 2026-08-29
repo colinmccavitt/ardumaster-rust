@@ -1,14 +1,16 @@
-//! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, and the
-//! first horizontal leftover: `limit_velocity_NE` plus proximity-backed
-//! STOP.
+//! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, the
+//! horizontal leftover (`limit_velocity_NE` plus proximity-backed STOP),
+//! and the full `adjust_velocity` leftover (NE / body proximity + Z +
+//! NEU backup mix).
 //!
-//! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity_z`,
-//! `limit_velocity_NE`, `adjust_velocity_proximity` STOP arm) and
+//! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity`,
+//! `adjust_velocity_NED_m`, `adjust_velocity_z`, `limit_velocity_NE`,
+//! `adjust_velocity_proximity`) and
 //! `ArduCopter/mode.cpp` (`Mode::get_avoidance_adjusted_climbrate_ms`).
 
 use ap_fence::{TYPE_ALT_MAX, TYPE_ALT_MIN};
 use ap_math::control::sqrt_controller;
-use ap_math::scalar::{is_negative, is_positive, is_zero, safe_sqrt, sq};
+use ap_math::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq};
 use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
 
@@ -157,7 +159,63 @@ pub struct AdjustVelocityNeLeftover {
     pub backing_up: bool,
 }
 
-/// `AC_Avoid` enable bitmask, vertical leftover, and NE / proximity leftover.
+/// Injected leftovers for the full `AC_Avoid::adjust_velocity` leftover.
+///
+/// ADR-0004 forbids the fence / proximity / AHRS singletons. Fence NE
+/// (circle / polygon / beacon) and `limit_accel_NEU_cm` stay later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdjustVelocityContext {
+    /// Leftover of `AP::proximity()` / AHRS yaw inside the proximity arm.
+    pub proximity: ProximityStopContext,
+    /// Leftover of `AP::fence()` / AHRS height inside `adjust_velocity_z`.
+    pub vertical: AdjustVelocityZContext,
+}
+
+impl Default for AdjustVelocityContext {
+    fn default() -> Self {
+        Self {
+            proximity: ProximityStopContext::default(),
+            vertical: AdjustVelocityZContext::default(),
+        }
+    }
+}
+
+/// Leftover of one `AC_Avoid::adjust_velocity` call.
+///
+/// Proximity (earth → body → earth) plus the vertical fence tail, then
+/// the NE / U backup mix. Circle / polygon / beacon NE stay later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdjustVelocityLeftover {
+    /// Desired NEU velocity after proximity, Z, and backup mix, cm/s.
+    pub desired_vel_neu_cms: Vector3f,
+    /// Combined backup after `AVOID_BACKUP_SPD` / `AVOID_BACKZ_SPD`, cm/s.
+    pub backup_vel_neu_cms: Vector3f,
+    /// Upstream `backing_up`.
+    pub backing_up: bool,
+    /// Proximity STOP zeroed the body-frame velocity.
+    pub proximity_stopped: bool,
+    /// Proximity `limit_velocity_NEU` changed the body-frame velocity.
+    pub proximity_limited: bool,
+    /// Vertical floor limit was armed.
+    pub limit_min_alt: bool,
+    /// Vertical ceiling limit was armed.
+    pub limit_max_alt: bool,
+}
+
+impl AdjustVelocityLeftover {
+    /// Upstream `adjust_velocity_NED_m` output frame, m/s.
+    #[must_use]
+    pub fn desired_vel_ned_ms(self) -> Vector3f {
+        Vector3f::new(
+            self.desired_vel_neu_cms.x * 0.01,
+            self.desired_vel_neu_cms.y * 0.01,
+            -self.desired_vel_neu_cms.z * 0.01,
+        )
+    }
+}
+
+/// `AC_Avoid` enable bitmask, vertical leftover, NE / proximity leftover,
+/// and the full `adjust_velocity` leftover.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Avoid {
     /// `AVOID_ENABLE` bitmask. Upstream `_enabled`.
@@ -626,6 +684,225 @@ impl Avoid {
             desired_vel_neu_cms: desired,
             backup_vel_ne_cms: backup.xy(),
             backing_up,
+        }
+    }
+
+    /// Full leftover of `AC_Avoid::adjust_velocity`.
+    ///
+    /// Disabled is identity. The proximity arm rotates earth NE through
+    /// body (obstacles are body-frame) and back. The fence tail is
+    /// [`Avoid::adjust_velocity_z`] only — circle / polygon / beacon NE
+    /// and `limit_accel_NEU_cm` stay later leftovers.
+    #[must_use]
+    pub fn adjust_velocity(
+        &self,
+        desired_vel_neu_cms: Vector3f,
+        k_p: f32,
+        accel_cmss: f32,
+        k_p_z: f32,
+        accel_z_cmss: f32,
+        dt: f32,
+        ctx: AdjustVelocityContext,
+    ) -> AdjustVelocityLeftover {
+        if self.enabled == DISABLED {
+            return AdjustVelocityLeftover {
+                desired_vel_neu_cms,
+                backup_vel_neu_cms: Vector3f::zero(),
+                backing_up: false,
+                proximity_stopped: false,
+                proximity_limited: false,
+                limit_min_alt: false,
+                limit_max_alt: false,
+            };
+        }
+
+        let accel_limited_cmss = accel_cmss.min(ACCEL_CMSS_MAX);
+        let prox = self.adjust_velocity_proximity(
+            k_p,
+            accel_limited_cmss,
+            desired_vel_neu_cms,
+            k_p_z,
+            accel_z_cmss,
+            dt,
+            ctx.proximity,
+        );
+        let mut desired = prox.desired_vel_neu_cms;
+
+        // `adjust_velocity_fence` tail: vertical fence only.
+        let z = self.adjust_velocity_z(k_p_z, accel_z_cmss, desired.z, dt, ctx.vertical);
+        desired.z = z.climb_rate_cms;
+
+        let mut q1 = Vector2f::zero();
+        let mut q2 = Vector2f::zero();
+        let mut q3 = Vector2f::zero();
+        let mut q4 = Vector2f::zero();
+        let mut back_up = 0.0_f32;
+        let mut back_down = 0.0_f32;
+        Self::find_max_quadrant_velocity_3d(
+            prox.backup_vel_neu_cms,
+            &mut q1,
+            &mut q2,
+            &mut q3,
+            &mut q4,
+            &mut back_up,
+            &mut back_down,
+        );
+        Self::find_max_quadrant_velocity_3d(
+            Vector3f::new(0.0, 0.0, z.backup_speed_cms),
+            &mut q1,
+            &mut q2,
+            &mut q3,
+            &mut q4,
+            &mut back_up,
+            &mut back_down,
+        );
+
+        // A single NE source keeps the proximity backup vector. Upstream
+        // quadrant binning requires both components non-zero, so an
+        // axis-aligned leftover would otherwise vanish before fence NE
+        // sources exist to combine.
+        let backup_ne = if prox.backup_vel_neu_cms.xy().is_zero() {
+            q1 + q2 + q3 + q4
+        } else {
+            prox.backup_vel_neu_cms.xy()
+        };
+        let mut backup = Vector3f::new(backup_ne.x, backup_ne.y, back_down + back_up);
+
+        let mut backing_up = false;
+        let backup_speed_max_ne_cms = self.backup_speed_max_ne_ms * 100.0;
+        if !backup.xy().is_zero() && is_positive(backup_speed_max_ne_cms) {
+            backing_up = true;
+            let mut xy = backup.xy();
+            xy.limit_length(backup_speed_max_ne_cms);
+            backup.x = xy.x;
+            backup.y = xy.y;
+            if !is_zero(backup.x) {
+                desired.x = if is_positive(backup.x) {
+                    desired.x.max(backup.x)
+                } else {
+                    desired.x.min(backup.x)
+                };
+            }
+            if !is_zero(backup.y) {
+                desired.y = if is_positive(backup.y) {
+                    desired.y.max(backup.y)
+                } else {
+                    desired.y.min(backup.y)
+                };
+            }
+        }
+
+        let backup_speed_max_u_cms = self.backup_speed_max_u_ms * 100.0;
+        if !is_zero(backup.z) && is_positive(backup_speed_max_u_cms) {
+            backing_up = true;
+            backup.z = constrain_value(backup.z, -backup_speed_max_u_cms, backup_speed_max_u_cms);
+            if !is_zero(backup.z) {
+                desired.z = if is_positive(backup.z) {
+                    desired.z.max(backup.z)
+                } else {
+                    desired.z.min(backup.z)
+                };
+            }
+        }
+
+        AdjustVelocityLeftover {
+            desired_vel_neu_cms: desired,
+            backup_vel_neu_cms: backup,
+            backing_up,
+            proximity_stopped: prox.stopped,
+            proximity_limited: prox.limited,
+            limit_min_alt: z.limit_min_alt,
+            limit_max_alt: z.limit_max_alt,
+        }
+    }
+
+    /// Upstream `AC_Avoid::adjust_velocity_NED_m`.
+    ///
+    /// Converts NED m/s → NEU cm/s, runs [`Avoid::adjust_velocity`], and
+    /// leaves the leftover in NEU cm/s ([`AdjustVelocityLeftover::desired_vel_ned_ms`]).
+    #[must_use]
+    pub fn adjust_velocity_ned_m(
+        &self,
+        desired_vel_ned_ms: Vector3f,
+        k_p: f32,
+        accel_mss: f32,
+        k_p_z: f32,
+        accel_z_mss: f32,
+        dt: f32,
+        ctx: AdjustVelocityContext,
+    ) -> AdjustVelocityLeftover {
+        let desired_vel_neu_cms = Vector3f::new(
+            desired_vel_ned_ms.x * 100.0,
+            desired_vel_ned_ms.y * 100.0,
+            -desired_vel_ned_ms.z * 100.0,
+        );
+        self.adjust_velocity(
+            desired_vel_neu_cms,
+            k_p,
+            accel_mss * 100.0,
+            k_p_z,
+            accel_z_mss * 100.0,
+            dt,
+            ctx,
+        )
+    }
+
+    /// Bin a backup velocity into the matching NE quadrant.
+    ///
+    /// Upstream `AC_Avoid::find_max_quadrant_velocity`. Axis-aligned
+    /// vectors (a zero component) match no quadrant.
+    pub fn find_max_quadrant_velocity(
+        desired_vel: Vector2f,
+        quad1_vel: &mut Vector2f,
+        quad2_vel: &mut Vector2f,
+        quad3_vel: &mut Vector2f,
+        quad4_vel: &mut Vector2f,
+    ) {
+        if desired_vel.is_zero() {
+            return;
+        }
+        if is_positive(desired_vel.x) && is_positive(desired_vel.y) {
+            quad1_vel.x = quad1_vel.x.max(desired_vel.x);
+            quad1_vel.y = quad1_vel.y.max(desired_vel.y);
+        }
+        if is_negative(desired_vel.x) && is_positive(desired_vel.y) {
+            quad2_vel.x = quad2_vel.x.min(desired_vel.x);
+            quad2_vel.y = quad2_vel.y.max(desired_vel.y);
+        }
+        if is_negative(desired_vel.x) && is_negative(desired_vel.y) {
+            quad3_vel.x = quad3_vel.x.min(desired_vel.x);
+            quad3_vel.y = quad3_vel.y.min(desired_vel.y);
+        }
+        if is_positive(desired_vel.x) && is_negative(desired_vel.y) {
+            quad4_vel.x = quad4_vel.x.max(desired_vel.x);
+            quad4_vel.y = quad4_vel.y.min(desired_vel.y);
+        }
+    }
+
+    /// Horizontal quadrants plus max-up / min-down vertical components.
+    ///
+    /// Upstream `AC_Avoid::find_max_quadrant_velocity_3D`.
+    pub fn find_max_quadrant_velocity_3d(
+        desired_vel: Vector3f,
+        quad1_vel: &mut Vector2f,
+        quad2_vel: &mut Vector2f,
+        quad3_vel: &mut Vector2f,
+        quad4_vel: &mut Vector2f,
+        max_z_vel: &mut f32,
+        min_z_vel: &mut f32,
+    ) {
+        Self::find_max_quadrant_velocity(
+            desired_vel.xy(),
+            quad1_vel,
+            quad2_vel,
+            quad3_vel,
+            quad4_vel,
+        );
+        if is_positive(desired_vel.z) && desired_vel.z > *max_z_vel {
+            *max_z_vel = desired_vel.z;
+        }
+        if is_negative(desired_vel.z) && desired_vel.z < *min_z_vel {
+            *min_z_vel = desired_vel.z;
         }
     }
 

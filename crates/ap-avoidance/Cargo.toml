@@ -1,6 +1,6 @@
 [package]
 name = "ap-avoidance"
-description = "Port of ArduPilot libraries/AC_Avoidance (Copter-4.7.0). COP-026 leftovers: enable bits, adjust_velocity_z, limit_velocity_NE, and proximity-backed STOP."
+description = "Port of ArduPilot libraries/AC_Avoidance (Copter-4.7.0). COP-026 leftovers: enable bits, adjust_velocity_z, limit_velocity_NE, proximity-backed STOP, and full adjust_velocity."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
