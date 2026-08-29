@@ -1,11 +1,12 @@
-//! `ModeGuided` init / set_destination / run / set_velocity leftover,
-//! upstream `ArduCopter/mode_guided.cpp`.
+//! `ModeGuided` init / set_destination / run / set_velocity /
+//! pos_control_run leftover, upstream `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
 //! to a coordinate, hold a velocity, or take an attitude. The first slice
-//! owns the enter and the Location dest setter. This slice owns the `run`
-//! dispatcher and the velocity setter. The `*_run` controller bodies,
-//! accel / angle setters, Guided-NoGPS, and Follow are later slices.
+//! owns the enter and the Location dest setter. The second owns the `run`
+//! dispatcher and the velocity setter. This slice owns `pos_control_run`.
+//! The remaining `*_run` bodies, accel / angle setters, Guided-NoGPS, and
+//! Follow are later slices.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -76,6 +77,26 @@
 //! acceleration, and stamps `update_time_ms`. A log write is compiled
 //! out when logging is off, and skipped when the caller passed
 //! `log_request = false`.
+//!
+//! # `pos_control_run` is two early exits, then a fly leftover
+//!
+//! `is_disarmed_or_landed` returns before terrain is consulted — a
+//! landed vehicle never fires `failsafe_terrain_on_event`. The
+//! `make_safe_ground_handling` argument is `tradheli && interlock`
+//! only; a tradheli with motor interlock stays spooled.
+//!
+//! A terrain dest that cannot read `get_terrain_D_m` fires terrain
+//! failsafe and returns without spooling or zeroing vel/accel. A
+//! non-terrain dest never asks. The fly path always writes
+//! `THROTTLE_UNLIMITED`, zeroes the guided vel/accel leftovers, and
+//! may `auto_yaw.set_mode(HOLD)` when the dest is stale *and* yaw
+//! is `RATE` or `ANGLE_RATE`. The timeout is `>` not `>=`, and
+//! `get_timeout_ms` floors `GUID_TIMEOUT` at 0.1 s.
+//!
+//! Terrain margin is zero unless the dest is terrain, then
+//! `MIN(wp_nav margin, 0.5 * |pos.z|)`. `input_pos_NED_m` gets that
+//! margin and the terrain D (zero when not terrain). Controllers
+//! and `input_thrust_vector_heading` always run on the fly path.
 
 /// `Mode::Number::GUIDED`.
 pub const MODE_NUMBER_GUIDED: u8 = 4;
@@ -662,7 +683,7 @@ pub enum GuidedRunBody {
     TakeOff,
     /// `SubMode::WP` → `wp_control_run` (and maybe a reached-GCS).
     Wp,
-    /// `SubMode::Pos` → `pos_control_run`.
+    /// `SubMode::Pos` → `pos_control_run` (body is [`guided_pos_control_run`]).
     Pos,
     /// `SubMode::Accel` → `accel_control_run`.
     Accel,
@@ -882,4 +903,156 @@ pub fn guided_set_velocity(view: &GuidedSetVelView) -> GuidedSetVel {
     let mut forwarded = *view;
     forwarded.accel_ned_mss = [0.0, 0.0, 0.0];
     guided_set_vel_accel(&forwarded)
+}
+
+/// Floor `GUID_TIMEOUT` at 0.1 s, upstream `get_timeout_ms`.
+pub const GUIDED_TIMEOUT_MIN_S: f32 = 0.1;
+
+/// `ParametersG2::guided_timeout` default.
+pub const GUIDED_TIMEOUT_DEFAULT_S: f32 = 3.0;
+
+/// Upstream `ModeGuided::get_timeout_ms`.
+///
+/// `MAX(guided_timeout, 0.1) * 1000` truncated toward zero into ms.
+/// A zero or negative param still times out after 100 ms — Guided must
+/// not wait forever for a dest that never arrives.
+#[must_use]
+pub fn guided_timeout_ms(guided_timeout_s: f32) -> u32 {
+    let timeout_s = if guided_timeout_s > GUIDED_TIMEOUT_MIN_S {
+        guided_timeout_s
+    } else {
+        GUIDED_TIMEOUT_MIN_S
+    };
+    (timeout_s * 1000.0) as u32
+}
+
+/// How `ModeGuided::pos_control_run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedPosControlExit {
+    /// `is_disarmed_or_landed`: `make_safe_ground_handling` and return.
+    /// Terrain is never consulted.
+    Disarmed {
+        /// `copter.is_tradheli() && motors->get_interlock()`.
+        keep_interlock: bool,
+    },
+    /// Terrain dest and `get_terrain_D_m` failed: `failsafe_terrain_on_event`
+    /// and return. Spool / vel / accel / yaw are left alone.
+    TerrainFailsafe,
+    /// Flew: unlimited spool, zero vel/accel, maybe HOLD, then Pos + att.
+    Flew {
+        /// `auto_yaw.set_mode(HOLD)` ran (stale dest and RATE / ANGLE_RATE).
+        yaw_hold: bool,
+        /// `terrain_d_m` passed to `input_pos_NED_m`. Zero when not terrain.
+        terrain_d_m: f32,
+        /// `terrain_margin_m` passed to `input_pos_NED_m`.
+        terrain_margin_m: f32,
+    },
+}
+
+/// Vehicle view `ModeGuided::pos_control_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedPosControlView {
+    /// `Mode::is_disarmed_or_landed()`.
+    pub disarmed_or_landed: bool,
+    /// `copter.is_tradheli()`.
+    pub is_tradheli: bool,
+    /// `motors->get_interlock()`.
+    pub motor_interlock: bool,
+    /// `guided_is_terrain_alt`.
+    pub terrain_alt: bool,
+    /// `wp_nav->get_terrain_D_m` succeeded. Consulted only when terrain.
+    pub terrain_d_ok: bool,
+    /// Terrain D, metres, when [`Self::terrain_d_ok`].
+    pub terrain_d_m: f32,
+    /// `wp_nav->get_terrain_margin_m()`.
+    pub wp_terrain_margin_m: f32,
+    /// `guided_pos_target_ned_m`.
+    pub pos_target_ned_m: [f32; 3],
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `update_time_ms` stamped by the last dest / vel setter.
+    pub update_time_ms: u32,
+    /// `g2.guided_timeout`, seconds.
+    pub guided_timeout_s: f32,
+    /// `auto_yaw.mode()` at the top of the tick.
+    pub auto_yaw: crate::auto_yaw::YawMode,
+}
+
+impl GuidedPosControlView {
+    /// After a non-terrain [`guided_set_destination`]: flying, dest fresh.
+    #[must_use]
+    pub const fn after_pos_dest() -> Self {
+        Self {
+            disarmed_or_landed: false,
+            is_tradheli: false,
+            motor_interlock: false,
+            terrain_alt: false,
+            terrain_d_ok: false,
+            terrain_d_m: 0.0,
+            wp_terrain_margin_m: 2.0,
+            pos_target_ned_m: [20.0, 10.0, -15.0],
+            now_ms: 1_100,
+            update_time_ms: 1_000,
+            guided_timeout_s: GUIDED_TIMEOUT_DEFAULT_S,
+            auto_yaw: crate::auto_yaw::YawMode::Hold,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::pos_control_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedPosControl {
+    /// Which arm returned, or the fly leftover.
+    pub exit: GuidedPosControlExit,
+}
+
+/// Upstream `ModeGuided::pos_control_run`.
+///
+/// Disarmed wins over terrain. Terrain fail wins over the fly path.
+/// Timeout uses wrapping unsigned subtract and `>`, not `>=`. Only
+/// [`crate::auto_yaw::YawMode::Rate`] and
+/// [`crate::auto_yaw::YawMode::AngleRate`] go to HOLD.
+#[must_use]
+pub fn guided_pos_control_run(view: &GuidedPosControlView) -> GuidedPosControl {
+    if view.disarmed_or_landed {
+        return GuidedPosControl {
+            exit: GuidedPosControlExit::Disarmed {
+                keep_interlock: view.is_tradheli && view.motor_interlock,
+            },
+        };
+    }
+
+    if view.terrain_alt && !view.terrain_d_ok {
+        return GuidedPosControl {
+            exit: GuidedPosControlExit::TerrainFailsafe,
+        };
+    }
+
+    let timed_out =
+        view.now_ms.wrapping_sub(view.update_time_ms) > guided_timeout_ms(view.guided_timeout_s);
+    let yaw_hold = timed_out
+        && matches!(
+            view.auto_yaw,
+            crate::auto_yaw::YawMode::Rate | crate::auto_yaw::YawMode::AngleRate
+        );
+
+    let terrain_d_m = if view.terrain_alt { view.terrain_d_m } else { 0.0 };
+    let terrain_margin_m = if view.terrain_alt {
+        let half_abs_z = 0.5 * view.pos_target_ned_m[2].abs();
+        if view.wp_terrain_margin_m < half_abs_z {
+            view.wp_terrain_margin_m
+        } else {
+            half_abs_z
+        }
+    } else {
+        0.0
+    };
+
+    GuidedPosControl {
+        exit: GuidedPosControlExit::Flew {
+            yaw_hold,
+            terrain_d_m,
+            terrain_margin_m,
+        },
+    }
 }

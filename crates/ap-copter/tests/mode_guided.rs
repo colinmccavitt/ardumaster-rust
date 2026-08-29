@@ -1,13 +1,16 @@
-//! `ModeGuided` init / set_destination / run / set_velocity leftovers,
-//! upstream `ArduCopter/mode_guided.cpp`.
+//! `ModeGuided` init / set_destination / run / set_velocity /
+//! pos_control_run leftovers, upstream `ArduCopter/mode_guided.cpp`.
 
+use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_guided::{
-    guided_init, guided_mode_flags, guided_run, guided_set_destination, guided_set_vel_accel,
-    guided_set_velocity, option_is_enabled, set_yaw_state_rad, use_wpnav_for_position_control,
-    GuidedInitView, GuidedOption, GuidedRunBody, GuidedRunView, GuidedSetDestFail,
-    GuidedSetDestView, GuidedSetVelView, GuidedSubMode, GuidedYawAction, MODE_NUMBER_FOLLOW,
-    MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS,
-    WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
+    guided_init, guided_mode_flags, guided_pos_control_run, guided_run, guided_set_destination,
+    guided_set_vel_accel, guided_set_velocity, guided_timeout_ms, option_is_enabled,
+    set_yaw_state_rad, use_wpnav_for_position_control, GuidedInitView, GuidedOption,
+    GuidedPosControlExit, GuidedPosControlView, GuidedRunBody, GuidedRunView, GuidedSetDestFail,
+    GuidedSetDestView, GuidedSetVelView, GuidedSubMode, GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S,
+    GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW, MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS,
+    WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS, WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS,
+    WP_SPD_UP_DEFAULT_MS,
 };
 
 #[test]
@@ -444,4 +447,218 @@ fn set_velocity_skips_log_when_request_or_compile_is_off() {
     let mut compiled_out = GuidedSetVelView::after_init();
     compiled_out.logging_enabled = false;
     assert!(!guided_set_velocity(&compiled_out).logged);
+}
+
+#[test]
+fn timeout_ms_floors_at_one_tenth_second() {
+    assert_eq!(guided_timeout_ms(GUIDED_TIMEOUT_DEFAULT_S), 3_000);
+    assert_eq!(guided_timeout_ms(GUIDED_TIMEOUT_MIN_S), 100);
+    assert_eq!(guided_timeout_ms(0.0), 100);
+    assert_eq!(guided_timeout_ms(-1.0), 100);
+    assert_eq!(guided_timeout_ms(0.05), 100);
+    assert_eq!(guided_timeout_ms(1.5), 1_500);
+}
+
+#[test]
+fn pos_run_after_dest_flies_without_terrain_or_hold() {
+    let out = guided_pos_control_run(&GuidedPosControlView::after_pos_dest());
+    assert_eq!(
+        out.exit,
+        GuidedPosControlExit::Flew {
+            yaw_hold: false,
+            terrain_d_m: 0.0,
+            terrain_margin_m: 0.0,
+        }
+    );
+}
+
+#[test]
+fn pos_run_disarmed_skips_terrain_failsafe() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.disarmed_or_landed = true;
+    view.terrain_alt = true;
+    view.terrain_d_ok = false;
+    let out = guided_pos_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedPosControlExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn pos_run_tradheli_interlock_is_the_only_keep() {
+    let mut heli = GuidedPosControlView::after_pos_dest();
+    heli.disarmed_or_landed = true;
+    heli.is_tradheli = true;
+    heli.motor_interlock = true;
+    assert_eq!(
+        guided_pos_control_run(&heli).exit,
+        GuidedPosControlExit::Disarmed {
+            keep_interlock: true,
+        }
+    );
+
+    let mut no_lock = heli;
+    no_lock.motor_interlock = false;
+    assert_eq!(
+        guided_pos_control_run(&no_lock).exit,
+        GuidedPosControlExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+
+    let mut not_heli = heli;
+    not_heli.is_tradheli = false;
+    assert_eq!(
+        guided_pos_control_run(&not_heli).exit,
+        GuidedPosControlExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn pos_run_terrain_dest_without_terrain_fails_closed() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.terrain_alt = true;
+    view.terrain_d_ok = false;
+    assert_eq!(
+        guided_pos_control_run(&view).exit,
+        GuidedPosControlExit::TerrainFailsafe
+    );
+}
+
+#[test]
+fn pos_run_non_terrain_never_asks_for_terrain_d() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.terrain_d_ok = false;
+    view.terrain_d_m = 12.0;
+    view.wp_terrain_margin_m = 5.0;
+    let out = guided_pos_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedPosControlExit::Flew {
+            yaw_hold: false,
+            terrain_d_m: 0.0,
+            terrain_margin_m: 0.0,
+        }
+    );
+}
+
+#[test]
+fn pos_run_terrain_margin_is_min_of_wpnav_and_half_abs_z() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.terrain_alt = true;
+    view.terrain_d_ok = true;
+    view.terrain_d_m = 12.0;
+    view.pos_target_ned_m = [0.0, 0.0, -15.0];
+    view.wp_terrain_margin_m = 2.0;
+    let out = guided_pos_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedPosControlExit::Flew {
+            yaw_hold: false,
+            terrain_d_m: 12.0,
+            terrain_margin_m: 2.0,
+        }
+    );
+
+    view.wp_terrain_margin_m = 20.0;
+    let out = guided_pos_control_run(&view);
+    match out.exit {
+        GuidedPosControlExit::Flew {
+            terrain_margin_m, ..
+        } => assert_eq!(terrain_margin_m.to_bits(), 7.5f32.to_bits()),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    view.pos_target_ned_m = [0.0, 0.0, 4.0];
+    view.wp_terrain_margin_m = 20.0;
+    let out = guided_pos_control_run(&view);
+    match out.exit {
+        GuidedPosControlExit::Flew {
+            terrain_margin_m, ..
+        } => assert_eq!(terrain_margin_m.to_bits(), 2.0f32.to_bits()),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn pos_run_timeout_holds_only_rate_and_angle_rate() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.now_ms = view.update_time_ms + 3_001;
+    view.auto_yaw = YawMode::Rate;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    view.auto_yaw = YawMode::AngleRate;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    for mode in [
+        YawMode::Hold,
+        YawMode::LookAtNextWp,
+        YawMode::Fixed,
+        YawMode::PilotRate,
+    ] {
+        view.auto_yaw = mode;
+        match guided_pos_control_run(&view).exit {
+            GuidedPosControlExit::Flew { yaw_hold, .. } => {
+                assert!(!yaw_hold, "{mode:?} must not HOLD on timeout")
+            }
+            other => panic!("expected Flew, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn pos_run_timeout_is_strictly_greater() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.auto_yaw = YawMode::Rate;
+    view.now_ms = view.update_time_ms + 3_000;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(!yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    view.now_ms = view.update_time_ms + 3_001;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn pos_run_timeout_uses_unsigned_wrap() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.auto_yaw = YawMode::Rate;
+    view.update_time_ms = 200;
+    view.now_ms = 100;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn pos_run_zero_guid_timeout_still_floors_to_100ms() {
+    let mut view = GuidedPosControlView::after_pos_dest();
+    view.guided_timeout_s = 0.0;
+    view.auto_yaw = YawMode::Rate;
+    view.now_ms = view.update_time_ms + 100;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(!yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+    view.now_ms = view.update_time_ms + 101;
+    match guided_pos_control_run(&view).exit {
+        GuidedPosControlExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
 }
