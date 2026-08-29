@@ -18,7 +18,8 @@
 //! `MODE_CIRCLE_ENABLED`). After `CIRCLE_` the next leftover is the
 //! stock `ATC_` `GOBJECT` (`GOBJECTVARPTR`). After `ATC_` the next leftover
 //! is the stock `PSC` `GOBJECT` (`GOBJECTPTR`). After `PSC` the next leftover
-//! is the stock `AHRS_` `GOBJECT`. Later groups, G2,
+//! is the stock `AHRS_` `GOBJECT`. After `AHRS_` the next leftover
+//! is the stock `MNT` `GOBJECT` (`HAL_MOUNT_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -912,7 +913,7 @@ pub fn for_each_psc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_camera_mount` — next leftover after `AHRS_`. Not this leftover.
+/// `Parameters::k_param_camera_mount` — next `GOBJECT`, prefix `MNT`.
 pub const K_PARAM_CAMERA_MOUNT: u16 = 166;
 
 /// Stock `AHRS_` leftover catalog.
@@ -937,6 +938,38 @@ pub fn find_ahrs_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `AHRS_` leftover as `ParamInfo` rows.
 pub fn for_each_ahrs_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in AHRS_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_battery` — next leftover after `MNT`. Not this leftover.
+pub const K_PARAM_BATTERY: u16 = 36;
+
+/// Stock `MNT` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `AHRS_`. `MNT` is
+/// `HAL_MOUNT_ENABLED` and a stock multicopter compiles it in. Nested
+/// `AP_Mount` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const MOUNT_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("MNT", K_PARAM_CAMERA_MOUNT)];
+
+/// First (only) row of the `MNT` leftover.
+#[must_use]
+pub fn mount_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    MOUNT_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `MNT` leftover by group prefix.
+#[must_use]
+pub fn find_mount_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    MOUNT_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `MNT` leftover as `ParamInfo` rows.
+pub fn for_each_mount_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in MOUNT_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
