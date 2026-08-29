@@ -12,7 +12,8 @@
 //! the next leftover is the contiguous `RELAY` / `CHUTE_` / `LGR_`
 //! `GOBJECT` group. After `LGR_` the next leftover is the stock
 //! `COMPASS_` `GOBJECT` (heli `IM_` is a `FRAME_CONFIG` row, not a
-//! Multi leftover). Later groups, G2, `load_parameters` conversions,
+//! Multi leftover). After `COMPASS_` the next leftover is the stock
+//! `INS` `GOBJECT`. Later groups, G2, `load_parameters` conversions,
 //! and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -739,7 +740,10 @@ pub const K_PARAM_COMPASS_ENABLED_DEPRECATED: u16 = 146;
 /// `Parameters::k_param_compass` — next `GOBJECT`, prefix `COMPASS_`.
 pub const K_PARAM_COMPASS: u16 = 147;
 
-/// `Parameters::k_param_ins` — next leftover after `COMPASS_`. Not this leftover.
+/// `Parameters::k_param_ins_old`. Deprecated. Not `INS`.
+pub const K_PARAM_INS_OLD: u16 = 2;
+
+/// `Parameters::k_param_ins` — next `GOBJECT`, prefix `INS`.
 pub const K_PARAM_INS: u16 = 3;
 
 /// Stock `COMPASS_` leftover catalog.
@@ -767,6 +771,35 @@ pub fn find_compass_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `COMPASS_` leftover as `ParamInfo` rows.
 pub fn for_each_compass_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in COMPASS_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_wp_nav` — next leftover after `INS`. Not this leftover.
+pub const K_PARAM_WP_NAV: u16 = 101;
+
+/// Stock `INS` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `COMPASS_`. Nested
+/// `AP_InertialSensor` `var_info` is not this leftover. `WP_` /
+/// `LOIT_` / `CIRCLE_` stay later.
+pub const INS_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("INS", K_PARAM_INS)];
+
+/// First (only) row of the `INS` leftover.
+#[must_use]
+pub fn ins_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    INS_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `INS` leftover by group prefix.
+#[must_use]
+pub fn find_ins_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    INS_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `INS` leftover as `ParamInfo` rows.
+pub fn for_each_ins_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in INS_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
