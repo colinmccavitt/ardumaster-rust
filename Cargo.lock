@@ -78,6 +78,7 @@ dependencies = [
  "ap-hal",
  "ap-math",
  "ap-motors",
+ "ap-precland",
  "ap-rc",
  "ap-scheduler",
  "ap-wpnav",

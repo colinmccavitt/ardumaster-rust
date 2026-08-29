@@ -14,6 +14,7 @@ ap-wpnav = { workspace = true }
 ap-rc = { workspace = true }
 ap-scheduler = { workspace = true }
 ap-hal = { workspace = true }
+ap-precland = { workspace = true }
 libm = { workspace = true }
 
 [features]

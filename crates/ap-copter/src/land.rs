@@ -10,17 +10,12 @@
 //! also an action is easier to test and harder to misuse when the two are
 //! separated.
 //!
-//! The precision-landing adjustment is **not ported here**. Upstream guards it
-//! with `AC_PRECLAND_ENABLED`, which defaults on, and when a target is
-//! acquired it can override the demand entirely — holding the descent at zero
-//! while the vehicle is too far from the target, or slowing it to a crawl near
-//! the ground. [`land_descent`] computes the demand *before* that override.
-//!
-//! That boundary is deliberate and it is a real limit: a caller that has
-//! precision landing active must not use this result unmodified. It is drawn
-//! here because the override reads `AC_PrecLand`, which is not ported, and
-//! porting a branch whose inputs are all invented would produce a function
-//! that could not be recorded against the firmware.
+//! The precision-landing adjustment is **not in this function**. Upstream
+//! guards it with `AC_PRECLAND_ENABLED`. [`land_descent`] computes the
+//! demand *before* that override;
+//! [`crate::land_precland::land_descent_precland_override`] applies it. A
+//! caller that has precision landing active must not use this result
+//! unmodified.
 
 use ap_math::control::sqrt_controller;
 use ap_math::scalar::constrain_value;

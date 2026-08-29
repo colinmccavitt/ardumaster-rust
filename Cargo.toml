@@ -49,6 +49,7 @@ ap-tecs = { path = "crates/ap-tecs" }
 ap-vtol-assist = { path = "crates/ap-vtol-assist" }
 ap-quadplane = { path = "crates/ap-quadplane" }
 ap-wpnav = { path = "crates/ap-wpnav" }
+ap-precland = { path = "crates/ap-precland" }
 
 # ADR-0004 decision 1: upstream builds -fno-exceptions. There is no unwinding
 # to reproduce, and a panic in flight code is a bug rather than control flow.
