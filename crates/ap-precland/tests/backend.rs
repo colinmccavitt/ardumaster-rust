@@ -1,7 +1,7 @@
 //! `AC_PrecLand_Backend` + `AC_PrecLand_MAVLink` leftover.
 //!
-//! Tracked as **COP-028**. IRLock / SITL / SITL-Gazebo and the retry
-//! state machine stay later.
+//! Tracked as **COP-028**. SITL and the retry state machine stay later.
+//! IRLock / SITL-Gazebo `update` live in `tests/irlock.rs`.
 
 use ap_math::scalar::is_equal;
 use ap_math::vector3::Vector3f;
@@ -289,7 +289,8 @@ fn leftover_catalog_drops_backend_and_mavlink() {
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_SITL::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }

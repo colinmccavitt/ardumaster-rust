@@ -1,8 +1,8 @@
 //! `AC_PrecLand::update` / `handle_msg` leftover.
 //!
-//! Tracked as **COP-028**. Estimator, inertial history, IRLock / SITL,
-//! and the retry state machine stay later. MAVLink `update` /
-//! `handle_msg` run in this crate.
+//! Tracked as **COP-028**. Estimator, inertial history, SITL, and the
+//! retry state machine stay later. MAVLink `update` / `handle_msg`
+//! and IRLock / SITL-Gazebo `update` run in this crate.
 
 use ap_math::scalar::is_equal;
 use ap_precland::{
@@ -190,7 +190,8 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
-    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
+    assert!(REMAINING.contains(&"AC_PrecLand_SITL::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }

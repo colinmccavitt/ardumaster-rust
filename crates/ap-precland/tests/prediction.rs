@@ -471,7 +471,7 @@ fn remaining_drops_prediction_and_getters() {
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(REMAINING.contains(&"inertial_data_frame_s"));
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }

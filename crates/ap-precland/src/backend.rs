@@ -1,11 +1,13 @@
-//! `AC_PrecLand_Backend` + `AC_PrecLand_MAVLink` leftovers, upstream
-//! `libraries/AC_PrecLand/AC_PrecLand_Backend.h` and
-//! `AC_PrecLand_MAVLink.{h,cpp}`.
+//! `AC_PrecLand_Backend` + `AC_PrecLand_MAVLink` + IRLock leftovers,
+//! upstream `libraries/AC_PrecLand/AC_PrecLand_Backend.h`,
+//! `AC_PrecLand_MAVLink.{h,cpp}`, `AC_PrecLand_IRLock.{h,cpp}`, and
+//! `AC_PrecLand_SITL_Gazebo.{h,cpp}`.
 //!
-//! Tracked as **COP-028**. This slice owns the shared LOS getters and
-//! the first real sensor path: companion-computer `LANDING_TARGET`
-//! messages. IRLock / SITL / SITL-Gazebo `update` stay later (those
-//! talk to `AP_IRLock` / `AP::sitl()`, which ADR-0004 forbids).
+//! Tracked as **COP-028**. This slice owns the shared LOS getters,
+//! the companion-computer `LANDING_TARGET` path, and the IRLock /
+//! SITL-Gazebo `update` body. Those two backends share one algorithm;
+//! ADR-0004 forbids `AP_IRLock`, so the vehicle injects an
+//! [`IrlockSample`]. SITL (`AP::sitl()`) stays later.
 //! `AC_PrecLand_Backend::handle_msg` is the empty default; MAVLink
 //! overrides it.
 
@@ -273,5 +275,140 @@ impl MavlinkBackend {
     #[must_use]
     pub fn wrong_frame_msg_sent(&self) -> bool {
         self.wrong_frame_msg_sent
+    }
+}
+
+/// Snapshot of `AP_IRLock` state the vehicle feeds into
+/// [`IrlockBackend::update`].
+///
+/// ADR-0004 forbids `AP_IRLock` / I2C / the SITL-Gazebo socket. This is
+/// the leftover of `irlock.update()` plus the getters
+/// `healthy()`, `num_targets()`, `last_update_ms()`, and
+/// `get_unit_vector_body()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IrlockSample {
+    /// `AP_IRLock::healthy()`.
+    pub healthy: bool,
+    /// `AP_IRLock::last_update_ms()`.
+    pub last_update_ms: u32,
+    /// `_target_info.pos_x` — tan(theta) right of image centre.
+    pub pos_x: f32,
+    /// `_target_info.pos_y` — tan(theta) down of image centre.
+    pub pos_y: f32,
+    /// `_target_info.pos_z`.
+    pub pos_z: f32,
+}
+
+impl IrlockSample {
+    /// Upstream `AP_IRLock::num_targets`. `1` when healthy, else `0`.
+    #[must_use]
+    pub fn num_targets(&self) -> usize {
+        if self.healthy {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Upstream `AP_IRLock::get_unit_vector_body`.
+    ///
+    /// `None` when not healthy. The divide by length is unguarded
+    /// (a zero-length target vector becomes NaN), matching upstream.
+    #[must_use]
+    pub fn unit_vector_body(&self) -> Option<Vector3f> {
+        if !self.healthy {
+            return None;
+        }
+        let mut ret = Vector3f::new(-self.pos_y, self.pos_x, self.pos_z);
+        ret /= ret.length();
+        Some(ret)
+    }
+}
+
+/// IR-Lock / SITL-Gazebo backend, upstream `AC_PrecLand_IRLock` and
+/// `AC_PrecLand_SITL_Gazebo`.
+///
+/// Both classes share the same `update` body. `init` only calls
+/// `irlock.init(get_bus())`, which stays a leftover on
+/// [`crate::InitLeftover::irlock_bus`]. Healthy stays false until
+/// the first driver snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IrlockBackend {
+    inner: Backend,
+    healthy: bool,
+}
+
+impl Default for IrlockBackend {
+    fn default() -> Self {
+        Self {
+            inner: Backend::new(),
+            healthy: false,
+        }
+    }
+}
+
+impl IrlockBackend {
+    /// Construct. Upstream `using AC_PrecLand_Backend::AC_PrecLand_Backend`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Upstream `AC_PrecLand_IRLock::init` /
+    /// `AC_PrecLand_SITL_Gazebo::init`.
+    ///
+    /// Does not set healthy. The `irlock.init(get_bus())` driver call
+    /// is the leftover.
+    pub fn init(&mut self) {}
+
+    /// Upstream `_state.healthy` after `update`.
+    #[must_use]
+    pub fn healthy(&self) -> bool {
+        self.healthy
+    }
+
+    /// Upstream `AC_PrecLand_IRLock::update` /
+    /// `AC_PrecLand_SITL_Gazebo::update`.
+    ///
+    /// Writes `_los_meas` when `num_targets() > 0` and
+    /// `last_update_ms` is new, then expires a stale LOS the same
+    /// way every backend `update` ends.
+    pub fn update(&mut self, sample: IrlockSample, now_ms: u32) {
+        self.healthy = sample.healthy;
+
+        if sample.num_targets() > 0 && sample.last_update_ms != self.inner.los_meas.time_ms {
+            if let Some(vec) = sample.unit_vector_body() {
+                self.inner.los_meas.vec_unit = vec;
+                self.inner.los_meas.frame = VectorFrame::BodyFrd;
+                self.inner.los_meas.valid = true;
+                self.inner.los_meas.time_ms = sample.last_update_ms;
+            }
+        }
+        self.inner.expire_stale_los(now_ms);
+    }
+
+    /// Upstream `get_los_meas`.
+    #[must_use]
+    pub fn get_los_meas(&self) -> Option<(Vector3f, VectorFrame)> {
+        self.inner.get_los_meas()
+    }
+
+    /// Upstream `los_meas_time_ms()`.
+    #[must_use]
+    pub fn los_meas_time_ms(&self) -> u32 {
+        self.inner.los_meas_time_ms()
+    }
+
+    /// Upstream `distance_to_target()`. IRLock never writes this;
+    /// stays `0` (unknown).
+    #[must_use]
+    pub fn distance_to_target(&self) -> f32 {
+        self.inner.distance_to_target()
+    }
+
+    /// Snapshot for [`crate::PrecLand::retrieve_los_meas`].
+    #[must_use]
+    pub fn los_sample(&self) -> Option<LosSample> {
+        self.inner.los_sample()
     }
 }

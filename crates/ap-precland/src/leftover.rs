@@ -1,7 +1,7 @@
 //! Remaining `AC_PrecLand` leftovers after `init` + `update` +
 //! `handle_msg` + the estimator frontend + `PosVelEKF` + output
 //! prediction and the getters / target-status leftover + the Backend
-//! / MAVLink sensor path.
+//! / MAVLink sensor path + the IRLock / SITL-Gazebo `update` path.
 //!
 //! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init),
 //! [`PrecLand::update`](crate::PrecLand::update),
@@ -12,28 +12,26 @@
 //! [`PrecLand::retrieve_los_meas`](crate::PrecLand::retrieve_los_meas),
 //! [`PosVelEKF`](crate::PosVelEKF),
 //! [`PrecLand::run_output_prediction`](crate::PrecLand::run_output_prediction),
-//! [`Backend`](crate::Backend), and [`MavlinkBackend`](crate::MavlinkBackend)
-//! are the contiguous leftovers so far. Everything listed here is
-//! still later.
+//! [`Backend`](crate::Backend), [`MavlinkBackend`](crate::MavlinkBackend),
+//! and [`IrlockBackend`](crate::IrlockBackend) are the contiguous
+//! leftovers so far. Everything listed here is still later.
 
 /// Remaining upstream symbols this crate has not ported yet.
 ///
 /// Weights are the ticket's 1,133 LOC (`AC_PrecLand.cpp` + `.h`). The
-/// Backend getters and MAVLink `LANDING_TARGET` path write `_los_meas`.
-/// Logging, the inertial ring, IRLock / SITL drivers, and the retry
-/// state machine stay here.
+/// Backend getters, MAVLink `LANDING_TARGET` path, and IRLock /
+/// SITL-Gazebo `update` write `_los_meas`. Logging, the inertial
+/// ring, the SITL sim backend, and the retry state machine stay here.
 pub const REMAINING: &[&str] = &[
     "AC_PrecLand::Write_Precland",
     // inertial history consumed by update / estimator / prediction
     "inertial_data_frame_s",
     "ObjectArray<inertial_data_frame_s>",
-    // remaining backends (IRLock / SITL talk to forbidden drivers)
+    // remaining backends (SITL talks to the forbidden singleton)
     "AC_PrecLand_IRLock::init(irlock)",
-    "AC_PrecLand_IRLock::update",
     "AC_PrecLand_SITL::init(AP::sitl)",
     "AC_PrecLand_SITL::update",
     "AC_PrecLand_SITL_Gazebo::init(irlock)",
-    "AC_PrecLand_SITL_Gazebo::update",
     // retry machine
     "AC_PrecLand_StateMachine::init",
     "AC_PrecLand_StateMachine::update",
