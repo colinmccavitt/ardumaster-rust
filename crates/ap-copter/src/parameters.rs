@@ -63,8 +63,10 @@
 //! (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). After `OSD` the
 //! next leftover is the stock `CC` `GOBJECT`
 //! (`AC_CUSTOMCONTROL_MULTI_ENABLED`). After `CC` the
-//! next leftover is the stock `G2` `GOBJECT`. `load_parameters`
-//! conversions and the rest of the enum stay later.
+//! next leftover is the stock `G2` `GOBJECT`. After `G2` the
+//! next leftover is `PARAM_VEHICLE_INFO` / `MAV` plus
+//! `load_parameters` conversions. Nested `ParametersG2::var_info`
+//! (`TUNE_MIN` / `TUNE_MAX`) stays later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -82,6 +84,11 @@
 
 use ap_param::info::ParamInfo;
 use ap_param::VarType;
+use ap_param::{
+    convert_class_objects, convert_g2_objects, merge_convert_stats, migrate_named_parameters,
+    ClassConversion, ClassConversionEntry, ConvertFlags, G2ObjectConversion,
+    G2ObjectConversionEntry, LoadParametersStats, NamedParameterMigration,
+};
 
 /// Layout version, upstream `Parameters::k_format_version`.
 ///
@@ -1689,9 +1696,7 @@ pub fn avd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
 /// Find a row in the `AVD_` leftover by group prefix.
 #[must_use]
 pub fn find_avd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
-    AVD_GOBJECT_VAR_INFO
-        .iter()
-        .find(|entry| entry.name == name)
+    AVD_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
 }
 
 /// Walk the `AVD_` leftover as `ParamInfo` rows.
@@ -1721,9 +1726,7 @@ pub fn ntf_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
 /// Find a row in the `NTF_` leftover by group prefix.
 #[must_use]
 pub fn find_ntf_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
-    NTF_GOBJECT_VAR_INFO
-        .iter()
-        .find(|entry| entry.name == name)
+    NTF_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
 }
 
 /// Walk the `NTF_` leftover as `ParamInfo` rows.
@@ -1756,9 +1759,7 @@ pub fn osd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
 /// Find a row in the `OSD` leftover by group prefix.
 #[must_use]
 pub fn find_osd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
-    OSD_GOBJECT_VAR_INFO
-        .iter()
-        .find(|entry| entry.name == name)
+    OSD_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
 }
 
 /// Walk the `OSD` leftover as `ParamInfo` rows.
@@ -1789,9 +1790,7 @@ pub fn cc_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
 /// Find a row in the `CC` leftover by group prefix.
 #[must_use]
 pub fn find_cc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
-    CC_GOBJECT_VAR_INFO
-        .iter()
-        .find(|entry| entry.name == name)
+    CC_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
 }
 
 /// Walk the `CC` leftover as `ParamInfo` rows.
@@ -1801,7 +1800,7 @@ pub fn for_each_cc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>))
     }
 }
 
-/// `Parameters::k_param_vehicle` — next leftover after `G2`. Not this leftover.
+/// `Parameters::k_param_vehicle` — `PARAM_VEHICLE_INFO` empty-prefix group.
 pub const K_PARAM_VEHICLE: u16 = 257;
 
 /// Stock `G2` leftover catalog.
@@ -1810,8 +1809,8 @@ pub const K_PARAM_VEHICLE: u16 = 257;
 /// `GOBJECT` with an empty prefix. Nested `ParametersG2::var_info`
 /// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2`
 /// (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are not this leftover.
-/// `PARAM_VEHICLE_INFO` / `MAV` stay later. Heli `H_` / `IM_` are
-/// not rows of this leftover.
+/// `PARAM_VEHICLE_INFO` / `MAV` and `load_parameters` conversions
+/// are the next leftover. Heli `H_` / `IM_` are not rows of this leftover.
 pub const G2_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("", K_PARAM_G2)];
 
 /// First (only) row of the `G2` leftover.
@@ -1831,4 +1830,234 @@ pub fn for_each_g2_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>))
     for entry in G2_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
+}
+/// `Parameters::k_param__gcs` — `MAV` `GOBJECT`.
+pub const K_PARAM_GCS: u16 = 260;
+
+/// `Parameters::k_param_fence_old` — fence class conversion.
+pub const K_PARAM_FENCE_OLD: u16 = 69;
+
+/// `Parameters::k_param_rpm_sensor_old` — RPM class conversion.
+pub const K_PARAM_RPM_SENSOR_OLD: u16 = 250;
+
+/// `Parameters::k_param_logger` — logger class conversion.
+pub const K_PARAM_LOGGER: u16 = 253;
+
+/// `Parameters::k_param_serial_manager_old` — serial toplevel conversion.
+pub const K_PARAM_SERIAL_MANAGER_OLD: u16 = 119;
+
+/// `Parameters::k_param_sysid_this_mav_old` — `MAV_SYSID` conversion.
+pub const K_PARAM_SYSID_THIS_MAV_OLD: u16 = 112;
+
+/// `Parameters::k_param_sysid_my_gcs_old` — `MAV_GCS_SYSID` conversion.
+pub const K_PARAM_SYSID_MY_GCS_OLD: u16 = 113;
+
+/// `Parameters::k_param_telem_delay_old` — `MAV_TELEM_DELAY` conversion.
+pub const K_PARAM_TELEM_DELAY_OLD: u16 = 115;
+
+/// `Parameters::k_param_pilot_speed_up_cms` — `PILOT_SPD_UP` conversion.
+pub const K_PARAM_PILOT_SPEED_UP_CMS: u16 = 28;
+
+/// `Parameters::k_param_pilot_accel_d_cmss` — `PILOT_ACC_Z` conversion.
+pub const K_PARAM_PILOT_ACCEL_D_CMSS: u16 = 48;
+
+/// `Parameters::k_param_pilot_takeoff_alt_cm` — `PILOT_TKO_ALT_M` conversion.
+pub const K_PARAM_PILOT_TAKEOFF_ALT_CM: u16 = 64;
+
+/// Stock `PARAM_VEHICLE_INFO` / `MAV` leftover catalog.
+///
+/// The remaining Multi `Copter::var_info` rows after `G2`.
+/// `PARAM_VEHICLE_INFO` is an empty-prefix group at `k_param_vehicle`
+/// (257), same prefix as `G2` (key 6) — keys distinguish them.
+/// `MAV` is `HAL_GCS_ENABLED`. Nested `AP_Vehicle::var_info` and
+/// `GCS` `var_info` are not this leftover. Nested `ParametersG2::var_info`
+/// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2` stay later.
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const VEHICLE_MAV_VAR_INFO: &[VarInfoSpec] =
+    &[group("", K_PARAM_VEHICLE), group("MAV", K_PARAM_GCS)];
+
+/// First row of the `PARAM_VEHICLE_INFO` / `MAV` leftover.
+#[must_use]
+pub fn vehicle_mav_var_info_entry() -> Option<&'static VarInfoSpec> {
+    VEHICLE_MAV_VAR_INFO.first()
+}
+
+/// Find a row in the `PARAM_VEHICLE_INFO` / `MAV` leftover by prefix.
+#[must_use]
+pub fn find_vehicle_mav_var(name: &str) -> Option<&'static VarInfoSpec> {
+    VEHICLE_MAV_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `PARAM_VEHICLE_INFO` / `MAV` leftover as `ParamInfo` rows.
+pub fn for_each_vehicle_mav_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in VEHICLE_MAV_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// AC_Fence class migration, upstream Mar-2022 block in `load_parameters`.
+pub const COPTER_FENCE_CLASS_CONVERSION: ClassConversionEntry = ClassConversionEntry {
+    old_key: K_PARAM_FENCE_OLD,
+    old_index: 0,
+    is_top_level: true,
+    force: false,
+    object_name: "FENCE",
+};
+
+/// AP_RPM class migration, upstream July-2025 block in `load_parameters`.
+pub const COPTER_RPM_CLASS_CONVERSION: ClassConversionEntry = ClassConversionEntry {
+    old_key: K_PARAM_RPM_SENSOR_OLD,
+    old_index: 0,
+    is_top_level: true,
+    force: true,
+    object_name: "RPM",
+};
+
+/// AP_Logger class migration, upstream Feb-2024 block in `load_parameters`.
+pub const COPTER_LOGGER_CLASS_CONVERSION: ClassConversionEntry = ClassConversionEntry {
+    old_key: K_PARAM_LOGGER,
+    old_index: 0,
+    is_top_level: true,
+    force: false,
+    object_name: "LOG",
+};
+
+/// AP_SerialManager toplevel migration, upstream Feb-2024 block in
+/// `load_parameters`.
+pub const COPTER_SERIAL_CLASS_CONVERSION: ClassConversionEntry = ClassConversionEntry {
+    old_key: K_PARAM_SERIAL_MANAGER_OLD,
+    old_index: 0,
+    is_top_level: true,
+    force: false,
+    object_name: "SERIAL",
+};
+
+/// Class conversions run from `Copter::load_parameters`, catalog order.
+///
+/// Upstream runs fence and rpm, then G2 objects, then logger and serial.
+pub const COPTER_CLASS_CONVERSIONS: &[ClassConversionEntry] = &[
+    COPTER_FENCE_CLASS_CONVERSION,
+    COPTER_RPM_CLASS_CONVERSION,
+    COPTER_LOGGER_CLASS_CONVERSION,
+    COPTER_SERIAL_CLASS_CONVERSION,
+];
+
+/// G2 sub-objects moved to AP_Vehicle, upstream `g2_conversions` in
+/// `Copter::load_parameters` (Copter-4.6).
+pub const COPTER_G2_CONVERSIONS: &[G2ObjectConversionEntry] = &[
+    G2ObjectConversionEntry {
+        old_index: 12,
+        object_name: "STAT",
+    },
+    G2ObjectConversionEntry {
+        old_index: 30,
+        object_name: "SCR",
+    },
+    G2ObjectConversionEntry {
+        old_index: 13,
+        object_name: "GRIP",
+    },
+];
+
+/// Old telemetry/sysid parameters renamed into the `MAV_` namespace, upstream
+/// `gcs_conversion_info` in `Copter::load_parameters` (Mar-2025).
+pub const COPTER_GCS_CONVERSIONS: &[NamedParameterMigration] = &[
+    NamedParameterMigration {
+        old_key: K_PARAM_SYSID_THIS_MAV_OLD,
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "MAV_SYSID",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_SYSID_MY_GCS_OLD,
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "MAV_GCS_SYSID",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_G2,
+        old_group_element: 11,
+        old_type: VarType::Int8,
+        new_name: "MAV_OPTIONS",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_TELEM_DELAY_OLD,
+        old_group_element: 0,
+        old_type: VarType::Int8,
+        new_name: "MAV_TELEM_DELAY",
+        scaler: 1.0,
+        flags: ConvertFlags::NONE,
+    },
+];
+
+/// Pilot vertical-speed conversions, upstream `pilot_conversion_info`
+/// (`convert_old_parameters_scaled`, scaler 0.01, Feb 2026).
+pub const COPTER_PILOT_CONVERSIONS: &[NamedParameterMigration] = &[
+    NamedParameterMigration {
+        old_key: K_PARAM_PILOT_SPEED_UP_CMS,
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "PILOT_SPD_UP",
+        scaler: 0.01,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_PILOT_ACCEL_D_CMSS,
+        old_group_element: 0,
+        old_type: VarType::Int16,
+        new_name: "PILOT_ACC_Z",
+        scaler: 0.01,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_PILOT_TAKEOFF_ALT_CM,
+        old_group_element: 0,
+        old_type: VarType::Float,
+        new_name: "PILOT_TKO_ALT_M",
+        scaler: 0.01,
+        flags: ConvertFlags::NONE,
+    },
+    NamedParameterMigration {
+        old_key: K_PARAM_G2,
+        old_group_element: 24,
+        old_type: VarType::Int16,
+        new_name: "PILOT_SPD_DN",
+        scaler: 0.01,
+        flags: ConvertFlags::NONE,
+    },
+];
+
+/// Run Copter load-time parameter migrations, upstream
+/// `Copter::load_parameters` conversion block (after
+/// `AP_Vehicle::load_parameters`).
+///
+/// G2 and class member layouts are supplied by the caller until the vehicle
+/// object graph is ported. Mode `convert_params` helpers stay later.
+/// Nested `ParametersG2::var_info` (`TUNE_MIN` / `TUNE_MAX`) stays later.
+pub fn load_parameters_migrations<S: ap_param::Storage + ?Sized>(
+    storage: &mut S,
+    table: &[ParamInfo<'_>],
+    filter: ap_param::info::EnumFilter,
+    g2: &[G2ObjectConversion<'_>],
+    g2_object_bytes: &mut [u8],
+    class: &[ClassConversion<'_>],
+    class_object_bytes: &mut [&mut [u8]],
+) -> Result<LoadParametersStats, ap_param::StorageError> {
+    let mut stats = LoadParametersStats::default();
+
+    stats.class = convert_class_objects(storage, class, class_object_bytes)?;
+    stats.g2 = convert_g2_objects(storage, K_PARAM_G2, g2, g2_object_bytes)?;
+    stats.named = migrate_named_parameters(storage, table, filter, COPTER_GCS_CONVERSIONS)?;
+    stats.named = merge_convert_stats(
+        stats.named,
+        migrate_named_parameters(storage, table, filter, COPTER_PILOT_CONVERSIONS)?,
+    );
+
+    Ok(stats)
 }
