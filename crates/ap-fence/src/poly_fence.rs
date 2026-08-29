@@ -1,8 +1,13 @@
 //! `AC_PolyFence_loader` leftover: inclusion / exclusion circles,
-//! vertex inclusion / exclusion polygons, and `breached(loc)`.
-//! EEPROM scan / index / SD stay later. Upstream
+//! vertex inclusion / exclusion polygons, `breached(loc)`,
+//! `load_from_storage`, and SD init. Upstream
 //! `libraries/AC_Fence/AC_PolyFence_loader.cpp`. Tracked as **COP-025**.
 
+use crate::poly_fence_storage::{
+    index_eeprom, index_fence_count, init_sdcard_storage, read_f32_from_storage,
+    read_latlon_from_storage, read_u32_from_storage, scale_latlon_from_origin, FenceIndex,
+    PolyFenceType, SdcardFenceContext, SdcardInitLeftover,
+};
 use ap_math::location::Location;
 use ap_math::polygon::polygon_closest_distance_point;
 use ap_math::scalar::{is_equal, is_positive};
@@ -11,7 +16,7 @@ use ap_math::vector2::Vector2f;
 /// `FENCE_OPTIONS` bit 1. Upstream `AC_Fence::OPTIONS::INCLUSION_UNION`.
 pub const OPTION_INCLUSION_UNION: u16 = 1 << 1;
 
-/// In-memory inclusion circles this leftover can hold. EEPROM stays later.
+/// In-memory inclusion circles this leftover can hold.
 pub const MAX_INCLUSION_CIRCLES: usize = 8;
 /// In-memory exclusion circles. Upstream `_loaded_circle_exclusion_boundary`.
 pub const MAX_EXCLUSION_CIRCLES: usize = 8;
@@ -19,8 +24,97 @@ pub const MAX_EXCLUSION_CIRCLES: usize = 8;
 pub const MAX_INCLUSION_POLYGONS: usize = 4;
 /// In-memory exclusion polygons. Upstream `_loaded_exclusion_boundary`.
 pub const MAX_EXCLUSION_POLYGONS: usize = 4;
-/// Vertices stored per in-memory polygon. EEPROM item count stays later.
+/// Vertices stored per in-memory polygon.
 pub const MAX_POLYGON_VERTICES: usize = 16;
+
+/// Injected leftover of `AP::ahrs().get_origin` and `AP_HAL::millis()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadFromStorageContext {
+    /// EKF origin. `None` is the C++ `!get_origin` path.
+    pub origin: Option<Location>,
+    /// `AP_HAL::millis()` leftover of `_load_time_ms`.
+    pub now_ms: u32,
+}
+
+/// `AC_PolyFence_loader::load_from_storage` leftover.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadFromStorageLeftover {
+    /// C++ return.
+    pub ok: bool,
+    /// `_load_attempted` after the call.
+    pub load_attempted: bool,
+    /// `_load_time_ms` after the call.
+    pub load_time_ms: u32,
+    /// Origin was missing — `_load_attempted` was not set.
+    pub origin_missing: bool,
+    /// `_eeprom_item_count == 0` success path.
+    pub empty: bool,
+    /// `_load_attempted` was already true; storage was not re-read.
+    pub already_attempted: bool,
+    /// `!check_indexed()`.
+    pub index_failed: bool,
+    /// Allocation leftover — more fences than the in-memory leftover holds.
+    pub alloc_failed: bool,
+    /// Corrupt / invalid item during the walk.
+    pub corrupt: bool,
+    /// `_loaded_return_point_lla`.
+    pub return_point: Option<Vertex>,
+    /// Inclusion circles seated.
+    pub inclusion_circles: u8,
+    /// Exclusion circles seated.
+    pub exclusion_circles: u8,
+    /// Inclusion polygons seated.
+    pub inclusion_polygons: u8,
+    /// Exclusion polygons seated.
+    pub exclusion_polygons: u8,
+}
+
+enum LoadFail {
+    Index,
+    Origin,
+    Alloc,
+    Corrupt,
+}
+
+impl LoadFromStorageLeftover {
+    fn from_state(fence: &PolyFence, already_attempted: bool, empty: bool) -> Self {
+        Self {
+            ok: fence.loaded || fence.load_time_ms != 0,
+            load_attempted: fence.load_attempted,
+            load_time_ms: fence.load_time_ms,
+            origin_missing: false,
+            empty,
+            already_attempted,
+            index_failed: false,
+            alloc_failed: false,
+            corrupt: false,
+            return_point: fence.return_point,
+            inclusion_circles: fence.inclusion_count,
+            exclusion_circles: fence.exclusion_count,
+            inclusion_polygons: fence.inclusion_poly_count,
+            exclusion_polygons: fence.exclusion_poly_count,
+        }
+    }
+
+    fn failed(fence: &PolyFence, why: LoadFail) -> Self {
+        Self {
+            ok: false,
+            load_attempted: fence.load_attempted,
+            load_time_ms: fence.load_time_ms,
+            origin_missing: matches!(why, LoadFail::Origin),
+            empty: false,
+            already_attempted: false,
+            index_failed: matches!(why, LoadFail::Index),
+            alloc_failed: matches!(why, LoadFail::Alloc),
+            corrupt: matches!(why, LoadFail::Corrupt),
+            return_point: fence.return_point,
+            inclusion_circles: fence.inclusion_count,
+            exclusion_circles: fence.exclusion_count,
+            inclusion_polygons: fence.inclusion_poly_count,
+            exclusion_polygons: fence.exclusion_poly_count,
+        }
+    }
+}
 
 /// One circular inclusion zone. Upstream `AC_PolyFence_loader::InclusionCircle`.
 ///
@@ -130,9 +224,7 @@ impl VertexPolygon {
     /// Seated vertices, in order.
     #[must_use]
     pub fn vertices(&self) -> &[Vertex] {
-        self.vertices
-            .get(..usize::from(self.count))
-            .unwrap_or(&[])
+        self.vertices.get(..usize::from(self.count)).unwrap_or(&[])
     }
 
     /// Append one vertex. False when the leftover is full.
@@ -166,7 +258,7 @@ pub struct BreachedLeftover {
 }
 
 /// `AC_PolyFence_loader` leftover. Holds in-memory circles and vertex
-/// polygons — no EEPROM index, no SD.
+/// polygons, plus the EEPROM load / SD-init flags.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolyFence {
     inclusion: [InclusionCircle; MAX_INCLUSION_CIRCLES],
@@ -178,8 +270,20 @@ pub struct PolyFence {
     exclusion_poly: [VertexPolygon; MAX_EXCLUSION_POLYGONS],
     exclusion_poly_count: u8,
     options: u16,
-    /// `_load_time_ms != 0`. EEPROM does not set this; the leftover does.
+    /// `_load_time_ms != 0` after a successful EEPROM load, or a seated zone.
     loaded: bool,
+    /// `_load_attempted`. Blocks a second EEPROM walk until [`Self::void_index`].
+    load_attempted: bool,
+    /// `_load_time_ms`. Zero until a successful `load_from_storage`.
+    load_time_ms: u32,
+    /// `_index_attempted`. Leftover of `check_indexed`.
+    index_attempted: bool,
+    /// `_indexed`. Leftover of `check_indexed`.
+    indexed: bool,
+    /// `_loaded_return_point_lla`.
+    return_point: Option<Vertex>,
+    /// `_failed_sdcard_storage`.
+    failed_sdcard_storage: bool,
 }
 
 impl Default for PolyFence {
@@ -204,13 +308,19 @@ impl PolyFence {
             exclusion_poly_count: 0,
             options: 0,
             loaded: false,
+            load_attempted: false,
+            load_time_ms: 0,
+            index_attempted: false,
+            indexed: false,
+            return_point: None,
+            failed_sdcard_storage: false,
         }
     }
 
-    /// `loaded()` — `_load_time_ms != 0`.
+    /// `loaded()` — `_load_time_ms != 0` or a seated in-memory zone.
     #[must_use]
     pub const fn loaded(&self) -> bool {
-        self.loaded
+        self.loaded || self.load_time_ms != 0
     }
 
     /// Seed `loaded()` without EEPROM. Used by tests and the fence leftover.
@@ -270,11 +380,228 @@ impl PolyFence {
 
     /// Drop seated zones and mark the leftover unloaded.
     pub fn clear(&mut self) {
+        self.unload();
+        self.load_attempted = false;
+        self.void_index();
+    }
+
+    /// `unload()`. Drops seated zones and `_load_time_ms`; keeps `_load_attempted`.
+    pub fn unload(&mut self) {
         self.inclusion_count = 0;
         self.exclusion_count = 0;
         self.inclusion_poly_count = 0;
         self.exclusion_poly_count = 0;
+        self.return_point = None;
         self.loaded = false;
+        self.load_time_ms = 0;
+    }
+
+    /// `void_index()`. Allows `load_from_storage` to walk EEPROM again.
+    pub fn void_index(&mut self) {
+        self.index_attempted = false;
+        self.indexed = false;
+        self.load_attempted = false;
+    }
+
+    /// `_load_attempted`.
+    #[must_use]
+    pub const fn load_attempted(&self) -> bool {
+        self.load_attempted
+    }
+
+    /// `_load_time_ms`.
+    #[must_use]
+    pub const fn load_time_ms(&self) -> u32 {
+        self.load_time_ms
+    }
+
+    /// `_loaded_return_point_lla`.
+    #[must_use]
+    pub const fn return_point(&self) -> Option<Vertex> {
+        self.return_point
+    }
+
+    /// `_failed_sdcard_storage`.
+    #[must_use]
+    pub const fn failed_sdcard_storage(&self) -> bool {
+        self.failed_sdcard_storage
+    }
+
+    /// `AC_PolyFence_loader::init` SD leftover, then `check_indexed`.
+    pub fn init(
+        &mut self,
+        ctx: SdcardFenceContext,
+        total: u16,
+        buf: &[u8],
+        index: &mut [FenceIndex],
+    ) -> SdcardInitLeftover {
+        let leftover = init_sdcard_storage(ctx, total, buf, index);
+        self.failed_sdcard_storage = leftover.failed_sdcard_storage;
+        self.index_attempted = true;
+        self.indexed = leftover.indexed;
+        if leftover.indexed {
+            self.load_attempted = false;
+        }
+        leftover
+    }
+
+    /// `check_indexed`. Indexes once; later calls reuse the flag.
+    fn check_indexed(&mut self, buf: &[u8], index: &mut [FenceIndex]) -> bool {
+        if !self.index_attempted {
+            self.indexed = index_eeprom(buf, index).is_some();
+            self.index_attempted = true;
+            if self.indexed {
+                self.load_attempted = false;
+            }
+        }
+        self.indexed
+    }
+
+    /// `load_from_storage`. Walks the EEPROM index into the in-memory leftover.
+    ///
+    /// The poly-loader semaphore stays later. A missing origin does **not**
+    /// set `_load_attempted`, so a later call can retry when AHRS is ready.
+    pub fn load_from_storage(
+        &mut self,
+        buf: &[u8],
+        index: &mut [FenceIndex],
+        ctx: LoadFromStorageContext,
+    ) -> LoadFromStorageLeftover {
+        if !self.check_indexed(buf, index) {
+            return LoadFromStorageLeftover::failed(self, LoadFail::Index);
+        }
+        if self.load_attempted {
+            return LoadFromStorageLeftover::from_state(self, true, false);
+        }
+        let Some(origin) = ctx.origin else {
+            return LoadFromStorageLeftover::failed(self, LoadFail::Origin);
+        };
+        let Some(indexed) = index_eeprom(buf, index) else {
+            self.indexed = false;
+            return LoadFromStorageLeftover::failed(self, LoadFail::Index);
+        };
+
+        self.load_attempted = true;
+        self.unload();
+
+        if indexed.counts.item_count == 0 {
+            self.load_time_ms = ctx.now_ms;
+            self.loaded = true;
+            return LoadFromStorageLeftover::from_state(self, false, true);
+        }
+
+        if !capacity_ok(index, indexed.num_fences) {
+            self.unload();
+            return LoadFromStorageLeftover::failed(self, LoadFail::Alloc);
+        }
+
+        let mut storage_valid = true;
+        let n = usize::from(indexed.num_fences).min(index.len());
+        let Some(live) = index.get(..n) else {
+            self.unload();
+            return LoadFromStorageLeftover::failed(self, LoadFail::Corrupt);
+        };
+        for entry in live {
+            if !storage_valid {
+                break;
+            }
+            let mut storage_offset = entry.storage_offset.saturating_add(1);
+            match entry.kind {
+                PolyFenceType::EndOfStorage => {
+                    storage_valid = false;
+                }
+                PolyFenceType::PolygonInclusion | PolyFenceType::PolygonExclusion => {
+                    if entry.count < 3 {
+                        storage_valid = false;
+                        break;
+                    }
+                    storage_offset = storage_offset.saturating_add(1);
+                    let mut poly = VertexPolygon::new();
+                    if !read_polygon_from_storage(
+                        buf,
+                        &mut storage_offset,
+                        entry.count,
+                        origin,
+                        &mut poly,
+                    ) {
+                        storage_valid = false;
+                        break;
+                    }
+                    let seated = if entry.kind == PolyFenceType::PolygonInclusion {
+                        self.push_inclusion_polygon(poly)
+                    } else {
+                        self.push_exclusion_polygon(poly)
+                    };
+                    if !seated {
+                        storage_valid = false;
+                    }
+                }
+                PolyFenceType::CircleInclusion
+                | PolyFenceType::CircleExclusion
+                | PolyFenceType::CircleInclusionInt
+                | PolyFenceType::CircleExclusionInt => {
+                    let Some((lat, lng)) = read_latlon_from_storage(buf, &mut storage_offset)
+                    else {
+                        storage_valid = false;
+                        break;
+                    };
+                    let _pos_cm = scale_latlon_from_origin(origin, lat, lng);
+                    let radius_m = if matches!(
+                        entry.kind,
+                        PolyFenceType::CircleInclusionInt | PolyFenceType::CircleExclusionInt
+                    ) {
+                        let Some(raw) = read_u32_from_storage(buf, &mut storage_offset) else {
+                            storage_valid = false;
+                            break;
+                        };
+                        raw as f32
+                    } else {
+                        let Some(raw) = read_f32_from_storage(buf, &mut storage_offset) else {
+                            storage_valid = false;
+                            break;
+                        };
+                        raw
+                    };
+                    if !is_positive(radius_m) {
+                        storage_valid = false;
+                        break;
+                    }
+                    let seated = if matches!(
+                        entry.kind,
+                        PolyFenceType::CircleInclusion | PolyFenceType::CircleInclusionInt
+                    ) {
+                        self.push_inclusion_circle(InclusionCircle::new(lat, lng, radius_m))
+                    } else {
+                        self.push_exclusion_circle(ExclusionCircle::new(lat, lng, radius_m))
+                    };
+                    if !seated {
+                        storage_valid = false;
+                    }
+                }
+                PolyFenceType::ReturnPoint => {
+                    if self.return_point.is_some() {
+                        storage_valid = false;
+                        break;
+                    }
+                    let Some((lat, lng)) = read_latlon_from_storage(buf, &mut storage_offset)
+                    else {
+                        storage_valid = false;
+                        break;
+                    };
+                    let _pos_cm = scale_latlon_from_origin(origin, lat, lng);
+                    self.return_point = Some(Vertex::new(lat, lng));
+                }
+            }
+        }
+
+        if !storage_valid {
+            self.unload();
+            return LoadFromStorageLeftover::failed(self, LoadFail::Corrupt);
+        }
+
+        self.load_time_ms = ctx.now_ms;
+        self.loaded = true;
+        LoadFromStorageLeftover::from_state(self, false, false)
     }
 
     /// Seat one inclusion circle. Returns false when the leftover is full.
@@ -376,8 +703,8 @@ impl PolyFence {
             };
         }
 
-        let num_inclusion = u16::from(self.inclusion_count)
-            .saturating_add(u16::from(self.inclusion_poly_count));
+        let num_inclusion =
+            u16::from(self.inclusion_count).saturating_add(u16::from(self.inclusion_poly_count));
         let mut num_inclusion_outside = 0_u16;
         // Upstream `-FLT_MAX`.
         let mut distance_outside_m = -f32::MAX;
@@ -562,4 +889,41 @@ fn polygon_distance_m(loc: Location, poly: &VertexPolygon) -> Option<f32> {
     let pos = origin.get_distance_ne(loc);
     let closest = polygon_closest_distance_point(ring, pos)?;
     Some(closest.length())
+}
+
+fn capacity_ok(index: &[FenceIndex], num_fences: u16) -> bool {
+    let inc_poly = index_fence_count(index, num_fences, PolyFenceType::PolygonInclusion);
+    let exc_poly = index_fence_count(index, num_fences, PolyFenceType::PolygonExclusion);
+    let inc_circ =
+        index_fence_count(index, num_fences, PolyFenceType::CircleInclusion).saturating_add(
+            index_fence_count(index, num_fences, PolyFenceType::CircleInclusionInt),
+        );
+    let exc_circ =
+        index_fence_count(index, num_fences, PolyFenceType::CircleExclusion).saturating_add(
+            index_fence_count(index, num_fences, PolyFenceType::CircleExclusionInt),
+        );
+    usize::from(inc_poly) <= MAX_INCLUSION_POLYGONS
+        && usize::from(exc_poly) <= MAX_EXCLUSION_POLYGONS
+        && usize::from(inc_circ) <= MAX_INCLUSION_CIRCLES
+        && usize::from(exc_circ) <= MAX_EXCLUSION_CIRCLES
+}
+
+/// `read_polygon_from_storage`. Seats lat/lng vertices; scales as leftover.
+fn read_polygon_from_storage(
+    buf: &[u8],
+    offset: &mut u16,
+    vertex_count: u16,
+    origin: Location,
+    poly: &mut VertexPolygon,
+) -> bool {
+    for _ in 0..vertex_count {
+        let Some((lat, lng)) = read_latlon_from_storage(buf, offset) else {
+            return false;
+        };
+        let _pos_cm = scale_latlon_from_origin(origin, lat, lng);
+        if !poly.push_vertex(Vertex::new(lat, lng)) {
+            return false;
+        }
+    }
+    true
 }

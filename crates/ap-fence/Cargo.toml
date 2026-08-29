@@ -1,6 +1,6 @@
 [package]
 name = "ap-fence"
-description = "Port of ArduPilot libraries/AC_Fence (Copter-4.7.0). COP-025 type bits, enable leftover, circle / alt / check() leftovers, pre-arm, dest-inside, auto-enable, check_fence_polygon, inclusion/exclusion circles, vertex polygons, EEPROM format, scan, index, and write_fence leftover."
+description = "Port of ArduPilot libraries/AC_Fence (Copter-4.7.0). COP-025 type bits, enable leftover, circle / alt / check() leftovers, pre-arm, dest-inside, auto-enable, check_fence_polygon, inclusion/exclusion circles, vertex polygons, EEPROM format, scan, index, write_fence, load_from_storage, and SD leftover."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

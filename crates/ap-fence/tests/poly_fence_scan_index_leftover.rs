@@ -1,6 +1,7 @@
 //! EEPROM scan / index / `write_fence` leftover.
 //!
-//! Tracked as **COP-025**. `load_from_storage` / SD stay later.
+//! Tracked as **COP-025**. `load_from_storage` / SD tests live in
+//! `poly_fence_load_sd_leftover.rs`.
 
 use ap_fence::{
     count_eeprom_fences, fence_storage_space_required, format_storage, index_eeprom,

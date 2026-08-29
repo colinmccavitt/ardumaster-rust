@@ -1,12 +1,13 @@
 //! Geofence type bits, enable leftover, circle / alt-max / alt-min checks,
 //! `check()` orchestration, pre-arm, dest-inside, auto-enable-on-arm/
 //! takeoff, `check_fence_polygon`, poly-loader inclusion / exclusion
-//! circles, vertex polygons, EEPROM format, scan, index, and `write_fence`.
-//! Upstream `libraries/AC_Fence`. Tracked as **COP-025**.
+//! circles, vertex polygons, EEPROM format, scan, index, `write_fence`,
+//! `load_from_storage`, and SD init. Upstream `libraries/AC_Fence`.
+//! Tracked as **COP-025**.
 //!
 //! This is the first real `AC_Fence` leftover. Plane already has a
 //! `FENCE_ACTION` table in `ap-plane::fence_failsafe_hookup`; that hookup
-//! now decodes through [`Action`] here. `load_from_storage` / SD stay later.
+//! now decodes through [`Action`] here.
 //!
 //! # Enable is a change mask, not a bool
 //!
@@ -40,15 +41,16 @@
 //! [`Fence::check_fence_polygon`] is the leftover of
 //! `AC_Fence::check_fence_polygon`. [`poly_fence::PolyFence`] is the
 //! `AC_PolyFence_loader` leftover: in-memory inclusion / exclusion
-//! circles, vertex inclusion / exclusion polygons, `breached(loc)`, and
-//! `check_inclusion_circle_margin`. [`poly_fence_storage`] is the EEPROM
-//! leftover — magic, item types, `format()`, `fence_storage_space_required`,
-//! `scan_eeprom`, the storage index, `validate_fence`, and `write_fence`.
-//! `load_from_storage` / SD stay later.
+//! circles, vertex inclusion / exclusion polygons, `breached(loc)`,
+//! `check_inclusion_circle_margin`, `load_from_storage`, and SD init.
+//! [`poly_fence_storage`] is the EEPROM leftover — magic, item types,
+//! `format()`, `fence_storage_space_required`, `scan_eeprom`, the storage
+//! index, `validate_fence`, `write_fence`, and the SD attach leftover.
 //!
 //! # What this crate does not own
 //!
-//! `load_from_storage` and SD storage stay later leftovers.
+//! Logger / `FENCE_TOTAL` param-save and the poly-loader semaphore stay
+//! later leftovers.
 
 #![no_std]
 
@@ -69,16 +71,19 @@ pub use fence::{
     TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
 };
 pub use poly_fence::{
-    BreachedLeftover, ExclusionCircle, InclusionCircle, PolyFence, Vertex, VertexPolygon,
-    MAX_EXCLUSION_CIRCLES, MAX_EXCLUSION_POLYGONS, MAX_INCLUSION_CIRCLES, MAX_INCLUSION_POLYGONS,
-    MAX_POLYGON_VERTICES, OPTION_INCLUSION_UNION,
+    BreachedLeftover, ExclusionCircle, InclusionCircle, LoadFromStorageContext,
+    LoadFromStorageLeftover, PolyFence, Vertex, VertexPolygon, MAX_EXCLUSION_CIRCLES,
+    MAX_EXCLUSION_POLYGONS, MAX_INCLUSION_CIRCLES, MAX_INCLUSION_POLYGONS, MAX_POLYGON_VERTICES,
+    OPTION_INCLUSION_UNION,
 };
 pub use poly_fence_storage::{
     count_eeprom_fences, fence_storage_space_required, format_storage, index_eeprom,
-    index_fence_count, max_items, read_f32_from_storage, read_latlon_from_storage,
-    read_uint8_from_storage, scan_eeprom, storage_formatted,
+    index_fence_count, init_sdcard_storage, max_items, read_f32_from_storage,
+    read_latlon_from_storage, read_u32_from_storage, read_uint8_from_storage,
+    scale_latlon_from_origin, scan_eeprom, sdcard_fence_filename, storage_formatted,
     sum_of_polygon_point_counts_and_returnpoint, validate_fence, write_eos_to_storage,
     write_f32_to_storage, write_fence, write_latlon_to_storage, write_type_to_storage,
     write_uint8_to_storage, EepromCounts, FenceIndex, IndexResult, PolyFenceItem, PolyFenceType,
-    WriteFenceResult, STORAGE_MAGIC,
+    SdcardFenceContext, SdcardInitLeftover, WriteFenceResult, SDCARD_FENCE_FILENAME,
+    SDCARD_FENCE_FILENAME_CHIBIOS, STORAGE_MAGIC,
 };

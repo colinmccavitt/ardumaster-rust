@@ -1,11 +1,12 @@
 //! `AC_PolyFence_loader` EEPROM leftover: item types, storage magic,
 //! `formatted()`, `format()`, write primitives, `fence_storage_space_required`,
-//! `scan_eeprom`, the storage index, and `write_fence`.
-//! `load_from_storage` / SD stay later. Upstream
+//! `scan_eeprom`, the storage index, `write_fence`, `load_from_storage`
+//! helpers, and the SD-card init leftover. Upstream
 //! `libraries/AC_Fence/AC_PolyFence_loader.cpp`. Tracked as **COP-025**.
 
-use ap_math::location::check_latlng_1e7;
+use ap_math::location::{check_latlng_1e7, Location};
 use ap_math::scalar::is_positive;
+use ap_math::vector2::Vector2f;
 
 /// `new_fence_storage_magic`. Byte 0 of a formatted fence store.
 pub const STORAGE_MAGIC: u8 = 235;
@@ -513,7 +514,7 @@ pub fn validate_fence(items: &[PolyFenceItem]) -> bool {
 /// the buffer, `format()`s, packs items, and writes EOS.
 ///
 /// Logger / `void_index` / `FENCE_TOTAL` param-save stay later; [`WriteFenceResult::new_total`]
-/// is the value those would have stored. `load_from_storage` stays later.
+/// is the value those would have stored.
 pub fn write_fence(buf: &mut [u8], items: &[PolyFenceItem]) -> Option<WriteFenceResult> {
     if !validate_fence(items) {
         return None;
@@ -634,4 +635,102 @@ fn read_i32_le(buf: &[u8], offset: &mut u16) -> Option<i32> {
     let arr: [u8; 4] = bytes.try_into().ok()?;
     *offset = offset.saturating_add(4);
     Some(i32::from_le_bytes(arr))
+}
+
+/// ChibiOS leftover of `AC_FENCE_SDCARD_FILENAME`.
+pub const SDCARD_FENCE_FILENAME_CHIBIOS: &str = "APM/fence.stg";
+/// Other-board leftover of `AC_FENCE_SDCARD_FILENAME`.
+pub const SDCARD_FENCE_FILENAME: &str = "fence.stg";
+
+/// `AC_FENCE_SDCARD_FILENAME` leftover of the two `#define`s.
+#[must_use]
+pub const fn sdcard_fence_filename(chibios: bool) -> &'static str {
+    if chibios {
+        SDCARD_FENCE_FILENAME_CHIBIOS
+    } else {
+        SDCARD_FENCE_FILENAME
+    }
+}
+
+/// Injected leftover of `AP::boardConfig()` and `StorageAccess::attach_file`.
+///
+/// ADR-0004 forbids the board-config singleton. [`SdcardFenceContext::size_kb`]
+/// is `get_sdcard_fence_kb`. [`SdcardFenceContext::attach_ok`] is the
+/// leftover of `fence_storage.attach_file(filename, size_kb)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdcardFenceContext {
+    /// BoardConfig pointer leftover. `false` is `bc == nullptr`.
+    pub board_config_present: bool,
+    /// Extra fence storage requested, kilobytes. `0` skips attach.
+    pub size_kb: u16,
+    /// Leftover of `attach_file`. Ignored when attach is skipped.
+    pub attach_ok: bool,
+}
+
+/// `AC_PolyFence_loader::init` SD leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdcardInitLeftover {
+    /// `_failed_sdcard_storage`.
+    pub failed_sdcard_storage: bool,
+    /// `_total.set(0)` on attach fail — not saved, so a later card fix can reboot.
+    pub total_wiped: bool,
+    /// `check_indexed()` leftover after the attach.
+    pub indexed: bool,
+    /// `_old_total` after init. Wiped total is `0`.
+    pub old_total: u16,
+    /// `size_kb > 0` and boardConfig was present.
+    pub attach_attempted: bool,
+}
+
+/// `AC_PolyFence_loader::init` SD leftover.
+///
+/// `AP_SDCARD_STORAGE_ENABLED` is on. `size_kb == 0` or a missing
+/// boardConfig skips attach. Attach failure wipes `FENCE_TOTAL` without
+/// saving. `check_indexed` still runs so an empty EEPROM can be formatted
+/// later by the owning loader.
+pub fn init_sdcard_storage(
+    ctx: SdcardFenceContext,
+    total: u16,
+    buf: &[u8],
+    index: &mut [FenceIndex],
+) -> SdcardInitLeftover {
+    let mut failed_sdcard_storage = false;
+    let mut total_wiped = false;
+    let mut attach_attempted = false;
+    let mut old_total = total;
+
+    if ctx.board_config_present && ctx.size_kb > 0 {
+        attach_attempted = true;
+        failed_sdcard_storage = !ctx.attach_ok;
+        if failed_sdcard_storage {
+            old_total = 0;
+            total_wiped = true;
+        }
+    }
+
+    let indexed = index_eeprom(buf, index).is_some();
+    SdcardInitLeftover {
+        failed_sdcard_storage,
+        total_wiped,
+        indexed,
+        old_total,
+        attach_attempted,
+    }
+}
+
+/// `fence_storage.read_uint32` leftover. Little-endian; +4.
+pub fn read_u32_from_storage(buf: &[u8], offset: &mut u16) -> Option<u32> {
+    let at = usize::from(*offset);
+    let bytes = buf.get(at..at.saturating_add(4))?;
+    let arr: [u8; 4] = bytes.try_into().ok()?;
+    *offset = offset.saturating_add(4);
+    Some(u32::from_le_bytes(arr))
+}
+
+/// `scale_latlon_from_origin`. NE centimetres from `origin` to `(lat, lng)`.
+///
+/// C++ always returns `true`; this leftover has no failure path.
+#[must_use]
+pub fn scale_latlon_from_origin(origin: Location, lat: i32, lng: i32) -> Vector2f {
+    origin.get_distance_ne(Location::new(lat, lng)) * 100.0
 }

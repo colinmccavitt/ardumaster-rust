@@ -2,7 +2,8 @@
 //! primitives, and `fence_storage_space_required`.
 //!
 //! Tracked as **COP-025**. Scan / index / `write_fence` tests live in
-//! `poly_fence_scan_index_leftover.rs`. `load_from_storage` / SD stay later.
+//! `poly_fence_scan_index_leftover.rs`. `load_from_storage` / SD tests live in
+//! `poly_fence_load_sd_leftover.rs`.
 
 use ap_fence::{
     fence_storage_space_required, format_storage, storage_formatted, write_eos_to_storage,
