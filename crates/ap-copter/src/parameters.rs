@@ -4,10 +4,13 @@
 //! GSCALAR `FORMAT_VERSION` through `SIMPLE`. The next leftover is
 //! `LOG_BITMASK` through the first `GOBJECT` (`ARMING_`). Keys come from
 //! `Parameters::k_param_*`, not from table order: `SIMPLE` is 206 even
-//! though it sits after `INITIAL_MODE` (208). `TUNE` is
-//! `AP_RC_TRANSMITTER_TUNING_ENABLED` and is not a row here. Later
-//! groups, G2, `load_parameters` conversions, and the rest of the enum
-//! stay later.
+//! though it sits after `INITIAL_MODE` (208). `TUNE` is the
+//! `AP_RC_TRANSMITTER_TUNING_ENABLED` leftover: it sits between
+//! `ESC_CALIBRATION` and `FRAME_TYPE` on the stock table, but is not a
+//! row of the `LOG_BITMASK` leftover. After `ARMING_` the next leftover
+//! is `DISARM_DELAY` through the next `GOBJECT` (`CAM`). Later groups,
+//! G2, `load_parameters` conversions, and the rest of the enum stay
+//! later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -429,7 +432,7 @@ const fn group(name: &'static str, key: u16) -> VarInfoSpec {
 ///
 /// Order is table order, not key order. `ESC_CALIBRATION` and
 /// `FRAME_TYPE` sit between `LOG_BITMASK` and `ARMING_` on the stock
-/// table. `TUNE` stays later: it is compiled only when
+/// table. `TUNE` is a separate leftover: it is compiled only when
 /// `AP_RC_TRANSMITTER_TUNING_ENABLED`.
 pub const LOG_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[
     scalar(
@@ -463,6 +466,218 @@ pub fn find_log_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `LOG_BITMASK` leftover as `ParamInfo` rows.
 pub fn for_each_log_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in LOG_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_rc_tuning_param` — `TUNE`.
+pub const K_PARAM_RC_TUNING_PARAM: u16 = 187;
+
+/// `Parameters::k_param_rc_tuning_param_high_old`. Unused. Not `TUNE`.
+pub const K_PARAM_RC_TUNING_PARAM_HIGH_OLD: u16 = 188;
+
+/// `Parameters::k_param_rc_tuning_param_low_old`. Unused. Not `TUNE`.
+pub const K_PARAM_RC_TUNING_PARAM_LOW_OLD: u16 = 189;
+
+/// Stock `TUNE` default — no transmitter knob selected.
+pub const TUNE_NONE: u8 = 0;
+
+/// `TUNE` leftover catalog.
+///
+/// Compiled only when `AP_RC_TRANSMITTER_TUNING_ENABLED` (defaults to
+/// `AP_RC_CHANNEL_ENABLED`, which is 1). Sits between `ESC_CALIBRATION`
+/// and `FRAME_TYPE` on the stock table, but is not a row of the
+/// `LOG_BITMASK` leftover. `TUNE_MIN` / `TUNE_MAX` live in G2.
+pub const TUNE_VAR_INFO: &[VarInfoSpec] =
+    &[scalar("TUNE", K_PARAM_RC_TUNING_PARAM, VarType::Int8, 0.0)];
+
+/// First (only) row of the `TUNE` leftover.
+#[must_use]
+pub fn tune_var_info_entry() -> Option<&'static VarInfoSpec> {
+    TUNE_VAR_INFO.first()
+}
+
+/// Find a row in the `TUNE` leftover by `@Param` name.
+#[must_use]
+pub fn find_tune_var(name: &str) -> Option<&'static VarInfoSpec> {
+    TUNE_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `TUNE` leftover as `ParamInfo` rows.
+pub fn for_each_tune_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in TUNE_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_disarm_delay` — `DISARM_DELAY`.
+pub const K_PARAM_DISARM_DELAY: u16 = 91;
+
+/// `Parameters::k_param_poshold_brake_rate_degs` — `PHLD_BRK_RATE`.
+pub const K_PARAM_POSHOLD_BRAKE_RATE_DEGS: u16 = 46;
+
+/// `Parameters::k_param_land_repositioning` — `LAND_REPOSITION`.
+pub const K_PARAM_LAND_REPOSITIONING: u16 = 52;
+
+/// `Parameters::k_param_fs_ekf_action` — `FS_EKF_ACTION`.
+pub const K_PARAM_FS_EKF_ACTION: u16 = 248;
+
+/// `Parameters::k_param_fs_ekf_thresh` — `FS_EKF_THRESH`.
+pub const K_PARAM_FS_EKF_THRESH: u16 = 54;
+
+/// `Parameters::k_param_fs_crash_check` — `FS_CRASH_CHECK`.
+pub const K_PARAM_FS_CRASH_CHECK: u16 = 92;
+
+/// `Parameters::k_param_rc_speed` — `RC_SPEED`.
+pub const K_PARAM_RC_SPEED: u16 = 192;
+
+/// `Parameters::k_param_acro_balance_roll` — `ACRO_BAL_ROLL`.
+pub const K_PARAM_ACRO_BALANCE_ROLL: u16 = 242;
+
+/// `Parameters::k_param_acro_balance_pitch` — `ACRO_BAL_PITCH`.
+pub const K_PARAM_ACRO_BALANCE_PITCH: u16 = 243;
+
+/// `Parameters::k_param_acro_trainer` — `ACRO_TRAINER`.
+pub const K_PARAM_ACRO_TRAINER: u16 = 27;
+
+/// `Parameters::k_param_camera` — next `GOBJECT`, prefix `CAM`.
+pub const K_PARAM_CAMERA: u16 = 165;
+
+/// `AUTO_DISARMING_DELAY` from Copter `config.h`, seconds.
+pub const AUTO_DISARMING_DELAY: u8 = 10;
+
+/// Multicopter `POSHOLD_BRAKE_RATE_DEFAULT` from Copter `config.h`.
+pub const POSHOLD_BRAKE_RATE_DEFAULT: i16 = 8;
+
+/// Tradheli `POSHOLD_BRAKE_RATE_DEFAULT`. Not this leftover.
+pub const POSHOLD_BRAKE_RATE_HELI: i16 = 4;
+
+/// `LAND_REPOSITION_DEFAULT` from Copter `config.h`.
+pub const LAND_REPOSITION_DEFAULT: u8 = 1;
+
+/// `FS_EKF_ACTION_REPORT_ONLY`.
+pub const FS_EKF_ACTION_REPORT_ONLY: u8 = 0;
+
+/// `FS_EKF_ACTION_LAND` — stock `FS_EKF_ACTION` default.
+pub const FS_EKF_ACTION_LAND: u8 = 1;
+
+/// `FS_EKF_ACTION_ALTHOLD`.
+pub const FS_EKF_ACTION_ALTHOLD: u8 = 2;
+
+/// `FS_EKF_ACTION_LAND_EVEN_STABILIZE`.
+pub const FS_EKF_ACTION_LAND_EVEN_STABILIZE: u8 = 3;
+
+/// `FS_EKF_ACTION_DEFAULT` from Copter `config.h`.
+pub const FS_EKF_ACTION_DEFAULT: u8 = FS_EKF_ACTION_LAND;
+
+/// `FS_EKF_THRESHOLD_DEFAULT` from Copter `config.h`.
+pub const FS_EKF_THRESHOLD_DEFAULT: f32 = 0.8;
+
+/// Multicopter `RC_FAST_SPEED` from Copter `config.h`.
+pub const RC_FAST_SPEED: i16 = 490;
+
+/// Tradheli `RC_FAST_SPEED`. Not this leftover.
+pub const RC_FAST_SPEED_HELI: i16 = 125;
+
+/// `ACRO_BALANCE_ROLL` from Copter `config.h`.
+pub const ACRO_BALANCE_ROLL: f32 = 1.0;
+
+/// `ACRO_BALANCE_PITCH` from Copter `config.h`.
+pub const ACRO_BALANCE_PITCH: f32 = 1.0;
+
+/// `ModeAcro::Trainer::OFF`.
+pub const ACRO_TRAINER_OFF: u8 = 0;
+
+/// `ModeAcro::Trainer::LEVELING`.
+pub const ACRO_TRAINER_LEVELING: u8 = 1;
+
+/// `ModeAcro::Trainer::LIMITED` — stock `ACRO_TRAINER` default.
+pub const ACRO_TRAINER_LIMITED: u8 = 2;
+
+/// `DISARM_DELAY` through the next `GOBJECT` leftover catalog.
+///
+/// Order is table order, not key order. `PHLD_BRK_RATE` is
+/// `MODE_POSHOLD_ENABLED`, the ACRO balance / trainer rows are
+/// `MODE_ACRO_ENABLED` (sport alone is SITL-only), and `CAM` is
+/// `AP_CAMERA_ENABLED`. A stock multicopter compiles all of them.
+/// Heli `RC_FAST_SPEED` (125) and heli `POSHOLD_BRAKE_RATE` (4) are
+/// `FRAME_CONFIG` rewrites, not rows. `RELAY` stays later.
+pub const DISARM_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[
+    scalar(
+        "DISARM_DELAY",
+        K_PARAM_DISARM_DELAY,
+        VarType::Int8,
+        AUTO_DISARMING_DELAY as f32,
+    ),
+    scalar(
+        "PHLD_BRK_RATE",
+        K_PARAM_POSHOLD_BRAKE_RATE_DEGS,
+        VarType::Int16,
+        POSHOLD_BRAKE_RATE_DEFAULT as f32,
+    ),
+    scalar(
+        "LAND_REPOSITION",
+        K_PARAM_LAND_REPOSITIONING,
+        VarType::Int8,
+        LAND_REPOSITION_DEFAULT as f32,
+    ),
+    scalar(
+        "FS_EKF_ACTION",
+        K_PARAM_FS_EKF_ACTION,
+        VarType::Int8,
+        FS_EKF_ACTION_DEFAULT as f32,
+    ),
+    scalar(
+        "FS_EKF_THRESH",
+        K_PARAM_FS_EKF_THRESH,
+        VarType::Float,
+        FS_EKF_THRESHOLD_DEFAULT,
+    ),
+    scalar("FS_CRASH_CHECK", K_PARAM_FS_CRASH_CHECK, VarType::Int8, 1.0),
+    scalar(
+        "RC_SPEED",
+        K_PARAM_RC_SPEED,
+        VarType::Int16,
+        RC_FAST_SPEED as f32,
+    ),
+    scalar(
+        "ACRO_BAL_ROLL",
+        K_PARAM_ACRO_BALANCE_ROLL,
+        VarType::Float,
+        ACRO_BALANCE_ROLL,
+    ),
+    scalar(
+        "ACRO_BAL_PITCH",
+        K_PARAM_ACRO_BALANCE_PITCH,
+        VarType::Float,
+        ACRO_BALANCE_PITCH,
+    ),
+    scalar(
+        "ACRO_TRAINER",
+        K_PARAM_ACRO_TRAINER,
+        VarType::Int8,
+        ACRO_TRAINER_LIMITED as f32,
+    ),
+    group("CAM", K_PARAM_CAMERA),
+];
+
+/// First row of the `DISARM_DELAY` leftover, `DISARM_DELAY`.
+#[must_use]
+pub fn disarm_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    DISARM_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `DISARM_DELAY` leftover by `@Param` name or group prefix.
+#[must_use]
+pub fn find_disarm_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    DISARM_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `DISARM_DELAY` leftover as `ParamInfo` rows.
+pub fn for_each_disarm_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in DISARM_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
