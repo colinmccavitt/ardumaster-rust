@@ -730,3 +730,9 @@ pub fn set_yaw_angle_offset(current_yaw_angle_rad: f32, offset_deg: f32) -> YawC
         mode: YawMode::AngleRate,
     }
 }
+
+mod leftover;
+pub use leftover::{
+    get_heading, set_mode, set_mode_to_default, GetHeadingContext, GetHeadingLeftover,
+    SetModeLeftover, YawAngleSource,
+};
