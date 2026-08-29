@@ -31,14 +31,15 @@
 //! as is the output stage that turns factors into PWM.
 //!
 //! The armed-stabilizing mixer leftover lives in [`armed`]. Failed-motor
-//! detection (`check_for_failed_motor`) and the matrix `output_to_motors`
-//! pass stay leftover.
+//! detection lives in [`failed_motor`]. The matrix `output_to_motors`
+//! pass stays leftover.
 
 use ap_math::scalar::{is_zero, radians, Real};
 
 pub mod armed;
 pub mod arming;
 pub mod current_limit;
+pub mod failed_motor;
 mod frames;
 pub mod output;
 pub mod spool;

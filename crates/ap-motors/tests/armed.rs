@@ -36,11 +36,10 @@ fn hover(throttle: f32) -> ArmedDemand {
 }
 
 #[test]
-fn leftover_catalog_leaves_failed_motor_and_pwm_pass() {
+fn leftover_catalog_leaves_the_pwm_pass() {
     assert_eq!(
         REMAINING,
         [
-            "check_for_failed_motor",
             "output_to_motors",
             "set_throttle_factor",
             "set_frame_class_and_type",

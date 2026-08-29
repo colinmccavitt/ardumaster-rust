@@ -12,8 +12,8 @@
 //! notch still sees the uncompensated throttle.
 //!
 //! `check_for_failed_motor` is called at the end of the upstream
-//! function and stays leftover. So does the matrix `output_to_motors`
-//! that turns `_thrust_rpyt_out` into PWM.
+//! function; that leftover lives in [`crate::failed_motor`]. The matrix
+//! `output_to_motors` that turns `_thrust_rpyt_out` into PWM stays leftover.
 
 use ap_math::scalar::{constrain_value, is_positive, is_zero};
 
@@ -23,13 +23,12 @@ use crate::{MotorMatrix, MAX_NUM_MOTORS};
 /// Default `MOT_YAW_HEADROOM`, upstream `AP_MOTORS_YAW_HEADROOM_DEFAULT`.
 pub const YAW_HEADROOM_DEFAULT: i16 = 200;
 
-/// Remaining COP-005 leftovers after this mixer slice.
+/// Remaining COP-005 leftovers after the mixer and failed-motor slices.
 ///
-/// Frame tables, the factor model, and this mixer are on the crate.
-/// Failed-motor detection, the matrix `output_to_motors` pass, and the
-/// leftover setup helpers are not.
+/// Frame tables, the factor model, this mixer, and
+/// `check_for_failed_motor` are on the crate. The matrix
+/// `output_to_motors` pass and the leftover setup helpers are not.
 pub const REMAINING: &[&str] = &[
-    "check_for_failed_motor",
     "output_to_motors",
     "set_throttle_factor",
     "set_frame_class_and_type",
@@ -132,8 +131,8 @@ impl ArmedOutput {
 /// `output_armed_stabilizing`.
 ///
 /// `check_for_failed_motor` is deliberately not called. That leftover
-/// filters `_thrust_rpyt_out` and decides `_motor_lost_index`; wiring
-/// it in here would pretend a detection path exists that does not.
+/// now lives in [`crate::failed_motor`]; wiring it in here would hide
+/// the filter state the caller has to own.
 #[must_use]
 pub fn output_armed_stabilizing(matrix: &MotorMatrix, demand: &ArmedDemand) -> ArmedOutput {
     let mut thrust_rpyt_out = [0.0_f32; MAX_NUM_MOTORS];
@@ -307,8 +306,8 @@ mod tests {
     }
 
     #[test]
-    fn remaining_names_the_failed_motor_leftover() {
-        assert!(REMAINING.contains(&"check_for_failed_motor"));
+    fn remaining_names_the_pwm_pass_leftover() {
+        assert!(!REMAINING.contains(&"check_for_failed_motor"));
         assert!(REMAINING.contains(&"output_to_motors"));
         assert!(!REMAINING.contains(&"output_armed_stabilizing"));
         assert!(!REMAINING.contains(&"setup_motors"));
