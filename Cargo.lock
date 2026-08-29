@@ -223,6 +223,7 @@ dependencies = [
  "ap-mission",
  "ap-nav",
  "ap-pid",
+ "ap-quadplane",
  "ap-rc",
  "ap-replay",
  "ap-scheduler",

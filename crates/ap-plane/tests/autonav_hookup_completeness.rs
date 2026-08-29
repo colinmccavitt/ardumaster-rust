@@ -21,14 +21,9 @@ const ON_MAIN: &[&str] = &[
     "FW-022 assisted modes",
 ];
 
-const THIS_SLICE: &[&str] = &["RTL_AUTOLAND", "completeness table"];
+const THIS_SLICE: &[&str] = &["RTL_AUTOLAND", "completeness table", "RTL switch_QRTL"];
 
-const REMAINING: &[&str] = &[
-    "QLAND / VTOL modes",
-    "RTL switch_QRTL",
-    "GUIDED offboard slew",
-    "log-replay",
-];
+const REMAINING: &[&str] = &["QLAND / VTOL modes", "GUIDED offboard slew", "log-replay"];
 
 #[test]
 fn completeness_table_matches_main_versus_remaining() {

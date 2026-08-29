@@ -22,6 +22,7 @@ ap-landing = { workspace = true }
 ap-math = { workspace = true }
 ap-mission = { workspace = true }
 ap-pid = { workspace = true }
+ap-quadplane = { workspace = true }
 ap-rc = { workspace = true }
 ap-scheduler = { workspace = true }
 ap-tecs = { workspace = true }

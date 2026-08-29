@@ -106,8 +106,8 @@ pub const AUTONAV_COMPLETENESS: &[AutonavPortItem] = &[
     },
     AutonavPortItem {
         name: "RTL switch_QRTL",
-        status: PortStatus::Remaining,
-        note: "ModeRTL::switch_QRTL VTOL handoff deferred",
+        status: PortStatus::ThisSlice,
+        note: "rtl_mode_switch_qrtl_tick / ModeRTL::switch_QRTL VTOL handoff (FW-041); VTOL_APPROACH_QRTL landing-approach state machine still remaining",
     },
     AutonavPortItem {
         name: "GUIDED offboard slew",
@@ -191,18 +191,19 @@ mod tests {
         assert!(completeness_unique_names());
         let (on_main, this_slice, remaining) = completeness_counts();
         assert_eq!(on_main, 12);
-        assert_eq!(this_slice, 2);
-        assert_eq!(remaining, 4);
+        assert_eq!(this_slice, 3);
+        assert_eq!(remaining, 3);
         assert!(completeness_has("AUTO enter/navigate", PortStatus::OnMain));
         assert!(completeness_has("RTL climb-then-home", PortStatus::OnMain));
         assert!(completeness_has("GUIDED remaining-leg", PortStatus::OnMain));
         assert!(completeness_has("FW-022 assisted modes", PortStatus::OnMain));
         assert!(completeness_has("RTL_AUTOLAND", PortStatus::ThisSlice));
         assert!(completeness_has("completeness table", PortStatus::ThisSlice));
+        assert!(completeness_has("RTL switch_QRTL", PortStatus::ThisSlice));
         assert!(completeness_has("QLAND / VTOL modes", PortStatus::Remaining));
         assert_eq!(on_main_items().count(), 12);
-        assert_eq!(this_slice_items().count(), 2);
-        assert_eq!(remaining_items().count(), 4);
+        assert_eq!(this_slice_items().count(), 3);
+        assert_eq!(remaining_items().count(), 3);
     }
 
     #[test]
