@@ -21,7 +21,9 @@
 //! is the stock `AHRS_` `GOBJECT`. After `AHRS_` the next leftover
 //! is the stock `MNT` `GOBJECT` (`HAL_MOUNT_ENABLED`). After `MNT` the
 //! next leftover is the stock `BATT` `GOBJECT`. After `BATT` the
-//! next leftover is the stock `BRD_` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `BRD_` `GOBJECT`. After `BRD_` the
+//! next leftover is the stock `CAN_` `GOBJECT`
+//! (`HAL_MAX_CAN_PROTOCOL_DRIVERS`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1009,14 +1011,14 @@ pub fn for_each_batt_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_can_mgr` — next leftover after `BRD_`. Not this leftover.
+/// `Parameters::k_param_can_mgr` — next `GOBJECT`, prefix `CAN_`.
 pub const K_PARAM_CAN_MGR: u16 = 8;
 
 /// Stock `BRD_` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `BATT`. Nested
-/// `AP_BoardConfig` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `AP_BoardConfig` `var_info` is not this leftover. `CAN_` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const BRD_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("BRD_", K_PARAM_BOARDCONFIG)];
 
 /// First (only) row of the `BRD_` leftover.
@@ -1037,3 +1039,34 @@ pub fn for_each_brd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
         visit(entry.param_info());
     }
 }
+
+/// `Parameters::k_param_sprayer` — next leftover after `CAN_`. Not this leftover.
+pub const K_PARAM_SPRAYER: u16 = 33;
+
+/// Stock `CAN_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `BRD_`. `CAN_` is
+/// `HAL_MAX_CAN_PROTOCOL_DRIVERS` and a stock multicopter compiles it in. Nested
+/// `AP_CANManager` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const CAN_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("CAN_", K_PARAM_CAN_MGR)];
+
+/// First (only) row of the `CAN_` leftover.
+#[must_use]
+pub fn can_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    CAN_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `CAN_` leftover by group prefix.
+#[must_use]
+pub fn find_can_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    CAN_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `CAN_` leftover as `ParamInfo` rows.
+pub fn for_each_can_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in CAN_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
