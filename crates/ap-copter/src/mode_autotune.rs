@@ -2,11 +2,12 @@
 //!
 //! Tracked as **COP-027**. Copter AutoTune is a thin wrapper around
 //! `AC_AutoTune` / `AC_AutoTune_Multi` (`libraries/AC_AutoTune/`). The
-//! `Step::UPDATE_GAINS` tune-type switch and the Multi library stay
-//! for a later slice. What this file owns is `init` (from-mode /
-//! throttle / flying gates, Loiter-or-PosHold, TuneMode / first-axis),
-//! `run` (Copter land/disarm wrapper, TuneMode dispatch, pilot
-//! override, and the level / execute / abort loop), and the Multi
+//! Multi `updating_*` math now lives in [`crate::autotune_update_gains`].
+//! `next_tune_type`, next-axis, backoff, and the rest of the Multi
+//! library stay for a later slice. What this file owns is `init`
+//! (from-mode / throttle / flying gates, Loiter-or-PosHold, TuneMode /
+//! first-axis), `run` (Copter land/disarm wrapper, TuneMode dispatch,
+//! pilot override, and the level / execute / abort loop), and the Multi
 //! `test_run` / twitching leftover that decides [`TwitchTick`].
 //!
 //! # `init` ignores `ignore_checks`
@@ -44,9 +45,10 @@
 //! angle, catalogues the attitude command, and runs the twitching
 //! helpers that write [`TwitchTick`]. The rotation-rate LPF stays
 //! leftover — this tick takes the already-filtered `rotation_rate`.
-//! UPDATE_GAINS is catalogued as a flag and falls through into ABORT,
-//! which returns to WAITING_FOR_LEVEL and reverses the Multi test
-//! direction.
+//! UPDATE_GAINS runs the Multi tune-type switch leftover, then falls
+//! through into ABORT, which returns to WAITING_FOR_LEVEL and reverses
+//! the Multi test direction. Sequencing (`next_tune_type` / next-axis)
+//! stays leftover.
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 
@@ -1298,6 +1300,16 @@ pub struct AutoTuneRunView {
     pub angle_lim_neg_rpy_cd: f32,
     /// Multi `angle_lim_max_rp_cd()`.
     pub angle_lim_max_rp_cd: f32,
+    /// `tune_*_rp` / `tune_*_sp` for the active UPDATE_GAINS axis.
+    pub tune_p: f32,
+    /// `tune_*_rd` / `tune_*_rLPF` for the active UPDATE_GAINS axis.
+    pub tune_d: f32,
+    /// `success_counter` before this tick. Upstream is `int8_t`.
+    pub success_counter: i8,
+    /// `ignore_next` before this tick.
+    pub ignore_next: bool,
+    /// `min_d` param.
+    pub min_d: f32,
 }
 
 impl AutoTuneRunView {
@@ -1357,6 +1369,11 @@ impl AutoTuneRunView {
             lean_angle_deg: 0.0,
             angle_lim_neg_rpy_cd: 900.0,
             angle_lim_max_rp_cd: 3750.0,
+            tune_p: 0.15,
+            tune_d: 0.004,
+            success_counter: 0,
+            ignore_next: false,
+            min_d: 0.0005,
         }
     }
 }
@@ -1436,8 +1453,24 @@ pub struct AutoTuneRun {
     pub twitch_reached_limit: bool,
     /// `step_scaler` after a twitch abort shrink.
     pub step_scaler: f32,
-    /// `Step::UPDATE_GAINS` body ran. The tune-type switch stays leftover.
+    /// `Step::UPDATE_GAINS` body ran.
     pub update_gains: bool,
+    /// `tune_*_rp` / `tune_*_sp` after UPDATE_GAINS leftover.
+    pub tune_p: f32,
+    /// `tune_*_rd` / `tune_*_rLPF` after UPDATE_GAINS leftover.
+    pub tune_d: f32,
+    /// `success_counter` after UPDATE_GAINS leftover.
+    pub success_counter: i8,
+    /// `ignore_next` after UPDATE_GAINS leftover.
+    pub ignore_next: bool,
+    /// `LogEvent::AUTOTUNE_REACHED_LIMIT` this tick.
+    pub update_gains_reached_limit: bool,
+    /// UPDATE_GAINS leftover wrote [`TuneMode::Failed`].
+    pub update_gains_failed: bool,
+    /// Heli type on Multi UPDATE_GAINS leftover.
+    pub update_gains_flow_of_control: bool,
+    /// `success_counter >= AUTOTUNE_SUCCESS_COUNT`. Sequencing stays leftover.
+    pub update_gains_complete: bool,
     /// `positive_direction` after Multi reverse, if ABORT ran.
     pub positive_direction: bool,
     /// Held yaw after override-release / yaw-twitch update.
@@ -1489,6 +1522,14 @@ fn run_passthrough(view: &AutoTuneRunView) -> AutoTuneRun {
         twitch_reached_limit: false,
         step_scaler: view.step_scaler,
         update_gains: false,
+        tune_p: view.tune_p,
+        tune_d: view.tune_d,
+        success_counter: view.success_counter,
+        ignore_next: view.ignore_next,
+        update_gains_reached_limit: false,
+        update_gains_failed: false,
+        update_gains_flow_of_control: false,
+        update_gains_complete: false,
         positive_direction: view.positive_direction,
         desired_yaw_rad: view.desired_yaw_rad,
         step_start_time_ms: view.step_start_time_ms,
@@ -1598,8 +1639,22 @@ fn control_attitude(view: &AutoTuneRunView, out: &mut AutoTuneRun) {
             }
         }
         Step::UpdateGains => {
-            // Tune-type switch / success_counter / next-axis stay leftover.
+            // next_tune_type / next-axis / backoff stay leftover.
             out.update_gains = true;
+            let gains = crate::autotune_update_gains::autotune_update_gains(
+                &crate::autotune_update_gains::UpdateGainsView::from_run(view),
+            );
+            out.tune_p = gains.tune_p;
+            out.tune_d = gains.tune_d;
+            out.success_counter = gains.success_counter;
+            out.ignore_next = gains.ignore_next;
+            out.update_gains_reached_limit = gains.reached_limit;
+            out.update_gains_failed = gains.failed;
+            out.update_gains_flow_of_control = gains.flow_of_control;
+            out.update_gains_complete = gains.tune_type_complete;
+            if gains.failed {
+                out.mode = TuneMode::Failed;
+            }
             abort_to_level(view, out, now);
         }
         Step::Abort => {
@@ -1620,9 +1675,10 @@ fn abort_to_level(view: &AutoTuneRunView, out: &mut AutoTuneRun, now: u32) {
 
 /// Upstream `ModeAutoTune::run` → Copter `AutoTune::run` → `AC_AutoTune::run`.
 ///
-/// The UPDATE_GAINS tune-type switch stays leftover. Poshold lean
-/// math (`get_poshold_attitude_rad` 10° / 20 m) is also leftover —
-/// this catalogs the call and the `have_position` latch.
+/// UPDATE_GAINS runs the Multi `updating_*` leftover. `next_tune_type`
+/// / next-axis / backoff stay leftover. Poshold lean math
+/// (`get_poshold_attitude_rad` 10° / 20 m) is also leftover — this
+/// catalogs the call and the `have_position` latch.
 #[must_use]
 pub fn mode_autotune_run(view: &AutoTuneRunView) -> AutoTuneRun {
     let mut out = run_passthrough(view);
