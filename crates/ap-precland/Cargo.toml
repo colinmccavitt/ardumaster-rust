@@ -1,6 +1,6 @@
 [package]
 name = "ap-precland"
-description = "Port of ArduPilot libraries/AC_PrecLand (Copter-4.7.0). COP-028 leftovers: AC_PrecLand::init, update, handle_msg, run_estimator, PosVelEKF, run_output_prediction, Backend, MAVLink, IRLock, SITL-Gazebo, SITL."
+description = "Port of ArduPilot libraries/AC_PrecLand (Copter-4.7.0). COP-028 leftovers: AC_PrecLand::init, update, handle_msg, run_estimator, PosVelEKF, run_output_prediction, Backend, MAVLink, IRLock, SITL-Gazebo, SITL, Write_Precland, inertial ring."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

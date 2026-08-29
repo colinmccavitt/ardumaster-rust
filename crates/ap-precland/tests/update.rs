@@ -176,7 +176,7 @@ fn handle_msg_dispatches_when_backend_exists() {
 #[test]
 fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(
-        REMAINING.len() > 10,
+        REMAINING.len() >= 8,
         "update slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand::update"));
@@ -187,7 +187,7 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(!REMAINING.contains(&"AC_PrecLand::check_target_status"));
-    assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
@@ -209,6 +209,7 @@ fn update_leftover_partial_eq() {
         need_run_estimator: true,
         need_check_target_status: true,
         need_write_precland: false,
+        write_precland: None,
     };
     assert_eq!(leftover, leftover);
 }

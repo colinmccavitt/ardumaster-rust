@@ -2,7 +2,7 @@
 //! `handle_msg` + the estimator frontend + `PosVelEKF` + output
 //! prediction and the getters / target-status leftover + the Backend
 //! / MAVLink sensor path + the IRLock / SITL-Gazebo `update` path +
-//! the SITL sim `update` path.
+//! the SITL sim `update` path + `Write_Precland` + the inertial ring.
 //!
 //! Tracked as **COP-028**. [`PrecLand::init`](crate::PrecLand::init),
 //! [`PrecLand::update`](crate::PrecLand::update),
@@ -14,22 +14,20 @@
 //! [`PosVelEKF`](crate::PosVelEKF),
 //! [`PrecLand::run_output_prediction`](crate::PrecLand::run_output_prediction),
 //! [`Backend`](crate::Backend), [`MavlinkBackend`](crate::MavlinkBackend),
-//! [`IrlockBackend`](crate::IrlockBackend), and
-//! [`SitlBackend`](crate::SitlBackend) are the contiguous leftovers so
+//! [`IrlockBackend`](crate::IrlockBackend),
+//! [`SitlBackend`](crate::SitlBackend),
+//! [`PrecLand::write_precland`](crate::PrecLand::write_precland), and
+//! [`InertialHistory`](crate::InertialHistory) are the contiguous leftovers so
 //! far. Everything listed here is still later.
 
 /// Remaining upstream symbols this crate has not ported yet.
 ///
 /// Weights are the ticket's 1,133 LOC (`AC_PrecLand.cpp` + `.h`). The
 /// Backend getters, MAVLink `LANDING_TARGET` path, IRLock /
-/// SITL-Gazebo `update`, and SITL sim `update` write `_los_meas`.
-/// Logging, the inertial ring, IRLock / SITL driver `init`, and the
-/// retry state machine stay here.
+/// SITL-Gazebo `update`, SITL sim `update`, `Write_Precland`, and the
+/// inertial ring write history / the PL packet. IRLock / SITL driver
+/// `init` and the retry state machine stay here.
 pub const REMAINING: &[&str] = &[
-    "AC_PrecLand::Write_Precland",
-    // inertial history consumed by update / estimator / prediction
-    "inertial_data_frame_s",
-    "ObjectArray<inertial_data_frame_s>",
     // remaining driver init leftovers (ADR-0004 forbids the buses)
     "AC_PrecLand_IRLock::init(irlock)",
     "AC_PrecLand_SITL::init(AP::sitl)",

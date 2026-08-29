@@ -5,7 +5,7 @@
 //! `check_ekf_init_timeout`, `construct_pos_meas_using_rangefinder`, and
 //! `retrieve_los_meas`. [`PosVelEKF`](crate::PosVelEKF) predict / init /
 //! fuse / NIS run with the Kalman path. `run_output_prediction` is a
-//! separate leftover; the inertial ring stays later.
+//! separate leftover. The inertial ring is [`crate::InertialHistory`].
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector2::Vector2f;
@@ -36,7 +36,7 @@ pub const EKF_INIT_VEL_VAR_NAV_VALID: f32 = 4.0;
 pub const EKF_INIT_VEL_VAR_NAV_INVALID: f32 = 100.0;
 
 /// Delayed inertial snapshot `run_estimator` reads from
-/// `(*_inertial_history)[0]`. The ring itself stays a leftover.
+/// `(*_inertial_history)[0]`. The ring is [`crate::InertialHistory`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InertialSample {
     /// `inertial_data_frame_s::Tbn`.
@@ -49,6 +49,8 @@ pub struct InertialSample {
     pub inertial_nav_velocity_valid: bool,
     /// `inertial_data_frame_s::dt`.
     pub dt: f32,
+    /// `inertial_data_frame_s::time_usec`.
+    pub time_usec: u64,
 }
 
 impl Default for InertialSample {
@@ -59,6 +61,7 @@ impl Default for InertialSample {
             inertial_nav_velocity: Vector3f::zero(),
             inertial_nav_velocity_valid: true,
             dt: 0.002_5,
+            time_usec: 0,
         }
     }
 }

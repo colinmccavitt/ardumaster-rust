@@ -12,7 +12,8 @@
 //! `check_target_status` leftover, [`Backend`] LOS getters, the
 //! first real sensor path ([`MavlinkBackend`]), the IRLock /
 //! SITL-Gazebo path ([`IrlockBackend`]), and the SITL sim path
-//! ([`SitlBackend`]). `init` is the
+//! ([`SitlBackend`]), [`PrecLand::write_precland`], and the inertial
+//! ring ([`InertialHistory`]). `init` is the
 //! constructor's follow-on: constrain `PLND_LAG`, size the inertial
 //! history ring, pick a sensor backend from `PLND_TYPE`, run that
 //! backend's `init()`, and rotate the body-frame approach vector by
@@ -60,14 +61,14 @@
 //!
 //! # What this crate does not own yet
 //!
-//! [`leftover::REMAINING`] is the catalog: logging, the inertial ring,
-//! IRLock / SITL-Gazebo `init(irlock)`, SITL `init(AP::sitl)`, and
-//! `AC_PrecLand_StateMachine`.
+//! [`leftover::REMAINING`] is the catalog: IRLock / SITL-Gazebo
+//! `init(irlock)`, SITL `init(AP::sitl)`, and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
 pub mod backend;
 pub mod estimator;
+pub mod inertial;
 pub mod leftover;
 pub mod pos_vel_ekf;
 pub mod precland;
@@ -77,6 +78,7 @@ pub use backend::{
     Backend, IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover, SitlBackend,
     SitlSample, LOS_MEAS_TIMEOUT_MS, MAV_FRAME_BODY_FRD, MAV_FRAME_LOCAL_FRD,
 };
+pub use inertial::{InertialDataFrame, InertialHistory, INERTIAL_HISTORY_MAX};
 pub use estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
     RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
@@ -87,7 +89,8 @@ pub use leftover::REMAINING;
 pub use pos_vel_ekf::PosVelEKF;
 pub use precland::{
     EstimatorType, HandleMsgLeftover, InitLeftover, LandingTargetMsg, PrecLand, PrecLandParams,
-    TargetState, Type, UpdateLeftover, VectorFrame, LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN,
+    LogPrecland, TargetState, Type, UpdateLeftover, VectorFrame, WritePreclandLeftover,
+    LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN,
     LOG_INTERVAL_MS, OPTION_DISABLED, OPTION_FAST_DESCEND, OPTION_MOVING_TARGET,
     OPTION_PRECLAND_AFTER_REPOSITION, ORIENT_DEFAULT_COPTER, XY_MAX_DIST_DESC_M_DEFAULT,
 };

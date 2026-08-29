@@ -2,8 +2,9 @@
 //! output-prediction leftovers, upstream
 //! `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. Logging, the inertial ring, and the retry
-//! state machine stay in [`crate::leftover`].
+//! Tracked as **COP-028**. `Write_Precland` packs the PL packet.
+//! The inertial ring is [`crate::InertialHistory`]. Driver `init` and
+//! the retry state machine stay in [`crate::leftover`].
 //! [`crate::MavlinkBackend`], [`crate::IrlockBackend`], and
 //! [`crate::SitlBackend`] are the sensor paths. Both
 //! [`PosVelEKF`](crate::PosVelEKF)s run with the Kalman path.
@@ -17,6 +18,7 @@ use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
 use ap_math::Ftype;
 
+use crate::inertial::InertialHistory;
 use crate::estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
     RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
@@ -179,8 +181,8 @@ pub struct InitLeftover {
 
 /// What `AC_PrecLand::update` ran and what it asked the vehicle for.
 ///
-/// The 400 Hz body is a dispatcher. AHRS history, `run_estimator`,
-/// `check_target_status`, and `Write_Precland` stay later leftovers.
+/// The 400 Hz body is a dispatcher. `run_estimator` and
+/// `check_target_status` stay later leftovers of this dispatcher.
 /// MAVLink `update` (stale-LOS expiry), IRLock / SITL-Gazebo `update`
 /// (when an [`IrlockSample`] is supplied), and SITL `update` (when a
 /// [`SitlSample`] is supplied) run here. This slice also owns the
@@ -196,6 +198,7 @@ pub struct UpdateLeftover {
     /// Caller `rangefinder_alt_valid`, forwarded to later leftovers.
     pub rangefinder_alt_valid: bool,
     /// Leftover of the AHRS snapshot + `_inertial_history->push_force`.
+    /// `false` when a frame was supplied and pushed.
     pub need_inertial_push: bool,
     /// Leftover of a backend `update` that did not run here.
     /// `false` for MAVLink, for IRLock / SITL-Gazebo when an
@@ -208,8 +211,55 @@ pub struct UpdateLeftover {
     pub need_run_estimator: bool,
     /// Leftover of `check_target_status`. Always true when not skipped.
     pub need_check_target_status: bool,
-    /// Leftover of `Write_Precland` when `now - _last_log_ms > 40`.
+    /// `true` when `now - _last_log_ms > 40`.
     pub need_write_precland: bool,
+    /// Packed `log_Precland` when the cadence fired. `None` when the
+    /// cadence did not fire or `update` skipped. `WriteBlock` stays a
+    /// logger leftover.
+    pub write_precland: Option<WritePreclandLeftover>,
+}
+
+/// Packed `log_Precland` payload. Upstream `LogStructure.h`.
+/// `LOG_PACKET_HEADER_INIT` and `AP::logger().WriteBlock` stay logger leftovers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogPrecland {
+    /// `AP_HAL::micros64()` leftover.
+    pub time_us: u64,
+    /// `healthy()`.
+    pub healthy: u8,
+    /// `target_acquired()`.
+    pub target_acquired: u8,
+    /// `get_target_position_relative_NE_m` X. Zero when not acquired.
+    pub pos_x: f32,
+    /// `get_target_position_relative_NE_m` Y. Zero when not acquired.
+    pub pos_y: f32,
+    /// `get_target_velocity_relative_NE_ms` X. Zero when not acquired.
+    pub vel_x: f32,
+    /// `get_target_velocity_relative_NE_ms` Y. Zero when not acquired.
+    pub vel_y: f32,
+    /// `get_target_position_measurement_NED_m` X.
+    pub meas_x: f32,
+    /// `get_target_position_measurement_NED_m` Y.
+    pub meas_y: f32,
+    /// `get_target_position_measurement_NED_m` Z.
+    pub meas_z: f32,
+    /// `last_backend_los_meas_ms()`.
+    pub last_meas: u32,
+    /// `ekf_outlier_count()` / `_outlier_reject_count`.
+    pub ekf_outcount: u32,
+    /// `(uint8_t)_estimator_type`.
+    pub estimator: u8,
+}
+
+/// What `AC_PrecLand::Write_Precland` packed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WritePreclandLeftover {
+    /// `true` when `!enabled()`.
+    pub skipped: bool,
+    /// Packed payload when not skipped.
+    pub packet: Option<LogPrecland>,
+    /// Leftover of `AP::logger().WriteBlock(&pkt, sizeof(pkt))`.
+    pub need_write_block: bool,
 }
 
 /// LANDING_TARGET fields `handle_msg` forwards to the backend.
@@ -290,6 +340,7 @@ pub struct PrecLand {
     current_target_state: TargetState,
     inertial_buffer_size: u16,
     inertial_history_ready: bool,
+    inertial_history: InertialHistory,
     approach_vector_body: Vector3f,
     last_log_ms: u32,
     target_acquired: bool,
@@ -345,6 +396,7 @@ impl PrecLand {
             current_target_state: TargetState::NeverSeen,
             inertial_buffer_size: 0,
             inertial_history_ready: false,
+            inertial_history: InertialHistory::default(),
             approach_vector_body: Vector3f::zero(),
             last_log_ms: 0,
             target_acquired: false,
@@ -397,7 +449,8 @@ impl PrecLand {
         let rounded = libm::roundf(self.lag_s * f32::from(update_rate_hz));
         let inertial_buffer_size = (rounded as u16).max(1);
         self.inertial_buffer_size = inertial_buffer_size;
-        self.inertial_history_ready = true;
+        self.inertial_history = InertialHistory::new(inertial_buffer_size);
+        self.inertial_history_ready = self.inertial_history.size() > 0;
 
         let mut leftover = InitLeftover {
             skipped: false,
@@ -453,7 +506,7 @@ impl PrecLand {
         rangefinder_alt_valid: bool,
         now_ms: u32,
     ) -> UpdateLeftover {
-        self.update_inner(rangefinder_alt_cm, rangefinder_alt_valid, now_ms, None, None)
+        self.update_inner(rangefinder_alt_cm, rangefinder_alt_valid, now_ms, None, None, None)
     }
 
     /// `AC_PrecLand::update` with an IRLock / SITL-Gazebo driver
@@ -472,6 +525,7 @@ impl PrecLand {
             rangefinder_alt_valid,
             now_ms,
             Some(sample),
+            None,
             None,
         )
     }
@@ -495,6 +549,28 @@ impl PrecLand {
             now_ms,
             None,
             Some(sample),
+            None,
+        )
+    }
+
+    /// `AC_PrecLand::update` with an AHRS inertial snapshot. Pushes the
+    /// frame onto the history ring (`push_force`). Without a snapshot
+    /// [`UpdateLeftover::need_inertial_push`] stays the AHRS leftover.
+    #[must_use]
+    pub fn update_with_inertial(
+        &mut self,
+        rangefinder_alt_cm: f32,
+        rangefinder_alt_valid: bool,
+        now_ms: u32,
+        frame: InertialSample,
+    ) -> UpdateLeftover {
+        self.update_inner(
+            rangefinder_alt_cm,
+            rangefinder_alt_valid,
+            now_ms,
+            None,
+            None,
+            Some(frame),
         )
     }
 
@@ -505,6 +581,7 @@ impl PrecLand {
         now_ms: u32,
         irlock: Option<IrlockSample>,
         sitl: Option<SitlSample>,
+        inertial: Option<InertialSample>,
     ) -> UpdateLeftover {
         // exit immediately if not enabled
         if self.backend.is_none() || !self.inertial_history_ready {
@@ -518,8 +595,14 @@ impl PrecLand {
                 need_run_estimator: false,
                 need_check_target_status: false,
                 need_write_precland: false,
+                write_precland: None,
             };
         }
+
+        if let Some(frame) = inertial {
+            self.inertial_history.push_force(frame);
+        }
+        let need_inertial_push = inertial.is_none();
 
         let rangefinder_alt_m = rangefinder_alt_cm * 0.01;
 
@@ -553,20 +636,24 @@ impl PrecLand {
             }
         }
         let need_write_precland = now_ms.wrapping_sub(self.last_log_ms) > LOG_INTERVAL_MS;
-        if need_write_precland {
+        let write_precland = if need_write_precland {
             self.last_log_ms = now_ms;
-        }
+            Some(self.write_precland(now_ms, u64::from(now_ms).saturating_mul(1_000)))
+        } else {
+            None
+        };
 
         UpdateLeftover {
             skipped: false,
             rangefinder_alt_m,
             rangefinder_alt_valid,
-            need_inertial_push: true,
+            need_inertial_push,
             need_backend_update,
             backend_updated,
             need_run_estimator: self.enabled,
             need_check_target_status: true,
             need_write_precland,
+            write_precland,
         }
     }
 
@@ -827,6 +914,75 @@ impl PrecLand {
     #[must_use]
     pub fn last_log_ms(&self) -> u32 {
         self.last_log_ms
+    }
+
+    /// The inertial history ring. Upstream `_inertial_history`.
+    #[must_use]
+    pub fn inertial_history(&self) -> &InertialHistory {
+        &self.inertial_history
+    }
+
+    /// Delayed horizon. Upstream `(*_inertial_history)[0]`.
+    #[must_use]
+    pub fn inertial_delayed(&self) -> Option<InertialSample> {
+        self.inertial_history.delayed()
+    }
+
+    /// Newest frame. Upstream `(*_inertial_history)[available()-1]`.
+    #[must_use]
+    pub fn inertial_newest(&self) -> Option<InertialSample> {
+        self.inertial_history.newest()
+    }
+
+    /// Walk the ring for `!inertialNavVelocityValid`.
+    #[must_use]
+    pub fn any_inertial_nav_invalid(&self) -> bool {
+        self.inertial_history.any_inertial_nav_invalid()
+    }
+
+    /// `AC_PrecLand::Write_Precland`.
+    ///
+    /// Packs the `log_Precland` payload. `now_ms` is the leftover of
+    /// `AP_HAL::millis()` the getters use; `time_us` is the leftover of
+    /// `AP_HAL::micros64()`. `AP::logger().WriteBlock` stays a leftover.
+    #[must_use]
+    pub fn write_precland(&mut self, now_ms: u32, time_us: u64) -> WritePreclandLeftover {
+        if !self.enabled() {
+            return WritePreclandLeftover {
+                skipped: true,
+                packet: None,
+                need_write_block: false,
+            };
+        }
+
+        let pos = self
+            .get_target_position_relative_ne_m(now_ms)
+            .unwrap_or_else(Vector2f::zero);
+        let vel = self
+            .get_target_velocity_relative_ne_ms(now_ms)
+            .unwrap_or_else(Vector2f::zero);
+        let meas = self.get_target_position_measurement_ned_m();
+
+        let packet = LogPrecland {
+            time_us,
+            healthy: u8::from(self.healthy()),
+            target_acquired: u8::from(self.target_acquired(now_ms)),
+            pos_x: pos.x,
+            pos_y: pos.y,
+            vel_x: vel.x,
+            vel_y: vel.y,
+            meas_x: meas.x,
+            meas_y: meas.y,
+            meas_z: meas.z,
+            last_meas: self.last_backend_los_meas_ms(),
+            ekf_outcount: self.outlier_reject_count(),
+            estimator: self.estimator_type as u8,
+        };
+        WritePreclandLeftover {
+            skipped: false,
+            packet: Some(packet),
+            need_write_block: true,
+        }
     }
 
     /// `PLND_EST_TYPE`.

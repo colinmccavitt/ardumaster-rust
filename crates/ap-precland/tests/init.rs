@@ -204,7 +204,7 @@ fn orient_none_leaves_approach_forward() {
 #[test]
 fn leftover_catalog_is_not_empty() {
     assert!(
-        REMAINING.len() > 10,
+        REMAINING.len() >= 8,
         "first stub must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand::update"));

@@ -448,7 +448,7 @@ fn check_ekf_init_timeout_is_a_noop_when_acquired() {
 #[test]
 fn leftover_catalog_drops_estimator_symbols() {
     assert!(
-        REMAINING.len() > 10,
+        REMAINING.len() >= 8,
         "estimator slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand::run_estimator"));
@@ -457,8 +457,8 @@ fn leftover_catalog_drops_estimator_symbols() {
     assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(!REMAINING.contains(&"AC_PrecLand::target_acquired"));
-    assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
-    assert!(REMAINING.contains(&"inertial_data_frame_s"));
+    assert!(!REMAINING.contains(&"inertial_data_frame_s"));
 }

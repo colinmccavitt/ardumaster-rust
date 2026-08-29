@@ -4,8 +4,9 @@
 //! Tracked as **COP-028**. This slice owns the lag-compensate walk from
 //! the delayed estimate to the current horizon, the IMU / camera / land
 //! offsets, and the getters that read `_target_pos_rel_out_ne_m` /
-//! `_target_vel_rel_out_ne_ms`. The inertial ring itself, `Write_Precland`,
-//! backends, and `AC_PrecLand_StateMachine` stay later.
+//! `_target_vel_rel_out_ne_ms`. The inertial ring is
+//! [`crate::InertialHistory`]. `Write_Precland` packs the PL packet.
+//! Driver `init` and `AC_PrecLand_StateMachine` stay later.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector2::Vector2f;

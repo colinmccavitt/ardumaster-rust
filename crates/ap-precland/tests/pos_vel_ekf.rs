@@ -58,11 +58,11 @@ fn fuse_pos_and_nis_match_upstream_algebra() {
 #[test]
 fn leftover_catalog_drops_posvelekf() {
     assert!(
-        REMAINING.len() > 10,
+        REMAINING.len() >= 8,
         "PosVelEKF slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"PosVelEKF"));
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
-    assert!(REMAINING.contains(&"inertial_data_frame_s"));
+    assert!(!REMAINING.contains(&"inertial_data_frame_s"));
 }
