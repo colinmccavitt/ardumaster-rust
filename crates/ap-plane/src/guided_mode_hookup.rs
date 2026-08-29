@@ -16,17 +16,14 @@
 //! real lines 30-102): the VTOL early return, the forced-RPY/GUIDED_TIMEOUT
 //! mechanism for roll and pitch, and the forced-throttle mechanism, tying
 //! all three together with their real fallbacks
-//! (`calc_nav_roll`/`calc_nav_pitch`/`calc_throttle`). Two real, larger
-//! sub-features of that same function are deliberately deferred to separate
-//! future tickets and are NOT built here:
-//! - the heading-slew PID computation itself (real lines 48-71, gated
-//!   `#if AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED`, using `g2.guidedHeading`)
-//!   - this ticket only decides whether that branch's condition applies
-//!   (`heading_slew_active`) and threads its already-computed result
-//!   through, via [`GuidedModeOffboardTickInputs::heading_slew_nav_roll_cd`].
-//! - `ModeGuided::handle_change_airspeed` (real lines 123-151) and the
-//!   offboard incremental-stepping branch of `update_target_altitude` (real
-//!   lines 170-202).
+//! (`calc_nav_roll`/`calc_nav_pitch`/`calc_throttle`). The heading-slew PID
+//! (real lines 48-71) lives in [`crate::guided_heading_slew`]; this module
+//! only decides whether that branch applies (`heading_slew_active`) and
+//! threads its already-computed result through
+//! [`GuidedModeOffboardTickInputs::heading_slew_nav_roll_cd`].
+//! `ModeGuided::handle_change_airspeed` (real lines 123-151) and the
+//! offboard incremental-stepping branch of `update_target_altitude` (real
+//! lines 170-202) stay deferred.
 
 use ap_math::scalar::constrain_int32;
 use ap_servo::function::Function;

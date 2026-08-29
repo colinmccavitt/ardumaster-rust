@@ -123,6 +123,7 @@ pub mod auto_mode_hookup;
 pub mod rtl_mode_hookup;
 pub mod loiter_mode_hookup;
 pub mod guided_mode_hookup;
+pub mod guided_heading_slew;
 pub mod takeoff_mode_hookup;
 pub mod autoland_mode_hookup;
 pub mod avoid_adsb_mode_hookup;
