@@ -10,7 +10,9 @@
 //! row of the `LOG_BITMASK` leftover. After `ARMING_` the next leftover
 //! is `DISARM_DELAY` through the next `GOBJECT` (`CAM`). After `CAM`
 //! the next leftover is the contiguous `RELAY` / `CHUTE_` / `LGR_`
-//! `GOBJECT` group. Later groups, G2, `load_parameters` conversions,
+//! `GOBJECT` group. After `LGR_` the next leftover is the stock
+//! `COMPASS_` `GOBJECT` (heli `IM_` is a `FRAME_CONFIG` row, not a
+//! Multi leftover). Later groups, G2, `load_parameters` conversions,
 //! and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -703,8 +705,7 @@ pub const K_PARAM_INPUT_MANAGER: u16 = 19;
 /// Order is table order, not key order. `RELAY` is `AP_RELAY_ENABLED`,
 /// `CHUTE_` is `HAL_PARACHUTE_ENABLED`, and `LGR_` is
 /// `AP_LANDINGGEAR_ENABLED`. A stock multicopter compiles all three.
-/// Heli `IM_` is a `FRAME_CONFIG` row, not this leftover. `COMPASS_`
-/// stays later.
+/// Heli `IM_` is a `FRAME_CONFIG` row, not this leftover.
 pub const RELAY_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[
     group("RELAY", K_PARAM_RELAY),
     group("CHUTE_", K_PARAM_PARACHUTE),
@@ -728,6 +729,44 @@ pub fn find_relay_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `RELAY` leftover as `ParamInfo` rows.
 pub fn for_each_relay_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in RELAY_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_compass_enabled_deprecated`. Unused. Not `COMPASS_`.
+pub const K_PARAM_COMPASS_ENABLED_DEPRECATED: u16 = 146;
+
+/// `Parameters::k_param_compass` — next `GOBJECT`, prefix `COMPASS_`.
+pub const K_PARAM_COMPASS: u16 = 147;
+
+/// `Parameters::k_param_ins` — next leftover after `COMPASS_`. Not this leftover.
+pub const K_PARAM_INS: u16 = 3;
+
+/// Stock `COMPASS_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `LGR_`. Heli `IM_` sits
+/// between them on a tradheli build (`FRAME_CONFIG == HELI_FRAME`) and
+/// is not a row of this leftover. Nested `AP_Compass` `var_info` is
+/// not this leftover. `INS` stays later.
+pub const COMPASS_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("COMPASS_", K_PARAM_COMPASS)];
+
+/// First (only) row of the `COMPASS_` leftover.
+#[must_use]
+pub fn compass_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    COMPASS_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `COMPASS_` leftover by group prefix.
+#[must_use]
+pub fn find_compass_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    COMPASS_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `COMPASS_` leftover as `ParamInfo` rows.
+pub fn for_each_compass_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in COMPASS_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
