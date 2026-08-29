@@ -89,6 +89,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-fence"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+]
+
+[[package]]
 name = "ap-filter"
 version = "0.1.0"
 dependencies = [
@@ -194,6 +201,7 @@ dependencies = [
  "ap-compass",
  "ap-control",
  "ap-declination",
+ "ap-fence",
  "ap-gps",
  "ap-hal",
  "ap-ins",

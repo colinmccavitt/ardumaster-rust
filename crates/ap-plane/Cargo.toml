@@ -14,6 +14,7 @@ ap-baro = { workspace = true }
 ap-compass = { workspace = true }
 ap-control = { workspace = true }
 ap-declination = { workspace = true }
+ap-fence = { workspace = true }
 ap-gps = { workspace = true }
 ap-hal = { workspace = true }
 ap-ins = { workspace = true }

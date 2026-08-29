@@ -20,6 +20,7 @@ ap-mission = { path = "crates/ap-mission" }
 ap-motors = { path = "crates/ap-motors" }
 ap-hal = { path = "crates/ap-hal" }
 ap-filter = { path = "crates/ap-filter" }
+ap-fence = { path = "crates/ap-fence" }
 ap-pid = { path = "crates/ap-pid" }
 ap-control = { path = "crates/ap-control" }
 ap-param = { path = "crates/ap-param" }

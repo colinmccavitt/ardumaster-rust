@@ -10,7 +10,9 @@
 //! / Terminate table and adds value 8 (`AUTOLAND_OR_RTL`). Terminate is the
 //! AFS-style hard action
 //! (`afs.gcs_terminate` on a geofence trip) rather than a Plane 4.7
-//! `FENCE_ACTION` token — `fence.cpp` has no terminate case. Radio / GCS
+//! `FENCE_ACTION` token — `fence.cpp` has no terminate case. Circle / alt-max leftovers live in `ap-fence` (**COP-025**);
+//! this hookup decodes `FENCE_ACTION` through [`ap_fence::Action`] and maps
+//! a new-breach bitmask onto the Plane action table. Radio / GCS
 //! / battery / short-long timers / terrain are left to their own modules.
 
 /// Upstream Plane `FENCE_ACTION` / `AC_Fence::Action` as this stub uses it.
@@ -41,13 +43,14 @@ impl FenceAction {
     /// [`Self::Terminate`].
     #[must_use]
     pub const fn from_param(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::ReportOnly),
-            1 => Some(Self::Rtl),
-            6 => Some(Self::Guided),
-            7 => Some(Self::GuidedThrottlePass),
-            8 => Some(Self::AutolandOrRtl),
-            _ => None,
+        match ap_fence::Action::from_param(value) {
+            Some(ap_fence::Action::ReportOnly) => Some(Self::ReportOnly),
+            Some(ap_fence::Action::RtlAndLand) => Some(Self::Rtl),
+            Some(ap_fence::Action::Guided) => Some(Self::Guided),
+            Some(ap_fence::Action::GuidedThrottlePass) => Some(Self::GuidedThrottlePass),
+            Some(ap_fence::Action::AutolandOrRtl) => Some(Self::AutolandOrRtl),
+            // Copter-only AC_Fence::Action tokens are invalid on Plane.
+            Some(_) | None => None,
         }
     }
 
@@ -143,6 +146,19 @@ pub fn fence_failsafe_action(inp: &FenceFailsafeInputs) -> FenceFailsafeResult {
     }
 }
 
+/// Map `AC_Fence::check` new-breach bits onto [`fence_failsafe_action`].
+///
+/// Circle / alt-max leftovers live in `ap-fence`. A zero mask is "no new
+/// breach" — the same as `fence_breaches.new_breaches == 0`.
+#[must_use]
+pub fn fence_failsafe_from_new_breaches(
+    mut inp: FenceFailsafeInputs,
+    new_breaches: u8,
+) -> FenceFailsafeResult {
+    inp.new_breach = new_breaches != 0;
+    fence_failsafe_action(&inp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,15 +176,39 @@ mod tests {
         assert_eq!(FenceAction::from_param(3), None);
         assert_eq!(FenceAction::from_param(4), None);
         assert_eq!(FenceAction::from_param(5), None);
-        assert_eq!(
-            FenceAction::from_param(8),
-            Some(FenceAction::AutolandOrRtl)
-        );
+        assert_eq!(FenceAction::from_param(8), Some(FenceAction::AutolandOrRtl));
         assert_eq!(FenceAction::from_param(9), None);
         assert_eq!(FenceAction::default_param(), FenceAction::Rtl);
         assert!(!FenceAction::ReportOnly.changes_vehicle());
         assert!(FenceAction::Rtl.changes_vehicle());
         assert!(FenceAction::AutolandOrRtl.changes_vehicle());
         assert!(FenceAction::Terminate.changes_vehicle());
+    }
+
+    #[test]
+    fn new_breach_bits_from_ap_fence_trip_the_plane_table() {
+        use ap_fence::{TYPE_ALT_MAX, TYPE_CIRCLE};
+
+        let quiet = FenceFailsafeInputs {
+            action: FenceAction::Rtl,
+            enabled: true,
+            new_breach: true,
+            armed: true,
+            in_recovery: false,
+            landing_impact: false,
+            autoland_available: false,
+        };
+        assert_eq!(
+            fence_failsafe_from_new_breaches(quiet, 0),
+            FenceFailsafeResult::None
+        );
+        assert_eq!(
+            fence_failsafe_from_new_breaches(quiet, TYPE_CIRCLE | TYPE_ALT_MAX),
+            FenceFailsafeResult::Rtl
+        );
+        assert_eq!(
+            FenceAction::from_param(ap_fence::Action::AlwaysLand as u8),
+            None
+        );
     }
 }
