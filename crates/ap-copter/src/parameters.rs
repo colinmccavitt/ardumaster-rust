@@ -34,7 +34,9 @@
 //! next leftover is the stock `AVOID_` `GOBJECT`
 //! (`AP_AVOIDANCE_ENABLED`). After `AVOID_` the
 //! next leftover is the stock `RALLY_` `GOBJECT`
-//! (`HAL_RALLY_ENABLED`). Later groups, G2,
+//! (`HAL_RALLY_ENABLED`). After `RALLY_` the
+//! next leftover is the stock `MOT_` `GOBJECT`
+//! (`GOBJECTVARPTR`; heli `H_` is a `FRAME_CONFIG` row). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1266,7 +1268,7 @@ pub fn for_each_avoid_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static
     }
 }
 
-/// `Parameters::k_param_motors` — next leftover after `RALLY_`. Not this leftover.
+/// `Parameters::k_param_motors` — next `GOBJECT`, prefix `MOT_`.
 pub const K_PARAM_MOTORS: u16 = 90;
 
 /// Stock `RALLY_` leftover catalog.
@@ -1294,6 +1296,35 @@ pub fn find_rally_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `RALLY_` leftover as `ParamInfo` rows.
 pub fn for_each_rally_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in RALLY_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_rcmap` — next leftover after `MOT_`. Not this leftover.
+pub const K_PARAM_RCMAP: u16 = 199;
+
+/// Stock `MOT_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `RALLY_`. Upstream is
+/// `GOBJECTVARPTR`. Nested `AP_MotorsMulticopter` `var_info` is not this
+/// leftover. `RCMAP_` stays later. Heli `H_` / `IM_` are not rows of this leftover.
+pub const MOT_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("MOT_", K_PARAM_MOTORS)];
+
+/// First (only) row of the `MOT_` leftover.
+#[must_use]
+pub fn mot_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    MOT_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `MOT_` leftover by group prefix.
+#[must_use]
+pub fn find_mot_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    MOT_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `MOT_` leftover as `ParamInfo` rows.
+pub fn for_each_mot_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in MOT_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
