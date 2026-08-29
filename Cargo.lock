@@ -75,9 +75,11 @@ name = "ap-copter"
 version = "0.1.0"
 dependencies = [
  "ap-control",
+ "ap-hal",
  "ap-math",
  "ap-motors",
  "ap-rc",
+ "ap-scheduler",
  "ap-wpnav",
  "libm",
 ]

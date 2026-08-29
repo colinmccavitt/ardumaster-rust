@@ -12,6 +12,8 @@ ap-control = { workspace = true }
 ap-motors = { workspace = true }
 ap-wpnav = { workspace = true }
 ap-rc = { workspace = true }
+ap-scheduler = { workspace = true }
+ap-hal = { workspace = true }
 libm = { workspace = true }
 
 [features]
