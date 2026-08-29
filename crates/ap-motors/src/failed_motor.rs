@@ -171,11 +171,7 @@ impl FailedMotor {
 
     /// Filter the mixer outputs and decide balance / boost / lost index,
     /// upstream `check_for_failed_motor`.
-    pub fn check_for_failed_motor(
-        &mut self,
-        matrix: &MotorMatrix,
-        inputs: &FailedMotorInputs,
-    ) {
+    pub fn check_for_failed_motor(&mut self, matrix: &MotorMatrix, inputs: &FailedMotorInputs) {
         let alpha = inputs.dt_s / (inputs.dt_s + FILTER_TIME_CONSTANT_S);
         for i in 0..MAX_NUM_MOTORS {
             if !matrix.is_enabled(i) {

@@ -32,7 +32,7 @@
 //!
 //! The armed-stabilizing mixer leftover lives in [`armed`]. Failed-motor
 //! detection lives in [`failed_motor`]. The matrix `output_to_motors`
-//! pass lives in [`output_to_motors`]. Setup helpers stay leftover.
+//! pass lives in [`output_to_motors`]. Setup leftovers live in [`setup`].
 
 use ap_math::scalar::{is_zero, radians, Real};
 
@@ -43,6 +43,7 @@ pub mod failed_motor;
 mod frames;
 pub mod output;
 pub mod output_to_motors;
+pub mod setup;
 pub mod spool;
 pub mod throttle;
 pub mod thrust_linearization;
@@ -327,6 +328,47 @@ impl MotorMatrix {
     #[must_use]
     pub fn num_motors(&self) -> usize {
         self.enabled.iter().filter(|&&e| e).count()
+    }
+
+    /// Whether motor `motor_num` is fitted, accepting the `int8_t` index
+    /// `set_throttle_factor` uses. Out of range is not fitted.
+    #[must_use]
+    pub fn is_enabled_i8(&self, motor_num: i8) -> bool {
+        usize::try_from(motor_num)
+            .ok()
+            .is_some_and(|i| self.is_enabled(i))
+    }
+
+    /// Write one motor's throttle factor. Returns whether the slot was
+    /// fitted. Does not re-normalise. Upstream `set_throttle_factor`'s
+    /// assignment after the class / init / enabled guards.
+    pub fn write_throttle_factor(&mut self, motor_num: i8, throttle_factor: f32) -> bool {
+        let Ok(i) = usize::try_from(motor_num) else {
+            return false;
+        };
+        if !self.is_enabled(i) {
+            return false;
+        }
+        if let Some(f) = self.factors.get_mut(i) {
+            f.throttle = throttle_factor;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Zero every yaw factor, fitted or not. Upstream `disable_yaw_torque`.
+    pub fn disable_yaw_torque(&mut self) {
+        for f in &mut self.factors {
+            f.yaw = 0.0;
+        }
+    }
+
+    /// One motor's factors and test order, upstream `get_factors`.
+    #[must_use]
+    pub fn get_factors(&self, i: u8) -> Option<(MotorFactors, u8)> {
+        let i = usize::from(i);
+        Some((self.motor(i)?, self.test_order(i)?))
     }
 }
 

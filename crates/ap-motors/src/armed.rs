@@ -24,18 +24,15 @@ use crate::{MotorMatrix, MAX_NUM_MOTORS};
 /// Default `MOT_YAW_HEADROOM`, upstream `AP_MOTORS_YAW_HEADROOM_DEFAULT`.
 pub const YAW_HEADROOM_DEFAULT: i16 = 200;
 
-/// Remaining COP-005 leftovers after the mixer, failed-motor, and PWM slices.
+/// Remaining COP-005 leftovers after the mixer, failed-motor, PWM, and
+/// setup-helper slices.
 ///
 /// Frame tables, the factor model, this mixer,
-/// `check_for_failed_motor`, and `output_to_motors` are on the crate.
-/// The leftover setup helpers are not.
-pub const REMAINING: &[&str] = &[
-    "set_throttle_factor",
-    "set_frame_class_and_type",
-    "disable_yaw_torque",
-    "get_factors",
-    "thrust_compensation",
-];
+/// `check_for_failed_motor`, `output_to_motors`, and the setup helpers
+/// (`set_throttle_factor`, `set_frame_class_and_type`,
+/// `disable_yaw_torque`, `get_factors`, `thrust_compensation`) are on
+/// the crate. The catalog is empty.
+pub const REMAINING: &[&str] = &[];
 
 /// Blend between a failed-motor value and the normal one, upstream
 /// `AP_MotorsMatrix::boost_ratio`.
@@ -306,11 +303,16 @@ mod tests {
     }
 
     #[test]
-    fn remaining_names_the_setup_helpers() {
+    fn remaining_is_empty_after_the_setup_helpers() {
+        assert!(REMAINING.is_empty());
         assert!(!REMAINING.contains(&"check_for_failed_motor"));
         assert!(!REMAINING.contains(&"output_to_motors"));
         assert!(!REMAINING.contains(&"output_armed_stabilizing"));
         assert!(!REMAINING.contains(&"setup_motors"));
-        assert!(REMAINING.contains(&"set_throttle_factor"));
+        assert!(!REMAINING.contains(&"set_throttle_factor"));
+        assert!(!REMAINING.contains(&"set_frame_class_and_type"));
+        assert!(!REMAINING.contains(&"disable_yaw_torque"));
+        assert!(!REMAINING.contains(&"get_factors"));
+        assert!(!REMAINING.contains(&"thrust_compensation"));
     }
 }

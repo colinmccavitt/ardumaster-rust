@@ -54,20 +54,11 @@ fn pwm_of(write: Option<RcWrite>) -> u16 {
 }
 
 #[test]
-fn leftover_catalog_drops_pwm_pass_and_keeps_setup_helpers() {
+fn leftover_catalog_drops_pwm_pass_and_setup_helpers() {
     assert!(!REMAINING.contains(&"output_to_motors"));
     assert!(!REMAINING.contains(&"check_for_failed_motor"));
     assert!(!REMAINING.contains(&"output_armed_stabilizing"));
-    assert_eq!(
-        REMAINING,
-        [
-            "set_throttle_factor",
-            "set_frame_class_and_type",
-            "disable_yaw_torque",
-            "get_factors",
-            "thrust_compensation",
-        ]
-    );
+    assert!(REMAINING.is_empty());
 }
 
 #[test]
@@ -112,7 +103,11 @@ fn shut_down_does_not_slew() {
         slew_dn_time: 0.5,
     };
     state.output_to_motors(&quad_x(), &inputs);
-    assert_eq!(state.actuator(0), 0.0, "shutdown assigns zero, it does not slew");
+    assert_eq!(
+        state.actuator(0),
+        0.0,
+        "shutdown assigns zero, it does not slew"
+    );
 }
 
 #[test]
@@ -126,12 +121,7 @@ fn ground_idle_slews_toward_spin_min_times_ramp() {
     state.output_to_motors(&quad_x(), &inputs);
     let spin_min = ThrustLinParams::default().spin_min;
     assert!((state.actuator(0) - spin_min).abs() < 1e-6);
-    let expected = output_to_pwm(
-        SpoolState::GroundIdle,
-        true,
-        &analog_pwm(),
-        spin_min,
-    );
+    let expected = output_to_pwm(SpoolState::GroundIdle, true, &analog_pwm(), spin_min);
     let writes = state.output_to_motors(&quad_x(), &inputs);
     let expected_u = u16::try_from(expected.max(0)).expect("pwm non-negative");
     assert_eq!(pwm_of(write_at(&writes, 0)), expected_u);
@@ -212,4 +202,3 @@ fn zero_thrust_flying_sits_at_spin_min() {
     let spin_min = ThrustLinParams::default().spin_min;
     assert!((state.actuator(0) - spin_min).abs() < 1e-6);
 }
-

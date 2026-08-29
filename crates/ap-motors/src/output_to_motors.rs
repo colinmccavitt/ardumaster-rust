@@ -179,9 +179,7 @@ impl OutputToMotors {
                     }
                 }
             }
-            SpoolState::SpoolingUp
-            | SpoolState::ThrottleUnlimited
-            | SpoolState::SpoolingDown => {
+            SpoolState::SpoolingUp | SpoolState::ThrottleUnlimited | SpoolState::SpoolingDown => {
                 for i in 0..MAX_NUM_MOTORS {
                     if !matrix.is_enabled(i) {
                         continue;
@@ -248,8 +246,9 @@ steps are checked against the already-ported helpers"
     fn leftover_catalog_drops_the_pwm_pass() {
         assert!(!REMAINING.contains(&"output_to_motors"));
         assert!(!REMAINING.contains(&"check_for_failed_motor"));
-        assert!(REMAINING.contains(&"set_throttle_factor"));
-        assert!(REMAINING.contains(&"thrust_compensation"));
+        assert!(!REMAINING.contains(&"set_throttle_factor"));
+        assert!(!REMAINING.contains(&"thrust_compensation"));
+        assert!(REMAINING.is_empty());
     }
 
     #[test]

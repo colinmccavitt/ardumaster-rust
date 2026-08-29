@@ -36,17 +36,8 @@ fn hover(throttle: f32) -> ArmedDemand {
 }
 
 #[test]
-fn leftover_catalog_leaves_the_setup_helpers() {
-    assert_eq!(
-        REMAINING,
-        [
-            "set_throttle_factor",
-            "set_frame_class_and_type",
-            "disable_yaw_torque",
-            "get_factors",
-            "thrust_compensation",
-        ]
-    );
+fn leftover_catalog_is_empty_after_setup_helpers() {
+    assert!(REMAINING.is_empty());
 }
 
 #[test]
@@ -125,10 +116,7 @@ fn a_yaw_that_will_not_fit_sets_the_yaw_limit() {
     );
     for i in 0..4 {
         let t = out.get_thrust_rpyt_out(i);
-        assert!(
-            (0.0..=1.0).contains(&t),
-            "motor {i} left the range: {t}"
-        );
+        assert!((0.0..=1.0).contains(&t), "motor {i} left the range: {t}");
     }
 }
 
@@ -151,10 +139,7 @@ fn a_roll_that_will_not_fit_scales_rpy_and_flags_the_axes() {
     assert!(out.limits.yaw);
     for i in 0..4 {
         let t = out.get_thrust_rpyt_out(i);
-        assert!(
-            (-0.01..=1.01).contains(&t),
-            "motor {i} left the range: {t}"
-        );
+        assert!((-0.01..=1.01).contains(&t), "motor {i} left the range: {t}");
     }
 }
 

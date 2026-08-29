@@ -11,12 +11,12 @@
 balance trips are boolean"
 )]
 
+use ap_motors::armed::REMAINING;
 use ap_motors::failed_motor::{
     is_corotating_frame, FailedMotor, FailedMotorInputs, BOOST_DROP_HIGH, FILTER_TIME_CONSTANT_S,
     FRAME_TYPE_CW_X_COR, FRAME_TYPE_X_COR, MIN_MOTORS_FOR_UNBALANCE, REBALANCE_THRESHOLD,
     RPYT_SUM_MIN, UNBALANCE_THRESHOLD,
 };
-use ap_motors::armed::REMAINING;
 use ap_motors::{MotorMatrix, MAX_NUM_MOTORS};
 
 fn hexa_x() -> MotorMatrix {
@@ -60,7 +60,8 @@ fn leftover_catalog_drops_failed_motor_and_pwm_pass() {
     assert!(!REMAINING.contains(&"check_for_failed_motor"));
     assert!(!REMAINING.contains(&"output_to_motors"));
     assert!(!REMAINING.contains(&"output_armed_stabilizing"));
-    assert!(REMAINING.contains(&"set_throttle_factor"));
+    assert!(!REMAINING.contains(&"set_throttle_factor"));
+    assert!(REMAINING.is_empty());
 }
 
 #[test]
@@ -144,10 +145,7 @@ fn a_hexa_with_one_loud_motor_trips_unbalance() {
 fn a_corotating_x8_does_not_trip() {
     let mut state = FailedMotor::new();
     let thrusts = [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 1.0];
-    state.check_for_failed_motor(
-        &octaquad_x_cor(),
-        &settled(&thrusts, FRAME_TYPE_X_COR),
-    );
+    state.check_for_failed_motor(&octaquad_x_cor(), &settled(&thrusts, FRAME_TYPE_X_COR));
     assert!(
         state.thrust_balanced(),
         "X_COR scales its top layer on purpose"
@@ -169,10 +167,7 @@ fn equal_thrusts_clear_a_previous_unbalance() {
 fn a_tiny_sum_forces_balance_of_one() {
     let mut state = FailedMotor::new();
     // All thrusts well under RPYT_SUM_MIN so the peak/mean is never taken.
-    state.check_for_failed_motor(
-        &hexa_x(),
-        &settled(&[0.01, 0.0, 0.0, 0.01, 0.0, 0.0], 1),
-    );
+    state.check_for_failed_motor(&hexa_x(), &settled(&[0.01, 0.0, 0.0, 0.01, 0.0, 0.0], 1));
     assert!(state.thrust_balanced());
     assert!(RPYT_SUM_MIN > 0.05);
 }
@@ -199,10 +194,7 @@ fn boost_holds_while_a_motor_is_pegged() {
     inputs.compensation_gain = 1.0;
     inputs.throttle_thrust_best_plus_adj = 0.5;
     state.check_for_failed_motor(&hexa_x(), &inputs);
-    assert!(
-        state.thrust_boost(),
-        "rpyt_high >= 0.9 must keep boost on"
-    );
+    assert!(state.thrust_boost(), "rpyt_high >= 0.9 must keep boost on");
 }
 
 #[test]

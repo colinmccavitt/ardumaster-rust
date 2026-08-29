@@ -203,7 +203,11 @@ impl ThrustLinearization {
     /// unlike the general one below it — is **not** clamped to `[0, 1]`
     /// before returning; that asymmetry is upstream's, not an omission here.
     #[must_use]
-    pub fn apply_thrust_curve_and_volt_scaling(&self, params: &ThrustLinParams, thrust: f32) -> f32 {
+    pub fn apply_thrust_curve_and_volt_scaling(
+        &self,
+        params: &ThrustLinParams,
+        thrust: f32,
+    ) -> f32 {
         let battery_scale = if is_positive(self.batt_voltage_filt.get()) {
             1.0 / self.batt_voltage_filt.get()
         } else {
@@ -328,8 +332,11 @@ impl ThrustLinearization {
         params.batt_voltage_min = params.batt_voltage_min.max(params.batt_voltage_max * 0.6);
 
         // Constrain the resting voltage estimate into the configured range.
-        let batt_voltage =
-            constrain_value(batt_voltage, params.batt_voltage_min, params.batt_voltage_max);
+        let batt_voltage = constrain_value(
+            batt_voltage,
+            params.batt_voltage_min,
+            params.batt_voltage_max,
+        );
 
         // Filter at 0.5 Hz. (Simplification above: always the filtered path.)
         self.batt_voltage_filt
@@ -359,7 +366,8 @@ impl ThrustLinearization {
 
         // Air density ratio is increasing in density / decreasing in
         // altitude.
-        let air_density_ratio = ap_baro::air_density_for_alt_amsl(alt_amsl) / ap_baro::SSL_AIR_DENSITY;
+        let air_density_ratio =
+            ap_baro::air_density_for_alt_amsl(alt_amsl) / ap_baro::SSL_AIR_DENSITY;
         if air_density_ratio > 0.3 && air_density_ratio < 1.5 {
             ret *= 1.0 / constrain_value(air_density_ratio, 0.5, 1.25);
         }
@@ -381,7 +389,11 @@ mod tests {
     }
 
     fn near(a: f32, b: f32, tol: f32) {
-        assert!((a - b).abs() < tol, "expected {b}, got {a} (diff {})", (a - b).abs());
+        assert!(
+            (a - b).abs() < tol,
+            "expected {b}, got {a} (diff {})",
+            (a - b).abs()
+        );
     }
 
     // --- Round-trip inverse tests -------------------------------------
@@ -409,11 +421,7 @@ mod tests {
                 for &thrust in &thrusts {
                     let actuator = tl.thrust_to_actuator(&params, thrust);
                     let recovered = tl.actuator_to_thrust(&params, actuator);
-                    near(
-                        recovered,
-                        thrust,
-                        1.0e-4,
-                    );
+                    near(recovered, thrust, 1.0e-4);
                 }
             }
         }
@@ -486,7 +494,10 @@ mod tests {
         // voltage. dt large relative to the 0.5 Hz cutoff so the filter has
         // mostly converged rather than testing the filter itself here.
         tl.update_lift_max_from_batt_voltage(&mut params, &battery(14.0), 10.0);
-        assert!(tl.lift_max() < 1.0, "a sub-max voltage should reduce lift_max");
+        assert!(
+            tl.lift_max() < 1.0,
+            "a sub-max voltage should reduce lift_max"
+        );
 
         for &thrust in &[0.0_f32, 0.2, 0.5, 0.8, 1.0] {
             let actuator = tl.thrust_to_actuator(&params, thrust);
