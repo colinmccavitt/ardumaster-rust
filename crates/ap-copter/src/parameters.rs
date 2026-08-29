@@ -20,7 +20,8 @@
 //! is the stock `PSC` `GOBJECT` (`GOBJECTPTR`). After `PSC` the next leftover
 //! is the stock `AHRS_` `GOBJECT`. After `AHRS_` the next leftover
 //! is the stock `MNT` `GOBJECT` (`HAL_MOUNT_ENABLED`). After `MNT` the
-//! next leftover is the stock `BATT` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `BATT` `GOBJECT`. After `BATT` the
+//! next leftover is the stock `BRD_` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -977,14 +978,14 @@ pub fn for_each_mount_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static
     }
 }
 
-/// `Parameters::k_param_BoardConfig` — next leftover after `BATT`. Not this leftover.
+/// `Parameters::k_param_BoardConfig` — next `GOBJECT`, prefix `BRD_`.
 pub const K_PARAM_BOARDCONFIG: u16 = 15;
 
 /// Stock `BATT` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `MNT`. Nested
-/// `AP_BattMonitor` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `AP_BattMonitor` `var_info` is not this leftover. `BRD_` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const BATT_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("BATT", K_PARAM_BATTERY)];
 
 /// First (only) row of the `BATT` leftover.
@@ -1004,6 +1005,35 @@ pub fn find_batt_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `BATT` leftover as `ParamInfo` rows.
 pub fn for_each_batt_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in BATT_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_can_mgr` — next leftover after `BRD_`. Not this leftover.
+pub const K_PARAM_CAN_MGR: u16 = 8;
+
+/// Stock `BRD_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `BATT`. Nested
+/// `AP_BoardConfig` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const BRD_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("BRD_", K_PARAM_BOARDCONFIG)];
+
+/// First (only) row of the `BRD_` leftover.
+#[must_use]
+pub fn brd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    BRD_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `BRD_` leftover by group prefix.
+#[must_use]
+pub fn find_brd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    BRD_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `BRD_` leftover as `ParamInfo` rows.
+pub fn for_each_brd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in BRD_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
