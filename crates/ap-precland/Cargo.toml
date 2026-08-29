@@ -1,0 +1,14 @@
+[package]
+name = "ap-precland"
+description = "Port of ArduPilot libraries/AC_PrecLand (Copter-4.7.0). COP-028 first leftover: AC_PrecLand::init."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-math = { workspace = true }
+libm = { workspace = true }
+
+[lints]
+workspace = true

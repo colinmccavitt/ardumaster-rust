@@ -227,6 +227,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-precland"
+version = "0.1.0"
+dependencies = [
+ "ap-math",
+ "libm",
+]
+
+[[package]]
 name = "ap-quadplane"
 version = "0.1.0"
 dependencies = [
