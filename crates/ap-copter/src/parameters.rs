@@ -37,7 +37,9 @@
 //! (`HAL_RALLY_ENABLED`). After `RALLY_` the
 //! next leftover is the stock `MOT_` `GOBJECT`
 //! (`GOBJECTVARPTR`; heli `H_` is a `FRAME_CONFIG` row). After `MOT_` the
-//! next leftover is the stock `RCMAP_` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `RCMAP_` `GOBJECT`. After `RCMAP_` the
+//! next leftover is the stock `EK2_` `GOBJECT`
+//! (`HAL_NAVEKF2_AVAILABLE`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1330,7 +1332,7 @@ pub fn for_each_mot_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_NavEKF2` — next leftover after `RCMAP_`. Not this leftover.
+/// `Parameters::k_param_NavEKF2` — next `GOBJECT`, prefix `EK2_`.
 pub const K_PARAM_NAVEKF2: u16 = 5;
 
 /// Stock `RCMAP_` leftover catalog.
@@ -1357,6 +1359,36 @@ pub fn find_rcmap_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `RCMAP_` leftover as `ParamInfo` rows.
 pub fn for_each_rcmap_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in RCMAP_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_NavEKF3` — next leftover after `EK2_`. Not this leftover.
+pub const K_PARAM_NAVEKF3: u16 = 7;
+
+/// Stock `EK2_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `RCMAP_`. Upstream is
+/// `GOBJECTN`. `EK2_` is `HAL_NAVEKF2_AVAILABLE`. Nested `NavEKF2`
+/// `var_info` is not this leftover. `EK3_` stays later (`HAL_NAVEKF3_AVAILABLE`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const EK2_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("EK2_", K_PARAM_NAVEKF2)];
+
+/// First (only) row of the `EK2_` leftover.
+#[must_use]
+pub fn ek2_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    EK2_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `EK2_` leftover by group prefix.
+#[must_use]
+pub fn find_ek2_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    EK2_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `EK2_` leftover as `ParamInfo` rows.
+pub fn for_each_ek2_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in EK2_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
