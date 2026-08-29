@@ -3,10 +3,14 @@
 //! Tracked as **COP-012**. The table is the leftover: every `FAST_TASK` and
 //! `SCHED_TASK` row with its rate, budget, priority, and compile gate.
 //! [`rc_loop`] is the first scheduled callback and [`throttle_loop`] is the
-//! next. The first Copter-owned fast-loop leftovers are
-//! [`run_rate_controller_main`], [`motors_output_main`], [`read_ahrs`], and
-//! [`read_inertia`] — INS `update` lives on `ap-ins`. The rest of
-//! `Copter.cpp` / `system.cpp` stay later leftovers.
+//! next; [`update_batt_compass`] is the next always-on Copter-owned scheduled
+//! leftover after GPS (which lives on `ap-gps`). The first Copter-owned
+//! fast-loop leftovers are [`run_rate_controller_main`],
+//! [`motors_output_main`], [`read_ahrs`], and [`read_inertia`] — INS `update`
+//! lives on `ap-ins`. [`update_flight_mode`] and
+//! [`update_land_and_crash_detectors`] are the next Copter-owned FAST_TASK
+//! leftovers after `check_ekf_reset` / `update_home_from_EKF`, which stay
+//! later. The rest of `Copter.cpp` / `system.cpp` stay later leftovers.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -14,12 +18,14 @@ use ap_scheduler::scheduler::{RunStats, Scheduler, Task, LOOP_RATE};
 
 use crate::attitude::RateControllerMainLeftover;
 use crate::aux::AirMode;
+use crate::ground::ekf_reset_method;
 use crate::radio::{
     read_radio, ReadRadioInputs, ReadRadioLeftover, ThrottleFailsafeInputs, ThrottleZeroInputs,
     FS_THR_VALUE_COPTER_DEFAULT,
 };
 
 pub use crate::attitude::run_rate_controller_main;
+pub use crate::ground::EkfResetMethod;
 
 /// `AP_Scheduler::FAST_TASK_PRI0` — every `FAST_TASK_CLASS` row uses this.
 pub const FAST_TASK_PRI0: u8 = 0;
@@ -50,6 +56,15 @@ pub const THROTTLE_LOOP_MAX_TIME_MICROS: u16 = 75;
 
 /// `throttle_loop` scheduler priority (lower is higher priority).
 pub const THROTTLE_LOOP_PRIORITY: u8 = 6;
+
+/// `update_batt_compass` rate, Hz. Upstream `SCHED_TASK(update_batt_compass, 10, 120, 15)`.
+pub const UPDATE_BATT_COMPASS_RATE_HZ: f32 = 10.0;
+
+/// `update_batt_compass` expected budget, microseconds.
+pub const UPDATE_BATT_COMPASS_MAX_TIME_MICROS: u16 = 120;
+
+/// `update_batt_compass` scheduler priority (lower is higher priority).
+pub const UPDATE_BATT_COMPASS_PRIORITY: u8 = 15;
 
 /// `ARMING_DELAY_SEC` — motors stay interlocked-off this long after arm.
 pub const ARMING_DELAY_SEC: f32 = 2.0;
@@ -349,9 +364,10 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 ];
 
 /// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
-/// table, `rc_loop`, `throttle_loop`, and the first Copter FAST_TASK bodies.
+/// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, and the first
+/// Copter FAST_TASK bodies including `update_flight_mode` and
+/// `update_land_and_crash_detectors`.
 pub const REMAINING: &[&str] = &[
-    "Copter::update_batt_compass",
     "Copter::loop_rate_logging",
     "Copter::ten_hz_logging_loop",
     "Copter::twentyfive_hz_logging",
@@ -364,9 +380,7 @@ pub const REMAINING: &[&str] = &[
     "Copter::update_altitude",
     "Copter::get_wp_distance_m",
     "Copter::check_ekf_reset",
-    "Copter::update_flight_mode",
     "Copter::update_home_from_EKF",
-    "Copter::update_land_and_crash_detectors",
     "Copter::update_rangefinder_terrain_offset",
     "Copter::run_nav_updates",
     "Copter::auto_disarm_check",
@@ -790,6 +804,140 @@ pub fn motors_output_main(
     MotorsOutputMainLeftover::Ran(motors_output(&main))
 }
 
+/// Inputs to `Copter::update_flight_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateFlightModeInputs {
+    /// `copter.ap.land_complete` — handed to `landed_gain_reduction`.
+    pub land_complete: bool,
+    /// `flightmode->move_vehicle_on_ekf_reset()`.
+    pub move_vehicle_on_ekf_reset: bool,
+}
+
+/// What `Copter::update_flight_mode` asked later leftovers to do.
+///
+/// Mode `run()` bodies stay on their own leftovers. This leftover is the
+/// call order: invalidate surface-tracking, reduce landed gains, pick the
+/// EKF reset method, then `flightmode->run()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateFlightModeLeftover {
+    /// `AP_RANGEFINDER_ENABLED` — `surface_tracking.invalidate_for_logging()`.
+    ///
+    /// Stock multicopter compiles this in. The mode `run()` that follows
+    /// may set `valid_for_logging` again if it actually uses the rangefinder.
+    pub invalidate_for_logging: bool,
+    /// Always: `attitude_control->landed_gain_reduction(land_complete)`.
+    pub landed_gain_reduction: bool,
+    /// The `land_complete` those gains saw.
+    pub land_complete: bool,
+    /// `pos_control->set_reset_handling_method(...)`.
+    pub reset_handling: EkfResetMethod,
+    /// Always: `flightmode->run()`.
+    pub flightmode_run: bool,
+}
+
+/// `Copter::update_flight_mode`.
+///
+/// Gains and the EKF reset method are chosen *before* `run()`. Folding
+/// `run()` first would let a mode that changes its own submode this tick
+/// pick a reset method the leftover has not yet published, and would let
+/// motors see last-tick landed gains for one loop after touchdown.
+///
+/// The reset method is [`ekf_reset_method`] — default modes return false
+/// (`MoveTarget`). Guided/auto position legs return true (`MoveVehicle`).
+#[must_use]
+pub fn update_flight_mode(inputs: UpdateFlightModeInputs) -> UpdateFlightModeLeftover {
+    UpdateFlightModeLeftover {
+        invalidate_for_logging: true,
+        landed_gain_reduction: true,
+        land_complete: inputs.land_complete,
+        reset_handling: ekf_reset_method(inputs.move_vehicle_on_ekf_reset),
+        flightmode_run: true,
+    }
+}
+
+/// What `Copter::update_land_and_crash_detectors` asked later leftovers to do.
+///
+/// `update_land_detector` is COP-021 and `crash_check` is COP-019. Thrust-loss,
+/// yaw-imbalance, and parachute stay later leftovers — this leftover is the
+/// call order and the gravity add the 1 Hz accel filter sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateLandAndCrashLeftover {
+    /// Always: `z += GRAVITY_MSS` then `land_accel_ef_filter.apply`.
+    pub apply_land_accel_filter: bool,
+    /// Gravity was added to earth-frame Z before the filter.
+    ///
+    /// A port that filtered raw AHRS accel would treat 1 G hover as motion
+    /// — `crash_check` compares the *filtered* vector after this add.
+    pub gravity_added_to_z: bool,
+    /// Always: `update_land_detector()`.
+    pub update_land_detector: bool,
+    /// `HAL_PARACHUTE_ENABLED` — compiled out of this leftover.
+    pub parachute_check: bool,
+    /// Always: `crash_check()`.
+    pub crash_check: bool,
+    /// Always: `thrust_loss_check()`.
+    pub thrust_loss_check: bool,
+    /// Always: `yaw_imbalance_check()`.
+    pub yaw_imbalance_check: bool,
+}
+
+/// `Copter::update_land_and_crash_detectors`.
+///
+/// Land detector runs before crash / thrust-loss / yaw-imbalance. Folding
+/// crash first would let `crash_check` see last-tick `ap.land_complete` on
+/// the same loop the detector raised it. The parachute call is compiled
+/// out, not skipped at runtime — a runtime `if parachute` would be a
+/// different function.
+#[must_use]
+pub const fn update_land_and_crash_detectors() -> UpdateLandAndCrashLeftover {
+    UpdateLandAndCrashLeftover {
+        apply_land_accel_filter: true,
+        gravity_added_to_z: true,
+        update_land_detector: true,
+        parachute_check: false,
+        crash_check: true,
+        thrust_loss_check: true,
+        yaw_imbalance_check: true,
+    }
+}
+
+/// Inputs to `Copter::update_batt_compass`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateBattCompassInputs {
+    /// `AP::compass().available()`.
+    pub compass_available: bool,
+}
+
+/// What `Copter::update_batt_compass` asked battery / compass leftovers to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateBattCompassLeftover {
+    /// Always: `battery.read()`.
+    pub battery_read: bool,
+    /// Compassmot throttle — only when the compass is available.
+    pub compass_set_throttle: bool,
+    /// Compassmot voltage — only when the compass is available.
+    pub compass_set_voltage: bool,
+    /// `compass.read()` — only when the compass is available.
+    pub compass_read: bool,
+}
+
+/// `Copter::update_batt_compass`.
+///
+/// Battery is read first, even when the compass is missing. Compassmot
+/// compensation uses that voltage; folding `compass.read()` first would
+/// compensate with last-tick throttle and voltage. A missing compass
+/// still reads the battery — the 10 Hz current integration is not a
+/// compass helper.
+#[must_use]
+pub const fn update_batt_compass(inputs: UpdateBattCompassInputs) -> UpdateBattCompassLeftover {
+    UpdateBattCompassLeftover {
+        battery_read: true,
+        compass_set_throttle: inputs.compass_available,
+        compass_set_voltage: inputs.compass_available,
+        compass_read: inputs.compass_available,
+    }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -805,6 +953,12 @@ pub struct VehicleLoopTicks {
     pub rc_loop: u32,
     /// Upstream `Copter::throttle_loop`.
     pub throttle_loop: u32,
+    /// Upstream `Copter::update_flight_mode`.
+    pub update_flight_mode: u32,
+    /// Upstream `Copter::update_land_and_crash_detectors`.
+    pub update_land_and_crash_detectors: u32,
+    /// Upstream `Copter::update_batt_compass`.
+    pub update_batt_compass: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -838,6 +992,16 @@ pub struct CopterVehicleLoop {
     pub last_rc: Option<RcLoopLeftover>,
     /// Leftover from the latest `throttle_loop` tick.
     pub last_throttle: Option<ThrottleLoopLeftover>,
+    /// Inputs for `update_flight_mode`.
+    pub flight_mode: UpdateFlightModeInputs,
+    /// Leftover from the latest `update_flight_mode` tick.
+    pub last_flight_mode: Option<UpdateFlightModeLeftover>,
+    /// Leftover from the latest `update_land_and_crash_detectors` tick.
+    pub last_land_crash: Option<UpdateLandAndCrashLeftover>,
+    /// Inputs for `update_batt_compass`.
+    pub batt_compass: UpdateBattCompassInputs,
+    /// Leftover from the latest `update_batt_compass` tick.
+    pub last_batt_compass: Option<UpdateBattCompassLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -862,6 +1026,16 @@ impl CopterVehicleLoop {
             },
             last_rc: None,
             last_throttle: None,
+            flight_mode: UpdateFlightModeInputs {
+                land_complete: false,
+                move_vehicle_on_ekf_reset: false,
+            },
+            last_flight_mode: None,
+            last_land_crash: None,
+            batt_compass: UpdateBattCompassInputs {
+                compass_available: true,
+            },
+            last_batt_compass: None,
         }
     }
 }
@@ -971,6 +1145,24 @@ fn task_throttle_loop(vehicle: &mut CopterVehicleLoop) {
     vehicle.last_throttle = Some(throttle_loop());
 }
 
+fn task_update_flight_mode(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_flight_mode = vehicle.ticks.update_flight_mode.saturating_add(1);
+    vehicle.last_flight_mode = Some(update_flight_mode(vehicle.flight_mode));
+}
+
+fn task_update_land_and_crash_detectors(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_land_and_crash_detectors = vehicle
+        .ticks
+        .update_land_and_crash_detectors
+        .saturating_add(1);
+    vehicle.last_land_crash = Some(update_land_and_crash_detectors());
+}
+
+fn task_update_batt_compass(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_batt_compass = vehicle.ticks.update_batt_compass.saturating_add(1);
+    vehicle.last_batt_compass = Some(update_batt_compass(vehicle.batt_compass));
+}
+
 /// First Copter-owned FAST_TASK, in upstream table form.
 #[must_use]
 pub fn copter_run_rate_controller_main_task() -> Task<CopterVehicleLoop> {
@@ -1054,10 +1246,67 @@ pub fn copter_first_fast_tasks() -> [Task<CopterVehicleLoop>; 4] {
     ]
 }
 
+/// `update_flight_mode` FAST_TASK row.
+#[must_use]
+pub fn copter_update_flight_mode_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_flight_mode,
+        name: "update_flight_mode",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// `update_land_and_crash_detectors` FAST_TASK row.
+#[must_use]
+pub fn copter_update_land_and_crash_detectors_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_land_and_crash_detectors,
+        name: "update_land_and_crash_detectors",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// `update_batt_compass` scheduled row.
+#[must_use]
+pub fn copter_update_batt_compass_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_batt_compass,
+        name: "update_batt_compass",
+        rate_hz: UPDATE_BATT_COMPASS_RATE_HZ,
+        max_time_micros: UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
+        priority: UPDATE_BATT_COMPASS_PRIORITY,
+    }
+}
+
 /// First two always-on scheduled leftovers, table order.
 #[must_use]
 pub fn copter_first_scheduled_tasks() -> [Task<CopterVehicleLoop>; 2] {
     [copter_rc_loop_task(), copter_throttle_loop_task()]
+}
+
+/// Next Copter-owned FAST_TASK leftovers after `read_inertia`.
+///
+/// Table order still has `check_ekf_reset` and `update_home_from_EKF`
+/// between / around these; those stay later leftovers. This pair is the
+/// attitude-run and land/crash wrapper.
+#[must_use]
+pub fn copter_next_fast_tasks() -> [Task<CopterVehicleLoop>; 2] {
+    [
+        copter_update_flight_mode_task(),
+        copter_update_land_and_crash_detectors_task(),
+    ]
+}
+
+/// Next always-on Copter-owned scheduled leftover after `throttle_loop`.
+///
+/// `fence_check` is gated and `AP_GPS::update` lives on `ap-gps`.
+#[must_use]
+pub fn copter_next_scheduled_tasks() -> [Task<CopterVehicleLoop>; 1] {
+    [copter_update_batt_compass_task()]
 }
 
 /// Advance one scheduler tick and run the leftover pass.

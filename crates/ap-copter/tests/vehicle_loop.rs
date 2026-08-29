@@ -2,14 +2,17 @@
 
 use ap_copter::radio::ReadRadioLeftover;
 use ap_copter::vehicle_loop::{
-    always_on_tasks, copter_first_fast_tasks, copter_first_scheduled_tasks, copter_rc_loop_task,
-    first_scheduled_task, get_scheduler_tasks, motors_output, motors_output_main, rc_loop,
-    read_ahrs, read_inertia, read_mode_switch, run_scheduler_tick, throttle_loop,
-    CopterVehicleLoop, InterlockEdge, ModeSwitchReadInputs, ModeSwitchReadLeftover,
-    MotorsOutputDrive, MotorsOutputMainLeftover, MotorsOutputPush, TaskKind, ARMING_DELAY_MS,
+    always_on_tasks, copter_first_fast_tasks, copter_first_scheduled_tasks, copter_next_fast_tasks,
+    copter_next_scheduled_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks,
+    motors_output, motors_output_main, rc_loop, read_ahrs, read_inertia, read_mode_switch,
+    run_scheduler_tick, throttle_loop, update_batt_compass, update_flight_mode,
+    update_land_and_crash_detectors, CopterVehicleLoop, EkfResetMethod, InterlockEdge,
+    ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover,
+    MotorsOutputPush, TaskKind, UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS,
     COPTER_LOOP_RATE_HZ, FAST_TASK_PRI0, MASK_LOG_PM, MODE_THROW, RC_LOOP_MAX_TIME_MICROS,
     RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING, SCHEDULER_TASKS, THROTTLE_LOOP_MAX_TIME_MICROS,
-    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ,
+    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
+    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
 };
 use ap_hal::time::{Clock, Micros, Millis};
 use ap_math::location::AltFrame;
@@ -96,6 +99,17 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::throttle_loop"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_flight_mode"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_land_and_crash_detectors"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_batt_compass"));
+    assert!(REMAINING.contains(&"Copter::check_ekf_reset"));
+    assert!(REMAINING.contains(&"Copter::update_home_from_EKF"));
 }
 
 #[test]
@@ -394,4 +408,124 @@ fn scheduler_runs_throttle_loop_every_eighth_tick() {
     assert!(leftover.update_throttle_mix);
     assert!(leftover.update_auto_armed);
     assert!(!leftover.heli_update_rotor_speed_targets);
+}
+
+#[test]
+fn update_batt_compass_is_the_ten_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "update_batt_compass")
+        .expect("update_batt_compass");
+    assert!(task.rate_hz == UPDATE_BATT_COMPASS_RATE_HZ);
+    assert_eq!(task.max_time_micros, UPDATE_BATT_COMPASS_MAX_TIME_MICROS);
+    assert_eq!(task.priority, UPDATE_BATT_COMPASS_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn update_flight_mode_reduces_gains_then_sets_reset_then_runs() {
+    let leftover = update_flight_mode(UpdateFlightModeInputs {
+        land_complete: true,
+        move_vehicle_on_ekf_reset: false,
+    });
+    assert!(leftover.invalidate_for_logging);
+    assert!(leftover.landed_gain_reduction);
+    assert!(leftover.land_complete);
+    assert_eq!(leftover.reset_handling, EkfResetMethod::MoveTarget);
+    assert!(leftover.flightmode_run);
+}
+
+#[test]
+fn update_flight_mode_moves_vehicle_when_the_mode_asks() {
+    let leftover = update_flight_mode(UpdateFlightModeInputs {
+        land_complete: false,
+        move_vehicle_on_ekf_reset: true,
+    });
+    assert!(!leftover.land_complete);
+    assert_eq!(leftover.reset_handling, EkfResetMethod::MoveVehicle);
+    assert!(leftover.flightmode_run);
+}
+
+#[test]
+fn update_land_and_crash_detectors_runs_stock_multicopter_callees() {
+    let leftover = update_land_and_crash_detectors();
+    assert!(leftover.apply_land_accel_filter);
+    assert!(leftover.gravity_added_to_z);
+    assert!(leftover.update_land_detector);
+    assert!(!leftover.parachute_check);
+    assert!(leftover.crash_check);
+    assert!(leftover.thrust_loss_check);
+    assert!(leftover.yaw_imbalance_check);
+}
+
+#[test]
+fn update_batt_compass_reads_battery_before_compass() {
+    let leftover = update_batt_compass(UpdateBattCompassInputs {
+        compass_available: true,
+    });
+    assert!(leftover.battery_read);
+    assert!(leftover.compass_set_throttle);
+    assert!(leftover.compass_set_voltage);
+    assert!(leftover.compass_read);
+}
+
+#[test]
+fn update_batt_compass_still_reads_battery_when_compass_is_missing() {
+    let leftover = update_batt_compass(UpdateBattCompassInputs {
+        compass_available: false,
+    });
+    assert!(leftover.battery_read);
+    assert!(!leftover.compass_set_throttle);
+    assert!(!leftover.compass_set_voltage);
+    assert!(!leftover.compass_read);
+}
+
+#[test]
+fn scheduler_runs_next_fast_tasks_every_loop() {
+    let tasks = copter_next_fast_tasks();
+    let mut last = [0u16; 2];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.flight_mode.land_complete = true;
+    vehicle.flight_mode.move_vehicle_on_ekf_reset = true;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+
+    assert_eq!(stats.tasks_run, 2);
+    assert_eq!(vehicle.ticks.update_flight_mode, 1);
+    assert_eq!(vehicle.ticks.update_land_and_crash_detectors, 1);
+    let mode = vehicle.last_flight_mode.expect("update_flight_mode ran");
+    assert!(mode.landed_gain_reduction);
+    assert!(mode.land_complete);
+    assert_eq!(mode.reset_handling, EkfResetMethod::MoveVehicle);
+    assert!(mode.flightmode_run);
+    let land = vehicle
+        .last_land_crash
+        .expect("update_land_and_crash_detectors ran");
+    assert!(land.update_land_detector);
+    assert!(land.crash_check);
+    assert!(!land.parachute_check);
+}
+
+#[test]
+fn scheduler_runs_update_batt_compass_every_fortieth_tick() {
+    let tasks = copter_next_scheduled_tasks();
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..39 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.update_batt_compass, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.update_batt_compass, 1);
+    let leftover = vehicle.last_batt_compass.expect("update_batt_compass ran");
+    assert!(leftover.battery_read);
+    assert!(leftover.compass_read);
 }
