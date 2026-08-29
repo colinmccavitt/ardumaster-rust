@@ -51,7 +51,9 @@
 //! next leftover is the stock `TERRAIN_` `GOBJECT`
 //! (`AP_TERRAIN_AVAILABLE`). After `TERRAIN_` the
 //! next leftover is the stock `FLOW` `GOBJECT`
-//! (`AP_OPTICALFLOW_ENABLED`). Later groups, G2,
+//! (`AP_OPTICALFLOW_ENABLED`). After `FLOW` the
+//! next leftover is the stock `PLND_` `GOBJECT`
+//! (`AC_PRECLAND_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1561,7 +1563,7 @@ pub fn for_each_terrain_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'stat
     }
 }
 
-/// `Parameters::k_param_precland` — next leftover after `FLOW`. Not this leftover.
+/// `Parameters::k_param_precland` — next `GOBJECT`, prefix `PLND_`.
 pub const K_PARAM_PRECLAND: u16 = 74;
 
 /// Stock `FLOW` leftover catalog.
@@ -1589,6 +1591,38 @@ pub fn find_flow_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `FLOW` leftover as `ParamInfo` rows.
 pub fn for_each_flow_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in FLOW_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_adsb` — next leftover after `PLND_`. Not this leftover.
+pub const K_PARAM_ADSB: u16 = 72;
+
+/// Stock `PLND_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `FLOW`. Upstream is
+/// `GOBJECT`. `PLND_` is `AC_PRECLAND_ENABLED`. Nested `AC_PrecLand`
+/// `var_info` is not this leftover. `ADSB_` stays later (`HAL_ADSB_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const PLND_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("PLND_", K_PARAM_PRECLAND)];
+
+/// First (only) row of the `PLND_` leftover.
+#[must_use]
+pub fn plnd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    PLND_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `PLND_` leftover by group prefix.
+#[must_use]
+pub fn find_plnd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    PLND_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `PLND_` leftover as `ParamInfo` rows.
+pub fn for_each_plnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in PLND_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
