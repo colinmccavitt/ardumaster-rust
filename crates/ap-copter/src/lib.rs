@@ -54,6 +54,7 @@ pub mod mode_sport;
 pub mod mode_stabilize;
 pub mod mode_systemid;
 pub mod mode_zigzag;
+pub mod parameters;
 pub mod pilot_input;
 pub mod radio;
 pub mod simple;
