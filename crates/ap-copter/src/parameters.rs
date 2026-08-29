@@ -8,9 +8,10 @@
 //! `AP_RC_TRANSMITTER_TUNING_ENABLED` leftover: it sits between
 //! `ESC_CALIBRATION` and `FRAME_TYPE` on the stock table, but is not a
 //! row of the `LOG_BITMASK` leftover. After `ARMING_` the next leftover
-//! is `DISARM_DELAY` through the next `GOBJECT` (`CAM`). Later groups,
-//! G2, `load_parameters` conversions, and the rest of the enum stay
-//! later.
+//! is `DISARM_DELAY` through the next `GOBJECT` (`CAM`). After `CAM`
+//! the next leftover is the contiguous `RELAY` / `CHUTE_` / `LGR_`
+//! `GOBJECT` group. Later groups, G2, `load_parameters` conversions,
+//! and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -678,6 +679,55 @@ pub fn find_disarm_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `DISARM_DELAY` leftover as `ParamInfo` rows.
 pub fn for_each_disarm_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in DISARM_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_relay` — next `GOBJECT`, prefix `RELAY`.
+pub const K_PARAM_RELAY: u16 = 13;
+
+/// `Parameters::k_param_epm_unused`. Unused. Not `RELAY`.
+pub const K_PARAM_EPM_UNUSED: u16 = 14;
+
+/// `Parameters::k_param_parachute` — `CHUTE_`.
+pub const K_PARAM_PARACHUTE: u16 = 17;
+
+/// `Parameters::k_param_landinggear` — `LGR_`.
+pub const K_PARAM_LANDINGGEAR: u16 = 18;
+
+/// `Parameters::k_param_input_manager` — heli `IM_`. Not this leftover.
+pub const K_PARAM_INPUT_MANAGER: u16 = 19;
+
+/// `RELAY` through `LGR_` leftover catalog.
+///
+/// Order is table order, not key order. `RELAY` is `AP_RELAY_ENABLED`,
+/// `CHUTE_` is `HAL_PARACHUTE_ENABLED`, and `LGR_` is
+/// `AP_LANDINGGEAR_ENABLED`. A stock multicopter compiles all three.
+/// Heli `IM_` is a `FRAME_CONFIG` row, not this leftover. `COMPASS_`
+/// stays later.
+pub const RELAY_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[
+    group("RELAY", K_PARAM_RELAY),
+    group("CHUTE_", K_PARAM_PARACHUTE),
+    group("LGR_", K_PARAM_LANDINGGEAR),
+];
+
+/// First row of the `RELAY` leftover, `RELAY`.
+#[must_use]
+pub fn relay_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    RELAY_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `RELAY` leftover by group prefix.
+#[must_use]
+pub fn find_relay_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    RELAY_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `RELAY` leftover as `ParamInfo` rows.
+pub fn for_each_relay_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in RELAY_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
