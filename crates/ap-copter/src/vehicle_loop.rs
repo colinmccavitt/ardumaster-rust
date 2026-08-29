@@ -9,14 +9,16 @@
 //! [`motors_output_main`], [`read_ahrs`], and [`read_inertia`] — INS `update`
 //! lives on `ap-ins`. [`update_flight_mode`] and
 //! [`update_land_and_crash_detectors`] are the next Copter-owned FAST_TASK
-//! leftovers after `check_ekf_reset` / `update_home_from_EKF`, which stay
-//! later. [`loop_rate_logging`], [`ten_hz_logging_loop`], and
+//! leftovers after `read_inertia`. [`check_ekf_reset`] and
+//! [`update_home_from_EKF`] sit around [`update_flight_mode`] in the
+//! FAST_TASK table. [`loop_rate_logging`], [`ten_hz_logging_loop`], and
 //! [`twentyfive_hz_logging`] are the `HAL_LOGGING_ENABLED` scheduled
 //! leftovers; [`three_hz_loop`], [`ap_value`], and [`one_hz_loop`] sit
 //! next to them in `Copter.cpp`. [`update_altitude`] is the next
-//! always-on Copter-owned scheduled leftover after those. Simple-mode
-//! lives in [`crate::simple`]. Later `Copter.cpp` / `system.cpp`
-//! leftovers stay later.
+//! always-on Copter-owned scheduled leftover after those. [`run_nav_updates`]
+//! is the next always-on scheduled leftover after that. Simple-mode
+//! lives in [`crate::simple`]. [`get_wp_distance_m`] is the Copter.cpp
+//! GCS helper. Later `Copter.cpp` / `system.cpp` leftovers stay later.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -125,6 +127,15 @@ pub const UPDATE_ALTITUDE_MAX_TIME_MICROS: u16 = 100;
 
 /// `update_altitude` scheduler priority (lower is higher priority).
 pub const UPDATE_ALTITUDE_PRIORITY: u8 = 42;
+
+/// `Copter.cpp` `SCHED_TASK(run_nav_updates, 50, 100, 45)`.
+pub const RUN_NAV_UPDATES_RATE_HZ: f32 = 50.0;
+
+/// Microsecond budget on the `run_nav_updates` row.
+pub const RUN_NAV_UPDATES_MAX_TIME_MICROS: u16 = 100;
+
+/// Scheduler priority on the `run_nav_updates` row.
+pub const RUN_NAV_UPDATES_PRIORITY: u8 = 45;
 
 /// `MASK_LOG_ATTITUDE_FAST` — Copter `defines.h`.
 pub const MASK_LOG_ATTITUDE_FAST: u32 = 1 << 0;
@@ -502,15 +513,13 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 
 /// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
 /// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, the first
-/// Copter FAST_TASK bodies including `update_flight_mode` and
+/// Copter FAST_TASK bodies including `check_ekf_reset`,
+/// `update_flight_mode`, `update_home_from_EKF`, and
 /// `update_land_and_crash_detectors`, the logging / 3 Hz / 1 Hz
-/// leftovers, simple-mode, and `update_altitude`.
+/// leftovers, simple-mode, `update_altitude`, `get_wp_distance_m`, and
+/// `run_nav_updates`.
 pub const REMAINING: &[&str] = &[
-    "Copter::get_wp_distance_m",
-    "Copter::check_ekf_reset",
-    "Copter::update_home_from_EKF",
     "Copter::update_rangefinder_terrain_offset",
-    "Copter::run_nav_updates",
     "Copter::auto_disarm_check",
     "Copter::standby_update",
     "Copter::lost_vehicle_check",
@@ -1539,6 +1548,393 @@ pub const fn update_altitude(inputs: UpdateAltitudeInputs) -> UpdateAltitudeLeft
     }
 }
 
+/// Inputs to `Copter::check_ekf_reset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckEkfResetInputs {
+    /// Stored `ekfYawReset_ms` before this call.
+    pub ekf_yaw_reset_ms: u32,
+    /// `ahrs.getLastYawResetAngle(...)` — the timestamp, not the angle.
+    pub new_ekf_yaw_reset_ms: u32,
+    /// Stored `ekf_primary_core` before this call.
+    pub ekf_primary_core: i8,
+    /// `ahrs.get_primary_core_index()`.
+    pub primary_core_index: i8,
+}
+
+/// What `Copter::check_ekf_reset` asked later leftovers to do.
+///
+/// Yaw handling runs first and is a timestamp inequality. A port that
+/// waited for a non-zero yaw *angle* would miss a reset that reported
+/// zero change. Primary-core handling is a separate `inertial_frame_reset`
+/// — both can fire on the same tick. Index `-1` is ignored even when it
+/// differs from the stored core; folding that refuse would reset attitude
+/// every loop before EKF publishes a core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckEkfResetLeftover {
+    /// Yaw-reset timestamp changed — `attitude_control->inertial_frame_reset()`.
+    pub inertial_frame_reset_yaw: bool,
+    /// `ekfYawReset_ms` after this call.
+    pub ekf_yaw_reset_ms: u32,
+    /// `LOGGER_WRITE_EVENT(LogEvent::EKF_YAW_RESET)`.
+    pub log_ekf_yaw_reset: bool,
+    /// Primary core changed and is not `-1` — another `inertial_frame_reset()`.
+    pub inertial_frame_reset_primary: bool,
+    /// `ekf_primary_core` after this call.
+    pub ekf_primary_core: i8,
+    /// `LOGGER_WRITE_ERROR(EKF_PRIMARY, LogErrorCode(ekf_primary_core))`.
+    pub log_ekf_primary: bool,
+    /// `gcs().send_text(..., "EKF primary changed:%d", ...)`.
+    pub gcs_ekf_primary_changed: bool,
+}
+
+/// `Copter::check_ekf_reset`.
+#[must_use]
+pub const fn check_ekf_reset(inputs: CheckEkfResetInputs) -> CheckEkfResetLeftover {
+    let yaw_changed = inputs.new_ekf_yaw_reset_ms != inputs.ekf_yaw_reset_ms;
+    let ekf_yaw_reset_ms = if yaw_changed {
+        inputs.new_ekf_yaw_reset_ms
+    } else {
+        inputs.ekf_yaw_reset_ms
+    };
+
+    let primary_changed =
+        inputs.primary_core_index != inputs.ekf_primary_core && inputs.primary_core_index != -1;
+    let ekf_primary_core = if primary_changed {
+        inputs.primary_core_index
+    } else {
+        inputs.ekf_primary_core
+    };
+
+    CheckEkfResetLeftover {
+        inertial_frame_reset_yaw: yaw_changed,
+        ekf_yaw_reset_ms,
+        log_ekf_yaw_reset: yaw_changed,
+        inertial_frame_reset_primary: primary_changed,
+        ekf_primary_core,
+        log_ekf_primary: primary_changed,
+        gcs_ekf_primary_changed: primary_changed,
+    }
+}
+
+/// Inputs to `Copter::set_home`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeInputs {
+    /// `ahrs.get_origin(...)` succeeded.
+    pub got_origin: bool,
+    /// `ahrs.set_home(loc)` succeeded.
+    pub ahrs_set_home_ok: bool,
+    /// `lock` — `update_home_from_EKF` always passes `false`.
+    pub lock: bool,
+}
+
+/// What `Copter::set_home` asked AHRS to do.
+///
+/// Origin is required before `set_home`. A port that wrote AHRS home
+/// without an origin would let RTL start from a location EKF cannot
+/// convert. Lock only runs after a successful write — locking a refuse
+/// would freeze an unset home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeLeftover {
+    /// `ahrs.set_home(loc)` was attempted.
+    pub set_ahrs_home: bool,
+    /// `ahrs.lock_home()` ran.
+    pub lock_home: bool,
+    /// The function returned `true`.
+    pub success: bool,
+}
+
+/// `Copter::set_home`.
+#[must_use]
+pub const fn set_home(inputs: SetHomeInputs) -> SetHomeLeftover {
+    if !inputs.got_origin {
+        return SetHomeLeftover {
+            set_ahrs_home: false,
+            lock_home: false,
+            success: false,
+        };
+    }
+    if !inputs.ahrs_set_home_ok {
+        return SetHomeLeftover {
+            set_ahrs_home: true,
+            lock_home: false,
+            success: false,
+        };
+    }
+    SetHomeLeftover {
+        set_ahrs_home: true,
+        lock_home: inputs.lock,
+        success: true,
+    }
+}
+
+/// Inputs to `Copter::set_home_to_current_location`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeToCurrentLocationInputs {
+    /// `ahrs.get_location(...)` succeeded.
+    pub got_location: bool,
+    /// `set_home(temp_loc, lock)` succeeded.
+    pub set_home_ok: bool,
+    /// `lock` forwarded into `set_home`.
+    pub lock: bool,
+}
+
+/// What `Copter::set_home_to_current_location` asked later leftovers to do.
+///
+/// SmartRTL (`MODE_SMARTRTL_ENABLED`, stock on) is armed only after
+/// `set_home` succeeds. A port that seeded SmartRTL on a failed home
+/// write would let SmartRTL think it had a home the AHRS refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeToCurrentLocationLeftover {
+    /// `set_home(temp_loc, lock)` was attempted.
+    pub set_home: bool,
+    /// The `lock` that attempt received.
+    pub set_home_lock: bool,
+    /// `g2.smart_rtl.set_home(true)` — stock `MODE_SMARTRTL_ENABLED`.
+    pub smart_rtl_set_home: bool,
+    /// The function returned `true`.
+    pub success: bool,
+}
+
+/// `Copter::set_home_to_current_location`.
+#[must_use]
+pub const fn set_home_to_current_location(
+    inputs: SetHomeToCurrentLocationInputs,
+) -> SetHomeToCurrentLocationLeftover {
+    if !inputs.got_location {
+        return SetHomeToCurrentLocationLeftover {
+            set_home: false,
+            set_home_lock: false,
+            smart_rtl_set_home: false,
+            success: false,
+        };
+    }
+    if !inputs.set_home_ok {
+        return SetHomeToCurrentLocationLeftover {
+            set_home: true,
+            set_home_lock: inputs.lock,
+            smart_rtl_set_home: false,
+            success: false,
+        };
+    }
+    SetHomeToCurrentLocationLeftover {
+        set_home: true,
+        set_home_lock: inputs.lock,
+        smart_rtl_set_home: true,
+        success: true,
+    }
+}
+
+/// Inputs to `Copter::set_home_to_current_location_inflight`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeToCurrentLocationInflightInputs {
+    /// `ahrs.get_location(...)` succeeded.
+    pub got_location: bool,
+    /// `ahrs.get_origin(...)` succeeded.
+    pub got_origin: bool,
+    /// `set_home(temp_loc, false)` succeeded.
+    pub set_home_ok: bool,
+}
+
+/// What `Copter::set_home_to_current_location_inflight` asked later leftovers to do.
+///
+/// Both EKF location *and* origin must succeed before `copy_alt_from`.
+/// A port that set home from the current location's alt would park RTL
+/// at inflight height, not the EKF origin. `set_home` is always
+/// `lock = false` here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetHomeToCurrentLocationInflightLeftover {
+    /// `temp_loc.copy_alt_from(ekf_origin)` ran.
+    pub copy_alt_from_origin: bool,
+    /// `set_home(temp_loc, false)` was attempted.
+    pub set_home: bool,
+    /// `g2.smart_rtl.set_home(true)` after a successful write.
+    pub smart_rtl_set_home: bool,
+}
+
+/// `Copter::set_home_to_current_location_inflight`.
+#[must_use]
+pub const fn set_home_to_current_location_inflight(
+    inputs: SetHomeToCurrentLocationInflightInputs,
+) -> SetHomeToCurrentLocationInflightLeftover {
+    if !inputs.got_location || !inputs.got_origin {
+        return SetHomeToCurrentLocationInflightLeftover {
+            copy_alt_from_origin: false,
+            set_home: false,
+            smart_rtl_set_home: false,
+        };
+    }
+    SetHomeToCurrentLocationInflightLeftover {
+        copy_alt_from_origin: true,
+        set_home: true,
+        smart_rtl_set_home: inputs.set_home_ok,
+    }
+}
+
+/// Inputs to `Copter::update_home_from_EKF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateHomeFromEkfInputs {
+    /// `ahrs.home_is_set()`.
+    pub home_is_set: bool,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `ahrs.get_location(...)` succeeded (used by both set-home paths).
+    pub got_location: bool,
+    /// `ahrs.get_origin(...)` succeeded.
+    pub got_origin: bool,
+    /// `ahrs.set_home(...)` succeeded when attempted.
+    pub ahrs_set_home_ok: bool,
+}
+
+/// Which `update_home_from_EKF` branch ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateHomeFromEkfPath {
+    /// Home already set — return immediately.
+    HomeAlreadySet,
+    /// Armed — `set_home_to_current_location_inflight()`.
+    ArmedInflight,
+    /// Disarmed — `set_home_to_current_location(false)`.
+    DisarmedGround,
+}
+
+/// What `Copter::update_home_from_EKF` asked later leftovers to do.
+///
+/// The leftover refuses as soon as home is set. Folding that check
+/// behind the armed branch would keep rewriting home every loop after
+/// the first inflight lock-in. Disarmed failures are ignored — this
+/// leftover does not retry a different path when `set_home` refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateHomeFromEkfLeftover {
+    /// Which branch ran.
+    pub path: UpdateHomeFromEkfPath,
+    /// Inflight: origin alt was copied onto the EKF location.
+    pub copy_alt_from_origin: bool,
+    /// `set_home(..., false)` was attempted.
+    pub set_home: bool,
+    /// `ahrs.lock_home()` — `update_home_from_EKF` always passes `lock = false`.
+    pub lock_home: bool,
+    /// `g2.smart_rtl.set_home(true)` after a successful write.
+    pub smart_rtl_set_home: bool,
+    /// The set-home helper returned `true` (disarmed) or completed (inflight).
+    pub success: bool,
+}
+
+/// `Copter::update_home_from_EKF`.
+#[must_use]
+pub const fn update_home_from_ekf(inputs: UpdateHomeFromEkfInputs) -> UpdateHomeFromEkfLeftover {
+    if inputs.home_is_set {
+        return UpdateHomeFromEkfLeftover {
+            path: UpdateHomeFromEkfPath::HomeAlreadySet,
+            copy_alt_from_origin: false,
+            set_home: false,
+            lock_home: false,
+            smart_rtl_set_home: false,
+            success: false,
+        };
+    }
+
+    if inputs.motors_armed {
+        let inflight =
+            set_home_to_current_location_inflight(SetHomeToCurrentLocationInflightInputs {
+                got_location: inputs.got_location,
+                got_origin: inputs.got_origin,
+                set_home_ok: inputs.got_origin && inputs.ahrs_set_home_ok,
+            });
+        let home = if inflight.set_home {
+            set_home(SetHomeInputs {
+                got_origin: inputs.got_origin,
+                ahrs_set_home_ok: inputs.ahrs_set_home_ok,
+                lock: false,
+            })
+        } else {
+            SetHomeLeftover {
+                set_ahrs_home: false,
+                lock_home: false,
+                success: false,
+            }
+        };
+        return UpdateHomeFromEkfLeftover {
+            path: UpdateHomeFromEkfPath::ArmedInflight,
+            copy_alt_from_origin: inflight.copy_alt_from_origin,
+            set_home: inflight.set_home,
+            lock_home: home.lock_home,
+            smart_rtl_set_home: inflight.smart_rtl_set_home,
+            success: home.success,
+        };
+    }
+
+    let ground = set_home_to_current_location(SetHomeToCurrentLocationInputs {
+        got_location: inputs.got_location,
+        set_home_ok: inputs.got_origin && inputs.ahrs_set_home_ok,
+        lock: false,
+    });
+    let home = if ground.set_home {
+        set_home(SetHomeInputs {
+            got_origin: inputs.got_origin,
+            ahrs_set_home_ok: inputs.ahrs_set_home_ok,
+            lock: false,
+        })
+    } else {
+        SetHomeLeftover {
+            set_ahrs_home: false,
+            lock_home: false,
+            success: false,
+        }
+    };
+    UpdateHomeFromEkfLeftover {
+        path: UpdateHomeFromEkfPath::DisarmedGround,
+        copy_alt_from_origin: false,
+        set_home: ground.set_home,
+        lock_home: home.lock_home,
+        smart_rtl_set_home: ground.smart_rtl_set_home,
+        success: home.success,
+    }
+}
+
+/// What `Copter::get_wp_distance_m` handed GCS.
+///
+/// The leftover always returns `true` and the mode's
+/// `wp_distance_m()`. A port that refused when the mode had no
+/// waypoint would drop `NAV_CONTROLLER_OUTPUT` on Stabilize / Acro.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GetWpDistanceLeftover {
+    /// The `bool` return — always `true`.
+    pub ok: bool,
+    /// `flightmode->wp_distance_m()`.
+    pub distance_m: f32,
+}
+
+/// `Copter::get_wp_distance_m`.
+#[must_use]
+pub const fn get_wp_distance_m(flightmode_wp_distance_m: f32) -> GetWpDistanceLeftover {
+    GetWpDistanceLeftover {
+        ok: true,
+        distance_m: flightmode_wp_distance_m,
+    }
+}
+
+/// What `Copter::run_nav_updates` asked later leftovers to do.
+///
+/// The whole leftover is `update_super_simple_bearing(false)`.
+/// `set_simple_mode(SUPERSIMPLE)` is the `force_update = true` caller;
+/// folding `true` in here would rewrite SuperSimple heading every 50 Hz
+/// tick even inside [`crate::simple::SUPER_SIMPLE_RADIUS_M`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunNavUpdatesLeftover {
+    /// Always: `update_super_simple_bearing(false)`.
+    pub update_super_simple_bearing: bool,
+    /// The force flag this leftover passes — always `false`.
+    pub force_update: bool,
+}
+
+/// `Copter::run_nav_updates`.
+#[must_use]
+pub const fn run_nav_updates() -> RunNavUpdatesLeftover {
+    RunNavUpdatesLeftover {
+        update_super_simple_bearing: true,
+        force_update: false,
+    }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -1550,6 +1946,10 @@ pub struct VehicleLoopTicks {
     pub read_ahrs: u32,
     /// Upstream `Copter::read_inertia`.
     pub read_inertia: u32,
+    /// Upstream `Copter::check_ekf_reset`.
+    pub check_ekf_reset: u32,
+    /// Upstream `Copter::update_home_from_EKF`.
+    pub update_home_from_ekf: u32,
     /// Upstream `Copter::rc_loop`.
     pub rc_loop: u32,
     /// Upstream `Copter::throttle_loop`.
@@ -1572,6 +1972,8 @@ pub struct VehicleLoopTicks {
     pub one_hz_loop: u32,
     /// Upstream `Copter::update_altitude`.
     pub update_altitude: u32,
+    /// Upstream `Copter::run_nav_updates`.
+    pub run_nav_updates: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -1597,6 +1999,14 @@ pub struct CopterVehicleLoop {
     pub current_loc: Location,
     /// Leftover from the latest `read_inertia` tick.
     pub last_inertia: Option<ReadInertiaLeftover>,
+    /// Inputs for `check_ekf_reset`.
+    pub ekf_reset: CheckEkfResetInputs,
+    /// Leftover from the latest `check_ekf_reset` tick.
+    pub last_ekf_reset: Option<CheckEkfResetLeftover>,
+    /// Inputs for `update_home_from_EKF`.
+    pub home_from_ekf: UpdateHomeFromEkfInputs,
+    /// Leftover from the latest `update_home_from_EKF` tick.
+    pub last_home_from_ekf: Option<UpdateHomeFromEkfLeftover>,
     /// Inputs for the `read_radio` half of `rc_loop`.
     pub radio: ReadRadioInputs,
     /// Inputs for the `read_mode_switch` half of `rc_loop`.
@@ -1639,6 +2049,8 @@ pub struct CopterVehicleLoop {
     pub last_one_hz: Option<OneHzLoopLeftover>,
     /// Leftover from the latest `update_altitude` tick.
     pub last_update_altitude: Option<UpdateAltitudeLeftover>,
+    /// Leftover from the latest `run_nav_updates` tick.
+    pub last_run_nav_updates: Option<RunNavUpdatesLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -1656,6 +2068,21 @@ impl CopterVehicleLoop {
             inertia: typical_read_inertia(),
             current_loc: Location::new(0, 0),
             last_inertia: None,
+            ekf_reset: CheckEkfResetInputs {
+                ekf_yaw_reset_ms: 0,
+                new_ekf_yaw_reset_ms: 0,
+                ekf_primary_core: 0,
+                primary_core_index: 0,
+            },
+            last_ekf_reset: None,
+            home_from_ekf: UpdateHomeFromEkfInputs {
+                home_is_set: true,
+                motors_armed: false,
+                got_location: true,
+                got_origin: true,
+                ahrs_set_home_ok: true,
+            },
+            last_home_from_ekf: None,
             radio: typical_radio_frame(),
             mode_switch: ModeSwitchReadInputs {
                 has_valid_input: true,
@@ -1685,6 +2112,7 @@ impl CopterVehicleLoop {
             last_three_hz: None,
             last_one_hz: None,
             last_update_altitude: None,
+            last_run_nav_updates: None,
         }
     }
 }
@@ -1784,6 +2212,23 @@ fn task_read_inertia(vehicle: &mut CopterVehicleLoop) {
     vehicle.last_inertia = Some(leftover);
 }
 
+fn task_check_ekf_reset(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.check_ekf_reset = vehicle.ticks.check_ekf_reset.saturating_add(1);
+    let leftover = check_ekf_reset(vehicle.ekf_reset);
+    vehicle.ekf_reset.ekf_yaw_reset_ms = leftover.ekf_yaw_reset_ms;
+    vehicle.ekf_reset.ekf_primary_core = leftover.ekf_primary_core;
+    vehicle.last_ekf_reset = Some(leftover);
+}
+
+fn task_update_home_from_ekf(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_home_from_ekf = vehicle.ticks.update_home_from_ekf.saturating_add(1);
+    let leftover = update_home_from_ekf(vehicle.home_from_ekf);
+    if leftover.success {
+        vehicle.home_from_ekf.home_is_set = true;
+    }
+    vehicle.last_home_from_ekf = Some(leftover);
+}
+
 fn task_rc_loop(vehicle: &mut CopterVehicleLoop) {
     vehicle.ticks.rc_loop = vehicle.ticks.rc_loop.saturating_add(1);
     vehicle.last_rc = Some(rc_loop(&vehicle.radio, vehicle.mode_switch));
@@ -1860,6 +2305,11 @@ fn task_update_altitude(vehicle: &mut CopterVehicleLoop) {
     vehicle.last_update_altitude = Some(update_altitude(UpdateAltitudeInputs {
         log_bitmask: vehicle.log_bitmask,
     }));
+}
+
+fn task_run_nav_updates(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.run_nav_updates = vehicle.ticks.run_nav_updates.saturating_add(1);
+    vehicle.last_run_nav_updates = Some(run_nav_updates());
 }
 
 /// First Copter-owned FAST_TASK, in upstream table form.
@@ -1945,12 +2395,36 @@ pub fn copter_first_fast_tasks() -> [Task<CopterVehicleLoop>; 4] {
     ]
 }
 
+/// `check_ekf_reset` FAST_TASK row.
+#[must_use]
+pub fn copter_check_ekf_reset_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_check_ekf_reset,
+        name: "check_ekf_reset",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
 /// `update_flight_mode` FAST_TASK row.
 #[must_use]
 pub fn copter_update_flight_mode_task() -> Task<CopterVehicleLoop> {
     Task {
         function: task_update_flight_mode,
         name: "update_flight_mode",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// `update_home_from_EKF` FAST_TASK row.
+#[must_use]
+pub fn copter_update_home_from_ekf_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_home_from_ekf,
+        name: "update_home_from_EKF",
         rate_hz: LOOP_RATE,
         max_time_micros: 0,
         priority: FAST_TASK_PRI0,
@@ -1989,13 +2463,15 @@ pub fn copter_first_scheduled_tasks() -> [Task<CopterVehicleLoop>; 2] {
 
 /// Next Copter-owned FAST_TASK leftovers after `read_inertia`.
 ///
-/// Table order still has `check_ekf_reset` and `update_home_from_EKF`
-/// between / around these; those stay later leftovers. This pair is the
-/// attitude-run and land/crash wrapper.
+/// Table order: `check_ekf_reset`, `update_flight_mode`,
+/// `update_home_from_EKF`, `update_land_and_crash_detectors`.
+/// `update_rangefinder_terrain_offset` stays a later leftover.
 #[must_use]
-pub fn copter_next_fast_tasks() -> [Task<CopterVehicleLoop>; 2] {
+pub fn copter_next_fast_tasks() -> [Task<CopterVehicleLoop>; 4] {
     [
+        copter_check_ekf_reset_task(),
         copter_update_flight_mode_task(),
+        copter_update_home_from_ekf_task(),
         copter_update_land_and_crash_detectors_task(),
     ]
 }
@@ -2093,6 +2569,18 @@ pub fn copter_update_altitude_task() -> Task<CopterVehicleLoop> {
         rate_hz: UPDATE_ALTITUDE_RATE_HZ,
         max_time_micros: UPDATE_ALTITUDE_MAX_TIME_MICROS,
         priority: UPDATE_ALTITUDE_PRIORITY,
+    }
+}
+
+/// `run_nav_updates` scheduled row (`50` Hz).
+#[must_use]
+pub fn copter_run_nav_updates_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_run_nav_updates,
+        name: "run_nav_updates",
+        rate_hz: RUN_NAV_UPDATES_RATE_HZ,
+        max_time_micros: RUN_NAV_UPDATES_MAX_TIME_MICROS,
+        priority: RUN_NAV_UPDATES_PRIORITY,
     }
 }
 

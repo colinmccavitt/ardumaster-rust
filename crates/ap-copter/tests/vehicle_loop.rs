@@ -2,29 +2,33 @@
 
 use ap_copter::radio::ReadRadioLeftover;
 use ap_copter::vehicle_loop::{
-    always_on_tasks, ap_value, copter_first_fast_tasks, copter_first_scheduled_tasks,
-    copter_logging_tasks, copter_next_fast_tasks, copter_next_scheduled_tasks,
-    copter_periodic_loop_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks,
-    loop_rate_logging, motors_output, motors_output_main, one_hz_loop, rc_loop, read_ahrs,
-    read_inertia, read_mode_switch, run_scheduler_tick, should_log, ten_hz_logging_loop,
-    three_hz_loop, throttle_loop, twentyfive_hz_logging, update_altitude, update_batt_compass,
-    update_flight_mode, update_land_and_crash_detectors, ApState, CopterVehicleLoop,
-    EkfResetMethod, InterlockEdge, LoopRateLoggingInputs, ModeSwitchReadInputs,
+    always_on_tasks, ap_value, check_ekf_reset, copter_first_fast_tasks,
+    copter_first_scheduled_tasks, copter_logging_tasks, copter_next_fast_tasks,
+    copter_next_scheduled_tasks, copter_periodic_loop_tasks, copter_rc_loop_task,
+    first_scheduled_task, get_scheduler_tasks, get_wp_distance_m, loop_rate_logging, motors_output,
+    motors_output_main, one_hz_loop, rc_loop, read_ahrs, read_inertia, read_mode_switch,
+    run_nav_updates, run_scheduler_tick, set_home, set_home_to_current_location,
+    set_home_to_current_location_inflight, should_log, ten_hz_logging_loop, three_hz_loop,
+    throttle_loop, twentyfive_hz_logging, update_altitude, update_batt_compass, update_flight_mode,
+    update_home_from_ekf, update_land_and_crash_detectors, ApState, CheckEkfResetInputs,
+    CopterVehicleLoop, EkfResetMethod, InterlockEdge, LoopRateLoggingInputs, ModeSwitchReadInputs,
     ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover, MotorsOutputPush,
-    OneHzLoopInputs, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs, UpdateAltitudeInputs,
-    UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS, COPTER_LOOP_RATE_HZ,
-    DEFAULT_LOG_BITMASK, FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS,
-    LOOP_RATE_LOGGING_PRIORITY, MASK_LOG_ANY, MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED,
-    MASK_LOG_IMU, MASK_LOG_IMU_FAST, MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW,
-    ONE_HZ_LOOP_MAX_TIME_MICROS, ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ,
-    RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING, SCHEDULER_TASKS,
-    TEN_HZ_LOGGING_MAX_TIME_MICROS, TEN_HZ_LOGGING_PRIORITY, TEN_HZ_LOGGING_RATE_HZ,
-    THREE_HZ_LOOP_MAX_TIME_MICROS, THREE_HZ_LOOP_PRIORITY, THREE_HZ_LOOP_RATE_HZ,
-    THROTTLE_LOOP_MAX_TIME_MICROS, THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ,
-    TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS, TWENTYFIVE_HZ_LOGGING_PRIORITY,
-    TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS, UPDATE_ALTITUDE_PRIORITY,
-    UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS, UPDATE_BATT_COMPASS_PRIORITY,
-    UPDATE_BATT_COMPASS_RATE_HZ,
+    OneHzLoopInputs, SetHomeInputs, SetHomeToCurrentLocationInflightInputs,
+    SetHomeToCurrentLocationInputs, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs,
+    UpdateAltitudeInputs, UpdateBattCompassInputs, UpdateFlightModeInputs, UpdateHomeFromEkfInputs,
+    UpdateHomeFromEkfPath, ARMING_DELAY_MS, COPTER_LOOP_RATE_HZ, DEFAULT_LOG_BITMASK,
+    FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS, LOOP_RATE_LOGGING_PRIORITY, MASK_LOG_ANY,
+    MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED, MASK_LOG_IMU, MASK_LOG_IMU_FAST,
+    MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS,
+    ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY,
+    RC_LOOP_RATE_HZ, REMAINING, RUN_NAV_UPDATES_MAX_TIME_MICROS, RUN_NAV_UPDATES_PRIORITY,
+    RUN_NAV_UPDATES_RATE_HZ, SCHEDULER_TASKS, TEN_HZ_LOGGING_MAX_TIME_MICROS,
+    TEN_HZ_LOGGING_PRIORITY, TEN_HZ_LOGGING_RATE_HZ, THREE_HZ_LOOP_MAX_TIME_MICROS,
+    THREE_HZ_LOOP_PRIORITY, THREE_HZ_LOOP_RATE_HZ, THROTTLE_LOOP_MAX_TIME_MICROS,
+    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ, TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS,
+    TWENTYFIVE_HZ_LOGGING_PRIORITY, TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS,
+    UPDATE_ALTITUDE_PRIORITY, UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
+    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
 };
 use ap_hal::time::{Clock, Micros, Millis};
 use ap_math::location::AltFrame;
@@ -120,9 +124,19 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::update_batt_compass"));
-    assert!(REMAINING.contains(&"Copter::check_ekf_reset"));
-    assert!(REMAINING.contains(&"Copter::update_home_from_EKF"));
-    assert!(REMAINING.contains(&"Copter::get_wp_distance_m"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::check_ekf_reset"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_home_from_EKF"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::get_wp_distance_m"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::run_nav_updates"));
+    assert!(REMAINING.contains(&"Copter::update_rangefinder_terrain_offset"));
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::init_simple_bearing"));
@@ -522,18 +536,32 @@ fn update_batt_compass_still_reads_battery_when_compass_is_missing() {
 #[test]
 fn scheduler_runs_next_fast_tasks_every_loop() {
     let tasks = copter_next_fast_tasks();
-    let mut last = [0u16; 2];
+    let mut last = [0u16; 4];
     let mut vehicle = CopterVehicleLoop::typical();
     vehicle.flight_mode.land_complete = true;
     vehicle.flight_mode.move_vehicle_on_ekf_reset = true;
+    vehicle.ekf_reset.new_ekf_yaw_reset_ms = 12;
+    vehicle.home_from_ekf.home_is_set = false;
+    vehicle.home_from_ekf.motors_armed = true;
     let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
     let clock = StepClock::new();
 
     let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
 
-    assert_eq!(stats.tasks_run, 2);
+    assert_eq!(stats.tasks_run, 4);
+    assert_eq!(vehicle.ticks.check_ekf_reset, 1);
     assert_eq!(vehicle.ticks.update_flight_mode, 1);
+    assert_eq!(vehicle.ticks.update_home_from_ekf, 1);
     assert_eq!(vehicle.ticks.update_land_and_crash_detectors, 1);
+    let ekf = vehicle.last_ekf_reset.expect("check_ekf_reset ran");
+    assert!(ekf.inertial_frame_reset_yaw);
+    assert_eq!(ekf.ekf_yaw_reset_ms, 12);
+    let home = vehicle
+        .last_home_from_ekf
+        .expect("update_home_from_EKF ran");
+    assert_eq!(home.path, UpdateHomeFromEkfPath::ArmedInflight);
+    assert!(home.copy_alt_from_origin);
+    assert!(home.success);
     let mode = vehicle.last_flight_mode.expect("update_flight_mode ran");
     assert!(mode.landed_gain_reduction);
     assert!(mode.land_complete);
@@ -1013,4 +1041,245 @@ fn scheduler_runs_update_altitude_every_fortieth_tick() {
     let leftover = vehicle.last_update_altitude.expect("update_altitude ran");
     assert!(leftover.read_barometer);
     assert!(leftover.write_control_tuning);
+}
+
+#[test]
+fn check_ekf_reset_is_silent_when_timestamps_and_core_match() {
+    let leftover = check_ekf_reset(CheckEkfResetInputs {
+        ekf_yaw_reset_ms: 40,
+        new_ekf_yaw_reset_ms: 40,
+        ekf_primary_core: 0,
+        primary_core_index: 0,
+    });
+    assert!(!leftover.inertial_frame_reset_yaw);
+    assert!(!leftover.log_ekf_yaw_reset);
+    assert_eq!(leftover.ekf_yaw_reset_ms, 40);
+    assert!(!leftover.inertial_frame_reset_primary);
+    assert!(!leftover.log_ekf_primary);
+    assert!(!leftover.gcs_ekf_primary_changed);
+    assert_eq!(leftover.ekf_primary_core, 0);
+}
+
+#[test]
+fn check_ekf_reset_yaw_uses_timestamp_not_angle() {
+    let leftover = check_ekf_reset(CheckEkfResetInputs {
+        ekf_yaw_reset_ms: 0,
+        new_ekf_yaw_reset_ms: 7,
+        ekf_primary_core: 1,
+        primary_core_index: 1,
+    });
+    assert!(leftover.inertial_frame_reset_yaw);
+    assert!(leftover.log_ekf_yaw_reset);
+    assert_eq!(leftover.ekf_yaw_reset_ms, 7);
+    assert!(!leftover.inertial_frame_reset_primary);
+}
+
+#[test]
+fn check_ekf_reset_ignores_primary_core_minus_one() {
+    let leftover = check_ekf_reset(CheckEkfResetInputs {
+        ekf_yaw_reset_ms: 1,
+        new_ekf_yaw_reset_ms: 1,
+        ekf_primary_core: 0,
+        primary_core_index: -1,
+    });
+    assert!(!leftover.inertial_frame_reset_primary);
+    assert_eq!(leftover.ekf_primary_core, 0);
+    assert!(!leftover.log_ekf_primary);
+    assert!(!leftover.gcs_ekf_primary_changed);
+}
+
+#[test]
+fn check_ekf_reset_can_fire_yaw_and_primary_on_the_same_tick() {
+    let leftover = check_ekf_reset(CheckEkfResetInputs {
+        ekf_yaw_reset_ms: 3,
+        new_ekf_yaw_reset_ms: 9,
+        ekf_primary_core: 0,
+        primary_core_index: 1,
+    });
+    assert!(leftover.inertial_frame_reset_yaw);
+    assert!(leftover.inertial_frame_reset_primary);
+    assert_eq!(leftover.ekf_yaw_reset_ms, 9);
+    assert_eq!(leftover.ekf_primary_core, 1);
+    assert!(leftover.log_ekf_primary);
+    assert!(leftover.gcs_ekf_primary_changed);
+}
+
+#[test]
+fn update_home_from_ekf_returns_when_home_is_already_set() {
+    let leftover = update_home_from_ekf(UpdateHomeFromEkfInputs {
+        home_is_set: true,
+        motors_armed: true,
+        got_location: true,
+        got_origin: true,
+        ahrs_set_home_ok: true,
+    });
+    assert_eq!(leftover.path, UpdateHomeFromEkfPath::HomeAlreadySet);
+    assert!(!leftover.copy_alt_from_origin);
+    assert!(!leftover.set_home);
+    assert!(!leftover.smart_rtl_set_home);
+}
+
+#[test]
+fn update_home_from_ekf_inflight_copies_origin_alt_before_set_home() {
+    let leftover = update_home_from_ekf(UpdateHomeFromEkfInputs {
+        home_is_set: false,
+        motors_armed: true,
+        got_location: true,
+        got_origin: true,
+        ahrs_set_home_ok: true,
+    });
+    assert_eq!(leftover.path, UpdateHomeFromEkfPath::ArmedInflight);
+    assert!(leftover.copy_alt_from_origin);
+    assert!(leftover.set_home);
+    assert!(!leftover.lock_home);
+    assert!(leftover.smart_rtl_set_home);
+    assert!(leftover.success);
+}
+
+#[test]
+fn update_home_from_ekf_inflight_refuses_without_origin() {
+    let leftover = update_home_from_ekf(UpdateHomeFromEkfInputs {
+        home_is_set: false,
+        motors_armed: true,
+        got_location: true,
+        got_origin: false,
+        ahrs_set_home_ok: true,
+    });
+    assert_eq!(leftover.path, UpdateHomeFromEkfPath::ArmedInflight);
+    assert!(!leftover.copy_alt_from_origin);
+    assert!(!leftover.set_home);
+    assert!(!leftover.smart_rtl_set_home);
+}
+
+#[test]
+fn update_home_from_ekf_disarmed_ignores_set_home_failure() {
+    let leftover = update_home_from_ekf(UpdateHomeFromEkfInputs {
+        home_is_set: false,
+        motors_armed: false,
+        got_location: true,
+        got_origin: true,
+        ahrs_set_home_ok: false,
+    });
+    assert_eq!(leftover.path, UpdateHomeFromEkfPath::DisarmedGround);
+    assert!(!leftover.copy_alt_from_origin);
+    assert!(leftover.set_home);
+    assert!(!leftover.smart_rtl_set_home);
+    assert!(!leftover.success);
+}
+
+#[test]
+fn set_home_requires_origin_and_locks_only_after_success() {
+    assert!(
+        !set_home(SetHomeInputs {
+            got_origin: false,
+            ahrs_set_home_ok: true,
+            lock: true,
+        })
+        .set_ahrs_home
+    );
+    let refused = set_home(SetHomeInputs {
+        got_origin: true,
+        ahrs_set_home_ok: false,
+        lock: true,
+    });
+    assert!(refused.set_ahrs_home);
+    assert!(!refused.lock_home);
+    let locked = set_home(SetHomeInputs {
+        got_origin: true,
+        ahrs_set_home_ok: true,
+        lock: true,
+    });
+    assert!(locked.success);
+    assert!(locked.lock_home);
+}
+
+#[test]
+fn set_home_to_current_location_seeds_smartrtl_only_on_success() {
+    let ok = set_home_to_current_location(SetHomeToCurrentLocationInputs {
+        got_location: true,
+        set_home_ok: true,
+        lock: true,
+    });
+    assert!(ok.set_home);
+    assert!(ok.set_home_lock);
+    assert!(ok.smart_rtl_set_home);
+    assert!(ok.success);
+    let no_loc = set_home_to_current_location(SetHomeToCurrentLocationInputs {
+        got_location: false,
+        set_home_ok: true,
+        lock: true,
+    });
+    assert!(!no_loc.set_home);
+    assert!(!no_loc.smart_rtl_set_home);
+}
+
+#[test]
+fn set_home_to_current_location_inflight_needs_both_location_and_origin() {
+    let leftover = set_home_to_current_location_inflight(SetHomeToCurrentLocationInflightInputs {
+        got_location: true,
+        got_origin: false,
+        set_home_ok: true,
+    });
+    assert!(!leftover.copy_alt_from_origin);
+    assert!(!leftover.set_home);
+    let ok = set_home_to_current_location_inflight(SetHomeToCurrentLocationInflightInputs {
+        got_location: true,
+        got_origin: true,
+        set_home_ok: false,
+    });
+    assert!(ok.copy_alt_from_origin);
+    assert!(ok.set_home);
+    assert!(!ok.smart_rtl_set_home);
+}
+
+#[test]
+fn get_wp_distance_m_always_returns_the_mode_distance() {
+    let leftover = get_wp_distance_m(0.0);
+    assert!(leftover.ok);
+    assert_eq!(leftover.distance_m, 0.0);
+    let leftover = get_wp_distance_m(42.5);
+    assert!(leftover.ok);
+    assert_eq!(leftover.distance_m, 42.5);
+}
+
+#[test]
+fn run_nav_updates_always_calls_super_simple_without_force() {
+    let leftover = run_nav_updates();
+    assert!(leftover.update_super_simple_bearing);
+    assert!(!leftover.force_update);
+}
+
+#[test]
+fn run_nav_updates_is_the_fifty_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "run_nav_updates")
+        .expect("run_nav_updates");
+    assert!(task.rate_hz == RUN_NAV_UPDATES_RATE_HZ);
+    assert_eq!(task.max_time_micros, RUN_NAV_UPDATES_MAX_TIME_MICROS);
+    assert_eq!(task.priority, RUN_NAV_UPDATES_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn scheduler_runs_run_nav_updates_every_eighth_tick() {
+    use ap_copter::vehicle_loop::copter_run_nav_updates_task;
+    let tasks = [copter_run_nav_updates_task()];
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..7 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.run_nav_updates, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.run_nav_updates, 1);
+    let leftover = vehicle.last_run_nav_updates.expect("run_nav_updates ran");
+    assert!(leftover.update_super_simple_bearing);
+    assert!(!leftover.force_update);
 }
