@@ -1,5 +1,5 @@
 //! `AC_Fence` type bits, enable leftover, circle / alt-max / alt-min checks, `check()` orchestration,
-//! plus pre-arm, dest-inside, and auto-enable-on-arm/takeoff leftovers.
+//! plus pre-arm, dest-inside, auto-enable, and `check_fence_polygon`.
 
 use ap_math::location::AltFrame;
 use ap_math::scalar::{is_positive, is_zero};
@@ -316,6 +316,10 @@ pub struct CheckContext {
     pub alt_min_u_m: Option<f32>,
     /// Home AMSL when an alt frame is [`AltFrame::Absolute`].
     pub home_alt_amsl_m: f32,
+    /// Leftover of `_poly_loader.breached(_last_fence_check_loc, ...)`.
+    pub poly_breached: bool,
+    /// `distance_outside_fence` out-param from the poly-loader leftover.
+    pub poly_distance_outside_m: f32,
 }
 
 impl Default for CheckContext {
@@ -328,12 +332,63 @@ impl Default for CheckContext {
             alt_max_u_m: Some(0.0),
             alt_min_u_m: Some(0.0),
             home_alt_amsl_m: 0.0,
+            poly_breached: false,
+            poly_distance_outside_m: 0.0,
         }
     }
 }
 
-/// `AC_Fence::check` leftover. Polygon EEPROM stays later, so the poly
-/// checker is not invoked.
+/// Inputs [`Fence::check_fence_polygon`] reads from AHRS / the loader.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckPolygonContext {
+    /// `_last_fence_check_loc_valid` — leftover of `ahrs.get_location`.
+    pub loc_valid: bool,
+    /// Leftover of `_poly_loader.breached(loc, dist, nearest)`.
+    pub poly_breached: bool,
+    /// `distance_outside_fence` out-param from the loader leftover.
+    pub distance_outside_m: f32,
+    /// `AP_HAL::millis()` leftover of `record_breach`.
+    pub now_ms: u32,
+}
+
+impl Default for CheckPolygonContext {
+    fn default() -> Self {
+        Self {
+            loc_valid: true,
+            poly_breached: false,
+            distance_outside_m: 0.0,
+            now_ms: 1_001,
+        }
+    }
+}
+
+/// Polygon-check leftover, upstream `AC_Fence::check_fence_polygon`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckPolygonLeftover {
+    /// Fresh breach. The C++ return. Already-breached stays false.
+    pub newly_breached: bool,
+    /// Whether the type bit was in [`Fence::get_enabled_fences`].
+    pub enabled: bool,
+    /// Leftover of `ahrs.get_location` when the type is enabled.
+    pub need_location: bool,
+    /// `_last_fence_check_loc_valid` used this call.
+    pub loc_valid: bool,
+    /// `_polygon_breach_distance_m` after the call.
+    pub breach_distance_m: f32,
+    /// Leftover of `record_breach`.
+    pub recorded_breach: bool,
+    /// Leftover of `GCS_SEND_MESSAGE(MSG_FENCE_STATUS)`.
+    pub need_gcs_fence_status: bool,
+    /// Margin bit set after the call.
+    pub margin_breached: bool,
+    /// `clear_breach` ran because the vehicle came back inside.
+    pub cleared_breach: bool,
+    /// Leftover of `record_margin_breach` this call.
+    pub recorded_margin: bool,
+}
+
+/// `AC_Fence::check` leftover. Polygon EEPROM stays later; the poly
+/// checker now runs when [`TYPE_POLYGON`] is present.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CheckLeftover {
     /// Newly breached types. The C++ return. Zero during recovery.
@@ -363,7 +418,10 @@ pub struct CheckLeftover {
     pub alt_min: CheckAltMinLeftover,
     /// Circle checker leftover. Idle when [`Self::skipped`].
     pub circle: CheckCircleLeftover,
-    /// Polygon checker is the loader leftover. Always false this slice.
+    /// Polygon checker leftover. Idle when [`Self::skipped`] or the
+    /// type is not present.
+    pub polygon: CheckPolygonLeftover,
+    /// True when [`Self::polygon`] ran with the type enabled.
     pub polygon_checked: bool,
     /// `auto_enable_fence_floor` actually flipped the floor on.
     pub floor_auto_enabled: bool,
@@ -569,6 +627,7 @@ pub struct Fence {
     alt_max_breach_distance_m: f32,
     alt_min_breach_distance_m: f32,
     circle_breach_distance_m: f32,
+    polygon_breach_distance_m: f32,
     circle_breach_direction: Vector2f,
     home_distance_m: f32,
     safe_relhome_alt_max_m: f32,
@@ -634,6 +693,7 @@ impl Fence {
             alt_max_breach_distance_m: 0.0,
             alt_min_breach_distance_m: 0.0,
             circle_breach_distance_m: 0.0,
+            polygon_breach_distance_m: 0.0,
             circle_breach_direction: Vector2f::zero(),
             home_distance_m: 0.0,
             safe_relhome_alt_max_m: 0.0,
@@ -693,10 +753,17 @@ impl Fence {
         self.enabled_fences & self.present()
     }
 
-    /// Inclusion / exclusion vertex count leftover. Stays 0 this slice.
+    /// Inclusion / exclusion vertex count leftover. Non-zero lets
+    /// [`Self::present`] expose [`TYPE_POLYGON`].
     #[must_use]
     pub const fn poly_fence_count(&self) -> u8 {
         self.poly_fence_count
+    }
+
+    /// `_polygon_breach_distance_m` after [`Self::check_fence_polygon`].
+    #[must_use]
+    pub const fn polygon_breach_distance_m(&self) -> f32 {
+        self.polygon_breach_distance_m
     }
 
     /// `get_action`.
@@ -1276,12 +1343,99 @@ impl Fence {
         }
     }
 
+    /// `AC_Fence::check_fence_polygon` leftover.
+    ///
+    /// The loader's `breached(loc, dist, nearest)` is injected through
+    /// [`CheckPolygonContext`]. EEPROM / vertex polygons stay on
+    /// [`crate::poly_fence`].
+    pub fn check_fence_polygon(&mut self, ctx: CheckPolygonContext) -> CheckPolygonLeftover {
+        if self.get_enabled_fences() & TYPE_POLYGON == 0 {
+            self.clear_breach(TYPE_POLYGON);
+            return CheckPolygonLeftover {
+                newly_breached: false,
+                enabled: false,
+                need_location: false,
+                loc_valid: ctx.loc_valid,
+                breach_distance_m: self.polygon_breach_distance_m,
+                recorded_breach: false,
+                need_gcs_fence_status: false,
+                margin_breached: (self.breached_fence_margins & TYPE_POLYGON) != 0,
+                cleared_breach: false,
+                recorded_margin: false,
+            };
+        }
+
+        if ctx.loc_valid {
+            self.polygon_breach_distance_m = ctx.distance_outside_m;
+        }
+
+        let was_breached = self.breached_fences & TYPE_POLYGON != 0;
+        if ctx.loc_valid && ctx.poly_breached {
+            if !was_breached {
+                let need_gcs = self.record_breach(TYPE_POLYGON, ctx.now_ms);
+                return CheckPolygonLeftover {
+                    newly_breached: true,
+                    enabled: true,
+                    need_location: true,
+                    loc_valid: true,
+                    breach_distance_m: self.polygon_breach_distance_m,
+                    recorded_breach: true,
+                    need_gcs_fence_status: need_gcs,
+                    margin_breached: (self.breached_fence_margins & TYPE_POLYGON) != 0,
+                    cleared_breach: false,
+                    recorded_margin: false,
+                };
+            }
+            return CheckPolygonLeftover {
+                newly_breached: false,
+                enabled: true,
+                need_location: true,
+                loc_valid: true,
+                breach_distance_m: self.polygon_breach_distance_m,
+                recorded_breach: false,
+                need_gcs_fence_status: false,
+                margin_breached: (self.breached_fence_margins & TYPE_POLYGON) != 0,
+                cleared_breach: false,
+                recorded_margin: false,
+            };
+        }
+
+        let recorded_margin = if self.polygon_breach_distance_m < 0.0
+            && self.polygon_breach_distance_m.abs() < self.get_margin_ne_m()
+        {
+            self.record_margin_breach(TYPE_POLYGON, ctx.now_ms);
+            true
+        } else {
+            self.clear_margin_breach(TYPE_POLYGON);
+            false
+        };
+
+        let cleared_breach = if was_breached {
+            self.clear_breach(TYPE_POLYGON);
+            true
+        } else {
+            false
+        };
+
+        CheckPolygonLeftover {
+            newly_breached: false,
+            enabled: true,
+            need_location: true,
+            loc_valid: ctx.loc_valid,
+            breach_distance_m: self.polygon_breach_distance_m,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_POLYGON) != 0,
+            cleared_breach,
+            recorded_margin,
+        }
+    }
+
     /// `AC_Fence::check` leftover.
     ///
     /// Clears stale breaches, optionally auto-disables the landing
-    /// floor, then runs the alt / circle checkers already on this
-    /// crate. The polygon checker stays with the loader leftover.
-    /// A live manual-recovery window records breaches but returns 0.
+    /// floor, then runs the alt / circle / polygon checkers. A live
+    /// manual-recovery window records breaches but returns 0.
     pub fn check(&mut self, ctx: CheckContext) -> CheckLeftover {
         let disabled_fences = if ctx.disable_auto_fences {
             self.get_auto_disable_fences()
@@ -1311,6 +1465,7 @@ impl Fence {
         let idle_circle = self.idle_circle_leftover();
         let idle_alt_max = self.idle_alt_max_leftover();
         let idle_alt_min = self.idle_alt_min_leftover();
+        let idle_polygon = self.idle_polygon_leftover();
 
         if (!self.enabled()
             && matches!(self.auto_enabled, AutoEnable::AlwaysDisabled)
@@ -1331,6 +1486,7 @@ impl Fence {
                 alt_max: idle_alt_max,
                 alt_min: idle_alt_min,
                 circle: idle_circle,
+                polygon: idle_polygon,
                 polygon_checked: false,
                 floor_auto_enabled: false,
                 floor_alt_unavailable: false,
@@ -1395,6 +1551,21 @@ impl Fence {
             idle_circle
         };
 
+        let polygon = if disabled_fences & TYPE_POLYGON == 0 {
+            let leftover = self.check_fence_polygon(CheckPolygonContext {
+                loc_valid: ctx.location_valid,
+                poly_breached: ctx.poly_breached,
+                distance_outside_m: ctx.poly_distance_outside_m,
+                now_ms: ctx.now_ms,
+            });
+            if leftover.newly_breached {
+                new_breaches |= TYPE_POLYGON;
+            }
+            leftover
+        } else {
+            idle_polygon
+        };
+
         let mut manual_recovery_active = false;
         let mut manual_recovery_expired = false;
         if self.manual_recovery_start_ms != 0 {
@@ -1422,7 +1593,8 @@ impl Fence {
             alt_max,
             alt_min,
             circle,
-            polygon_checked: false,
+            polygon,
+            polygon_checked: polygon.enabled,
             floor_auto_enabled,
             floor_alt_unavailable,
             need_gcs_floor_notice,
@@ -1902,6 +2074,21 @@ impl Fence {
             need_gcs_fence_status: false,
             margin_breached: (self.breached_fence_margins & TYPE_ALT_MAX) != 0,
             cleared_breach: false,
+        }
+    }
+
+    fn idle_polygon_leftover(&self) -> CheckPolygonLeftover {
+        CheckPolygonLeftover {
+            newly_breached: false,
+            enabled: false,
+            need_location: false,
+            loc_valid: self.last_fence_check_loc_valid,
+            breach_distance_m: self.polygon_breach_distance_m,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_POLYGON) != 0,
+            cleared_breach: false,
+            recorded_margin: false,
         }
     }
 

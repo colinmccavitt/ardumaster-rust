@@ -1,8 +1,9 @@
 //! AC_Fence type bits, enable leftover, circle / alt-max / alt-min checks,
 //! `check()` orchestration, pre-arm, dest-inside, and auto-enable leftovers.
 //!
-//! Tracked as **COP-025**. Polygon EEPROM / `AC_PolyFence_loader` is not
-//! in this slice.
+//! Tracked as **COP-025**. Polygon EEPROM / SD storage is not in this
+//! slice; inclusion-circle `breached` and `check_fence_polygon` live in
+//! `poly_fence_leftover`.
 
 use ap_fence::{
     Action, AutoEnable, AutoEnablePrint, CheckAltMaxContext, CheckAltMinContext,
@@ -576,6 +577,8 @@ fn check_ctx(alt_max_u_m: f32, alt_min_u_m: f32, north_m: f32, east_m: f32) -> C
         alt_max_u_m: Some(alt_max_u_m),
         alt_min_u_m: Some(alt_min_u_m),
         home_alt_amsl_m: 0.0,
+        poly_breached: false,
+        poly_distance_outside_m: 0.0,
     }
 }
 
