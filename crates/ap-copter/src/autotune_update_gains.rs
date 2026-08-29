@@ -3,8 +3,8 @@
 //! Tracked as **COP-027**. The Copter wrapper used to catalogue
 //! UPDATE_GAINS as a flag and fall through into ABORT. This leftover
 //! is the tune-type switch and the Multi `updating_*` gain math that
-//! the flag skipped. `next_tune_type`, next-axis, and
-//! `set_tuning_gains_with_backoff` stay leftover. Heli `RATE_FF_UP` /
+//! the flag skipped. Sequencing lives in [`crate::autotune_next`].
+//! Heli `RATE_FF_UP` /
 //! `MAX_GAINS` trip flow-of-control. `TUNE_CHECK` only forces
 //! [`AUTOTUNE_SUCCESS_COUNT`]; `TUNE_COMPLETE` is a no-op.
 //!
@@ -155,9 +155,9 @@ pub struct UpdateGains {
     pub rate_p_failed: bool,
     /// GCS "Angle P Gain Determination Failed".
     pub angle_p_failed: bool,
-    /// `success_counter >= AUTOTUNE_SUCCESS_COUNT`. Sequencing stays leftover.
+    /// `success_counter >= AUTOTUNE_SUCCESS_COUNT`. Sequencing is [`crate::autotune_next`].
     pub tune_type_complete: bool,
-    /// Tuner `mode` after this leftover. Sequencing / FINISHED stay leftover.
+    /// Tuner `mode` after this leftover. FINISHED is [`crate::autotune_next`].
     pub mode: TuneMode,
 }
 
@@ -197,8 +197,8 @@ pub const fn rate_p_fail_min_d(axis: AxisType) -> bool {
 /// Upstream `AC_AutoTune::control_attitude` UPDATE_GAINS switch plus
 /// Multi `updating_*_all` / `updating_*`.
 ///
-/// `next_tune_type` / next-axis / backoff stay leftover. A complete
-/// tune-type is reported on [`UpdateGains::tune_type_complete`].
+/// A complete tune-type is reported on [`UpdateGains::tune_type_complete`];
+/// [`crate::autotune_next`] walks backoff / next type / next axis.
 #[must_use]
 pub fn autotune_update_gains(view: &UpdateGainsView) -> UpdateGains {
     match view.tune_type {

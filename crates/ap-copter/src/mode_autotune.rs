@@ -3,8 +3,9 @@
 //! Tracked as **COP-027**. Copter AutoTune is a thin wrapper around
 //! `AC_AutoTune` / `AC_AutoTune_Multi` (`libraries/AC_AutoTune/`). The
 //! Multi `updating_*` math now lives in [`crate::autotune_update_gains`].
-//! `next_tune_type`, next-axis, backoff, and the rest of the Multi
-//! library stay for a later slice. What this file owns is `init`
+//! Sequencing (`next_tune_type` / next-axis / backoff) lives in
+//! [`crate::autotune_next`]. The rest of the Multi library stays for a
+//! later slice. What this file owns is `init`
 //! (from-mode / throttle / flying gates, Loiter-or-PosHold, TuneMode /
 //! first-axis), `run` (Copter land/disarm wrapper, TuneMode dispatch,
 //! pilot override, and the level / execute / abort loop), and the Multi
@@ -47,8 +48,7 @@
 //! leftover — this tick takes the already-filtered `rotation_rate`.
 //! UPDATE_GAINS runs the Multi tune-type switch leftover, then falls
 //! through into ABORT, which returns to WAITING_FOR_LEVEL and reverses
-//! the Multi test direction. Sequencing (`next_tune_type` / next-axis)
-//! stays leftover.
+//! the Multi test direction. Sequencing is [`crate::autotune_next`].
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 
@@ -965,6 +965,11 @@ pub struct AutoTuneInit {
     /// `axes_completed` after a fresh start. `Some(0)` then; `None` on
     /// resume / validate / fail-before-internals.
     pub axes_completed: Option<u8>,
+    /// First Multi tune-type after `next_tune_type(..., true)`. `None`
+    /// on resume / validate / fail-before-internals.
+    pub tune_type: Option<TuneType>,
+    /// `tune_seq_index` after that reset. `Some(0)` on a fresh start.
+    pub tune_seq_index: Option<u8>,
     /// `step` after a fresh start or TUNING resume. Always
     /// [`Step::WaitingForLevel`] on those paths.
     pub step: Option<Step>,
@@ -989,6 +994,8 @@ fn failed(fail: AutoTuneInitFail) -> AutoTuneInit {
         mode: None,
         axis: None,
         axes_completed: None,
+        tune_type: None,
+        tune_seq_index: None,
         step: None,
         have_position: None,
         gcs_message: None,
@@ -1068,19 +1075,24 @@ pub fn mode_autotune_init(_ignore_checks: bool, view: &AutoTuneInitView) -> Auto
     let use_poshold = autotune_use_poshold(view.from_mode_number);
 
     match view.mode {
-        TuneMode::Failed | TuneMode::Uninitialised => AutoTuneInit {
-            use_poshold: Some(use_poshold),
-            init_position_controller: true,
-            backup_gains: true,
-            mode: Some(TuneMode::Tuning),
-            axis: first_enabled_axis(view.axis_bitmask).or(Some(view.axis)),
-            axes_completed: Some(0),
-            step: Some(Step::WaitingForLevel),
-            have_position: Some(false),
-            gcs_message: Some(AUTOTUNE_MESSAGE_STARTED),
-            fail: None,
-            ok: true,
-        },
+        TuneMode::Failed | TuneMode::Uninitialised => {
+            let seq = crate::autotune_next::next_tune_type(TuneType::TuneComplete, true, 0);
+            AutoTuneInit {
+                use_poshold: Some(use_poshold),
+                init_position_controller: true,
+                backup_gains: true,
+                mode: Some(TuneMode::Tuning),
+                axis: first_enabled_axis(view.axis_bitmask).or(Some(view.axis)),
+                axes_completed: Some(0),
+                tune_type: Some(seq.tune_type),
+                tune_seq_index: Some(seq.tune_seq_index),
+                step: Some(Step::WaitingForLevel),
+                have_position: Some(false),
+                gcs_message: Some(AUTOTUNE_MESSAGE_STARTED),
+                fail: None,
+                ok: true,
+            }
+        }
         TuneMode::Tuning => AutoTuneInit {
             use_poshold: Some(use_poshold),
             init_position_controller: true,
@@ -1088,6 +1100,8 @@ pub fn mode_autotune_init(_ignore_checks: bool, view: &AutoTuneInitView) -> Auto
             mode: Some(TuneMode::Tuning),
             axis: Some(view.axis),
             axes_completed: None,
+            tune_type: None,
+            tune_seq_index: None,
             step: Some(Step::WaitingForLevel),
             have_position: Some(false),
             gcs_message: Some(AUTOTUNE_MESSAGE_STARTED),
@@ -1101,6 +1115,8 @@ pub fn mode_autotune_init(_ignore_checks: bool, view: &AutoTuneInitView) -> Auto
             mode: Some(TuneMode::Validating),
             axis: Some(view.axis),
             axes_completed: None,
+            tune_type: None,
+            tune_seq_index: None,
             step: None,
             have_position: Some(false),
             gcs_message: Some(AUTOTUNE_MESSAGE_TESTING),
@@ -1310,6 +1326,16 @@ pub struct AutoTuneRunView {
     pub ignore_next: bool,
     /// `min_d` param.
     pub min_d: f32,
+    /// `AUTOTUNE_AXES` mask.
+    pub axis_bitmask: u8,
+    /// `axes_completed` before this tick.
+    pub axes_completed: u8,
+    /// `tune_seq_index` before this tick.
+    pub tune_seq_index: u8,
+    /// `gain_backoff` / `AUTOTUNE_GMBK` before the clamp.
+    pub gain_backoff: f32,
+    /// `tune_*_accel_radss` before ANGLE_P_UP backoff.
+    pub tune_accel_radss: f32,
 }
 
 impl AutoTuneRunView {
@@ -1374,6 +1400,11 @@ impl AutoTuneRunView {
             success_counter: 0,
             ignore_next: false,
             min_d: 0.0005,
+            axis_bitmask: AUTOTUNE_AXIS_BITMASK_DEFAULT,
+            axes_completed: 0,
+            tune_seq_index: 0,
+            gain_backoff: crate::autotune_next::AUTOTUNE_GAIN_BACKOFF_DEFAULT,
+            tune_accel_radss: 0.0,
         }
     }
 }
@@ -1469,8 +1500,32 @@ pub struct AutoTuneRun {
     pub update_gains_failed: bool,
     /// Heli type on Multi UPDATE_GAINS leftover.
     pub update_gains_flow_of_control: bool,
-    /// `success_counter >= AUTOTUNE_SUCCESS_COUNT`. Sequencing stays leftover.
+    /// `success_counter >= AUTOTUNE_SUCCESS_COUNT`.
     pub update_gains_complete: bool,
+    /// Sequencing leftover ran this tick.
+    pub sequencing: bool,
+    /// `tune_type` after [`crate::autotune_next`].
+    pub tune_type: TuneType,
+    /// Axis after next-axis, else the view axis.
+    pub axis: AxisType,
+    /// `axes_completed` after next-axis, else the view value.
+    pub axes_completed: u8,
+    /// `tune_seq_index` after [`crate::autotune_next`].
+    pub tune_seq_index: u8,
+    /// `AP_Notify::events.autotune_next_axis`.
+    pub next_axis: bool,
+    /// Last enabled axis finished.
+    pub autotune_complete: bool,
+    /// `tune_*_accel_radss` after ANGLE_P_UP backoff.
+    pub tune_accel_radss: f32,
+    /// `gain_backoff` after the clamp.
+    pub gain_backoff: f32,
+    /// Rate-P or angle-P backoff wrote the gains.
+    pub backoff_applied: bool,
+    /// `report_final_gains` ran.
+    pub reported_final_gains: bool,
+    /// `update_gcs` message id. `SUCCESS` when the last axis finishes.
+    pub gcs_message: Option<u8>,
     /// `positive_direction` after Multi reverse, if ABORT ran.
     pub positive_direction: bool,
     /// Held yaw after override-release / yaw-twitch update.
@@ -1530,6 +1585,18 @@ fn run_passthrough(view: &AutoTuneRunView) -> AutoTuneRun {
         update_gains_failed: false,
         update_gains_flow_of_control: false,
         update_gains_complete: false,
+        sequencing: false,
+        tune_type: view.tune_type,
+        axis: view.axis,
+        axes_completed: view.axes_completed,
+        tune_seq_index: view.tune_seq_index,
+        next_axis: false,
+        autotune_complete: false,
+        tune_accel_radss: view.tune_accel_radss,
+        gain_backoff: view.gain_backoff,
+        backoff_applied: false,
+        reported_final_gains: false,
+        gcs_message: None,
         positive_direction: view.positive_direction,
         desired_yaw_rad: view.desired_yaw_rad,
         step_start_time_ms: view.step_start_time_ms,
@@ -1639,7 +1706,6 @@ fn control_attitude(view: &AutoTuneRunView, out: &mut AutoTuneRun) {
             }
         }
         Step::UpdateGains => {
-            // next_tune_type / next-axis / backoff stay leftover.
             out.update_gains = true;
             let gains = crate::autotune_update_gains::autotune_update_gains(
                 &crate::autotune_update_gains::UpdateGainsView::from_run(view),
@@ -1654,6 +1720,37 @@ fn control_attitude(view: &AutoTuneRunView, out: &mut AutoTuneRun) {
             out.update_gains_complete = gains.tune_type_complete;
             if gains.failed {
                 out.mode = TuneMode::Failed;
+            } else if gains.tune_type_complete {
+                let adv = crate::autotune_next::autotune_advance(
+                    &crate::autotune_next::AdvanceView::from_run(
+                        view,
+                        gains.tune_p,
+                        gains.tune_d,
+                        gains.tune_type_complete,
+                    ),
+                );
+                out.sequencing = true;
+                out.success_counter = adv.success_counter;
+                out.step_scaler = adv.step_scaler;
+                out.tune_p = adv.tune_p;
+                out.tune_d = adv.tune_d;
+                out.tune_type = adv.tune_type;
+                out.tune_seq_index = adv.tune_seq_index;
+                out.axis = adv.axis;
+                out.axes_completed = adv.axes_completed;
+                out.next_axis = adv.next_axis;
+                out.autotune_complete = adv.autotune_complete;
+                out.tune_accel_radss = adv.tune_accel_radss;
+                out.gain_backoff = adv.gain_backoff;
+                out.backoff_applied = adv.backoff_applied;
+                out.reported_final_gains = adv.reported_final_gains;
+                out.gcs_message = adv.gcs_message;
+                if adv.flow_of_control {
+                    out.update_gains_flow_of_control = true;
+                }
+                if adv.complete {
+                    out.mode = TuneMode::Finished;
+                }
             }
             abort_to_level(view, out, now);
         }
@@ -1675,8 +1772,8 @@ fn abort_to_level(view: &AutoTuneRunView, out: &mut AutoTuneRun, now: u32) {
 
 /// Upstream `ModeAutoTune::run` → Copter `AutoTune::run` → `AC_AutoTune::run`.
 ///
-/// UPDATE_GAINS runs the Multi `updating_*` leftover. `next_tune_type`
-/// / next-axis / backoff stay leftover. Poshold lean math
+/// UPDATE_GAINS runs the Multi `updating_*` leftover, then
+/// [`crate::autotune_next`] when a tune-type freezes. Poshold lean math
 /// (`get_poshold_attitude_rad` 10° / 20 m) is also leftover — this
 /// catalogs the call and the `have_position` latch.
 #[must_use]
