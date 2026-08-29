@@ -34,6 +34,7 @@ pub mod mode_brake;
 pub mod mode_drift;
 pub mod mode_entry;
 pub mod mode_guided;
+pub mod mode_guided_nogps;
 pub mod mode_land;
 pub mod mode_loiter;
 pub mod mode_poshold;

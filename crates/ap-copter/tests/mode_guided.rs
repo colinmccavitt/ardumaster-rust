@@ -1,17 +1,19 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run / set_angle leftovers, upstream `ArduCopter/mode_guided.cpp`.
+//! pos_control_run / set_angle / angle_control_run leftovers, upstream
+//! `ArduCopter/mode_guided.cpp`.
 
 use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_guided::{
-    guided_angle_control_start, guided_init, guided_mode_flags, guided_pos_control_run, guided_run,
-    guided_set_angle, guided_set_destination, guided_set_vel_accel, guided_set_velocity,
-    guided_timeout_ms, option_is_enabled, set_yaw_state_rad, use_wpnav_for_position_control,
-    GuidedAngleStartView, GuidedInitView, GuidedOption, GuidedPosControlExit, GuidedPosControlView,
-    GuidedRunBody, GuidedRunView, GuidedSetAngleView, GuidedSetDestFail, GuidedSetDestView,
-    GuidedSetVelView, GuidedSubMode, GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S,
-    GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW, MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS,
-    WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS, WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS,
-    WP_SPD_UP_DEFAULT_MS,
+    guided_angle_control_run, guided_angle_control_start, guided_init, guided_mode_flags,
+    guided_pos_control_run, guided_run, guided_set_angle, guided_set_destination,
+    guided_set_vel_accel, guided_set_velocity, guided_timeout_ms, option_is_enabled,
+    set_yaw_state_rad, use_wpnav_for_position_control, GuidedAngleAttitude, GuidedAngleControlExit,
+    GuidedAngleControlView, GuidedAngleStartView, GuidedAngleVertical, GuidedInitView,
+    GuidedOption, GuidedPosControlExit, GuidedPosControlView, GuidedRunBody, GuidedRunView,
+    GuidedSetAngleView, GuidedSetDestFail, GuidedSetDestView, GuidedSetVelView, GuidedSubMode,
+    GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S, GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW,
+    MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS,
+    WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
 };
 
 #[test]
@@ -841,4 +843,301 @@ fn set_angle_always_converts_euler_even_when_logging_is_off() {
 fn set_angle_has_no_log_request_gate() {
     let view = GuidedSetAngleView::after_init();
     assert!(guided_set_angle(&view).logged);
+}
+
+#[test]
+fn angle_run_after_set_angle_flies_climb_and_quat() {
+    let view = GuidedAngleControlView::after_set_angle();
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Flew {
+            attitude: GuidedAngleAttitude::Quaternion,
+            vertical: GuidedAngleVertical::Climb { climb_rate_ms: 1.5 },
+        }
+    );
+    assert!(out.auto_armed);
+    assert!(!out.timed_out);
+    assert!(!out.timeout_init_d);
+    assert!(!out.use_thrust);
+    assert!(out.avoidance_applied);
+    assert_eq!(out.constrained_climb_ms.to_bits(), 1.5f32.to_bits());
+    assert_eq!(out.climb_rate_ms.to_bits(), 1.5f32.to_bits());
+    assert_eq!(out.attitude_quat, [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(out.ang_vel_body, [0.1, -0.05, 0.2]);
+}
+
+#[test]
+fn angle_run_zero_quat_uses_rate_input() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.attitude_quat = [0.0, 0.0, 0.0, 0.0];
+    match guided_angle_control_run(&view).exit {
+        GuidedAngleControlExit::Flew {
+            attitude: GuidedAngleAttitude::Rate,
+            ..
+        } => {}
+        other => panic!("expected Rate, got {other:?}"),
+    }
+}
+
+#[test]
+fn angle_run_thrust_skips_constrain_and_avoidance() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.use_thrust = true;
+    view.thrust_norm = 0.4;
+    view.climb_rate_ms = 9.0;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Flew {
+            attitude: GuidedAngleAttitude::Quaternion,
+            vertical: GuidedAngleVertical::Thrust { thrust_norm: 0.4 },
+        }
+    );
+    assert!(!out.avoidance_applied);
+    assert_eq!(out.constrained_climb_ms.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+    assert!(out.use_thrust);
+    assert!(out.auto_armed);
+}
+
+#[test]
+fn angle_run_constrain_clamps_to_wpnav_speeds() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.climb_rate_ms = 9.0;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.constrained_climb_ms.to_bits(),
+        WP_SPD_UP_DEFAULT_MS.to_bits()
+    );
+    match out.exit {
+        GuidedAngleControlExit::Flew {
+            vertical: GuidedAngleVertical::Climb { climb_rate_ms },
+            ..
+        } => assert_eq!(climb_rate_ms.to_bits(), WP_SPD_UP_DEFAULT_MS.to_bits()),
+        other => panic!("expected Climb, got {other:?}"),
+    }
+
+    view.climb_rate_ms = -9.0;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.constrained_climb_ms.to_bits(),
+        (-WP_SPD_DOWN_DEFAULT_MS).to_bits()
+    );
+}
+
+#[test]
+fn angle_run_nan_climb_constrains_to_midpoint() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.climb_rate_ms = f32::NAN;
+    view.default_speed_down_ms = 1.5;
+    view.default_speed_up_ms = 2.5;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(out.constrained_climb_ms.to_bits(), 0.5f32.to_bits());
+}
+
+#[test]
+fn angle_run_timeout_levels_and_zeroes_climb() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.now_ms = view.update_time_ms + 3_001;
+    view.att_target_yaw_rad = core::f32::consts::FRAC_PI_2;
+    let out = guided_angle_control_run(&view);
+    assert!(out.timed_out);
+    assert!(!out.timeout_init_d);
+    assert!(!out.use_thrust);
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.ang_vel_body, [0.0, 0.0, 0.0]);
+    let q = ap_math::quaternion::Quaternion::from_euler(0.0, 0.0, view.att_target_yaw_rad);
+    assert_eq!(out.attitude_quat, [q.q1, q.q2, q.q3, q.q4]);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Flew {
+            attitude: GuidedAngleAttitude::Quaternion,
+            vertical: GuidedAngleVertical::Climb { climb_rate_ms: 0.0 },
+        }
+    );
+    assert!(!out.auto_armed);
+}
+
+#[test]
+fn angle_run_timeout_is_strictly_greater() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.now_ms = view.update_time_ms + 3_000;
+    assert!(!guided_angle_control_run(&view).timed_out);
+    view.now_ms = view.update_time_ms + 3_001;
+    assert!(guided_angle_control_run(&view).timed_out);
+}
+
+#[test]
+fn angle_run_timeout_uses_unsigned_wrap() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.update_time_ms = 200;
+    view.now_ms = 100;
+    assert!(guided_angle_control_run(&view).timed_out);
+}
+
+#[test]
+fn angle_run_timeout_clears_thrust_and_inits_d() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.use_thrust = true;
+    view.thrust_norm = 0.6;
+    view.now_ms = view.update_time_ms + 3_001;
+    let out = guided_angle_control_run(&view);
+    assert!(out.timed_out);
+    assert!(out.timeout_init_d);
+    assert!(!out.use_thrust);
+    assert!(!out.avoidance_applied);
+    assert_eq!(out.climb_rate_ms.to_bits(), 0.0f32.to_bits());
+    match out.exit {
+        GuidedAngleControlExit::Flew {
+            vertical: GuidedAngleVertical::Climb { climb_rate_ms },
+            ..
+        } => assert_eq!(climb_rate_ms.to_bits(), 0.0f32.to_bits()),
+        other => panic!("expected Climb after thrust timeout, got {other:?}"),
+    }
+}
+
+#[test]
+fn angle_run_disarmed_grounds_even_when_positive() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.motors_armed = false;
+    view.land_complete = true;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+    assert!(!out.auto_armed);
+}
+
+#[test]
+fn angle_run_tradheli_interlock_is_the_only_keep() {
+    let mut heli = GuidedAngleControlView::after_set_angle();
+    heli.motors_armed = false;
+    heli.is_tradheli = true;
+    heli.motor_interlock = true;
+    assert_eq!(
+        guided_angle_control_run(&heli).exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: true,
+        }
+    );
+
+    let mut no_lock = heli;
+    no_lock.motor_interlock = false;
+    assert_eq!(
+        guided_angle_control_run(&no_lock).exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+
+    let mut not_heli = heli;
+    not_heli.is_tradheli = false;
+    assert_eq!(
+        guided_angle_control_run(&not_heli).exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn angle_run_not_auto_armed_grounds_unless_positive() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.auto_armed = false;
+    view.climb_rate_ms = 0.0;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+    assert!(!out.auto_armed);
+
+    view.climb_rate_ms = 1.5;
+    let out = guided_angle_control_run(&view);
+    assert!(out.auto_armed);
+    match out.exit {
+        GuidedAngleControlExit::Flew { .. } => {}
+        other => panic!("expected Flew after auto-arm, got {other:?}"),
+    }
+}
+
+#[test]
+fn angle_run_landed_without_positive_grounds() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.land_complete = true;
+    view.climb_rate_ms = 0.0;
+    assert_eq!(
+        guided_angle_control_run(&view).exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn angle_run_landed_positive_takeoff() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.land_complete = true;
+    view.spool_unlimited = false;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Takeoff {
+            cleared_land: false,
+        }
+    );
+    assert!(out.auto_armed);
+}
+
+#[test]
+fn angle_run_takeoff_clears_land_only_when_spool_unlimited() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.land_complete = true;
+    view.spool_unlimited = true;
+    assert_eq!(
+        guided_angle_control_run(&view).exit,
+        GuidedAngleControlExit::Takeoff { cleared_land: true }
+    );
+}
+
+#[test]
+fn angle_run_is_positive_uses_epsilon_not_zero() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.land_complete = true;
+    view.climb_rate_ms = 1.0e-8;
+    view.default_speed_down_ms = 1.5;
+    view.default_speed_up_ms = 2.5;
+    let out = guided_angle_control_run(&view);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
+    assert!(!out.auto_armed);
+}
+
+#[test]
+fn angle_run_timeout_on_landed_thrust_grounds_after_clear() {
+    let mut view = GuidedAngleControlView::after_set_angle();
+    view.use_thrust = true;
+    view.thrust_norm = 0.5;
+    view.land_complete = true;
+    view.now_ms = view.update_time_ms + 3_001;
+    let out = guided_angle_control_run(&view);
+    assert!(out.timed_out);
+    assert!(out.timeout_init_d);
+    assert!(!out.use_thrust);
+    assert_eq!(
+        out.exit,
+        GuidedAngleControlExit::Ground {
+            keep_interlock: false,
+        }
+    );
 }

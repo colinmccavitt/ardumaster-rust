@@ -1,13 +1,15 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run / set_angle leftover, upstream `ArduCopter/mode_guided.cpp`.
+//! pos_control_run / set_angle / angle_control_run leftover, upstream
+//! `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
 //! to a coordinate, hold a velocity, or take an attitude. The first slice
 //! owns the enter and the Location dest setter. The second owns the `run`
 //! dispatcher and the velocity setter. The third owns `pos_control_run`.
-//! This slice owns `set_angle` (and `angle_control_start`). The remaining
-//! `*_run` bodies, the accel setter, Guided-NoGPS, and Follow are later
-//! slices.
+//! The fourth owns `set_angle` (and `angle_control_start`). This slice owns
+//! `angle_control_run`. Guided-NoGPS is the thin companion that always
+//! starts and runs Angle. The remaining `*_run` bodies, the accel setter,
+//! and Follow are later slices.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -111,8 +113,31 @@
 //! The unused vertical channel is zeroed. `to_euler` always runs; the
 //! log write is compiled out when logging is off. There is no
 //! `log_request` gate (unlike the velocity setter).
+//!
+//! # `angle_control_run` constrains climb, then a timeout, then three exits
+//!
+//! Thrust ticks never constrain or ask avoidance — `climb_rate_ms` stays
+//! zero. Climb ticks constrain to `[-speed_down, speed_up]` (NaN becomes
+//! the midpoint) and then call avoidance; this leftover treats avoidance
+//! as identity and records that it ran.
+//!
+//! Timeout is wrapping unsigned subtract and `>` not `>=`, same as Pos.
+//! A stale tick reseeds a yaw-only quat, zeroes body rates, and zeroes
+//! climb. A stale *thrust* tick also `D_init_controller` and clears
+//! `use_thrust` — so `is_positive` after a timeout always sees climb
+//! zero, never the leftover thrust.
+//!
+//! `is_positive` is `>= FLT_EPSILON`, not `> 0`. Armed and positive
+//! writes `auto_armed` *before* the exits, so a first positive command
+//! can take off without a prior auto-arm. Ground is `!armed ||
+//! !auto_armed || (landed && !positive)` with the same tradheli
+//! interlock keep as Pos. Landed and positive is takeoff: relax,
+//! unlimited spool, and `set_land_complete(false)` plus D-init only
+//! when the spool is already unlimited. The fly path is a zero-quat
+//! leftover: all-zero takes rate input, anything else takes the quat.
 
 use ap_math::quaternion::Quaternion;
+use ap_math::scalar::{constrain_value, is_positive};
 
 /// `Mode::Number::GUIDED`.
 pub const MODE_NUMBER_GUIDED: u8 = 4;
@@ -1296,5 +1321,241 @@ pub fn guided_set_angle(view: &GuidedSetAngleView) -> GuidedSetAngle {
         update_time_ms: view.now_ms,
         euler_rad: [roll_rad, pitch_rad, yaw_rad],
         logged: view.logging_enabled,
+    }
+}
+
+/// How `ModeGuided::angle_control_run` commanded attitude on a fly tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidedAngleAttitude {
+    /// `attitude_quat.is_zero()` then `input_rate_bf_roll_pitch_yaw_rads`.
+    Rate,
+    /// Non-zero quat then `input_quaternion`.
+    Quaternion,
+}
+
+/// Vertical leftover of a fly tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedAngleVertical {
+    /// `set_throttle_out(thrust_norm, true, throttle_filt)`.
+    Thrust {
+        /// `guided_angle_state.thrust_norm` after the timeout gate.
+        thrust_norm: f32,
+    },
+    /// `D_set_pos_target_from_climb_rate_ms` then `D_update_controller`.
+    Climb {
+        /// Climb after constrain, avoidance, and timeout.
+        climb_rate_ms: f32,
+    },
+}
+
+/// How `ModeGuided::angle_control_run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedAngleControlExit {
+    /// `!armed || !auto_armed || (land_complete && !positive)`:
+    /// `make_safe_ground_handling` and return.
+    Ground {
+        /// `copter.is_tradheli() && motors->get_interlock()`.
+        keep_interlock: bool,
+    },
+    /// Landed and positive: relax, unlimited spool, then maybe clear land.
+    Takeoff {
+        /// Current spool was already `THROTTLE_UNLIMITED`:
+        /// `set_land_complete(false)` and `D_init_controller`.
+        cleared_land: bool,
+    },
+    /// Flying: unlimited spool, then attitude + vertical leftovers.
+    Flew {
+        /// Rate vs quaternion leftover.
+        attitude: GuidedAngleAttitude,
+        /// Thrust vs climb leftover. Uses post-timeout `use_thrust`.
+        vertical: GuidedAngleVertical,
+    },
+}
+
+/// Vehicle view `ModeGuided::angle_control_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedAngleControlView {
+    /// `guided_angle_state.use_thrust` at the top of the tick.
+    pub use_thrust: bool,
+    /// `guided_angle_state.climb_rate_ms` at the top of the tick.
+    pub climb_rate_ms: f32,
+    /// `guided_angle_state.thrust_norm`.
+    pub thrust_norm: f32,
+    /// Commanded attitude, scalar-first (`q1..q4`).
+    pub attitude_quat: [f32; 4],
+    /// `guided_angle_state.ang_vel_body`.
+    pub ang_vel_body: [f32; 3],
+    /// `wp_nav->get_default_speed_down_ms()` — constrain lower magnitude.
+    pub default_speed_down_ms: f32,
+    /// `wp_nav->get_default_speed_up_ms()` — constrain upper bound.
+    pub default_speed_up_ms: f32,
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `guided_angle_state.update_time_ms`.
+    pub update_time_ms: u32,
+    /// `g2.guided_timeout`, seconds.
+    pub guided_timeout_s: f32,
+    /// `attitude_control->get_att_target_euler_rad().z` — timeout seed yaw.
+    pub att_target_yaw_rad: f32,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `copter.ap.auto_armed` at the top of the tick.
+    pub auto_armed: bool,
+    /// `copter.ap.land_complete`.
+    pub land_complete: bool,
+    /// `copter.is_tradheli()`.
+    pub is_tradheli: bool,
+    /// `motors->get_interlock()`.
+    pub motor_interlock: bool,
+    /// `motors->get_spool_state() == THROTTLE_UNLIMITED`. Consulted only
+    /// on the takeoff arm.
+    pub spool_unlimited: bool,
+}
+
+impl GuidedAngleControlView {
+    /// After a climb [`guided_set_angle`]: flying, dest fresh, identity quat.
+    #[must_use]
+    pub const fn after_set_angle() -> Self {
+        Self {
+            use_thrust: false,
+            climb_rate_ms: 1.5,
+            thrust_norm: 0.0,
+            attitude_quat: [1.0, 0.0, 0.0, 0.0],
+            ang_vel_body: [0.1, -0.05, 0.2],
+            default_speed_down_ms: WP_SPD_DOWN_DEFAULT_MS,
+            default_speed_up_ms: WP_SPD_UP_DEFAULT_MS,
+            now_ms: 2_100,
+            update_time_ms: 2_000,
+            guided_timeout_s: GUIDED_TIMEOUT_DEFAULT_S,
+            att_target_yaw_rad: 0.0,
+            motors_armed: true,
+            auto_armed: true,
+            land_complete: false,
+            is_tradheli: false,
+            motor_interlock: false,
+            spool_unlimited: false,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::angle_control_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedAngleControl {
+    /// Which arm returned, or the fly leftover.
+    pub exit: GuidedAngleControlExit,
+    /// `set_auto_armed(true)` ran (`armed && positive` after timeout).
+    pub auto_armed: bool,
+    /// Timeout fired. Always evaluated, even on the ground / takeoff arms.
+    pub timed_out: bool,
+    /// Timeout cleared thrust (`D_init_controller` + `use_thrust = false`).
+    pub timeout_init_d: bool,
+    /// `use_thrust` after the timeout gate.
+    pub use_thrust: bool,
+    /// Constrain leftover. Zero when the tick started in thrust.
+    pub constrained_climb_ms: f32,
+    /// Climb after constrain / avoidance / timeout. Zero on a thrust start
+    /// and after any timeout.
+    pub climb_rate_ms: f32,
+    /// Avoidance ran because the tick started in climb, not thrust.
+    pub avoidance_applied: bool,
+    /// Quat after the timeout gate (yaw-only seed, or the command).
+    pub attitude_quat: [f32; 4],
+    /// Body rates after the timeout gate (zeroed on timeout).
+    pub ang_vel_body: [f32; 3],
+}
+
+/// Upstream `ModeGuided::angle_control_run`.
+///
+/// Constrain and avoidance only on climb. Timeout (wrapping, `>`) can
+/// convert thrust to a zero-climb hold and is evaluated *before*
+/// `is_positive` and the exits. Auto-arm is written before the ground
+/// check, so a first positive command is not grounded for `!auto_armed`.
+#[must_use]
+pub fn guided_angle_control_run(view: &GuidedAngleControlView) -> GuidedAngleControl {
+    let avoidance_applied = !view.use_thrust;
+    let constrained_climb_ms = if view.use_thrust {
+        0.0
+    } else {
+        constrain_value(
+            view.climb_rate_ms,
+            -view.default_speed_down_ms,
+            view.default_speed_up_ms,
+        )
+    };
+
+    let timed_out =
+        view.now_ms.wrapping_sub(view.update_time_ms) > guided_timeout_ms(view.guided_timeout_s);
+
+    let (use_thrust, timeout_init_d, climb_rate_ms, attitude_quat, ang_vel_body) = if timed_out {
+        let q = Quaternion::from_euler(0.0, 0.0, view.att_target_yaw_rad);
+        let timeout_init_d = view.use_thrust;
+        (
+            false,
+            timeout_init_d,
+            0.0,
+            [q.q1, q.q2, q.q3, q.q4],
+            [0.0, 0.0, 0.0],
+        )
+    } else {
+        (
+            view.use_thrust,
+            false,
+            constrained_climb_ms,
+            view.attitude_quat,
+            view.ang_vel_body,
+        )
+    };
+
+    let vertical_cmd = if use_thrust {
+        view.thrust_norm
+    } else {
+        climb_rate_ms
+    };
+    let positive = is_positive(vertical_cmd);
+    let auto_armed = view.motors_armed && positive;
+    let auto_armed_now = view.auto_armed || auto_armed;
+
+    let exit = if !view.motors_armed || !auto_armed_now || (view.land_complete && !positive) {
+        GuidedAngleControlExit::Ground {
+            keep_interlock: view.is_tradheli && view.motor_interlock,
+        }
+    } else if view.land_complete && positive {
+        GuidedAngleControlExit::Takeoff {
+            cleared_land: view.spool_unlimited,
+        }
+    } else {
+        let q = Quaternion::new(
+            attitude_quat[0],
+            attitude_quat[1],
+            attitude_quat[2],
+            attitude_quat[3],
+        );
+        GuidedAngleControlExit::Flew {
+            attitude: if q.is_zero() {
+                GuidedAngleAttitude::Rate
+            } else {
+                GuidedAngleAttitude::Quaternion
+            },
+            vertical: if use_thrust {
+                GuidedAngleVertical::Thrust {
+                    thrust_norm: view.thrust_norm,
+                }
+            } else {
+                GuidedAngleVertical::Climb { climb_rate_ms }
+            },
+        }
+    };
+
+    GuidedAngleControl {
+        exit,
+        auto_armed,
+        timed_out,
+        timeout_init_d,
+        use_thrust,
+        constrained_climb_ms,
+        climb_rate_ms,
+        avoidance_applied,
+        attitude_quat,
+        ang_vel_body,
     }
 }
