@@ -18,8 +18,13 @@
 //! [`auto_spline_start`] is `ModeAuto::do_spline_wp` — C++ has no
 //! separate `spline_start`; this leftover is the spline destination,
 //! next-segment lookup, yaw, and WP park that `NAV_SPLINE_WAYPOINT`
-//! runs. The other `do_*` bodies and the `*_run` controllers are later
-//! slices.
+//! runs. [`auto_loiter_unlimited`] is `ModeAuto::do_loiter_unlimited`:
+//! the same default-loc + dest fetch as spline, then [`auto_wp_start`].
+//! [`auto_loiter_time`] reuses that leftover and latches the loiter
+//! timer. [`auto_loiter_to_alt`] reuses it, then reads the target
+//! alt-above-home and parks in LOITER_TO_ALT (or marks both reached
+//! on a bad alt). The other `do_*` bodies and the `*_run` controllers
+//! are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -117,6 +122,30 @@
 //! dest loc while parked on the last WP is a flow-of-control error
 //! and the leftover continues with current. Every other refuse is
 //! `failsafe_terrain_on_event` and returns before yaw or `_mode`.
+//!
+//! # loiter_unlimited is dest then wp_start
+//!
+//! `do_loiter_unlimited` has no submode of its own — it flies to the
+//! loiter point via [`auto_wp_start`]. Default loc is current (minus
+//! offsets). If wpnav is already on its dest, that dest becomes the
+//! default; a failed fetch is a flow-of-control error and the leftover
+//! keeps current. `get_loc_from_cmd` then `wp_start`. Either refuse
+//! is `failsafe_terrain_on_event` and returns false. Success returns
+//! true with `_mode = WP`.
+//!
+//! # loiter_time latches the delay after that
+//!
+//! `do_loiter_time` is a wrapper: if unlimited refuses, the leftover
+//! returns without touching the timer. Otherwise `loiter_time` is
+//! zeroed and `loiter_time_max = cmd.p1` (seconds).
+//!
+//! # loiter_to_alt then parks in LOITER_TO_ALT
+//!
+//! After unlimited succeeds, a zero lat/lng copies current. A failed
+//! `get_alt_m(ABOVE_HOME)` marks both reached, sends
+//! `"bad do_loiter_to_alt"`, and leaves `_mode` at WP. Success
+//! clears the loiter-to-alt flags, copies wpnav D limits onto the
+//! position controller, and sets `_mode = LOITER_TO_ALT`.
 
 use crate::mode_rtl::{rtl_init, RtlInit, RtlInitView};
 
@@ -1638,5 +1667,368 @@ pub const fn auto_spline_start(view: &AutoSplineStartView) -> AutoSplineStart {
         set_next_wp: true,
         yaw_set_default: !skip_yaw,
         submode: Some(AutoSubMode::Wp),
+    }
+}
+
+/// Vehicle view [`auto_loiter_unlimited`] reads.
+///
+/// `do_loiter_unlimited` fills dest from the command (using the
+/// caller's default loc when lat/lon/alt are zero) and then hands
+/// that dest to [`auto_wp_start`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterUnlimitedView {
+    /// `wp_nav->is_active()`.
+    pub wp_nav_active: bool,
+    /// `wp_nav->reached_wp_destination()`.
+    pub reached_wp_destination: bool,
+    /// `wp_nav->get_wp_destination_loc(default_loc)`.
+    pub wp_dest_loc_ok: bool,
+    /// `get_loc_from_cmd(cmd, default_loc, target_loc)`.
+    pub dest_loc_ok: bool,
+    /// Inputs to [`auto_wp_start`].
+    pub wp: AutoWpStartView,
+}
+
+impl AutoLoiterUnlimitedView {
+    /// Idle wpnav, dest accepted, yaw HOLD.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            wp_nav_active: false,
+            reached_wp_destination: false,
+            wp_dest_loc_ok: false,
+            dest_loc_ok: true,
+            wp: AutoWpStartView::idle_loiter(),
+        }
+    }
+
+    /// Parked on the last WP — default loc comes from wpnav.
+    #[must_use]
+    pub const fn from_reached_wp() -> Self {
+        let mut view = Self::ready();
+        view.wp_nav_active = true;
+        view.reached_wp_destination = true;
+        view.wp_dest_loc_ok = true;
+        view.wp.wp_nav_active = true;
+        view
+    }
+
+    /// `get_loc_from_cmd` refused the dest (terrain).
+    #[must_use]
+    pub const fn dest_refused() -> Self {
+        let mut view = Self::ready();
+        view.dest_loc_ok = false;
+        view
+    }
+
+    /// `wp_start` refused after dest loc was accepted.
+    #[must_use]
+    pub const fn wp_refused() -> Self {
+        let mut view = Self::ready();
+        view.wp = AutoWpStartView::dest_refused();
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::do_loiter_unlimited` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterUnlimited {
+    /// What `do_loiter_unlimited` returned.
+    pub ok: bool,
+    /// Default loc came from `get_wp_destination_loc`.
+    pub default_from_wp_dest: bool,
+    /// `INTERNAL_ERROR(flow_of_control)` — dest loc fetch failed while
+    /// parked. The leftover continues with `current_loc`.
+    pub dest_loc_flow_of_control: bool,
+    /// `copter.failsafe_terrain_on_event` ran.
+    pub terrain_failsafe: bool,
+    /// What [`auto_wp_start`] produced. Zeroed when dest loc refused
+    /// before `wp_start` ran.
+    pub wp: AutoWpStart,
+    /// `_mode` after a successful start. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+}
+
+impl AutoLoiterUnlimited {
+    /// Shared refuse leftover: terrain failsafe, `_mode` unchanged.
+    #[must_use]
+    const fn refused(
+        default_from_wp_dest: bool,
+        dest_loc_flow_of_control: bool,
+        wp: AutoWpStart,
+    ) -> Self {
+        Self {
+            ok: false,
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            terrain_failsafe: true,
+            wp,
+            submode: None,
+        }
+    }
+}
+
+/// `wp_start` was never called — dest loc refused first.
+#[must_use]
+const fn wp_start_not_called() -> AutoWpStart {
+    AutoWpStart {
+        ok: false,
+        wp_and_spline_init: false,
+        init_speed_xy_ms: 0.0,
+        stopping_point_from_takeoff: false,
+        set_speed_up: false,
+        set_speed_down: false,
+        set_wp_destination: false,
+        yaw_set_default: false,
+        submode: None,
+    }
+}
+
+/// Upstream `ModeAuto::do_loiter_unlimited`.
+///
+/// Default loc is `current_loc` (minus offsets). If wpnav is already
+/// on its dest, that dest becomes the default; a failed fetch is a
+/// flow-of-control error and the leftover keeps `current_loc`.
+/// `get_loc_from_cmd` then [`auto_wp_start`]. Either refuse is
+/// terrain failsafe and returns false. Success parks in WP via
+/// `wp_start` and returns true.
+#[must_use]
+pub const fn auto_loiter_unlimited(view: &AutoLoiterUnlimitedView) -> AutoLoiterUnlimited {
+    let mut default_from_wp_dest = false;
+    let mut dest_loc_flow_of_control = false;
+    if view.wp_nav_active && view.reached_wp_destination {
+        if view.wp_dest_loc_ok {
+            default_from_wp_dest = true;
+        } else {
+            dest_loc_flow_of_control = true;
+        }
+    }
+
+    if !view.dest_loc_ok {
+        return AutoLoiterUnlimited::refused(
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            wp_start_not_called(),
+        );
+    }
+
+    let wp = auto_wp_start(&view.wp);
+    if !wp.ok {
+        return AutoLoiterUnlimited::refused(default_from_wp_dest, dest_loc_flow_of_control, wp);
+    }
+
+    AutoLoiterUnlimited {
+        ok: true,
+        default_from_wp_dest,
+        dest_loc_flow_of_control,
+        terrain_failsafe: false,
+        wp,
+        submode: wp.submode,
+    }
+}
+
+/// Vehicle view [`auto_loiter_time`] reads.
+///
+/// `do_loiter_time` reuses [`auto_loiter_unlimited`] and then latches
+/// the loiter delay from `cmd.p1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterTimeView {
+    /// Inputs to [`auto_loiter_unlimited`].
+    pub unlimited: AutoLoiterUnlimitedView,
+    /// `cmd.p1` — delay at the loiter point, seconds.
+    pub delay_s: u16,
+}
+
+impl AutoLoiterTimeView {
+    /// Dest accepted, a 10 s loiter.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            unlimited: AutoLoiterUnlimitedView::ready(),
+            delay_s: 10,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_loiter_time` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterTime {
+    /// What [`auto_loiter_unlimited`] produced.
+    pub unlimited: AutoLoiterUnlimited,
+    /// `loiter_time` was zeroed.
+    pub loiter_time_cleared: bool,
+    /// `loiter_time_max = cmd.p1`. Zero when unlimited refused.
+    pub loiter_time_max_s: u16,
+}
+
+/// Upstream `ModeAuto::do_loiter_time`.
+///
+/// Reuses [`auto_loiter_unlimited`]. A refuse returns without
+/// touching the timer. Success zeros `loiter_time` and stores
+/// `cmd.p1` as `loiter_time_max`.
+#[must_use]
+pub const fn auto_loiter_time(view: &AutoLoiterTimeView) -> AutoLoiterTime {
+    let unlimited = auto_loiter_unlimited(&view.unlimited);
+    if !unlimited.ok {
+        return AutoLoiterTime {
+            unlimited,
+            loiter_time_cleared: false,
+            loiter_time_max_s: 0,
+        };
+    }
+    AutoLoiterTime {
+        unlimited,
+        loiter_time_cleared: true,
+        loiter_time_max_s: view.delay_s,
+    }
+}
+
+/// Vehicle view [`auto_loiter_to_alt`] reads.
+///
+/// `do_loiter_to_alt` reuses [`auto_loiter_unlimited`], then reads
+/// the command's alt-above-home and parks in `LOITER_TO_ALT`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterToAltView {
+    /// Inputs to [`auto_loiter_unlimited`].
+    pub unlimited: AutoLoiterUnlimitedView,
+    /// `cmd.content.location.lat == 0 && lng == 0`.
+    pub lat_lng_zero: bool,
+    /// `target_loc.get_alt_m(ABOVE_HOME, loiter_to_alt.alt_m)`.
+    pub alt_ok: bool,
+    /// `wp_nav->get_default_speed_down_ms()`.
+    pub speed_down_ms: f32,
+    /// `wp_nav->get_default_speed_up_ms()`.
+    pub speed_up_ms: f32,
+    /// `wp_nav->get_accel_D_mss()`.
+    pub accel_d_mss: f32,
+}
+
+impl AutoLoiterToAltView {
+    /// Dest accepted, a real lat/lng, alt-above-home ok.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            unlimited: AutoLoiterUnlimitedView::ready(),
+            lat_lng_zero: false,
+            alt_ok: true,
+            speed_down_ms: 1.5,
+            speed_up_ms: 2.5,
+            accel_d_mss: 2.5,
+        }
+    }
+
+    /// Zero lat/lng — leftover copies current before the alt read.
+    #[must_use]
+    pub const fn current_lat_lng() -> Self {
+        let mut view = Self::ready();
+        view.lat_lng_zero = true;
+        view
+    }
+
+    /// `get_alt_m(ABOVE_HOME)` refused.
+    #[must_use]
+    pub const fn bad_alt() -> Self {
+        let mut view = Self::ready();
+        view.alt_ok = false;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::do_loiter_to_alt` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoLoiterToAlt {
+    /// What [`auto_loiter_unlimited`] produced.
+    pub unlimited: AutoLoiterUnlimited,
+    /// Current lat/lng were copied onto a zero command loc.
+    pub used_current_lat_lng: bool,
+    /// `"bad do_loiter_to_alt"` — `get_alt_m` refused.
+    pub bad_alt: bool,
+    /// `loiter_to_alt.reached_destination_xy` after the leftover.
+    pub reached_destination_xy: bool,
+    /// `loiter_to_alt.loiter_start_done` after the leftover.
+    pub loiter_start_done: bool,
+    /// `loiter_to_alt.reached_alt` after the leftover.
+    pub reached_alt: bool,
+    /// `loiter_to_alt.alt_error_m` after a successful start.
+    pub alt_error_m: f32,
+    /// First argument to `D_set_max_speed_accel_m`. Zero when unused.
+    pub d_speed_down_ms: f32,
+    /// Second argument to `D_set_max_speed_accel_m`. Zero when unused.
+    pub d_speed_up_ms: f32,
+    /// Third argument to `D_set_max_speed_accel_m`. Zero when unused.
+    pub d_accel_mss: f32,
+    /// Both `D_set_max_speed_accel_m` and the correction twin ran.
+    pub d_limits_set: bool,
+    /// `_mode` after the leftover. `None` when unlimited refused.
+    pub submode: Option<AutoSubMode>,
+}
+
+impl AutoLoiterToAlt {
+    /// Shared refuse leftover: unlimited failed; nothing else ran.
+    #[must_use]
+    const fn refused(unlimited: AutoLoiterUnlimited) -> Self {
+        Self {
+            unlimited,
+            used_current_lat_lng: false,
+            bad_alt: false,
+            reached_destination_xy: false,
+            loiter_start_done: false,
+            reached_alt: false,
+            alt_error_m: 0.0,
+            d_speed_down_ms: 0.0,
+            d_speed_up_ms: 0.0,
+            d_accel_mss: 0.0,
+            d_limits_set: false,
+            submode: None,
+        }
+    }
+}
+
+/// Upstream `ModeAuto::do_loiter_to_alt`.
+///
+/// Reuses [`auto_loiter_unlimited`]. A refuse returns without
+/// touching `loiter_to_alt`. After a success, a zero lat/lng copies
+/// current. A failed `get_alt_m(ABOVE_HOME)` marks both reached,
+/// sends `"bad do_loiter_to_alt"`, and leaves `_mode` at WP. Success
+/// clears the flags, copies wpnav D limits, and parks in
+/// `LOITER_TO_ALT`.
+#[must_use]
+pub const fn auto_loiter_to_alt(view: &AutoLoiterToAltView) -> AutoLoiterToAlt {
+    let unlimited = auto_loiter_unlimited(&view.unlimited);
+    if !unlimited.ok {
+        return AutoLoiterToAlt::refused(unlimited);
+    }
+
+    let used_current_lat_lng = view.lat_lng_zero;
+    if !view.alt_ok {
+        return AutoLoiterToAlt {
+            unlimited,
+            used_current_lat_lng,
+            bad_alt: true,
+            reached_destination_xy: true,
+            loiter_start_done: false,
+            reached_alt: true,
+            alt_error_m: 0.0,
+            d_speed_down_ms: 0.0,
+            d_speed_up_ms: 0.0,
+            d_accel_mss: 0.0,
+            d_limits_set: false,
+            submode: unlimited.submode,
+        };
+    }
+
+    AutoLoiterToAlt {
+        unlimited,
+        used_current_lat_lng,
+        bad_alt: false,
+        reached_destination_xy: false,
+        loiter_start_done: false,
+        reached_alt: false,
+        alt_error_m: 0.0,
+        d_speed_down_ms: view.speed_down_ms,
+        d_speed_up_ms: view.speed_up_ms,
+        d_accel_mss: view.accel_d_mss,
+        d_limits_set: true,
+        submode: Some(AutoSubMode::LoiterToAlt),
     }
 }
