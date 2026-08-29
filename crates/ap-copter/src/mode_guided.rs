@@ -1,15 +1,17 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run / set_angle / angle_control_run leftover, upstream
+//! pos_control_run / set_angle / angle_control_run /
+//! velaccel_control_run leftover, upstream
 //! `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
 //! to a coordinate, hold a velocity, or take an attitude. The first slice
 //! owns the enter and the Location dest setter. The second owns the `run`
 //! dispatcher and the velocity setter. The third owns `pos_control_run`.
-//! The fourth owns `set_angle` (and `angle_control_start`). This slice owns
-//! `angle_control_run`. Guided-NoGPS is the thin companion that always
-//! starts and runs Angle. The remaining `*_run` bodies, the accel setter,
-//! and Follow are later slices.
+//! The fourth owns `set_angle` (and `angle_control_start`). The fifth owns
+//! `angle_control_run` and Guided-NoGPS. This slice owns
+//! `velaccel_control_run`. ModeFollow init is the companion in
+//! `mode_follow`. `accel_control_run`, `posvelaccel_control_run`, the
+//! accel setter, and Follow `run` are later slices.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -100,6 +102,29 @@
 //! `MIN(wp_nav margin, 0.5 * |pos.z|)`. `input_pos_NED_m` gets that
 //! margin and the terrain D (zero when not terrain). Controllers
 //! and `input_thrust_vector_heading` always run on the fly path.
+//!
+//! # `velaccel_control_run` is one early exit, then a timeout, then a stab leftover
+//!
+//! `is_disarmed_or_landed` is the only early return — there is no terrain
+//! gate. The `make_safe_ground_handling` argument is the same tradheli
+//! interlock keep as Pos.
+//!
+//! The fly path always writes `THROTTLE_UNLIMITED`. Timeout (wrapping
+//! unsigned subtract, `>` not `>=`) zeroes the guided vel *and* accel
+//! leftovers and may `auto_yaw.set_mode(HOLD)` when yaw is `RATE` or
+//! `ANGLE_RATE`. Unlike Pos, a fresh dest does not zero vel/accel — only
+//! a stale one does.
+//!
+//! Avoidance is compiled out when `AP_AVOIDANCE_ENABLED` is off; this
+//! leftover treats `adjust_velocity_NED_m` as identity and records that
+//! it ran. `do_avoid` is `limits_active()` after that call, or false
+//! when compiled out. A live avoid blocks both the desired-vel overwrite
+//! and the stop-stabilisation.
+//!
+//! `!stabilizing_vel_NE && !do_avoid` overwrites the NE vel leftover
+//! from `get_vel_desired_NED_ms` and then `NE_stop_vel_stabilisation`.
+//! Else `!stabilizing_pos_NE && !do_avoid` only stops position
+//! stabilisation. D always takes the (possibly zeroed) vel/accel z.
 
 //! # `set_angle` starts Angle, then forks thrust vs climb
 //!
@@ -146,7 +171,7 @@ pub const MODE_NUMBER_GUIDED: u8 = 4;
 /// so Guided and Guided-NoGPS stay in one catalog.
 pub const MODE_NUMBER_GUIDED_NOGPS: u8 = 20;
 
-/// `Mode::Number::FOLLOW` — later slice; same catalog reason.
+/// `Mode::Number::FOLLOW` — init leftover lives in `mode_follow`.
 pub const MODE_NUMBER_FOLLOW: u8 = 23;
 
 /// `WP_SPD_DEFAULT` — `pva_control_start` NE speed when the caller has
@@ -256,6 +281,24 @@ pub const fn option_is_enabled(guided_options: u32, option: GuidedOption) -> boo
 #[must_use]
 pub const fn use_wpnav_for_position_control(guided_options: u32) -> bool {
     option_is_enabled(guided_options, GuidedOption::WpNavUsedForPosControl)
+}
+
+/// Upstream `ModeGuided::stabilizing_pos_NE`.
+///
+/// Bit 4 (`DoNotStabilizePositionXy`) inverted. Default GUID_OPTIONS is
+/// zero, so position is stabilised unless a GCS cleared the bit.
+#[must_use]
+pub const fn stabilizing_pos_ne(guided_options: u32) -> bool {
+    !option_is_enabled(guided_options, GuidedOption::DoNotStabilizePositionXy)
+}
+
+/// Upstream `ModeGuided::stabilizing_vel_NE`.
+///
+/// Bit 5 (`DoNotStabilizeVelocityXy`) inverted. `velaccel_control_run`
+/// consults this *and* `do_avoid` before overwriting the NE vel leftover.
+#[must_use]
+pub const fn stabilizing_vel_ne(guided_options: u32) -> bool {
+    !option_is_enabled(guided_options, GuidedOption::DoNotStabilizeVelocityXy)
 }
 
 /// AutoYaw setter `set_yaw_state_rad` would call.
@@ -1557,5 +1600,180 @@ pub fn guided_angle_control_run(view: &GuidedAngleControlView) -> GuidedAngleCon
         avoidance_applied,
         attitude_quat,
         ang_vel_body,
+    }
+}
+
+/// How `ModeGuided::velaccel_control_run` stopped NE stabilisation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidedVelAccelStop {
+    /// Both axes still stabilising, or `do_avoid` blocked the stops.
+    None,
+    /// `!stabilizing_vel_NE && !do_avoid`: `NE_stop_vel_stabilisation`.
+    StopVel,
+    /// `stabilizing_vel_NE && !stabilizing_pos_NE && !do_avoid`:
+    /// `NE_stop_pos_stabilisation`.
+    StopPos,
+}
+
+/// How `ModeGuided::velaccel_control_run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedVelAccelExit {
+    /// `is_disarmed_or_landed`: `make_safe_ground_handling` and return.
+    Disarmed {
+        /// `copter.is_tradheli() && motors->get_interlock()`.
+        keep_interlock: bool,
+    },
+    /// Flying: unlimited spool, then timeout / avoid / stab leftovers.
+    Flew {
+        /// `auto_yaw.set_mode(HOLD)` ran (stale dest and RATE / ANGLE_RATE).
+        yaw_hold: bool,
+        /// Timeout zeroed `guided_vel_target_ned_ms`.
+        vel_zeroed: bool,
+        /// Timeout zeroed `guided_accel_target_ned_mss`.
+        accel_zeroed: bool,
+        /// `AP_AVOIDANCE_ENABLED` compiled in: `adjust_velocity_NED_m` ran.
+        avoidance_applied: bool,
+        /// `copter.avoid.limits_active()` after that call. False when
+        /// avoidance is compiled out.
+        do_avoid: bool,
+        /// NE vel leftover overwritten from `get_vel_desired_NED_ms`.
+        vel_from_desired_ne: bool,
+        /// Which stop-stabilisation ran.
+        stop: GuidedVelAccelStop,
+        /// Vel leftover after timeout and the desired-NE overwrite.
+        vel_ned_ms: [f32; 3],
+        /// Accel leftover after timeout.
+        accel_ned_mss: [f32; 3],
+    },
+}
+
+/// Vehicle view `ModeGuided::velaccel_control_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedVelAccelView {
+    /// `Mode::is_disarmed_or_landed()`.
+    pub disarmed_or_landed: bool,
+    /// `copter.is_tradheli()`.
+    pub is_tradheli: bool,
+    /// `motors->get_interlock()`.
+    pub motor_interlock: bool,
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `update_time_ms` stamped by the last dest / vel setter.
+    pub update_time_ms: u32,
+    /// `g2.guided_timeout`, seconds.
+    pub guided_timeout_s: f32,
+    /// `auto_yaw.mode()` at the top of the tick.
+    pub auto_yaw: crate::auto_yaw::YawMode,
+    /// `guided_vel_target_ned_ms` at the top of the tick.
+    pub vel_target_ned_ms: [f32; 3],
+    /// `guided_accel_target_ned_mss` at the top of the tick.
+    pub accel_target_ned_mss: [f32; 3],
+    /// `pos_control->get_vel_desired_NED_ms()` — NE overwrite source.
+    pub vel_desired_ned_ms: [f32; 3],
+    /// `stabilizing_vel_NE()`.
+    pub stabilizing_vel_ne: bool,
+    /// `stabilizing_pos_NE()`.
+    pub stabilizing_pos_ne: bool,
+    /// `AP_AVOIDANCE_ENABLED`.
+    pub avoidance_enabled: bool,
+    /// `copter.avoid.limits_active()`. Consulted only when avoidance.
+    pub avoidance_limits_active: bool,
+}
+
+impl GuidedVelAccelView {
+    /// After [`guided_set_velocity`]: flying, dest fresh, both axes stab.
+    #[must_use]
+    pub const fn after_set_vel() -> Self {
+        Self {
+            disarmed_or_landed: false,
+            is_tradheli: false,
+            motor_interlock: false,
+            now_ms: 2_100,
+            update_time_ms: 2_000,
+            guided_timeout_s: GUIDED_TIMEOUT_DEFAULT_S,
+            auto_yaw: crate::auto_yaw::YawMode::Hold,
+            vel_target_ned_ms: [1.5, -0.5, 0.0],
+            accel_target_ned_mss: [0.0, 0.0, 0.0],
+            vel_desired_ned_ms: [0.3, 0.1, -0.2],
+            stabilizing_vel_ne: true,
+            stabilizing_pos_ne: true,
+            avoidance_enabled: true,
+            avoidance_limits_active: false,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::velaccel_control_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedVelAccel {
+    /// Which arm returned, or the fly leftover.
+    pub exit: GuidedVelAccelExit,
+}
+
+/// Upstream `ModeGuided::velaccel_control_run`.
+///
+/// Disarmed is the only early exit. Timeout uses wrapping unsigned
+/// subtract and `>`, not `>=`. Avoidance is identity on the numbers
+/// and only `do_avoid` changes the leftover. `!stabilizing_vel_NE &&
+/// !do_avoid` overwrites NE vel from the position controller's desired
+/// and stops vel stab; else `!stabilizing_pos_NE && !do_avoid` stops
+/// pos stab. D always takes the post-timeout vel/accel z.
+#[must_use]
+pub fn guided_velaccel_control_run(view: &GuidedVelAccelView) -> GuidedVelAccel {
+    if view.disarmed_or_landed {
+        return GuidedVelAccel {
+            exit: GuidedVelAccelExit::Disarmed {
+                keep_interlock: view.is_tradheli && view.motor_interlock,
+            },
+        };
+    }
+
+    let timed_out =
+        view.now_ms.wrapping_sub(view.update_time_ms) > guided_timeout_ms(view.guided_timeout_s);
+    let yaw_hold = timed_out
+        && matches!(
+            view.auto_yaw,
+            crate::auto_yaw::YawMode::Rate | crate::auto_yaw::YawMode::AngleRate
+        );
+
+    let mut vel_ned_ms = if timed_out {
+        [0.0, 0.0, 0.0]
+    } else {
+        view.vel_target_ned_ms
+    };
+    let accel_ned_mss = if timed_out {
+        [0.0, 0.0, 0.0]
+    } else {
+        view.accel_target_ned_mss
+    };
+
+    let avoidance_applied = view.avoidance_enabled;
+    let do_avoid = view.avoidance_enabled && view.avoidance_limits_active;
+    let vel_from_desired_ne = !view.stabilizing_vel_ne && !do_avoid;
+    if vel_from_desired_ne {
+        vel_ned_ms[0] = view.vel_desired_ned_ms[0];
+        vel_ned_ms[1] = view.vel_desired_ned_ms[1];
+    }
+
+    let stop = if !view.stabilizing_vel_ne && !do_avoid {
+        GuidedVelAccelStop::StopVel
+    } else if !view.stabilizing_pos_ne && !do_avoid {
+        GuidedVelAccelStop::StopPos
+    } else {
+        GuidedVelAccelStop::None
+    };
+
+    GuidedVelAccel {
+        exit: GuidedVelAccelExit::Flew {
+            yaw_hold,
+            vel_zeroed: timed_out,
+            accel_zeroed: timed_out,
+            avoidance_applied,
+            do_avoid,
+            vel_from_desired_ne,
+            stop,
+            vel_ned_ms,
+            accel_ned_mss,
+        },
     }
 }

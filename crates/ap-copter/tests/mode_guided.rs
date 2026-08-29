@@ -1,19 +1,22 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
-//! pos_control_run / set_angle / angle_control_run leftovers, upstream
+//! pos_control_run / set_angle / angle_control_run /
+//! velaccel_control_run leftovers, upstream
 //! `ArduCopter/mode_guided.cpp`.
 
 use ap_copter::auto_yaw::YawMode;
 use ap_copter::mode_guided::{
     guided_angle_control_run, guided_angle_control_start, guided_init, guided_mode_flags,
     guided_pos_control_run, guided_run, guided_set_angle, guided_set_destination,
-    guided_set_vel_accel, guided_set_velocity, guided_timeout_ms, option_is_enabled,
-    set_yaw_state_rad, use_wpnav_for_position_control, GuidedAngleAttitude, GuidedAngleControlExit,
+    guided_set_vel_accel, guided_set_velocity, guided_timeout_ms, guided_velaccel_control_run,
+    option_is_enabled, set_yaw_state_rad, stabilizing_pos_ne, stabilizing_vel_ne,
+    use_wpnav_for_position_control, GuidedAngleAttitude, GuidedAngleControlExit,
     GuidedAngleControlView, GuidedAngleStartView, GuidedAngleVertical, GuidedInitView,
     GuidedOption, GuidedPosControlExit, GuidedPosControlView, GuidedRunBody, GuidedRunView,
     GuidedSetAngleView, GuidedSetDestFail, GuidedSetDestView, GuidedSetVelView, GuidedSubMode,
-    GuidedYawAction, GUIDED_TIMEOUT_DEFAULT_S, GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW,
-    MODE_NUMBER_GUIDED, MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS,
-    WP_SPD_DEFAULT_MS, WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
+    GuidedVelAccelExit, GuidedVelAccelStop, GuidedVelAccelView, GuidedYawAction,
+    GUIDED_TIMEOUT_DEFAULT_S, GUIDED_TIMEOUT_MIN_S, MODE_NUMBER_FOLLOW, MODE_NUMBER_GUIDED,
+    MODE_NUMBER_GUIDED_NOGPS, WPNAV_ACCELERATION_MSS, WP_ACC_Z_DEFAULT_MSS, WP_SPD_DEFAULT_MS,
+    WP_SPD_DOWN_DEFAULT_MS, WP_SPD_UP_DEFAULT_MS,
 };
 
 #[test]
@@ -1140,4 +1143,309 @@ fn angle_run_timeout_on_landed_thrust_grounds_after_clear() {
             keep_interlock: false,
         }
     );
+}
+
+#[test]
+fn stabilizing_helpers_invert_guid_options_bits() {
+    assert!(stabilizing_pos_ne(0));
+    assert!(stabilizing_vel_ne(0));
+    assert!(!stabilizing_pos_ne(
+        GuidedOption::DoNotStabilizePositionXy as u32
+    ));
+    assert!(!stabilizing_vel_ne(
+        GuidedOption::DoNotStabilizeVelocityXy as u32
+    ));
+    assert!(stabilizing_pos_ne(
+        GuidedOption::DoNotStabilizeVelocityXy as u32
+    ));
+    assert!(stabilizing_vel_ne(
+        GuidedOption::DoNotStabilizePositionXy as u32
+    ));
+}
+
+#[test]
+fn velaccel_run_after_set_vel_flies_without_hold_or_overwrite() {
+    let out = guided_velaccel_control_run(&GuidedVelAccelView::after_set_vel());
+    assert_eq!(
+        out.exit,
+        GuidedVelAccelExit::Flew {
+            yaw_hold: false,
+            vel_zeroed: false,
+            accel_zeroed: false,
+            avoidance_applied: true,
+            do_avoid: false,
+            vel_from_desired_ne: false,
+            stop: GuidedVelAccelStop::None,
+            vel_ned_ms: [1.5, -0.5, 0.0],
+            accel_ned_mss: [0.0, 0.0, 0.0],
+        }
+    );
+}
+
+#[test]
+fn velaccel_run_disarmed_skips_timeout_and_stab() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.disarmed_or_landed = true;
+    view.now_ms = view.update_time_ms + 3_001;
+    view.stabilizing_vel_ne = false;
+    assert_eq!(
+        guided_velaccel_control_run(&view).exit,
+        GuidedVelAccelExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn velaccel_run_tradheli_interlock_is_the_only_keep() {
+    let mut heli = GuidedVelAccelView::after_set_vel();
+    heli.disarmed_or_landed = true;
+    heli.is_tradheli = true;
+    heli.motor_interlock = true;
+    assert_eq!(
+        guided_velaccel_control_run(&heli).exit,
+        GuidedVelAccelExit::Disarmed {
+            keep_interlock: true,
+        }
+    );
+
+    let mut no_lock = heli;
+    no_lock.motor_interlock = false;
+    assert_eq!(
+        guided_velaccel_control_run(&no_lock).exit,
+        GuidedVelAccelExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+
+    let mut not_heli = heli;
+    not_heli.is_tradheli = false;
+    assert_eq!(
+        guided_velaccel_control_run(&not_heli).exit,
+        GuidedVelAccelExit::Disarmed {
+            keep_interlock: false,
+        }
+    );
+}
+
+#[test]
+fn velaccel_run_timeout_zeros_vel_and_accel() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.now_ms = view.update_time_ms + 3_001;
+    view.accel_target_ned_mss = [0.2, 0.1, -0.3];
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            vel_zeroed,
+            accel_zeroed,
+            yaw_hold,
+            vel_ned_ms,
+            accel_ned_mss,
+            ..
+        } => {
+            assert!(vel_zeroed);
+            assert!(accel_zeroed);
+            assert!(!yaw_hold);
+            assert_eq!(vel_ned_ms, [0.0, 0.0, 0.0]);
+            assert_eq!(accel_ned_mss, [0.0, 0.0, 0.0]);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_timeout_holds_only_rate_and_angle_rate() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.now_ms = view.update_time_ms + 3_001;
+    view.auto_yaw = YawMode::Rate;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    view.auto_yaw = YawMode::AngleRate;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew { yaw_hold, .. } => assert!(yaw_hold),
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    for mode in [
+        YawMode::Hold,
+        YawMode::LookAtNextWp,
+        YawMode::Fixed,
+        YawMode::PilotRate,
+    ] {
+        view.auto_yaw = mode;
+        match guided_velaccel_control_run(&view).exit {
+            GuidedVelAccelExit::Flew { yaw_hold, .. } => {
+                assert!(!yaw_hold, "{mode:?} must not HOLD on timeout")
+            }
+            other => panic!("expected Flew, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn velaccel_run_timeout_is_strictly_greater() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.auto_yaw = YawMode::Rate;
+    view.now_ms = view.update_time_ms + 3_000;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            yaw_hold,
+            vel_zeroed,
+            ..
+        } => {
+            assert!(!yaw_hold);
+            assert!(!vel_zeroed);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+
+    view.now_ms = view.update_time_ms + 3_001;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            yaw_hold,
+            vel_zeroed,
+            ..
+        } => {
+            assert!(yaw_hold);
+            assert!(vel_zeroed);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_timeout_uses_unsigned_wrap() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.auto_yaw = YawMode::Rate;
+    view.update_time_ms = 200;
+    view.now_ms = 100;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            yaw_hold,
+            vel_zeroed,
+            ..
+        } => {
+            assert!(yaw_hold);
+            assert!(vel_zeroed);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_avoidance_compiled_out_never_sets_do_avoid() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.avoidance_enabled = false;
+    view.avoidance_limits_active = true;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            avoidance_applied,
+            do_avoid,
+            ..
+        } => {
+            assert!(!avoidance_applied);
+            assert!(!do_avoid);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_live_avoid_blocks_overwrite_and_stops() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.avoidance_limits_active = true;
+    view.stabilizing_vel_ne = false;
+    view.stabilizing_pos_ne = false;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            do_avoid,
+            vel_from_desired_ne,
+            stop,
+            vel_ned_ms,
+            ..
+        } => {
+            assert!(do_avoid);
+            assert!(!vel_from_desired_ne);
+            assert_eq!(stop, GuidedVelAccelStop::None);
+            assert_eq!(vel_ned_ms, [1.5, -0.5, 0.0]);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_unstabilised_vel_overwrites_ne_from_desired() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.stabilizing_vel_ne = false;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            vel_from_desired_ne,
+            stop,
+            vel_ned_ms,
+            ..
+        } => {
+            assert!(vel_from_desired_ne);
+            assert_eq!(stop, GuidedVelAccelStop::StopVel);
+            assert_eq!(vel_ned_ms, [0.3, 0.1, 0.0]);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_timeout_then_unstabilised_vel_restores_ne() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.now_ms = view.update_time_ms + 3_001;
+    view.stabilizing_vel_ne = false;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            vel_zeroed,
+            vel_from_desired_ne,
+            stop,
+            vel_ned_ms,
+            accel_ned_mss,
+            ..
+        } => {
+            assert!(vel_zeroed);
+            assert!(vel_from_desired_ne);
+            assert_eq!(stop, GuidedVelAccelStop::StopVel);
+            assert_eq!(vel_ned_ms, [0.3, 0.1, 0.0]);
+            assert_eq!(accel_ned_mss, [0.0, 0.0, 0.0]);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_unstabilised_pos_stops_pos_only() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.stabilizing_pos_ne = false;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew {
+            vel_from_desired_ne,
+            stop,
+            vel_ned_ms,
+            ..
+        } => {
+            assert!(!vel_from_desired_ne);
+            assert_eq!(stop, GuidedVelAccelStop::StopPos);
+            assert_eq!(vel_ned_ms, [1.5, -0.5, 0.0]);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
+}
+
+#[test]
+fn velaccel_run_vel_stop_wins_over_pos_stop() {
+    let mut view = GuidedVelAccelView::after_set_vel();
+    view.stabilizing_vel_ne = false;
+    view.stabilizing_pos_ne = false;
+    match guided_velaccel_control_run(&view).exit {
+        GuidedVelAccelExit::Flew { stop, .. } => {
+            assert_eq!(stop, GuidedVelAccelStop::StopVel);
+        }
+        other => panic!("expected Flew, got {other:?}"),
+    }
 }

@@ -33,6 +33,7 @@ pub mod mode_auto;
 pub mod mode_brake;
 pub mod mode_drift;
 pub mod mode_entry;
+pub mod mode_follow;
 pub mod mode_guided;
 pub mod mode_guided_nogps;
 pub mod mode_land;
