@@ -57,7 +57,8 @@
 //! next leftover is the stock `ADSB_` `GOBJECT`
 //! (`HAL_ADSB_ENABLED`). After `ADSB_` the
 //! next leftover is the stock `AVD_` `GOBJECT`
-//! (`AP_ADSB_AVOIDANCE_ENABLED`). Later groups, G2,
+//! (`AP_ADSB_AVOIDANCE_ENABLED`). After `AVD_` the
+//! next leftover is the stock `NTF_` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1663,7 +1664,7 @@ pub fn for_each_adsb_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_notify` — next leftover after `AVD_`. Not this leftover.
+/// `Parameters::k_param_notify` — next `GOBJECT`, prefix `NTF_`.
 pub const K_PARAM_NOTIFY: u16 = 73;
 
 /// Stock `AVD_` leftover catalog.
@@ -1691,6 +1692,38 @@ pub fn find_avd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `AVD_` leftover as `ParamInfo` rows.
 pub fn for_each_avd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in AVD_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_osd` — next leftover after `NTF_`. Not this leftover.
+pub const K_PARAM_OSD: u16 = 9;
+
+/// Stock `NTF_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `AVD_`. Upstream is
+/// `GOBJECT`. Nested `AP_Notify` `var_info` is not this leftover. `OSD`
+/// stays later (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). Heli `H_` / `IM_`
+/// are not rows of this leftover.
+pub const NTF_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("NTF_", K_PARAM_NOTIFY)];
+
+/// First (only) row of the `NTF_` leftover.
+#[must_use]
+pub fn ntf_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    NTF_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `NTF_` leftover by group prefix.
+#[must_use]
+pub fn find_ntf_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    NTF_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `NTF_` leftover as `ParamInfo` rows.
+pub fn for_each_ntf_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in NTF_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
