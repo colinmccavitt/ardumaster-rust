@@ -5,9 +5,8 @@
 //! A*-style shortest path. [`DijkstraFenceContext`] is the leftover of
 //! `AP::fence()->polyfence()` and `Location::get_vector_xy_from_origin_NE_cm`.
 //!
-//! The OA database, vertical BendyRuler, GCS error spam, and visgraph
-//! logging stay later leftovers. ADR-0004 forbids the fence / AHRS / HAL
-//! singletons.
+//! GCS error spam and visgraph logging stay later leftovers. ADR-0004
+//! forbids the fence / AHRS / HAL singletons.
 
 use ap_math::location::Location;
 use ap_math::polygon::{polygon_intersects, polygon_outside};

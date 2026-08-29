@@ -1,7 +1,7 @@
 //! OA path-planner + BendyRuler leftover. Tracked as **COP-026**.
 //!
-//! Dijkstra coverage lives in `oa_dijkstra.rs`. The OA database, vertical
-//! BendyRuler, and lean-angle avoidance stay later leftovers.
+//! Dijkstra coverage lives in `oa_dijkstra.rs`. Lean-angle avoidance stays
+//! a later leftover.
 
 use ap_avoidance::{
     BendyMarginContext, BendyRuler, DijkstraFenceContext, OaBendyType, OaDbItem, OaPathPlanType,
@@ -198,7 +198,7 @@ fn bendy_update_clear_path_is_not_required() {
 }
 
 #[test]
-fn bendy_vertical_type_stays_later_leftover() {
+fn bendy_vertical_clear_path_is_not_required() {
     let mut bendy = BendyRuler::new();
     bendy.set_bendy_type_param(2);
     assert_eq!(bendy.get_type(), OaBendyType::Vertical);

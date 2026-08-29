@@ -6,8 +6,8 @@
 //! `ALT_MIN` near-home reject. GCS `send_adsb_vehicle` stays a later
 //! leftover.
 //!
-//! ADR-0004 forbids the AHRS / HAL / GCS singletons. Vertical BendyRuler
-//! and lean-angle avoidance in non-GPS modes stay later leftovers.
+//! ADR-0004 forbids the AHRS / HAL / GCS singletons. Lean-angle avoidance
+//! in non-GPS modes stays a later leftover.
 
 use ap_math::scalar::{is_equal, is_positive, is_zero, radians, sq, Real};
 use ap_math::vector3::Vector3f;

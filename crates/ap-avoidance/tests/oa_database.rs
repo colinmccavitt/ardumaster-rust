@@ -1,7 +1,6 @@
 //! OA database leftover. Tracked as **COP-026**.
 //!
-//! Vertical BendyRuler and lean-angle avoidance in non-GPS modes stay
-//! later leftovers.
+//! Lean-angle avoidance in non-GPS modes stays a later leftover.
 
 use ap_avoidance::{
     Database, OaDbImportance, OaDbOutputLevel, OaDbSource, QueuePushContext,

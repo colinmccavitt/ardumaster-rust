@@ -1,7 +1,6 @@
 //! OA Dijkstra leftover. Tracked as **COP-026**.
 //!
-//! The OA database, vertical BendyRuler, and lean-angle avoidance stay
-//! later leftovers.
+//! Lean-angle avoidance stays a later leftover.
 
 use ap_avoidance::{
     same_latlon, BendyMarginContext, Dijkstra, DijkstraError, DijkstraFenceContext, DijkstraState,

@@ -3,11 +3,10 @@
 //! Frontend: type / margin / options, `init`, `pre_arm_check`,
 //! `mission_avoidance`, and one tick of `avoidance_thread` as
 //! [`PathPlanner::process`]. Planner arms are [`crate::oa_bendy_ruler`]
-//! (horizontal) and [`crate::oa_dijkstra`].
+//! (horizontal and vertical) and [`crate::oa_dijkstra`].
 //!
-//! The OA database, vertical BendyRuler, and the background HAL thread
-//! stay later leftovers. ADR-0004 forbids the AHRS / HAL / database
-//! singletons.
+//! The background HAL thread stays a later leftover. ADR-0004 forbids the
+//! AHRS / HAL / database singletons.
 //!
 //! [`PathPlanner::process`] is the leftover of one avoidance-thread
 //! iteration; [`MissionAvoidanceLeftover`] is the leftover of the

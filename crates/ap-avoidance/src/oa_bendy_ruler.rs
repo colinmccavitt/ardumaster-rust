@@ -1,16 +1,16 @@
 //! BendyRuler leftover. Upstream `AP_OABendyRuler`.
 //!
-//! This slice is [`BendyRuler::update`] plus the horizontal search
-//! (`search_xy_path`) and [`BendyRuler::resist_bearing_change`].
-//! [`BendyMarginContext`] is the leftover of `calc_avoidance_margin` /
-//! `calc_margin_from_object_database`. Fence-circle / polygon / alt-fence
-//! margin arms, vertical search, and the OA database itself stay later
-//! leftovers. Dijkstra is [`crate::oa_dijkstra`].
+//! This slice is [`BendyRuler::update`] plus horizontal (`search_xy_path`)
+//! and vertical (`search_vertical_path`) search, and
+//! [`BendyRuler::resist_bearing_change`]. [`BendyMarginContext`] is the
+//! leftover of `calc_avoidance_margin` / `calc_margin_from_object_database`.
+//! Fence-circle / polygon / alt-fence margin arms stay later leftovers.
+//! Dijkstra is [`crate::oa_dijkstra`].
 //!
 //! ADR-0004 forbids the AHRS / fence / OA-database singletons.
 
 use ap_math::location::Location;
-use ap_math::scalar::{constrain_value, degrees, is_equal, is_positive, wrap_180, Real};
+use ap_math::scalar::{constrain_value, degrees, is_equal, is_positive, radians, wrap_180, Real};
 use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
 use ap_math::Ftype;
@@ -31,6 +31,31 @@ fn loc_offset(loc: &mut Location, bearing_deg: f32, distance_m: f32) {
     loc.offset_bearing(Ftype::from(bearing_deg), Ftype::from(distance_m));
 }
 
+/// Leftover of `Location::offset_bearing_and_pitch`.
+fn loc_offset_bearing_and_pitch(
+    loc: &mut Location,
+    bearing_deg: f32,
+    pitch_deg: f32,
+    distance_m: f32,
+) {
+    let pitch = radians(Ftype::from(pitch_deg));
+    let bearing = radians(Ftype::from(bearing_deg));
+    let dist = Ftype::from(distance_m);
+    loc.offset(
+        Real::cos(pitch) * Real::cos(bearing) * dist,
+        Real::cos(pitch) * Real::sin(bearing) * dist,
+    );
+    // Upstream: `const int32_t dalt = sinF(radians(pitch_deg)) * distance * 100.0f;`
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "upstream Location::offset_bearing_and_pitch truncates the centimetre offset to int32"
+    )]
+    {
+        let dalt = (Real::sin(pitch) * dist * Ftype::from(100.0)).to_f64() as i32;
+        loc.alt = loc.alt.saturating_add(dalt);
+    }
+}
+
 /// Default `OA_BR_LOOKAHEAD`, metres.
 pub const LOOKAHEAD_M_DEFAULT: f32 = 15.0;
 /// Default `OA_BR_CONT_RATIO`.
@@ -42,6 +67,8 @@ pub const TYPE_DEFAULT: i8 = 1;
 
 /// Horizontal probe increment, degrees. Upstream `OA_BENDYRULER_BEARING_INC_XY`.
 pub const BEARING_INC_XY_DEG: f32 = 5.0;
+/// Vertical probe increment, degrees. Upstream `OA_BENDYRULER_BEARING_INC_VERTICAL`.
+pub const BEARING_INC_VERTICAL_DEG: f32 = 90.0;
 /// Step-2 lookahead as a ratio of step-1. Upstream `OA_BENDYRULER_LOOKAHEAD_STEP2_RATIO`.
 pub const LOOKAHEAD_STEP2_RATIO: f32 = 1.0;
 /// Step-2 looks at least this far, metres. Upstream `OA_BENDYRULER_LOOKAHEAD_STEP2_MIN`.
@@ -61,7 +88,7 @@ pub enum OaBendyType {
     Disabled = 0,
     /// Horizontal search. Upstream `OA_BENDY_HORIZONTAL`.
     Horizontal = 1,
-    /// Vertical search. Upstream `OA_BENDY_VERTICAL`. Later leftover.
+    /// Vertical search. Upstream `OA_BENDY_VERTICAL`.
     Vertical = 2,
 }
 
@@ -140,7 +167,7 @@ pub struct BendyRuler {
     bendy_ratio: f32,
     /// `OA_BR_CONT_ANGLE`, degrees.
     bendy_angle_deg: f32,
-    /// `OA_BR_TYPE`. Vertical stays a later leftover.
+    /// `OA_BR_TYPE`.
     bendy_type: i8,
     /// From the path-planner frontend. Upstream `_margin_max`.
     margin_max_m: f32,
@@ -218,7 +245,7 @@ impl BendyRuler {
         self.bendy_type
     }
 
-    /// `OA_BR_TYPE` setter. Vertical search stays a later leftover.
+    /// `OA_BR_TYPE` setter.
     pub fn set_bendy_type_param(&mut self, bendy_type: i8) {
         self.bendy_type = bendy_type;
     }
@@ -283,9 +310,17 @@ impl BendyRuler {
 
         match self.get_type() {
             OaBendyType::Vertical => {
-                // Vertical search stays a later leftover.
                 leftover.bendy_type = OaBendyType::Vertical;
-                leftover.required = false;
+                leftover.required = self.search_vertical_path(
+                    current_loc,
+                    destination,
+                    lookahead_step1_dist,
+                    lookahead_step2_dist,
+                    bearing_to_dest,
+                    distance_to_dest,
+                    margin,
+                    &mut leftover.destination_new,
+                );
             }
             OaBendyType::Horizontal | OaBendyType::Disabled => {
                 leftover.bendy_type = OaBendyType::Horizontal;
@@ -304,6 +339,143 @@ impl BendyRuler {
         }
 
         leftover
+    }
+
+    /// Leftover of `AP_OABendyRuler::search_vertical_path`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "matches the upstream search_vertical_path argument list"
+    )]
+    fn search_vertical_path(
+        &mut self,
+        current_loc: Location,
+        destination: Location,
+        lookahead_step1_dist: f32,
+        lookahead_step2_dist: f32,
+        bearing_to_dest: f32,
+        distance_to_dest: f32,
+        margin: &BendyMarginContext,
+        destination_new: &mut Location,
+    ) -> bool {
+        let mut best_pitch = 0.0_f32;
+        let mut have_best_pitch = false;
+        let mut best_margin = f32::MIN;
+        let mut best_margin_pitch = best_pitch;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "upstream angular_limit is 180 / OA_BENDYRULER_BEARING_INC_VERTICAL"
+        )]
+        let angular_limit = (180.0 / BEARING_INC_VERTICAL_DEG) as u8;
+
+        for i in 0..=angular_limit {
+            for bdir in 0_u8..=1 {
+                if (i == 0 && bdir > 0) || (i == angular_limit && bdir > 0) {
+                    continue;
+                }
+                let sign = if bdir == 0 { 1.0 } else { -1.0 };
+                let pitch_delta = f32::from(i) * BEARING_INC_VERTICAL_DEG * sign;
+
+                let mut test_loc = current_loc;
+                loc_offset_bearing_and_pitch(
+                    &mut test_loc,
+                    bearing_to_dest,
+                    pitch_delta,
+                    lookahead_step1_dist,
+                );
+
+                let step1_margin = self.calc_avoidance_margin(current_loc, test_loc, margin);
+                if step1_margin > best_margin {
+                    best_margin_pitch = pitch_delta;
+                    best_margin = step1_margin;
+                }
+                if step1_margin <= self.margin_max_m {
+                    continue;
+                }
+
+                if !have_best_pitch {
+                    best_pitch = pitch_delta;
+                    have_best_pitch = true;
+                }
+
+                const TEST_PITCH_STEP2: [f32; 4] = [0.0, 90.0, -90.0, 180.0];
+                let bearing_to_dest2 = if is_equal(pitch_delta.abs(), 90.0) {
+                    bearing_to_dest
+                } else {
+                    test_loc.get_bearing_to(destination) as f32 * 0.01
+                };
+                let distance2 = constrain_value(
+                    lookahead_step2_dist,
+                    LOOKAHEAD_STEP2_MIN_M,
+                    metres_f32(test_loc.get_distance(destination)),
+                );
+                for (j, &tp) in TEST_PITCH_STEP2.iter().enumerate() {
+                    let bearing_test2 = wrap_180(tp);
+                    let mut test_loc2 = test_loc;
+                    loc_offset_bearing_and_pitch(
+                        &mut test_loc2,
+                        bearing_to_dest2,
+                        bearing_test2,
+                        distance2,
+                    );
+
+                    let margin2 = self.calc_avoidance_margin(test_loc, test_loc2, margin);
+                    if margin2 <= self.margin_max_m {
+                        continue;
+                    }
+
+                    let mut active = i != 0 || j != 0;
+                    if !active {
+                        const SUB_TEST_PITCH: [f32; 2] = [-90.0, 90.0];
+                        let mut sub_ctx = *margin;
+                        sub_ctx.proximity_only = true;
+                        for &sub_pitch in &SUB_TEST_PITCH {
+                            let mut test_loc_sub = test_loc;
+                            loc_offset_bearing_and_pitch(
+                                &mut test_loc_sub,
+                                bearing_to_dest2,
+                                sub_pitch,
+                                self.margin_max_m,
+                            );
+                            let margin_sub =
+                                self.calc_avoidance_margin(test_loc, test_loc_sub, &sub_ctx);
+                            if margin_sub < self.margin_max_m {
+                                active = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    *destination_new = current_loc;
+                    loc_offset_bearing_and_pitch(
+                        destination_new,
+                        bearing_to_dest,
+                        pitch_delta,
+                        distance_to_dest,
+                    );
+                    self.current_lookahead_m =
+                        self.lookahead_m.min(self.current_lookahead_m * 1.1);
+                    return active;
+                }
+            }
+        }
+
+        let chosen_pitch = if have_best_pitch {
+            self.current_lookahead_m = self.lookahead_m.min(self.current_lookahead_m * 1.05);
+            best_pitch
+        } else {
+            self.current_lookahead_m = (self.lookahead_m * 0.5).max(self.current_lookahead_m * 0.9);
+            best_margin_pitch
+        };
+
+        *destination_new = current_loc;
+        loc_offset_bearing_and_pitch(
+            destination_new,
+            bearing_to_dest,
+            chosen_pitch,
+            distance_to_dest,
+        );
+        true
     }
 
     /// Leftover of `AP_OABendyRuler::search_xy_path`.

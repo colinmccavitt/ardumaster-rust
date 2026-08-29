@@ -30,7 +30,7 @@
 //!
 //! The sixth leftover is the OA path planner: [`PathPlanner`] (the
 //! `AP_OAPathPlanner` frontend) plus [`BendyRuler`] (`AP_OABendyRuler`
-//! horizontal search).
+//! horizontal and vertical search).
 //!
 //! The seventh leftover is Dijkstra: [`Dijkstra`] (`AP_OADijkstra`) plus
 //! [`VisGraph`] (`AP_OAVisGraph`). [`DijkstraFenceContext`] injects the
@@ -40,8 +40,7 @@
 //! queue, match / refresh, and expiry. [`QueuePushContext`] is the leftover
 //! of `ahrs.get_relative_position_NED_home` for Copter `ALT_MIN`.
 //!
-//! Vertical BendyRuler and lean-angle avoidance in non-GPS modes stay
-//! later leftovers.
+//! Lean-angle avoidance in non-GPS modes stays a later leftover.
 //!
 //! ADR-0004 forbids the fence / AHRS / proximity / beacon / HAL singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
@@ -54,7 +53,7 @@
 //!
 //! # What this crate does not own
 //!
-//! Vertical BendyRuler and lean-angle avoidance in non-GPS modes.
+//! Lean-angle avoidance in non-GPS modes.
 
 #![no_std]
 
@@ -80,7 +79,8 @@ pub use fence_ne::{
 };
 pub use oa_bendy_ruler::{
     same_latlon, BendyMarginContext, BendyRuler, BendyUpdateLeftover, OaBendyType, OaDbItem,
-    ANGLE_DEFAULT, BEARING_INC_XY_DEG, LOOKAHEAD_M_DEFAULT, LOOKAHEAD_PAST_DEST_M,
+    ANGLE_DEFAULT, BEARING_INC_VERTICAL_DEG, BEARING_INC_XY_DEG, LOOKAHEAD_M_DEFAULT,
+    LOOKAHEAD_PAST_DEST_M,
     LOOKAHEAD_STEP2_MIN_M, LOOKAHEAD_STEP2_RATIO, LOW_SPEED_SQUARED, OA_DB_ITEMS_MAX,
     RATIO_DEFAULT, TYPE_DEFAULT,
 };
