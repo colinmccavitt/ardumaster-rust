@@ -3,7 +3,8 @@
 //!
 //! The remaining Multi `Copter::var_info` rows after `G2`. Nested
 //! `AP_Vehicle::var_info` / `GCS` `var_info` is not this leftover.
-//! Nested `ParametersG2::var_info` (`TUNE_MIN` / `TUNE_MAX`) stays later.
+//! Nested `ParametersG2::var_info` (`TUNE_MIN` / `TUNE_MAX`) and
+//! `var_info2` (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are a separate leftover.
 //! Heli `H_` / `IM_` are not rows of this leftover.
 
 #![allow(

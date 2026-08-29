@@ -66,7 +66,8 @@
 //! next leftover is the stock `G2` `GOBJECT`. After `G2` the
 //! next leftover is `PARAM_VEHICLE_INFO` / `MAV` plus
 //! `load_parameters` conversions. Nested `ParametersG2::var_info`
-//! (`TUNE_MIN` / `TUNE_MAX`) stays later.
+//! (`TUNE_MIN` / `TUNE_MAX`) and `var_info2` (`TUNE2_MIN` /
+//! `TUNE2_MAX` / `TUNE2`) close the Multi leftover catalog.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -82,7 +83,7 @@
 //! heli `WP_YAW_BEHAVIOR` default (`LOOK_AHEAD`) is a `FRAME_CONFIG`
 //! rewrite, not a row. This leftover keeps the multicopter default.
 
-use ap_param::info::ParamInfo;
+use ap_param::info::{GroupInfo, ParamInfo};
 use ap_param::VarType;
 use ap_param::{
     convert_class_objects, convert_g2_objects, merge_convert_stats, migrate_named_parameters,
@@ -1808,9 +1809,9 @@ pub const K_PARAM_VEHICLE: u16 = 257;
 /// The next contiguous Multi `GOBJECT` after `CC`. Upstream is
 /// `GOBJECT` with an empty prefix. Nested `ParametersG2::var_info`
 /// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2`
-/// (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are not this leftover.
+/// (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are a separate leftover.
 /// `PARAM_VEHICLE_INFO` / `MAV` and `load_parameters` conversions
-/// are the next leftover. Heli `H_` / `IM_` are not rows of this leftover.
+/// are a separate leftover. Heli `H_` / `IM_` are not rows of this leftover.
 pub const G2_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("", K_PARAM_G2)];
 
 /// First (only) row of the `G2` leftover.
@@ -1871,7 +1872,8 @@ pub const K_PARAM_PILOT_TAKEOFF_ALT_CM: u16 = 64;
 /// (257), same prefix as `G2` (key 6) — keys distinguish them.
 /// `MAV` is `HAL_GCS_ENABLED`. Nested `AP_Vehicle::var_info` and
 /// `GCS` `var_info` are not this leftover. Nested `ParametersG2::var_info`
-/// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2` stay later.
+/// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2`
+/// (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are a separate leftover.
 /// Heli `H_` / `IM_` are not rows of this leftover.
 pub const VEHICLE_MAV_VAR_INFO: &[VarInfoSpec] =
     &[group("", K_PARAM_VEHICLE), group("MAV", K_PARAM_GCS)];
@@ -2039,7 +2041,6 @@ pub const COPTER_PILOT_CONVERSIONS: &[NamedParameterMigration] = &[
 ///
 /// G2 and class member layouts are supplied by the caller until the vehicle
 /// object graph is ported. Mode `convert_params` helpers stay later.
-/// Nested `ParametersG2::var_info` (`TUNE_MIN` / `TUNE_MAX`) stays later.
 pub fn load_parameters_migrations<S: ap_param::Storage + ?Sized>(
     storage: &mut S,
     table: &[ParamInfo<'_>],
@@ -2060,4 +2061,180 @@ pub fn load_parameters_migrations<S: ap_param::Storage + ?Sized>(
     );
 
     Ok(stats)
+}
+/// `ParametersG2::var_info` idx of `TUNE_MIN`.
+pub const G2_TUNE_MIN_IDX: u8 = 31;
+
+/// `ParametersG2::var_info` idx of `TUNE_MAX`.
+pub const G2_TUNE_MAX_IDX: u8 = 32;
+
+/// `ParametersG2::var_info` idx of the empty-prefix `var_info2` extension.
+pub const G2_VAR_INFO2_EXTENSION_IDX: u8 = 61;
+
+/// `ParametersG2::var_info2` idx of `TUNE2_MIN`.
+pub const G2_TUNE2_MIN_IDX: u8 = 11;
+
+/// `ParametersG2::var_info2` idx of `TUNE2_MAX`.
+pub const G2_TUNE2_MAX_IDX: u8 = 12;
+
+/// `ParametersG2::var_info2` idx of `TUNE2`.
+pub const G2_TUNE2_IDX: u8 = 13;
+
+/// One `ParametersG2` `AP_GROUPINFO` leftover row.
+///
+/// Nested under `G2` (`k_param_g2` = 6). `idx` is the `AP_GROUPINFO`
+/// identifier, not a `Parameters::k_param_*` key.
+#[derive(Debug, Clone, Copy)]
+pub struct G2VarInfoSpec {
+    /// `@Param` name fragment. `G2` has an empty prefix, so this is the
+    /// full parameter name.
+    pub name: &'static str,
+    /// Six-bit group index, upstream `AP_GROUPINFO` second argument.
+    pub idx: u8,
+    /// `AP_ParamT::vtype` of the member.
+    pub ptype: VarType,
+    /// `Info.def_value`. Upstream stores every GROUPINFO default as float.
+    pub default: f32,
+}
+
+impl G2VarInfoSpec {
+    /// Nested descriptor row for [`ap_param::info::find_by_name`].
+    #[must_use]
+    pub const fn group_info(self) -> GroupInfo<'static> {
+        GroupInfo {
+            name: self.name,
+            idx: self.idx,
+            ptype: self.ptype.as_u8(),
+            flags: 0,
+            group: None,
+        }
+    }
+
+    /// Flat descriptor under the `G2` key. `idx` is not encoded here;
+    /// use [`Self::group_info`] when the group element matters.
+    #[must_use]
+    pub const fn param_info(self) -> ParamInfo<'static> {
+        ParamInfo {
+            name: self.name,
+            key: K_PARAM_G2,
+            ptype: self.ptype.as_u8(),
+            flags: 0,
+            group: None,
+        }
+    }
+}
+
+const fn g2_scalar(name: &'static str, idx: u8, ptype: VarType, default: f32) -> G2VarInfoSpec {
+    G2VarInfoSpec {
+        name,
+        idx,
+        ptype,
+        default,
+    }
+}
+
+/// Nested `ParametersG2::var_info` `TUNE_MIN` / `TUNE_MAX` leftover catalog.
+///
+/// Compiled only when `AP_RC_TRANSMITTER_TUNING_ENABLED` (defaults to
+/// `AP_RC_CHANNEL_ENABLED`, which is 1). Lives in `ParametersG2::var_info`
+/// at idx 31/32, not in `Copter::var_info` (`TUNE` is key 187). Heli
+/// `H_` / `IM_` are not rows of this leftover.
+pub const G2_TUNE_VAR_INFO: &[G2VarInfoSpec] = &[
+    g2_scalar("TUNE_MIN", G2_TUNE_MIN_IDX, VarType::Float, 0.0),
+    g2_scalar("TUNE_MAX", G2_TUNE_MAX_IDX, VarType::Float, 0.0),
+];
+
+/// Nested `ParametersG2::var_info2` `TUNE2_*` leftover catalog.
+///
+/// Compiled only when `AP_RC_TRANSMITTER_TUNING_ENABLED`. Lives in the
+/// empty-prefix `AP_SUBGROUPEXTENSION` at idx 61, then idx 11/12/13.
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const G2_TUNE2_VAR_INFO: &[G2VarInfoSpec] = &[
+    g2_scalar("TUNE2_MIN", G2_TUNE2_MIN_IDX, VarType::Float, 0.0),
+    g2_scalar("TUNE2_MAX", G2_TUNE2_MAX_IDX, VarType::Float, 0.0),
+    g2_scalar("TUNE2", G2_TUNE2_IDX, VarType::Int8, 0.0),
+];
+
+/// `TUNE2_*` rows as `GroupInfo`, nested under the idx-61 extension.
+pub const G2_TUNE2_GROUP_INFO: [GroupInfo<'static>; 3] = [
+    GroupInfo {
+        name: "TUNE2_MIN",
+        idx: G2_TUNE2_MIN_IDX,
+        ptype: VarType::Float.as_u8(),
+        flags: 0,
+        group: None,
+    },
+    GroupInfo {
+        name: "TUNE2_MAX",
+        idx: G2_TUNE2_MAX_IDX,
+        ptype: VarType::Float.as_u8(),
+        flags: 0,
+        group: None,
+    },
+    GroupInfo {
+        name: "TUNE2",
+        idx: G2_TUNE2_IDX,
+        ptype: VarType::Int8.as_u8(),
+        flags: 0,
+        group: None,
+    },
+];
+
+/// `TUNE_MIN` / `TUNE_MAX` plus the empty-prefix `var_info2` extension.
+pub const G2_TUNE_NESTED_GROUP_INFO: [GroupInfo<'static>; 3] = [
+    GroupInfo {
+        name: "TUNE_MIN",
+        idx: G2_TUNE_MIN_IDX,
+        ptype: VarType::Float.as_u8(),
+        flags: 0,
+        group: None,
+    },
+    GroupInfo {
+        name: "TUNE_MAX",
+        idx: G2_TUNE_MAX_IDX,
+        ptype: VarType::Float.as_u8(),
+        flags: 0,
+        group: None,
+    },
+    GroupInfo {
+        name: "",
+        idx: G2_VAR_INFO2_EXTENSION_IDX,
+        ptype: VarType::Group.as_u8(),
+        flags: 0,
+        group: Some(&G2_TUNE2_GROUP_INFO),
+    },
+];
+
+/// First row of the G2 `TUNE_MIN` leftover, `TUNE_MIN`.
+#[must_use]
+pub fn g2_tune_var_info_entry() -> Option<&'static G2VarInfoSpec> {
+    G2_TUNE_VAR_INFO.first()
+}
+
+/// Find a row in the G2 TUNE leftover by `@Param` name.
+#[must_use]
+pub fn find_g2_tune_var(name: &str) -> Option<&'static G2VarInfoSpec> {
+    G2_TUNE_VAR_INFO
+        .iter()
+        .chain(G2_TUNE2_VAR_INFO)
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the G2 TUNE leftover as flat `ParamInfo` rows under `k_param_g2`.
+pub fn for_each_g2_tune_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in G2_TUNE_VAR_INFO.iter().chain(G2_TUNE2_VAR_INFO) {
+        visit(entry.param_info());
+    }
+}
+
+/// `G2` parent whose children are this leftover (for nested `find_by_name`).
+#[must_use]
+pub const fn g2_tune_parent_param_info() -> ParamInfo<'static> {
+    ParamInfo {
+        name: "",
+        key: K_PARAM_G2,
+        ptype: VarType::Group.as_u8(),
+        flags: 0,
+        group: Some(&G2_TUNE_NESTED_GROUP_INFO),
+    }
 }
