@@ -291,7 +291,8 @@ fn leftover_catalog_drops_backend_and_mavlink() {
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::update"));
+    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }
 

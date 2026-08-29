@@ -1,16 +1,19 @@
-//! `AC_PrecLand_Backend` + `AC_PrecLand_MAVLink` + IRLock leftovers,
-//! upstream `libraries/AC_PrecLand/AC_PrecLand_Backend.h`,
-//! `AC_PrecLand_MAVLink.{h,cpp}`, `AC_PrecLand_IRLock.{h,cpp}`, and
-//! `AC_PrecLand_SITL_Gazebo.{h,cpp}`.
+//! `AC_PrecLand_Backend` + `AC_PrecLand_MAVLink` + IRLock leftovers +
+//! SITL leftover, upstream `libraries/AC_PrecLand/AC_PrecLand_Backend.h`,
+//! `AC_PrecLand_MAVLink.{h,cpp}`, `AC_PrecLand_IRLock.{h,cpp}`,
+//! `AC_PrecLand_SITL_Gazebo.{h,cpp}`, and `AC_PrecLand_SITL.{h,cpp}`.
 //!
 //! Tracked as **COP-028**. This slice owns the shared LOS getters,
-//! the companion-computer `LANDING_TARGET` path, and the IRLock /
-//! SITL-Gazebo `update` body. Those two backends share one algorithm;
-//! ADR-0004 forbids `AP_IRLock`, so the vehicle injects an
-//! [`IrlockSample`]. SITL (`AP::sitl()`) stays later.
-//! `AC_PrecLand_Backend::handle_msg` is the empty default; MAVLink
-//! overrides it.
+//! the companion-computer `LANDING_TARGET` path, the IRLock /
+//! SITL-Gazebo `update` body, and the SITL sim `update` body. IRLock
+//! and SITL-Gazebo share one algorithm; ADR-0004 forbids `AP_IRLock`,
+//! so the vehicle injects an [`IrlockSample`]. SITL talks to
+//! `AP::sitl()`; ADR-0004 forbids that singleton, so the vehicle
+//! injects a [`SitlSample`]. `AC_PrecLand_Backend::handle_msg` is the
+//! empty default; MAVLink overrides it.
 
+use ap_math::matrix3::Matrix3f;
+use ap_math::rotations_gen::{rotate_inverse, Rotation};
 use ap_math::vector3::Vector3f;
 
 use crate::estimator::LosSample;
@@ -401,6 +404,134 @@ impl IrlockBackend {
 
     /// Upstream `distance_to_target()`. IRLock never writes this;
     /// stays `0` (unknown).
+    #[must_use]
+    pub fn distance_to_target(&self) -> f32 {
+        self.inner.distance_to_target()
+    }
+
+    /// Snapshot for [`crate::PrecLand::retrieve_los_meas`].
+    #[must_use]
+    pub fn los_sample(&self) -> Option<LosSample> {
+        self.inner.los_sample()
+    }
+}
+
+/// Snapshot of `SITL::SIM_Precland` + AHRS the vehicle feeds into
+/// [`SitlBackend::update`].
+///
+/// ADR-0004 forbids `AP::sitl()` and the SITL singleton. This is the
+/// leftover of `precland_sim.healthy()`, `last_update_ms()`,
+/// `get_target_position()`, `option_enabled(ENABLE_TARGET_DISTANCE)`,
+/// and `AP::ahrs().get_rotation_body_to_ned()`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SitlSample {
+    /// `SIM_Precland::healthy()`.
+    pub healthy: bool,
+    /// `SIM_Precland::last_update_ms()`.
+    pub last_update_ms: u32,
+    /// `SIM_Precland::get_target_position()`. NED metres.
+    ///
+    /// Upstream is `Vector3d`; the backend immediately `tofloat()`s
+    /// after `mul_transpose`, so this leftover stores [`Vector3f`].
+    pub target_position: Vector3f,
+    /// `SIM_Precland::option_enabled(Option::ENABLE_TARGET_DISTANCE)`.
+    pub enable_target_distance: bool,
+    /// `AP::ahrs().get_rotation_body_to_ned()`.
+    ///
+    /// Upstream `todouble()` then `mul_transpose`; leftover is
+    /// [`Matrix3f`].
+    pub body_to_ned: Matrix3f,
+}
+
+/// SITL precland-sim backend, upstream `AC_PrecLand_SITL`.
+///
+/// `init` stores `AP::sitl()`, which stays a leftover on
+/// [`crate::InitLeftover::need_sitl`]. Healthy stays false until
+/// the first sim snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SitlBackend {
+    inner: Backend,
+    healthy: bool,
+}
+
+impl Default for SitlBackend {
+    fn default() -> Self {
+        Self {
+            inner: Backend::new(),
+            healthy: false,
+        }
+    }
+}
+
+impl SitlBackend {
+    /// Construct. Upstream `using AC_PrecLand_Backend::AC_PrecLand_Backend`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Upstream `AC_PrecLand_SITL::init`.
+    ///
+    /// Does not set healthy. The `AP::sitl()` singleton fetch is the
+    /// leftover.
+    pub fn init(&mut self) {}
+
+    /// Upstream `_state.healthy` after `update`.
+    #[must_use]
+    pub fn healthy(&self) -> bool {
+        self.healthy
+    }
+
+    /// Upstream `AC_PrecLand_SITL::update`.
+    ///
+    /// Writes `_los_meas` when the sim is healthy and
+    /// `last_update_ms` is new. Unlike IRLock, a repeated timestamp
+    /// or an unhealthy snapshot *clears* `_los_meas.valid` before
+    /// the shared stale-LOS expiry.
+    pub fn update(&mut self, sample: SitlSample, now_ms: u32, orient: Rotation) {
+        self.healthy = sample.healthy;
+
+        if sample.healthy && sample.last_update_ms != self.inner.los_meas.time_ms {
+            let mut vec = sample.body_to_ned.mul_transpose(-sample.target_position);
+            self.inner.distance_to_target = if sample.enable_target_distance {
+                vec.length()
+            } else {
+                0.0
+            };
+            vec /= vec.length();
+            self.inner.los_meas.vec_unit = vec;
+            self.inner.los_meas.frame = VectorFrame::BodyFrd;
+
+            if orient != Rotation::Pitch270 {
+                // rotate body frame vector based on orientation
+                // this is done to have homogeneity among backends
+                // frontend rotates it back to get correct body frame vector
+                let _ = rotate_inverse(&mut self.inner.los_meas.vec_unit, orient);
+                let _ = rotate_inverse(&mut self.inner.los_meas.vec_unit, Rotation::Pitch90);
+            }
+
+            self.inner.los_meas.valid = true;
+            self.inner.los_meas.time_ms = sample.last_update_ms;
+        } else {
+            self.inner.los_meas.valid = false;
+        }
+
+        self.inner.expire_stale_los(now_ms);
+    }
+
+    /// Upstream `get_los_meas`.
+    #[must_use]
+    pub fn get_los_meas(&self) -> Option<(Vector3f, VectorFrame)> {
+        self.inner.get_los_meas()
+    }
+
+    /// Upstream `los_meas_time_ms()`.
+    #[must_use]
+    pub fn los_meas_time_ms(&self) -> u32 {
+        self.inner.los_meas_time_ms()
+    }
+
+    /// Upstream `distance_to_target()`. Metres. `0` means unknown.
     #[must_use]
     pub fn distance_to_target(&self) -> f32 {
         self.inner.distance_to_target()

@@ -191,7 +191,8 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::update"));
+    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }

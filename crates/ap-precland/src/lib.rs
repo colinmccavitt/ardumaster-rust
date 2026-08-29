@@ -10,8 +10,9 @@
 //! [`PrecLand::retrieve_los_meas`]), Kalman [`PosVelEKF`],
 //! [`PrecLand::run_output_prediction`], the getters /
 //! `check_target_status` leftover, [`Backend`] LOS getters, the
-//! first real sensor path ([`MavlinkBackend`]), and the IRLock /
-//! SITL-Gazebo path ([`IrlockBackend`]). `init` is the
+//! first real sensor path ([`MavlinkBackend`]), the IRLock /
+//! SITL-Gazebo path ([`IrlockBackend`]), and the SITL sim path
+//! ([`SitlBackend`]). `init` is the
 //! constructor's follow-on: constrain `PLND_LAG`, size the inertial
 //! history ring, pick a sensor backend from `PLND_TYPE`, run that
 //! backend's `init()`, and rotate the body-frame approach vector by
@@ -22,7 +23,8 @@
 //! history push, IRLock / SITL `_backend->update()`, `run_estimator`,
 //! `check_target_status`, and 25 Hz `Write_Precland`. MAVLink
 //! `update` (stale-LOS expiry) runs here. IRLock / SITL-Gazebo
-//! `update` (injected [`IrlockSample`]) runs here too.
+//! `update` (injected [`IrlockSample`]) runs here too. SITL
+//! `update` (injected [`SitlSample`]) runs here too.
 //! The estimator leftover is the RAW / Kalman switch, the EKF init
 //! timeout, rangefinder NED construction, and LOS retrieve. Kalman
 //! `PosVelEKF` predict / init / fuse / NIS run here.
@@ -59,7 +61,7 @@
 //! # What this crate does not own yet
 //!
 //! [`leftover::REMAINING`] is the catalog: logging, the inertial ring,
-//! SITL `update`, IRLock / SITL-Gazebo `init(irlock)`, and
+//! IRLock / SITL-Gazebo `init(irlock)`, SITL `init(AP::sitl)`, and
 //! `AC_PrecLand_StateMachine`.
 
 #![no_std]
@@ -72,8 +74,8 @@ pub mod precland;
 pub mod prediction;
 
 pub use backend::{
-    Backend, IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover,
-    LOS_MEAS_TIMEOUT_MS, MAV_FRAME_BODY_FRD, MAV_FRAME_LOCAL_FRD,
+    Backend, IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover, SitlBackend,
+    SitlSample, LOS_MEAS_TIMEOUT_MS, MAV_FRAME_BODY_FRD, MAV_FRAME_LOCAL_FRD,
 };
 pub use estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,

@@ -2,10 +2,10 @@
 //! output-prediction leftovers, upstream
 //! `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. SITL `update`, logging, the inertial
-//! ring, and the retry state machine stay in [`crate::leftover`].
-//! [`crate::MavlinkBackend`] and [`crate::IrlockBackend`] are the
-//! first real sensor paths. Both
+//! Tracked as **COP-028**. Logging, the inertial ring, and the retry
+//! state machine stay in [`crate::leftover`].
+//! [`crate::MavlinkBackend`], [`crate::IrlockBackend`], and
+//! [`crate::SitlBackend`] are the sensor paths. Both
 //! [`PosVelEKF`](crate::PosVelEKF)s run with the Kalman path.
 //! `run_output_prediction` writes the lag-compensated output the
 //! getters read.
@@ -23,7 +23,9 @@ use crate::estimator::{
     EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
-use crate::backend::{IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover};
+use crate::backend::{
+    IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover, SitlBackend, SitlSample,
+};
 use crate::pos_vel_ekf::PosVelEKF;
 use crate::prediction::{
     OutputPredictionLeftover, OutputPredictionWorld, LANDING_TARGET_LOST_DIST_THRESH_M,
@@ -177,11 +179,11 @@ pub struct InitLeftover {
 
 /// What `AC_PrecLand::update` ran and what it asked the vehicle for.
 ///
-/// The 400 Hz body is a dispatcher. AHRS history, SITL
-/// `_backend->update()`, `run_estimator`, `check_target_status`, and
-/// `Write_Precland` stay later leftovers. MAVLink `update` (stale-LOS
-/// expiry) and IRLock / SITL-Gazebo `update` (when an
-/// [`IrlockSample`] is supplied) run here. This slice also owns the
+/// The 400 Hz body is a dispatcher. AHRS history, `run_estimator`,
+/// `check_target_status`, and `Write_Precland` stay later leftovers.
+/// MAVLink `update` (stale-LOS expiry), IRLock / SITL-Gazebo `update`
+/// (when an [`IrlockSample`] is supplied), and SITL `update` (when a
+/// [`SitlSample`] is supplied) run here. This slice also owns the
 /// early-return, the cm→m convert, the `_enabled` gate, and the 25 Hz
 /// log cadence.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -196,8 +198,9 @@ pub struct UpdateLeftover {
     /// Leftover of the AHRS snapshot + `_inertial_history->push_force`.
     pub need_inertial_push: bool,
     /// Leftover of a backend `update` that did not run here.
-    /// `false` for MAVLink, and for IRLock / SITL-Gazebo when an
-    /// [`IrlockSample`] was supplied.
+    /// `false` for MAVLink, for IRLock / SITL-Gazebo when an
+    /// [`IrlockSample`] was supplied, and for SITL when a
+    /// [`SitlSample`] was supplied.
     pub need_backend_update: bool,
     /// `true` when a backend `update` ran (`_backend && _enabled`).
     pub backend_updated: bool,
@@ -283,6 +286,7 @@ pub struct PrecLand {
     backend_healthy: bool,
     mavlink: MavlinkBackend,
     irlock: IrlockBackend,
+    sitl: SitlBackend,
     current_target_state: TargetState,
     inertial_buffer_size: u16,
     inertial_history_ready: bool,
@@ -337,6 +341,7 @@ impl PrecLand {
             backend_healthy: false,
             mavlink: MavlinkBackend::new(),
             irlock: IrlockBackend::new(),
+            sitl: SitlBackend::new(),
             current_target_state: TargetState::NeverSeen,
             inertial_buffer_size: 0,
             inertial_history_ready: false,
@@ -422,6 +427,7 @@ impl PrecLand {
             }
             Type::Sitl => {
                 self.backend = Some(Type::Sitl);
+                self.sitl.init();
                 leftover.need_sitl = true;
             }
         }
@@ -447,11 +453,12 @@ impl PrecLand {
         rangefinder_alt_valid: bool,
         now_ms: u32,
     ) -> UpdateLeftover {
-        self.update_inner(rangefinder_alt_cm, rangefinder_alt_valid, now_ms, None)
+        self.update_inner(rangefinder_alt_cm, rangefinder_alt_valid, now_ms, None, None)
     }
 
     /// `AC_PrecLand::update` with an IRLock / SITL-Gazebo driver
-    /// snapshot. SITL still leaves [`UpdateLeftover::need_backend_update`].
+    /// snapshot. SITL still leaves [`UpdateLeftover::need_backend_update`]
+    /// unless [`Self::update_with_sitl`] is used.
     #[must_use]
     pub fn update_with_irlock(
         &mut self,
@@ -465,6 +472,29 @@ impl PrecLand {
             rangefinder_alt_valid,
             now_ms,
             Some(sample),
+            None,
+        )
+    }
+
+    /// `AC_PrecLand::update` with a SITL precland-sim snapshot.
+    ///
+    /// IRLock / SITL-Gazebo still leave
+    /// [`UpdateLeftover::need_backend_update`] unless
+    /// [`Self::update_with_irlock`] is used.
+    #[must_use]
+    pub fn update_with_sitl(
+        &mut self,
+        rangefinder_alt_cm: f32,
+        rangefinder_alt_valid: bool,
+        now_ms: u32,
+        sample: SitlSample,
+    ) -> UpdateLeftover {
+        self.update_inner(
+            rangefinder_alt_cm,
+            rangefinder_alt_valid,
+            now_ms,
+            None,
+            Some(sample),
         )
     }
 
@@ -474,6 +504,7 @@ impl PrecLand {
         rangefinder_alt_valid: bool,
         now_ms: u32,
         irlock: Option<IrlockSample>,
+        sitl: Option<SitlSample>,
     ) -> UpdateLeftover {
         // exit immediately if not enabled
         if self.backend.is_none() || !self.inertial_history_ready {
@@ -510,7 +541,13 @@ impl PrecLand {
                     }
                 }
                 Some(Type::Sitl) => {
-                    need_backend_update = true;
+                    if let Some(sample) = sitl {
+                        self.sitl.update(sample, now_ms, self.orient);
+                        self.backend_healthy = self.sitl.healthy();
+                        backend_updated = true;
+                    } else {
+                        need_backend_update = true;
+                    }
                 }
                 Some(Type::None) | None => {}
             }
@@ -727,12 +764,13 @@ impl PrecLand {
     }
 
     /// Upstream `_backend->get_los_meas` for MAVLink / IRLock /
-    /// SITL-Gazebo.
+    /// SITL-Gazebo / SITL.
     #[must_use]
     pub fn backend_los_meas(&self) -> Option<(Vector3f, VectorFrame)> {
         match self.backend {
             Some(Type::Mavlink) => self.mavlink.get_los_meas(),
             Some(Type::Irlock | Type::SitlGazebo) => self.irlock.get_los_meas(),
+            Some(Type::Sitl) => self.sitl.get_los_meas(),
             _ => None,
         }
     }
@@ -743,17 +781,19 @@ impl PrecLand {
         match self.backend {
             Some(Type::Mavlink) => self.mavlink.los_sample(),
             Some(Type::Irlock | Type::SitlGazebo) => self.irlock.los_sample(),
+            Some(Type::Sitl) => self.sitl.los_sample(),
             _ => None,
         }
     }
 
     /// Upstream `_backend->distance_to_target()`. `0` when unknown or
-    /// when the backend is SITL / none.
+    /// when there is no backend.
     #[must_use]
     pub fn distance_to_target(&self) -> f32 {
         match self.backend {
             Some(Type::Mavlink) => self.mavlink.distance_to_target(),
             Some(Type::Irlock | Type::SitlGazebo) => self.irlock.distance_to_target(),
+            Some(Type::Sitl) => self.sitl.distance_to_target(),
             _ => 0.0,
         }
     }
