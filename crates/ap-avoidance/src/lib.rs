@@ -40,7 +40,10 @@
 //! queue, match / refresh, and expiry. [`QueuePushContext`] is the leftover
 //! of `ahrs.get_relative_position_NED_home` for Copter `ALT_MIN`.
 //!
-//! Lean-angle avoidance in non-GPS modes stays a later leftover.
+//! The ninth leftover is lean-angle avoidance in non-GPS modes:
+//! [`Avoid::adjust_roll_pitch_rad`], [`Avoid::distance_m_to_lean_norm`],
+//! and [`Avoid::get_proximity_roll_pitch_norm`]. [`LeanAngleContext`]
+//! injects the proximity object list (`get_object_angle_and_distance`).
 //!
 //! ADR-0004 forbids the fence / AHRS / proximity / beacon / HAL singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
@@ -49,11 +52,8 @@
 //! the leftover of `AP::proximity()->get_obstacle` /
 //! `closest_point_from_segment_to_obstacle` and the AHRS 2-D yaw
 //! rotation. [`BendyMarginContext`] is the leftover of
-//! `calc_margin_from_object_database`.
-//!
-//! # What this crate does not own
-//!
-//! Lean-angle avoidance in non-GPS modes.
+//! `calc_margin_from_object_database`. [`LeanAngleContext`] is the leftover
+//! of `AP::proximity()->get_object_angle_and_distance`.
 
 #![no_std]
 
@@ -68,10 +68,12 @@ pub mod oa_vis_graph;
 pub use avoid::{
     get_avoidance_adjusted_climbrate_ms, AdjustVelocityContext, AdjustVelocityLeftover,
     AdjustVelocityNeLeftover, AdjustVelocityZContext, AdjustVelocityZLeftover, Avoid,
-    LimitAccelNeuLeftover, ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX,
-    ACCEL_MAX_MSS_DEFAULT, ACCEL_TIMEOUT_MS, ACTIVE_LIMIT_TIMEOUT_MS, AVOID_DEFAULT,
-    BACKUP_DEADZONE_M_DEFAULT, BACKUP_SPEED_MAX_NE_MS_DEFAULT, BACKUP_SPEED_MAX_U_MS_DEFAULT,
-    BEHAVIOR_SLIDE, BEHAVIOR_STOP, DISABLED, MARGIN_M_DEFAULT, STOP_AT_BEACON_FENCE, STOP_AT_FENCE,
+    AdjustRollPitchLeftover, LeanAngleContext, LeanProximityObject, LimitAccelNeuLeftover,
+    ProximityStopContext, ProximityStopLeftover, ACCEL_CMSS_MAX, ACCEL_MAX_MSS_DEFAULT,
+    ACCEL_TIMEOUT_MS, ACTIVE_LIMIT_TIMEOUT_MS, ANGLE_MAX_DEG_DEFAULT, ANGLE_MAX_PERCENT,
+    AVOID_DEFAULT, BACKUP_DEADZONE_M_DEFAULT, BACKUP_SPEED_MAX_NE_MS_DEFAULT,
+    BACKUP_SPEED_MAX_U_MS_DEFAULT, BEHAVIOR_SLIDE, BEHAVIOR_STOP, DISABLED, LEAN_OBJECTS_MAX,
+    MARGIN_M_DEFAULT, NONGPS_DIST_MAX_DEFAULT, STOP_AT_BEACON_FENCE, STOP_AT_FENCE,
     USE_PROXIMITY_SENSOR,
 };
 pub use fence_ne::{

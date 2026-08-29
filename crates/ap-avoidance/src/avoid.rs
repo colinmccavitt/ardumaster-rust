@@ -1,17 +1,19 @@
 //! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, the
 //! horizontal leftover (`limit_velocity_NE` plus proximity-backed STOP),
 //! the full `adjust_velocity` leftover (NE / body proximity + Z +
-//! NEU backup mix), fence NE (`adjust_velocity_fence`), and
-//! accel-jerk limiting (`limit_accel_NEU_cm`).
+//! NEU backup mix), fence NE (`adjust_velocity_fence`),
+//! accel-jerk limiting (`limit_accel_NEU_cm`), and lean-angle avoidance
+//! in non-GPS modes (`adjust_roll_pitch_rad`).
 //!
 //! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity`,
 //! `adjust_velocity_NED_m`, `adjust_velocity_z`, `limit_velocity_NE`,
-//! `adjust_velocity_proximity`, `limit_accel_NEU_cm`) and
-//! `ArduCopter/mode.cpp` (`Mode::get_avoidance_adjusted_climbrate_ms`).
+//! `adjust_velocity_proximity`, `limit_accel_NEU_cm`,
+//! `adjust_roll_pitch_rad`) and `ArduCopter/mode.cpp`
+//! (`Mode::get_avoidance_adjusted_climbrate_ms`).
 
 use ap_fence::{TYPE_ALT_MAX, TYPE_ALT_MIN};
 use ap_math::control::sqrt_controller;
-use ap_math::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq};
+use ap_math::scalar::{constrain_value, is_negative, is_positive, is_zero, radians, safe_sqrt, sq, Real};
 use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
 
@@ -46,6 +48,84 @@ pub const ACCEL_TIMEOUT_MS: u32 = 200;
 /// Limiting is still "active" within this window of the last change.
 /// Upstream `AC_AVOID_ACTIVE_LIMIT_TIMEOUT_MS`.
 pub const ACTIVE_LIMIT_TIMEOUT_MS: u32 = 500;
+
+/// Objects beyond this range are ignored in non-GPS modes.
+/// Upstream `AC_AVOID_NONGPS_DIST_MAX_DEFAULT` / `AVOID_DIST_MAX`.
+pub const NONGPS_DIST_MAX_DEFAULT: f32 = 5.0;
+/// Avoidance lean is never more than this fraction of the vehicle max.
+/// Upstream `AC_AVOID_ANGLE_MAX_PERCENT`.
+pub const ANGLE_MAX_PERCENT: f32 = 0.75;
+/// Default `AVOID_ANG_MAX`, degrees. Upstream `AP_GROUPINFO` default.
+pub const ANGLE_MAX_DEG_DEFAULT: f32 = 10.0;
+/// Max objects [`LeanAngleContext`] injects.
+pub const LEAN_OBJECTS_MAX: usize = 8;
+
+/// One leftover of `AP_Proximity::get_object_angle_and_distance`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeanProximityObject {
+    /// Body-frame bearing to the object, degrees. 0 is forward.
+    pub angle_deg: f32,
+    /// Range to the object, metres.
+    pub dist_m: f32,
+}
+
+/// Injected leftovers of `AP::proximity()` inside `adjust_roll_pitch_rad`.
+///
+/// ADR-0004 forbids that singleton. Each [`LeanProximityObject`] is one
+/// successful `get_object_angle_and_distance` reading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeanAngleContext {
+    /// Leftover of `AP::proximity()` non-null (`HAL_PROXIMITY_ENABLED`).
+    pub proximity_present: bool,
+    /// Leftover of `get_object_count` / `get_object_angle_and_distance`.
+    pub objects: [Option<LeanProximityObject>; LEAN_OBJECTS_MAX],
+}
+
+impl LeanAngleContext {
+    /// No proximity sensor. Upstream `proximity == nullptr`.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            proximity_present: false,
+            objects: [None; LEAN_OBJECTS_MAX],
+        }
+    }
+
+    /// Present sensor with the given object list (truncated to [`LEAN_OBJECTS_MAX`]).
+    #[must_use]
+    pub fn from_objects(objects: &[LeanProximityObject]) -> Self {
+        let mut ctx = Self {
+            proximity_present: true,
+            objects: [None; LEAN_OBJECTS_MAX],
+        };
+        for (slot, obj) in ctx.objects.iter_mut().zip(objects.iter().copied()) {
+            *slot = Some(obj);
+        }
+        ctx
+    }
+}
+
+impl Default for LeanAngleContext {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Leftover of one `AC_Avoid::adjust_roll_pitch_rad` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdjustRollPitchLeftover {
+    /// Roll after avoidance, radians.
+    pub roll_rad: f32,
+    /// Pitch after avoidance, radians.
+    pub pitch_rad: f32,
+    /// Early-return: proximity off or a non-positive angle cap.
+    pub skipped: bool,
+    /// Avoidance lean was scaled to the 75% `ANG_MAX` cap.
+    pub avoidance_limited: bool,
+    /// Combined lean was scaled to `veh_angle_max_rad`.
+    pub total_limited: bool,
+}
+
 
 /// Slide around the obstacle. Upstream `BEHAVIOR_SLIDE`. Copter default.
 pub const BEHAVIOR_SLIDE: u8 = 0;
@@ -249,7 +329,8 @@ impl AdjustVelocityLeftover {
 }
 
 /// `AC_Avoid` enable bitmask, vertical leftover, NE / proximity leftover,
-/// the full `adjust_velocity` leftover, and accel-jerk limiter state.
+/// the full `adjust_velocity` leftover, accel-jerk limiter state, and
+/// lean-angle avoidance in non-GPS modes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Avoid {
     /// `AVOID_ENABLE` bitmask. Upstream `_enabled`.
@@ -268,6 +349,10 @@ pub struct Avoid {
     backup_deadzone_m: f32,
     /// `AVOID_ACCEL_MAX`, m/s/s. Upstream `_accel_max_mss`.
     accel_max_mss: f32,
+    /// `AVOID_ANG_MAX`, degrees. Upstream `_angle_max_deg`.
+    angle_max_deg: f32,
+    /// `AVOID_DIST_MAX`, metres. Upstream `_dist_max_m`.
+    dist_max_m: f32,
     /// Leftover of `_last_limit_time` (`AP_HAL::millis()`).
     last_limit_time_ms: u32,
     /// Leftover of `_prev_avoid_vel_neu_cms`.
@@ -293,6 +378,8 @@ impl Avoid {
             proximity_enabled: true,
             backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
             accel_max_mss: ACCEL_MAX_MSS_DEFAULT,
+            angle_max_deg: ANGLE_MAX_DEG_DEFAULT,
+            dist_max_m: NONGPS_DIST_MAX_DEFAULT,
             last_limit_time_ms: 0,
             prev_avoid_vel_neu_cms: Vector3f {
                 x: 0.0,
@@ -314,6 +401,8 @@ impl Avoid {
             proximity_enabled: true,
             backup_deadzone_m: BACKUP_DEADZONE_M_DEFAULT,
             accel_max_mss: ACCEL_MAX_MSS_DEFAULT,
+            angle_max_deg: ANGLE_MAX_DEG_DEFAULT,
+            dist_max_m: NONGPS_DIST_MAX_DEFAULT,
             last_limit_time_ms: 0,
             prev_avoid_vel_neu_cms: Vector3f {
                 x: 0.0,
@@ -416,6 +505,152 @@ impl Avoid {
     pub fn set_accel_max_mss(&mut self, accel_max_mss: f32) {
         self.accel_max_mss = accel_max_mss;
     }
+
+    /// `AVOID_ANG_MAX`, degrees. Upstream `_angle_max_deg`.
+    #[must_use]
+    pub const fn angle_max_deg(&self) -> f32 {
+        self.angle_max_deg
+    }
+
+    /// Set `AVOID_ANG_MAX`. Zero disables lean-based avoidance.
+    pub fn set_angle_max_deg(&mut self, angle_max_deg: f32) {
+        self.angle_max_deg = angle_max_deg;
+    }
+
+    /// `AVOID_DIST_MAX`, metres. Upstream `_dist_max_m`.
+    #[must_use]
+    pub const fn dist_max_m(&self) -> f32 {
+        self.dist_max_m
+    }
+
+    /// Set `AVOID_DIST_MAX`.
+    pub fn set_dist_max_m(&mut self, dist_max_m: f32) {
+        self.dist_max_m = dist_max_m;
+    }
+
+    /// Convert a range to a lean fraction (0..1). Upstream
+    /// `AC_Avoid::distance_m_to_lean_norm`.
+    #[must_use]
+    pub fn distance_m_to_lean_norm(&self, dist_m: f32) -> f32 {
+        if dist_m < 0.0 || dist_m >= self.dist_max_m || self.dist_max_m <= 0.0 {
+            0.0
+        } else {
+            1.0 - (dist_m / self.dist_max_m)
+        }
+    }
+
+    /// Max positive / negative roll and pitch fractions from proximity.
+    ///
+    /// Upstream `AC_Avoid::get_proximity_roll_pitch_norm`. Returns
+    /// `(roll_pos, roll_neg, pitch_pos, pitch_neg)` in the -1..+1 range.
+    #[must_use]
+    pub fn get_proximity_roll_pitch_norm(
+        &self,
+        ctx: LeanAngleContext,
+    ) -> (f32, f32, f32, f32) {
+        let mut roll_positive_norm = 0.0;
+        let mut roll_negative_norm = 0.0;
+        let mut pitch_positive_norm = 0.0;
+        let mut pitch_negative_norm = 0.0;
+        if !ctx.proximity_present {
+            return (
+                roll_positive_norm,
+                roll_negative_norm,
+                pitch_positive_norm,
+                pitch_negative_norm,
+            );
+        }
+        for obj in ctx.objects.iter().flatten() {
+            if obj.dist_m >= self.dist_max_m {
+                continue;
+            }
+            let lean_norm = self.distance_m_to_lean_norm(obj.dist_m);
+            let angle_rad = radians(obj.angle_deg);
+            let roll_norm = -Real::sin(angle_rad) * lean_norm;
+            let pitch_norm = Real::cos(angle_rad) * lean_norm;
+            if roll_norm > 0.0 {
+                roll_positive_norm = roll_positive_norm.max(roll_norm);
+            } else if roll_norm < 0.0 {
+                roll_negative_norm = roll_negative_norm.min(roll_norm);
+            }
+            if pitch_norm > 0.0 {
+                pitch_positive_norm = pitch_positive_norm.max(pitch_norm);
+            } else if pitch_norm < 0.0 {
+                pitch_negative_norm = pitch_negative_norm.min(pitch_norm);
+            }
+        }
+        (
+            roll_positive_norm,
+            roll_negative_norm,
+            pitch_positive_norm,
+            pitch_negative_norm,
+        )
+    }
+
+    /// Push roll / pitch away from proximity objects in non-GPS modes.
+    ///
+    /// Upstream `AC_Avoid::adjust_roll_pitch_rad`. `veh_angle_max_rad` is
+    /// `attitude_control->lean_angle_max_rad()`.
+    #[must_use]
+    pub fn adjust_roll_pitch_rad(
+        &self,
+        roll_rad: f32,
+        pitch_rad: f32,
+        veh_angle_max_rad: f32,
+        ctx: LeanAngleContext,
+    ) -> AdjustRollPitchLeftover {
+        if !self.proximity_avoidance_enabled()
+            || self.angle_max_deg <= 0.0
+            || veh_angle_max_rad <= 0.0
+        {
+            return AdjustRollPitchLeftover {
+                roll_rad,
+                pitch_rad,
+                skipped: true,
+                avoidance_limited: false,
+                total_limited: false,
+            };
+        }
+
+        let (roll_positive_norm, roll_negative_norm, pitch_positive_norm, pitch_negative_norm) =
+            self.get_proximity_roll_pitch_norm(ctx);
+
+        let mut rp_out_rad = Vector2f::new(
+            (roll_positive_norm + roll_negative_norm) * radians(45.0),
+            (pitch_positive_norm + pitch_negative_norm) * radians(45.0),
+        );
+
+        let angle_limit_rad = constrain_value(
+            radians(self.angle_max_deg),
+            0.0,
+            veh_angle_max_rad * ANGLE_MAX_PERCENT,
+        );
+        let mut vec_length_rad = rp_out_rad.length();
+        let mut avoidance_limited = false;
+        if vec_length_rad > angle_limit_rad {
+            rp_out_rad *= angle_limit_rad / vec_length_rad;
+            avoidance_limited = true;
+        }
+
+        rp_out_rad.x += roll_rad;
+        rp_out_rad.y += pitch_rad;
+
+        vec_length_rad = rp_out_rad.length();
+        let mut total_limited = false;
+        if vec_length_rad > veh_angle_max_rad {
+            rp_out_rad *= veh_angle_max_rad / vec_length_rad;
+            total_limited = true;
+        }
+
+        AdjustRollPitchLeftover {
+            roll_rad: rp_out_rad.x,
+            pitch_rad: rp_out_rad.y,
+            skipped: false,
+            avoidance_limited,
+            total_limited,
+        }
+    }
+
 
     /// Leftover of `_last_limit_time`.
     #[must_use]
