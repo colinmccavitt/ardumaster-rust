@@ -41,7 +41,9 @@
 //! next leftover is the stock `EK2_` `GOBJECT`
 //! (`HAL_NAVEKF2_AVAILABLE`). After `EK2_` the
 //! next leftover is the stock `EK3_` `GOBJECT`
-//! (`HAL_NAVEKF3_AVAILABLE`). Later groups, G2,
+//! (`HAL_NAVEKF3_AVAILABLE`). After `EK3_` the
+//! next leftover is the stock `MIS_` `GOBJECT`
+//! (`MODE_AUTO_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1395,7 +1397,7 @@ pub fn for_each_ek2_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_mission` — next leftover after `EK3_`. Not this leftover.
+/// `Parameters::k_param_mission` — next `GOBJECT`, prefix `MIS_`.
 pub const K_PARAM_MISSION: u16 = 42;
 
 /// Stock `EK3_` leftover catalog.
@@ -1421,6 +1423,36 @@ pub fn find_ek3_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `EK3_` leftover as `ParamInfo` rows.
 pub fn for_each_ek3_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in EK3_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_rssi` — next leftover after `MIS_`. Not this leftover.
+pub const K_PARAM_RSSI: u16 = 97;
+
+/// Stock `MIS_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `EK3_`. Upstream is
+/// `GOBJECTN`. `MIS_` is `MODE_AUTO_ENABLED`. Nested `AP_Mission`
+/// `var_info` is not this leftover. `RSSI_` stays later (`AP_RSSI_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const MIS_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("MIS_", K_PARAM_MISSION)];
+
+/// First (only) row of the `MIS_` leftover.
+#[must_use]
+pub fn mis_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    MIS_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `MIS_` leftover by group prefix.
+#[must_use]
+pub fn find_mis_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    MIS_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `MIS_` leftover as `ParamInfo` rows.
+pub fn for_each_mis_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in MIS_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
