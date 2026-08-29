@@ -1,7 +1,11 @@
 //! What a mode does each iteration, and what resets it.
 //!
 //! Upstream `ArduPlane/mode.cpp`: `Mode::run`, `Mode::reset_controllers`,
-//! `Mode::pre_arm_checks`, `Mode::output_pilot_throttle`.
+//! `Mode::pre_arm_checks`, `Mode::output_pilot_throttle`, `Mode::is_taking_
+//! off`, `Mode::output_rudder_and_steering`.
+
+use ap_servo::function::Function;
+use ap_tecs::params::FlightStage;
 
 /// How much of the pilot's stick reaches a stabilised mode's output.
 ///
@@ -156,5 +160,115 @@ pub fn pilot_throttle_source(throttle_passthru_stabilize: bool) -> PilotThrottle
         PilotThrottleSource::Direct
     } else {
         PilotThrottleSource::TrimAdjusted
+    }
+}
+
+/// Upstream `Mode::is_taking_off`: is the vehicle in the takeoff flight
+/// stage?
+///
+/// A one-line equality check upstream, kept as a pure predicate over an
+/// explicit `flight_stage` rather than reaching into vehicle state, matching
+/// this port's own `ADR-0012` convention (see e.g.
+/// [`crate::failsafe_in_landing_sequence_hookup`]'s own `flight_stage`
+/// parameter). [`FlightStage`] is `ap-tecs`'s own port of
+/// `AP_FixedWing::FlightStage` — reused directly rather than reinvented,
+/// since it already carries a real `Takeoff` variant with the correct
+/// upstream discriminant.
+///
+/// `ap-plane`'s `throttle_rules::allow_fw_systemid` already ported upstream's
+/// `if (is_taking_off() || is_landing())` gate (real `mode.cpp:394`) as
+/// `SystemIdContext.taking_off`, an externally-supplied `bool` — this
+/// function is the real computation that value was always meant to come
+/// from. Wiring `allow_fw_systemid`'s caller to actually call this is a
+/// separate integration concern, left untouched here.
+#[must_use]
+pub fn is_taking_off(flight_stage: FlightStage) -> bool {
+    flight_stage == FlightStage::Takeoff
+}
+
+/// What `Mode::output_rudder_and_steering` writes to the servo registry:
+/// the same value, broadcast to both `k_rudder` and `k_steering`.
+///
+/// Upstream performs the two `SRV_Channels::set_output_scaled` calls
+/// directly; this only decides what should be written; matching this port's
+/// own "decide, don't act" convention (see [`pilot_throttle_source`] above,
+/// upstream `Mode::output_pilot_throttle`'s own port). The caller applies
+/// each pair with `ap_servo::registry::Registry::set_output_scaled`.
+///
+/// Both entries reuse [`Function`], `ap-servo`'s own real representation of
+/// `SRV_Channel::Function` (`Function::RUDDER` / `Function::STEERING`,
+/// upstream `k_rudder` / `k_steering`), rather than a bare pair of `f32`s —
+/// keeping the channel identity attached to the value instead of leaving the
+/// caller to already know which two functions this describes.
+///
+/// `vtol-rust`'s `ModeQAutotune::run` already ported its own call to
+/// `output_rudder_and_steering(0.0)` as a bare decision flag,
+/// `QAutotuneRun::rudder_centered: bool` (`crates/ap-quadplane/src/mode_
+/// qautotune.rs`), without implementing the underlying mechanism. It is a
+/// candidate that could now be wired to this function, but doing so is
+/// `VT-009`'s own already-closed scope, not this ticket's — left untouched.
+#[must_use]
+pub fn output_rudder_and_steering(val: f32) -> RudderSteeringOutput {
+    RudderSteeringOutput {
+        rudder: (Function::RUDDER, val),
+        steering: (Function::STEERING, val),
+    }
+}
+
+/// The two servo-function writes [`output_rudder_and_steering`] decided on.
+///
+/// `rudder` and `steering` are always `(Function::RUDDER, val)` and
+/// `(Function::STEERING, val)` for the same `val` — upstream's real function
+/// has no asymmetry between the two channels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RudderSteeringOutput {
+    /// `(Function::RUDDER, val)`, upstream's `k_rudder` write.
+    pub rudder: (Function, f32),
+    /// `(Function::STEERING, val)`, upstream's `k_steering` write.
+    pub steering: (Function, f32),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_taking_off_true_for_takeoff_stage() {
+        assert!(is_taking_off(FlightStage::Takeoff));
+    }
+
+    #[test]
+    fn is_taking_off_false_for_normal_stage() {
+        assert!(!is_taking_off(FlightStage::Normal));
+    }
+
+    #[test]
+    fn is_taking_off_false_for_land_stage() {
+        assert!(!is_taking_off(FlightStage::Land));
+    }
+
+    #[test]
+    fn is_taking_off_false_for_vtol_stage() {
+        assert!(!is_taking_off(FlightStage::Vtol));
+    }
+
+    #[test]
+    fn is_taking_off_false_for_abort_landing_stage() {
+        assert!(!is_taking_off(FlightStage::AbortLanding));
+    }
+
+    #[test]
+    fn output_rudder_and_steering_broadcasts_identical_fractional_value() {
+        let out = output_rudder_and_steering(0.37);
+
+        // Both channels carry the exact same value the caller passed in --
+        // not swapped, not independently derived.
+        assert_eq!(out.rudder, (Function::RUDDER, 0.37));
+        assert_eq!(out.steering, (Function::STEERING, 0.37));
+        assert_eq!(out.rudder.1, out.steering.1);
+
+        // And it is genuinely the two distinct real channel functions, not
+        // the same function written twice.
+        assert_ne!(out.rudder.0, out.steering.0);
     }
 }
