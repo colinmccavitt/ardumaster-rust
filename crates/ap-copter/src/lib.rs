@@ -52,5 +52,6 @@ pub mod mode_systemid;
 pub mod mode_zigzag;
 pub mod pilot_input;
 pub mod radio;
+pub mod simple;
 pub mod stick_nav;
 pub mod vehicle_loop;

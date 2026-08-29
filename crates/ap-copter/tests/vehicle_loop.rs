@@ -7,12 +7,13 @@ use ap_copter::vehicle_loop::{
     copter_periodic_loop_tasks, copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks,
     loop_rate_logging, motors_output, motors_output_main, one_hz_loop, rc_loop, read_ahrs,
     read_inertia, read_mode_switch, run_scheduler_tick, should_log, ten_hz_logging_loop,
-    three_hz_loop, throttle_loop, twentyfive_hz_logging, update_batt_compass, update_flight_mode,
-    update_land_and_crash_detectors, ApState, CopterVehicleLoop, EkfResetMethod, InterlockEdge,
-    LoopRateLoggingInputs, ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive,
-    MotorsOutputMainLeftover, MotorsOutputPush, OneHzLoopInputs, TaskKind, TenHzLoggingInputs,
-    TwentyfiveHzLoggingInputs, UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS,
-    COPTER_LOOP_RATE_HZ, DEFAULT_LOG_BITMASK, FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS,
+    three_hz_loop, throttle_loop, twentyfive_hz_logging, update_altitude, update_batt_compass,
+    update_flight_mode, update_land_and_crash_detectors, ApState, CopterVehicleLoop,
+    EkfResetMethod, InterlockEdge, LoopRateLoggingInputs, ModeSwitchReadInputs,
+    ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover, MotorsOutputPush,
+    OneHzLoopInputs, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs, UpdateAltitudeInputs,
+    UpdateBattCompassInputs, UpdateFlightModeInputs, ARMING_DELAY_MS, COPTER_LOOP_RATE_HZ,
+    DEFAULT_LOG_BITMASK, FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS,
     LOOP_RATE_LOGGING_PRIORITY, MASK_LOG_ANY, MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED,
     MASK_LOG_IMU, MASK_LOG_IMU_FAST, MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW,
     ONE_HZ_LOOP_MAX_TIME_MICROS, ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ,
@@ -21,8 +22,9 @@ use ap_copter::vehicle_loop::{
     THREE_HZ_LOOP_MAX_TIME_MICROS, THREE_HZ_LOOP_PRIORITY, THREE_HZ_LOOP_RATE_HZ,
     THROTTLE_LOOP_MAX_TIME_MICROS, THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ,
     TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS, TWENTYFIVE_HZ_LOGGING_PRIORITY,
-    TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
-    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
+    TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS, UPDATE_ALTITUDE_PRIORITY,
+    UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS, UPDATE_BATT_COMPASS_PRIORITY,
+    UPDATE_BATT_COMPASS_RATE_HZ,
 };
 use ap_hal::time::{Clock, Micros, Millis};
 use ap_math::location::AltFrame;
@@ -120,8 +122,19 @@ fn remaining_leftovers_keep_later_callbacks() {
         .any(|name| *name == "Copter::update_batt_compass"));
     assert!(REMAINING.contains(&"Copter::check_ekf_reset"));
     assert!(REMAINING.contains(&"Copter::update_home_from_EKF"));
-    assert!(REMAINING.contains(&"Copter::init_simple_bearing"));
-    assert!(REMAINING.contains(&"Copter::update_altitude"));
+    assert!(REMAINING.contains(&"Copter::get_wp_distance_m"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::init_simple_bearing"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_simple_mode"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_super_simple_bearing"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_altitude"));
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::loop_rate_logging"));
@@ -945,4 +958,59 @@ fn scheduler_runs_three_hz_then_one_hz() {
     assert!(one.log_ap_state);
     assert!(!one.update_using_interlock);
     assert!(!one.flying);
+}
+
+#[test]
+fn update_altitude_is_the_ten_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "update_altitude")
+        .expect("update_altitude");
+    assert!(task.rate_hz == UPDATE_ALTITUDE_RATE_HZ);
+    assert_eq!(task.max_time_micros, UPDATE_ALTITUDE_MAX_TIME_MICROS);
+    assert_eq!(task.priority, UPDATE_ALTITUDE_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn update_altitude_always_reads_baro_and_writes_ctun_on_default_bitmask() {
+    let leftover = update_altitude(UpdateAltitudeInputs {
+        log_bitmask: DEFAULT_LOG_BITMASK,
+    });
+    assert!(leftover.read_barometer);
+    assert!(leftover.write_control_tuning);
+    assert!(!leftover.write_notch);
+    assert!(!leftover.write_gyro_fft);
+}
+
+#[test]
+fn update_altitude_skips_ctun_when_that_bit_is_clear() {
+    let leftover = update_altitude(UpdateAltitudeInputs { log_bitmask: 0 });
+    assert!(leftover.read_barometer);
+    assert!(!leftover.write_control_tuning);
+    assert!(!leftover.write_notch);
+    assert!(!leftover.write_gyro_fft);
+}
+
+#[test]
+fn scheduler_runs_update_altitude_every_fortieth_tick() {
+    use ap_copter::vehicle_loop::copter_update_altitude_task;
+    let tasks = [copter_update_altitude_task()];
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..39 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.update_altitude, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.update_altitude, 1);
+    let leftover = vehicle.last_update_altitude.expect("update_altitude ran");
+    assert!(leftover.read_barometer);
+    assert!(leftover.write_control_tuning);
 }

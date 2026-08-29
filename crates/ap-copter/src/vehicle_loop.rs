@@ -13,8 +13,10 @@
 //! later. [`loop_rate_logging`], [`ten_hz_logging_loop`], and
 //! [`twentyfive_hz_logging`] are the `HAL_LOGGING_ENABLED` scheduled
 //! leftovers; [`three_hz_loop`], [`ap_value`], and [`one_hz_loop`] sit
-//! next to them in `Copter.cpp`. Simple-mode, `update_altitude`, and
-//! `system.cpp` stay later leftovers.
+//! next to them in `Copter.cpp`. [`update_altitude`] is the next
+//! always-on Copter-owned scheduled leftover after those. Simple-mode
+//! lives in [`crate::simple`]. Later `Copter.cpp` / `system.cpp`
+//! leftovers stay later.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -114,6 +116,15 @@ pub const ONE_HZ_LOOP_MAX_TIME_MICROS: u16 = 100;
 
 /// `one_hz_loop` scheduler priority (lower is higher priority).
 pub const ONE_HZ_LOOP_PRIORITY: u8 = 81;
+
+/// `update_altitude` rate, Hz. Upstream `SCHED_TASK(update_altitude, 10, 100, 42)`.
+pub const UPDATE_ALTITUDE_RATE_HZ: f32 = 10.0;
+
+/// `update_altitude` expected budget, microseconds.
+pub const UPDATE_ALTITUDE_MAX_TIME_MICROS: u16 = 100;
+
+/// `update_altitude` scheduler priority (lower is higher priority).
+pub const UPDATE_ALTITUDE_PRIORITY: u8 = 42;
 
 /// `MASK_LOG_ATTITUDE_FAST` — Copter `defines.h`.
 pub const MASK_LOG_ATTITUDE_FAST: u32 = 1 << 0;
@@ -492,13 +503,9 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 /// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
 /// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, the first
 /// Copter FAST_TASK bodies including `update_flight_mode` and
-/// `update_land_and_crash_detectors`, and the logging / 3 Hz / 1 Hz
-/// leftovers.
+/// `update_land_and_crash_detectors`, the logging / 3 Hz / 1 Hz
+/// leftovers, simple-mode, and `update_altitude`.
 pub const REMAINING: &[&str] = &[
-    "Copter::init_simple_bearing",
-    "Copter::update_simple_mode",
-    "Copter::update_super_simple_bearing",
-    "Copter::update_altitude",
     "Copter::get_wp_distance_m",
     "Copter::check_ekf_reset",
     "Copter::update_home_from_EKF",
@@ -1490,6 +1497,48 @@ pub const fn one_hz_loop(inputs: OneHzLoopInputs) -> OneHzLoopLeftover {
     }
 }
 
+/// Inputs to `Copter::update_altitude`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateAltitudeInputs {
+    /// `LOG_BITMASK`.
+    pub log_bitmask: u32,
+}
+
+/// What `Copter::update_altitude` asked later leftovers to do.
+///
+/// Harmonic-notch FTN and gyro-FFT are compiled out of this leftover
+/// (`AP_INERTIALSENSOR_HARMONICNOTCH_ENABLED` / `HAL_GYROFFT_ENABLED`).
+/// Upstream only writes them when CTUN is on and `MASK_LOG_FTN_FAST`
+/// is off; those writes stay later if the gates compile in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateAltitudeLeftover {
+    /// Always: `read_barometer()`.
+    pub read_barometer: bool,
+    /// `Log_Write_Control_Tuning()` — `MASK_LOG_CTUN`.
+    pub write_control_tuning: bool,
+    /// `ins.write_notch_log_messages()` — compiled out.
+    pub write_notch: bool,
+    /// `gyro_fft.write_log_messages()` — compiled out.
+    pub write_gyro_fft: bool,
+}
+
+/// `Copter::update_altitude`.
+///
+/// Baro is always read. CTUN logging is the bitmask test; folding the
+/// baro read behind CTUN would starve altitude on a vehicle that
+/// cleared that bit. Notch / FFT stay compiled out even when the
+/// `!FTN_FAST` inner gate is true.
+#[must_use]
+pub const fn update_altitude(inputs: UpdateAltitudeInputs) -> UpdateAltitudeLeftover {
+    let write_ctun = should_log(inputs.log_bitmask, MASK_LOG_CTUN);
+    UpdateAltitudeLeftover {
+        read_barometer: true,
+        write_control_tuning: write_ctun,
+        write_notch: false,
+        write_gyro_fft: false,
+    }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -1521,6 +1570,8 @@ pub struct VehicleLoopTicks {
     pub three_hz_loop: u32,
     /// Upstream `Copter::one_hz_loop`.
     pub one_hz_loop: u32,
+    /// Upstream `Copter::update_altitude`.
+    pub update_altitude: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -1586,6 +1637,8 @@ pub struct CopterVehicleLoop {
     pub last_three_hz: Option<ThreeHzLoopLeftover>,
     /// Leftover from the latest `one_hz_loop` tick.
     pub last_one_hz: Option<OneHzLoopLeftover>,
+    /// Leftover from the latest `update_altitude` tick.
+    pub last_update_altitude: Option<UpdateAltitudeLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -1631,6 +1684,7 @@ impl CopterVehicleLoop {
             last_twentyfive_hz_logging: None,
             last_three_hz: None,
             last_one_hz: None,
+            last_update_altitude: None,
         }
     }
 }
@@ -1798,6 +1852,13 @@ fn task_one_hz_loop(vehicle: &mut CopterVehicleLoop) {
         motors_armed: vehicle.motors.armed,
         using_rate_thread: vehicle.using_rate_thread,
         land_complete: vehicle.flight_mode.land_complete,
+    }));
+}
+
+fn task_update_altitude(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_altitude = vehicle.ticks.update_altitude.saturating_add(1);
+    vehicle.last_update_altitude = Some(update_altitude(UpdateAltitudeInputs {
+        log_bitmask: vehicle.log_bitmask,
     }));
 }
 
@@ -2021,6 +2082,18 @@ pub fn copter_logging_tasks() -> [Task<CopterVehicleLoop>; 3] {
 #[must_use]
 pub fn copter_periodic_loop_tasks() -> [Task<CopterVehicleLoop>; 2] {
     [copter_three_hz_loop_task(), copter_one_hz_loop_task()]
+}
+
+/// `update_altitude` scheduled row (`10` Hz).
+#[must_use]
+pub fn copter_update_altitude_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_altitude,
+        name: "update_altitude",
+        rate_hz: UPDATE_ALTITUDE_RATE_HZ,
+        max_time_micros: UPDATE_ALTITUDE_MAX_TIME_MICROS,
+        priority: UPDATE_ALTITUDE_PRIORITY,
+    }
 }
 
 /// Advance one scheduler tick and run the leftover pass.
