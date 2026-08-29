@@ -23,6 +23,12 @@
 
 #![no_std]
 
+pub mod p_2d;
+pub mod pid_2d;
+
+pub use p_2d::AcP2d;
+pub use pid_2d::AcPid2d;
+
 use ap_filter::notch::NotchFilter;
 use ap_filter::slew::{SlewLimiter, SlewParams};
 use ap_math::scalar::{calc_lowpass_alpha_dt, constrain_value, is_negative, is_positive, is_zero};

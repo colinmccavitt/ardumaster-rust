@@ -14,9 +14,12 @@ index fault is a test failure, which is the desired outcome"
 
 use ap_control::pos_control_ne::{
     accel_ne_to_lean_angles, lean_angles_to_accel_ned, stopping_point_d, thrust_vector,
-    AttitudeCapability, DLimits, NeLimits,
+    yaw_from_ne_motion, AttitudeCapability, DLimits, NeDisturbance, NeEstimates, NeLimits,
+    NeOffsets, NeUpdateInputs, PosControlNe, NE_POS_P,
 };
+use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
+use ap_pid::{AcP2d, AcPid2d};
 
 fn f(s: &str) -> f32 {
     f32::from_bits(s.trim().parse::<u32>().expect("float bits"))
@@ -585,5 +588,251 @@ fn the_angle_conversions_match_upstream() {
         "{} angle-conversion rows, largest difference {largest:e}; \
          {passthrough} passthrough, {inverted} inverted",
         rows.len()
+    );
+}
+// leftover: D_update_controller (vertical PID + AHRS) is not this slice.
+// leftover: NE_init_controller / NE_update_offsets / EKF reset.
+// leftover: var_info. Lean-angle conversions and get_thrust_vector are done.
+
+fn update_inputs() -> NeUpdateInputs {
+    NeUpdateInputs {
+        dt: 0.02,
+        ahrs_control_scale_xy: 1.0,
+        ne_control_scale_factor: 1.0,
+        vel_max_ne_ms: 10.0,
+        estimates: NeEstimates {
+            pos_m: Vector2::new(0.0, 0.0),
+            vel_ms: Vector2f::new(0.0, 0.0),
+        },
+        offsets: NeOffsets::default(),
+        lean_angle_max_rad: 0.8,
+        cos_yaw: 1.0,
+        sin_yaw: 0.0,
+        att_yaw_target_rad: 0.3,
+    }
+}
+
+/// A one-metre north error at kp=1, no filters, no I, no D, must produce a
+/// 1 m/s north velocity demand and then a 1 m/s^2 north acceleration
+/// demand when the velocity PID is also kp=1 with I and D off.
+#[test]
+fn the_pid_path_is_p_then_velocity_pid_then_feedforward() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(1.0, 0.0);
+    let mut pos_p = AcP2d::new(NE_POS_P);
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let inp = update_inputs();
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+
+    assert!((out.vel_target_ms.x - 1.0).abs() < 1e-5);
+    assert!(out.vel_target_ms.y.abs() < 1e-5);
+    assert!((out.accel_target_mss.x - 1.0).abs() < 1e-5);
+    assert!(out.accel_target_mss.y.abs() < 1e-5);
+    assert_eq!(out.ne_control_scale_factor, 1.0);
+}
+
+/// The AHRS scale is applied to the P output *and* the PID output. A
+/// port that scaled only one of them would still look plausible on a
+/// quiet hover and fail here: with scale 0.5 the velocity demand is
+/// halved and the acceleration demand is quartered.
+#[test]
+fn the_ahrs_scale_applies_to_both_loops() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(1.0, 0.0);
+    let mut pos_p = AcP2d::new(1.0);
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.ahrs_control_scale_xy = 0.5;
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+
+    assert!(
+        (out.vel_target_ms.x - 0.5).abs() < 1e-5,
+        "P output must be scaled"
+    );
+    assert!(
+        (out.accel_target_mss.x - 0.25).abs() < 1e-5,
+        "PID output must be scaled again, got {}",
+        out.accel_target_mss.x
+    );
+}
+
+/// `_ne_control_scale_factor` is a one-shot. After the call it is 1,
+/// and it multiplies the same places the AHRS scale does.
+#[test]
+fn the_one_shot_scale_is_consumed() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(1.0, 0.0);
+    let mut pos_p = AcP2d::new(1.0);
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.ne_control_scale_factor = 2.0;
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!((out.vel_target_ms.x - 2.0).abs() < 1e-5);
+    assert!((out.accel_target_mss.x - 4.0).abs() < 1e-5);
+    assert_eq!(out.ne_control_scale_factor, 1.0);
+}
+
+/// Offsets are added to desired to form the absolute target, and to the
+/// feed-forward velocity and acceleration. A port that treated desired
+/// as already-absolute would double-count them or drop them.
+#[test]
+fn offsets_are_added_to_the_absolute_target_and_the_feedforward() {
+    let mut ne = PosControlNe::new();
+    ne.vel_desired_ms = Vector2f::new(0.5, 0.0);
+    ne.accel_desired_mss = Vector2f::new(0.25, 0.0);
+    let mut pos_p = AcP2d::new(0.0);
+    let mut vel_pid = AcPid2d::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.offsets = NeOffsets {
+        pos_m: Vector2::new(3.0, -1.0),
+        vel_ms: Vector2f::new(0.1, 0.2),
+        accel_mss: Vector2f::new(0.05, -0.05),
+    };
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!((out.pos_target_m.x - 3.0).abs() < 1e-9);
+    assert!((out.pos_target_m.y + 1.0).abs() < 1e-9);
+    assert!((out.vel_target_ms.x - 0.6).abs() < 1e-5);
+    assert!((out.vel_target_ms.y - 0.2).abs() < 1e-5);
+    assert!((out.accel_target_mss.x - 0.30).abs() < 1e-5);
+    assert!((out.accel_target_mss.y + 0.05).abs() < 1e-5);
+}
+
+/// A disturbance is added to the estimate for this cycle and then
+/// cleared. The P controller therefore sees a different error than the
+/// raw estimate, and a second call with the same desired must not.
+#[test]
+fn a_disturbance_is_applied_once_and_then_cleared() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(0.0, 0.0);
+    let mut pos_p = AcP2d::new(1.0);
+    let mut vel_pid = AcPid2d::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let inp = update_inputs();
+    let mut disturb = NeDisturbance {
+        pos_m: Vector2f::new(-2.0, 0.0),
+        vel_ms: Vector2f::zero(),
+    };
+
+    let first = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!((first.vel_target_ms.x - 2.0).abs() < 1e-5);
+    assert_eq!(disturb.pos_m, Vector2f::zero());
+    assert_eq!(disturb.vel_ms, Vector2f::zero());
+
+    let second = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!(
+        second.vel_target_ms.x.abs() < 1e-5,
+        "a cleared disturbance must not keep correcting"
+    );
+}
+
+/// When the lean-angle budget binds, the limit vector is the
+/// *unbounded* acceleration — that is what the next PID step uses for
+/// anti-windup. When it does not bind, the limit vector is zero.
+#[test]
+fn the_limit_vector_is_the_unbounded_accel_only_when_clipped() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(50.0, 0.0);
+    let mut pos_p = AcP2d::new(2.0);
+    let mut vel_pid = AcPid2d::new(2.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.lean_angle_max_rad = 0.1;
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!(
+        out.limited,
+        "a 50 m error at kp=2 must exceed 0.1 rad of lean"
+    );
+    assert!(
+        ne.limit_vector.length() > out.accel_target_mss.length(),
+        "the stored limit is the unbounded demand, not the clipped one"
+    );
+
+    ne.pos_desired_m = Vector2::new(0.01, 0.0);
+    ne.limit_vector = Vector2f::zero();
+    pos_p = AcP2d::new(1.0);
+    vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    inp.lean_angle_max_rad = 0.8;
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!(!out.limited);
+    assert_eq!(ne.limit_vector, Vector2f::zero());
+}
+
+/// The lean angles are exactly [`accel_ne_to_lean_angles`] of the
+/// (possibly limited) acceleration target. This is composition, not a
+/// second conversion.
+#[test]
+fn lean_angles_come_from_the_existing_conversion() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(1.0, 0.5);
+    let mut pos_p = AcP2d::new(1.0);
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.cos_yaw = 0.0;
+    inp.sin_yaw = 1.0;
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    let (roll, pitch) = accel_ne_to_lean_angles(
+        out.accel_target_mss.x,
+        out.accel_target_mss.y,
+        inp.cos_yaw,
+        inp.sin_yaw,
+    );
+    assert!((out.roll_target_rad - roll).abs() < 1e-7);
+    assert!((out.pitch_target_rad - pitch).abs() < 1e-7);
+}
+
+/// Yaw follows the velocity vector once speed exceeds five percent of
+/// the configured maximum, and keeps the attitude target below that.
+#[test]
+fn yaw_follows_the_velocity_vector_only_when_moving() {
+    let (yaw, rate) =
+        yaw_from_ne_motion(Vector2f::new(2.0, 0.0), Vector2f::new(0.0, 4.0), 10.0, 0.3);
+    assert!(
+        (yaw - 0.0).abs() < 1e-5,
+        "due east? wait north is +x so heading 0"
+    );
+    // vel = (2, 0) heading atan2(0, 2) = 0.
+    // accel_turn is (0, 4), speed 2, turn rate 2 rad/s.
+    // vel.cross(accel_turn) = 2*4 - 0*0 = 8 > 0, so rate stays positive.
+    assert!((rate - 2.0).abs() < 1e-5, "got rate {rate}");
+
+    let (yaw, rate) =
+        yaw_from_ne_motion(Vector2f::new(0.1, 0.0), Vector2f::new(0.0, 4.0), 10.0, 0.3);
+    assert_eq!(yaw, 0.3, "below 5% of 10 m/s the attitude yaw is kept");
+    assert_eq!(rate, 0.0);
+}
+
+/// A P-controller clamp rewrites the absolute target and therefore the
+/// desired position (target minus offset). That is how a clamp on the
+/// *absolute* target becomes a clamp on the trajectory.
+#[test]
+fn a_position_clamp_rewrites_desired() {
+    let mut ne = PosControlNe::new();
+    ne.pos_desired_m = Vector2::new(100.0, 0.0);
+    let mut pos_p = AcP2d::new(1.0);
+    pos_p.set_limits(2.0, 0.0, 0.0);
+    let mut vel_pid = AcPid2d::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = update_inputs();
+    inp.offsets.pos_m = Vector2::new(1.0, 0.0);
+    let mut disturb = NeDisturbance::default();
+
+    let out = ne.update_controller(&mut pos_p, &mut vel_pid, &inp, &mut disturb);
+    assert!(
+        out.pos_target_m.x < 10.0,
+        "the absolute target must have been pulled in, got {}",
+        out.pos_target_m.x
+    );
+    assert!(
+        (ne.pos_desired_m.x - (out.pos_target_m.x - 1.0)).abs() < 1e-9,
+        "desired is the (clamped) target minus the offset"
     );
 }

@@ -4,16 +4,23 @@
 //! Everything here works in the NE plane of the NED frame, in metres. The
 //! vertical axis is a separate controller with its own limits, because a
 //! multirotor's authority in the two is not remotely the same.
+//!
+//! leftover: `D_update_controller` (vertical PID + AHRS).
+//! leftover: `NE_init_controller` / `NE_update_offsets` / EKF reset.
+//! leftover: `var_info`.
+//!
+//! Lean-angle conversions and `get_thrust_vector` are already in — do not redo.
 
 use ap_math::control::{
-    accel_mss_to_angle_rad, shape_accel, shape_accel_xy, shape_pos_vel_accel,
-    shape_pos_vel_accel_xy, shape_vel_accel, shape_vel_accel_xy, stopping_distance,
-    update_pos_vel_accel, update_pos_vel_accel_xy, update_vel_accel, update_vel_accel_xy, Postype,
-    GRAVITY_MSS,
+    accel_mss_to_angle_rad, angle_rad_to_accel_mss, limit_accel_xy, shape_accel, shape_accel_xy,
+    shape_pos_vel_accel, shape_pos_vel_accel_xy, shape_vel_accel, shape_vel_accel_xy,
+    stopping_distance, update_pos_vel_accel, update_pos_vel_accel_xy, update_vel_accel,
+    update_vel_accel_xy, Postype, GRAVITY_MSS,
 };
 use ap_math::scalar::{is_positive, is_zero};
 use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
+use ap_pid::{AcP2d, AcPid2d};
 
 /// Default horizontal jerk, upstream `POSCONTROL_JERK_NE_MSSS`.
 pub const JERK_NE_MSSS: f32 = 5.0;
@@ -751,4 +758,242 @@ pub fn accel_ne_to_lean_angles(
 #[must_use]
 pub fn thrust_vector(accel_target_ned_mss: Vector3f) -> Vector3f {
     Vector3f::new(accel_target_ned_mss.x, accel_target_ned_mss.y, -GRAVITY_MSS)
+}
+
+/// Plane NE position P default, upstream `POSCONTROL_NE_POS_P`.
+pub const NE_POS_P: f32 = 1.0;
+
+/// Estimates the NE controller reads from AHRS / EKF, plus the system-ID
+/// disturbance that is added to them for one cycle and then cleared.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeEstimates {
+    /// Position estimate, metres NED, upstream `_pos_estimate_ned_m.xy()`.
+    pub pos_m: Vector2<Postype>,
+    /// Velocity estimate, metres per second, upstream `_vel_estimate_ned_ms.xy()`.
+    pub vel_ms: Vector2f,
+}
+
+/// Current NE offsets. The machinery that *moves* these toward their
+/// targets is a leftover (`NE_update_offsets` / `NE_init_offsets`); this
+/// slice takes the values as they stand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeOffsets {
+    /// Position offset, metres, upstream `_pos_offset_ned_m.xy()`.
+    pub pos_m: Vector2<Postype>,
+    /// Velocity offset, metres per second.
+    pub vel_ms: Vector2f,
+    /// Acceleration offset, metres per second squared.
+    pub accel_mss: Vector2f,
+}
+
+impl Default for NeOffsets {
+    fn default() -> Self {
+        Self {
+            pos_m: Vector2::new(0.0, 0.0),
+            vel_ms: Vector2f::zero(),
+            accel_mss: Vector2f::zero(),
+        }
+    }
+}
+
+/// System-ID disturbance, added to the estimate for one cycle.
+///
+/// Upstream zeros both after the update. The port takes them mutably and
+/// does the same, so a caller that forgets to clear them cannot leak a
+/// one-shot into the next loop.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct NeDisturbance {
+    /// Position disturbance, metres, upstream `_disturb_pos_ne_m`.
+    pub pos_m: Vector2f,
+    /// Velocity disturbance, metres per second.
+    pub vel_ms: Vector2f,
+}
+
+/// Everything `NE_update_controller` reads from outside itself.
+///
+/// AHRS, the attitude controller, and the scheduler are passed in rather
+/// than reached for: ADR-0004 rules out singletons. The timeout / init
+/// path and the EKF-reset handler are leftovers and are not invoked here
+/// — a caller that has not been running is expected to have initialised
+/// before this is called.
+#[derive(Debug, Clone, Copy)]
+pub struct NeUpdateInputs {
+    /// Loop period, seconds, upstream `_dt_s`.
+    pub dt: f32,
+    /// AHRS navigation-velocity gain scaler, upstream
+    /// `AP::ahrs().getControlLimits` `ahrsControlScaleXY`.
+    ///
+    /// Applied twice: once to the P-controller's velocity demand and once
+    /// to the PID's acceleration demand. Optical-flow EKF reduces this
+    /// below one when the flow is noisy, so both loops back off together
+    /// rather than the inner one fighting a still-aggressive outer one.
+    pub ahrs_control_scale_xy: f32,
+    /// One-shot extra scale, upstream `_ne_control_scale_factor`.
+    /// Consumed by this call; the output reports it reset to 1.
+    pub ne_control_scale_factor: f32,
+    /// Configured horizontal speed limit, used only by the yaw gate.
+    pub vel_max_ne_ms: f32,
+    /// Position and velocity estimates.
+    pub estimates: NeEstimates,
+    /// Current offsets (not advanced — that is leftover).
+    pub offsets: NeOffsets,
+    /// Already-min'd lean-angle limit, radians: the smaller of the
+    /// attitude controller's althold max and `get_lean_angle_max_rad`.
+    pub lean_angle_max_rad: f32,
+    /// Heading cosine, upstream `ahrs.cos_yaw()`.
+    pub cos_yaw: f32,
+    /// Heading sine, upstream `ahrs.sin_yaw()`.
+    pub sin_yaw: f32,
+    /// Attitude-controller yaw target, used only when the vehicle is
+    /// moving too slowly to take yaw from the velocity vector.
+    pub att_yaw_target_rad: f32,
+}
+
+/// What `NE_update_controller` wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeUpdateOutput {
+    /// Absolute position target, desired plus offset, possibly clamped
+    /// by the P controller.
+    pub pos_target_m: Vector2<Postype>,
+    /// Velocity target after P, AHRS scale, and feed-forward.
+    pub vel_target_ms: Vector2f,
+    /// Acceleration target after PID, AHRS scale, feed-forward, and the
+    /// lean-angle limit.
+    pub accel_target_mss: Vector2f,
+    /// Lean-angle roll, radians.
+    pub roll_target_rad: f32,
+    /// Lean-angle pitch, radians.
+    pub pitch_target_rad: f32,
+    /// Yaw target, radians — heading of motion when moving, otherwise
+    /// the attitude controller's last yaw.
+    pub yaw_target_rad: f32,
+    /// Yaw rate from the centripetal turn, or zero when too slow.
+    pub yaw_rate_target_rads: f32,
+    /// Whether the lean-angle limit bound the acceleration.
+    pub limited: bool,
+    /// `_ne_control_scale_factor` after the call. Always 1: the scale
+    /// is consumed.
+    pub ne_control_scale_factor: f32,
+}
+
+impl PosControlNe {
+    /// The NE PID path, upstream `NE_update_controller`.
+    ///
+    /// Position P produces a velocity correction; velocity PID produces
+    /// an acceleration correction; both are scaled by the AHRS factor and
+    /// added to the kinematic feed-forward (desired plus offset). The
+    /// acceleration is then limited by the lean-angle budget and converted
+    /// to roll/pitch. Yaw follows the velocity vector once the vehicle is
+    /// moving faster than five percent of its configured maximum.
+    ///
+    /// leftover: `NE_handle_ekf_reset` / `NE_init_controller` timeout.
+    /// leftover: `NE_update_offsets` (offsets are taken as given).
+    /// leftover: `D_update_controller` (vertical PID + AHRS).
+    /// leftover: `var_info`.
+    ///
+    /// Lean-angle conversion uses [`accel_ne_to_lean_angles`];
+    /// `get_thrust_vector` is already a free function. Neither is redone.
+    pub fn update_controller(
+        &mut self,
+        pos_p: &mut AcP2d,
+        vel_pid: &mut AcPid2d,
+        inp: &NeUpdateInputs,
+        disturb: &mut NeDisturbance,
+    ) -> NeUpdateOutput {
+        let scale = inp.ahrs_control_scale_xy * inp.ne_control_scale_factor;
+
+        let mut pos_target = Vector2::new(
+            self.pos_desired_m.x + inp.offsets.pos_m.x,
+            self.pos_desired_m.y + inp.offsets.pos_m.y,
+        );
+
+        let comb_pos = Vector2::new(
+            inp.estimates.pos_m.x + Postype::from(disturb.pos_m.x),
+            inp.estimates.pos_m.y + Postype::from(disturb.pos_m.y),
+        );
+
+        let mut vel_target = pos_p.update_all(&mut pos_target, comb_pos);
+        self.pos_desired_m = Vector2::new(
+            pos_target.x - inp.offsets.pos_m.x,
+            pos_target.y - inp.offsets.pos_m.y,
+        );
+
+        vel_target *= scale;
+        vel_target += self.vel_desired_ms + inp.offsets.vel_ms;
+
+        let comb_vel = inp.estimates.vel_ms + disturb.vel_ms;
+        let mut accel_target = vel_pid.update_all(vel_target, comb_vel, inp.dt, self.limit_vector);
+
+        accel_target *= scale;
+        accel_target += self.accel_desired_mss + inp.offsets.accel_mss;
+
+        let accel_max = angle_rad_to_accel_mss(inp.lean_angle_max_rad);
+        self.limit_vector = accel_target;
+        let limited = limit_accel_xy(self.vel_desired_ms, &mut accel_target, accel_max);
+        if !limited {
+            self.limit_vector = Vector2f::zero();
+        }
+
+        let (roll_target_rad, pitch_target_rad) =
+            accel_ne_to_lean_angles(accel_target.x, accel_target.y, inp.cos_yaw, inp.sin_yaw);
+
+        let (yaw_target_rad, yaw_rate_target_rads) = yaw_from_ne_motion(
+            self.vel_desired_ms,
+            self.accel_desired_mss,
+            inp.vel_max_ne_ms,
+            inp.att_yaw_target_rad,
+        );
+
+        disturb.pos_m = Vector2f::zero();
+        disturb.vel_ms = Vector2f::zero();
+
+        NeUpdateOutput {
+            pos_target_m: pos_target,
+            vel_target_ms: vel_target,
+            accel_target_mss: accel_target,
+            roll_target_rad,
+            pitch_target_rad,
+            yaw_target_rad,
+            yaw_rate_target_rads,
+            limited,
+            ne_control_scale_factor: 1.0,
+        }
+    }
+}
+
+/// Yaw and yaw-rate from the NE kinematic demand, upstream
+/// `calculate_yaw_and_rate_yaw`.
+///
+/// The turn rate is centripetal: isolate the acceleration perpendicular
+/// to the velocity, divide by speed. The sign is the 2-D cross product
+/// of velocity with that turn acceleration — positive clockwise.
+///
+/// Below five percent of the configured maximum speed the heading of
+/// the velocity vector is not a heading at all — it chatters around
+/// whatever noise is left — so the attitude controller's last yaw is
+/// kept and the rate is zeroed.
+#[must_use]
+pub fn yaw_from_ne_motion(
+    vel_desired_ms: Vector2f,
+    accel_desired_mss: Vector2f,
+    vel_max_ne_ms: f32,
+    att_yaw_target_rad: f32,
+) -> (f32, f32) {
+    let vel_len = vel_desired_ms.length();
+    let mut turn_rate_rads = 0.0;
+    if is_positive(vel_len) {
+        let accel_forward = vel_desired_ms.dot(accel_desired_mss) / vel_len;
+        let accel_turn = accel_desired_mss - vel_desired_ms * (accel_forward / vel_len);
+        turn_rate_rads = accel_turn.length() / vel_len;
+        // upstream: (accel_turn.y * vel.x - accel_turn.x * vel.y) < 0
+        // which is vel.cross(accel_turn) < 0.
+        if vel_desired_ms.cross(accel_turn) < 0.0 {
+            turn_rate_rads = -turn_rate_rads;
+        }
+    }
+
+    if vel_len > vel_max_ne_ms * 0.05 {
+        return (vel_desired_ms.angle(), turn_rate_rads);
+    }
+    (att_yaw_target_rad, 0.0)
 }
