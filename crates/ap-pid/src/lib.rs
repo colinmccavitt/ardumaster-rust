@@ -13,17 +13,21 @@
 //! * **`update_all` takes `now_ms`.** Upstream's `SlewLimiter` reads
 //!   `AP_HAL::millis()` internally; ADR-0004 rules out singletons, so the port
 //!   passes time in, exactly as `ap-tecs` does.
-//! * **Notch filters are absent.** Upstream can attach target and error notch
-//!   filters through `AP_Filter` when `AP_FILTER_ENABLED`. Both pointers are
-//!   null unless a vehicle configures them, and the remaining Filter library is
-//!   FW-036. When they are null — which is every configuration this port
-//!   currently supports — upstream's code path is exactly what is reproduced
-//!   here.
+//! * **Notch filters are optional.** Upstream attaches target and error notch
+//!   filters through `AP_Filter` when `AP_FILTER_ENABLED`.
+//!   [`AcPid::set_notch_sample_rate`] looks up the NTF/NEF index in a
+//!   caller-supplied [`NotchFilterSource`] -- ADR-0004 rules out
+//!   `AP::filters()`. Both notches stay absent unless a vehicle sets a
+//!   non-zero index, which is every stock configuration and the path every
+//!   existing test exercises.
 
 #![no_std]
 
+use ap_filter::notch::NotchFilter;
 use ap_filter::slew::{SlewLimiter, SlewParams};
 use ap_math::scalar::{calc_lowpass_alpha_dt, constrain_value, is_negative, is_positive, is_zero};
+
+pub use ap_filter::ap_filter::{Filters, NotchFilterParams, NotchFilterSource};
 
 /// The tunable gains, upstream's `AC_PID::Defaults` plus the members set
 /// through `set_*`.
@@ -151,6 +155,13 @@ pub struct AcPid {
 
     slew_limiter: SlewLimiter,
     info: PidInfo,
+
+    /// Target-notch index, upstream `_notch_T_filter` (`ATC_RAT_*_NTF`).
+    pub notch_t_filter: i8,
+    /// Error-notch index, upstream `_notch_E_filter` (`ATC_RAT_*_NEF`).
+    pub notch_e_filter: i8,
+    target_notch: Option<NotchFilter<f32>>,
+    error_notch: Option<NotchFilter<f32>>,
 }
 
 impl AcPid {
@@ -171,6 +182,56 @@ impl AcPid {
             slew_limit_scale: 1,
             slew_limiter: SlewLimiter::new(),
             info: PidInfo::default(),
+            notch_t_filter: 0,
+            notch_e_filter: 0,
+            target_notch: None,
+            error_notch: None,
+        }
+    }
+
+    /// The target notch, if `set_notch_sample_rate` allocated one.
+    #[must_use]
+    pub fn target_notch(&self) -> Option<&NotchFilter<f32>> {
+        self.target_notch.as_ref()
+    }
+
+    /// The error notch, if `set_notch_sample_rate` allocated one.
+    #[must_use]
+    pub fn error_notch(&self) -> Option<&NotchFilter<f32>> {
+        self.error_notch.as_ref()
+    }
+
+    /// Configure optional target/error notches, upstream `set_notch_sample_rate`.
+    ///
+    /// Both indices zero is a no-op. A non-zero index allocates, then looks up.
+    /// A null lookup keeps an uninitialised notch; a failed setup drops it and clears the index.
+    pub fn set_notch_sample_rate(&mut self, sample_rate: f32, filters: &impl NotchFilterSource) {
+        if self.notch_t_filter == 0 && self.notch_e_filter == 0 {
+            return;
+        }
+        if self.notch_t_filter != 0 {
+            if self.target_notch.is_none() {
+                self.target_notch = Some(NotchFilter::new());
+            }
+            if let Some(params) = filters.get_filter(self.notch_t_filter as u8) {
+                let notch = self.target_notch.as_mut().expect("just allocated");
+                if !params.setup_notch_filter(notch, sample_rate) {
+                    self.target_notch = None;
+                    self.notch_t_filter = 0;
+                }
+            }
+        }
+        if self.notch_e_filter != 0 {
+            if self.error_notch.is_none() {
+                self.error_notch = Some(NotchFilter::new());
+            }
+            if let Some(params) = filters.get_filter(self.notch_e_filter as u8) {
+                let notch = self.error_notch.as_mut().expect("just allocated");
+                if !params.setup_notch_filter(notch, sample_rate) {
+                    self.error_notch = None;
+                    self.notch_e_filter = 0;
+                }
+            }
         }
     }
 
@@ -239,17 +300,32 @@ impl AcPid {
             // inputs rather than stepping toward them from stale state.
             self.reset_filter = false;
             self.target = target;
+            if let Some(n) = self.target_notch.as_mut() {
+                n.reset();
+                self.target = n.apply(self.target);
+            }
             self.error = self.target - measurement;
+            if let Some(n) = self.error_notch.as_mut() {
+                n.reset();
+                self.error = n.apply(self.error);
+            }
             // clear the derivative history so the reset does not show up as a
             // spike on the next call
             self.derivative = 0.0;
             self.target_derivative = 0.0;
         } else {
             let target_last = self.target;
+            let mut target = target;
+            if let Some(n) = self.target_notch.as_mut() {
+                target = n.apply(target);
+            }
             self.target += calc_lowpass_alpha_dt(dt, self.gains.filt_t_hz) * (target - self.target);
 
             let error_last = self.error;
-            let error = self.target - measurement;
+            let mut error = self.target - measurement;
+            if let Some(n) = self.error_notch.as_mut() {
+                error = n.apply(error);
+            }
             self.error += calc_lowpass_alpha_dt(dt, self.gains.filt_e_hz) * (error - self.error);
 
             if is_positive(dt) {

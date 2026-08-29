@@ -6,7 +6,7 @@
 //! three numbers this hands to three PIDs.
 
 use ap_math::vector3::Vector3f;
-use ap_pid::{AcPid, Scaling};
+use ap_pid::{AcPid, NotchFilterSource, Scaling};
 
 use crate::throttle_mix::{GainBoost, ThrottleMix, ThrottleMixConfig, VehicleThrottleState};
 
@@ -213,6 +213,13 @@ impl RateLoop {
     pub fn relax(&mut self) {
         self.reset_filters();
         self.reset_i_terms();
+    }
+
+    /// Configure the three rate-PID notches, upstream `AC_AttitudeControl_Multi::set_notch_sample_rate`.
+    pub fn set_notch_sample_rate(&mut self, sample_rate: f32, filters: &impl NotchFilterSource) {
+        self.roll.set_notch_sample_rate(sample_rate, filters);
+        self.pitch.set_notch_sample_rate(sample_rate, filters);
+        self.yaw.set_notch_sample_rate(sample_rate, filters);
     }
 
     /// One iteration, upstream `rate_controller_run_dt`.
