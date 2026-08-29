@@ -27,7 +27,8 @@
 //! next leftover is the stock `SPRAY_` `GOBJECT`
 //! (`HAL_SPRAYER_ENABLED`). After `SPRAY_` the
 //! next leftover is the stock `SIM_` `GOBJECT`
-//! (`AP_SIM_ENABLED`). Later groups, G2,
+//! (`AP_SIM_ENABLED`). After `SIM_` the
+//! next leftover is the stock `BARO` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1106,15 +1107,15 @@ pub fn for_each_spray_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static
     }
 }
 
-/// `Parameters::k_param_barometer` — next leftover after `SIM_`. Not this leftover.
+/// `Parameters::k_param_barometer` — next `GOBJECT`, prefix `BARO`.
 pub const K_PARAM_BAROMETER: u16 = 11;
 
 /// Stock `SIM_` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `SPRAY_`. `SIM_` is
 /// `AP_SIM_ENABLED` and a stock multicopter compiles it in. Nested
-/// `SITL::SIM` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `SITL::SIM` `var_info` is not this leftover. `BARO` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const SIM_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("SIM_", K_PARAM_SITL)];
 
 /// First (only) row of the `SIM_` leftover.
@@ -1132,6 +1133,37 @@ pub fn find_sim_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `SIM_` leftover as `ParamInfo` rows.
 pub fn for_each_sim_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in SIM_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_gps` — next leftover after `BARO`. Not this leftover.
+pub const K_PARAM_GPS: u16 = 16;
+
+/// Stock `BARO` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `SIM_`. Nested
+/// `AP_Baro` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const BARO_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("BARO", K_PARAM_BAROMETER)];
+
+/// First (only) row of the `BARO` leftover.
+#[must_use]
+pub fn baro_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    BARO_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `BARO` leftover by group prefix.
+#[must_use]
+pub fn find_baro_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    BARO_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `BARO` leftover as `ParamInfo` rows.
+pub fn for_each_baro_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in BARO_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
