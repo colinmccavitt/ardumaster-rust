@@ -29,7 +29,8 @@
 //! next leftover is the stock `SIM_` `GOBJECT`
 //! (`AP_SIM_ENABLED`). After `SIM_` the
 //! next leftover is the stock `BARO` `GOBJECT`. After `BARO` the
-//! next leftover is the stock `GPS` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `GPS` `GOBJECT`. After `GPS` the
+//! next leftover is the stock `SCHED_` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1169,14 +1170,14 @@ pub fn for_each_baro_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_scheduler` — next leftover after `GPS`. Not this leftover.
+/// `Parameters::k_param_scheduler` — next `GOBJECT`, prefix `SCHED_`.
 pub const K_PARAM_SCHEDULER: u16 = 12;
 
 /// Stock `GPS` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `BARO`. Nested
-/// `AP_GPS` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `AP_GPS` `var_info` is not this leftover. `SCHED_` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const GPS_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("GPS", K_PARAM_GPS)];
 
 /// First (only) row of the `GPS` leftover.
@@ -1194,6 +1195,37 @@ pub fn find_gps_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `GPS` leftover as `ParamInfo` rows.
 pub fn for_each_gps_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in GPS_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_avoid` — next leftover after `SCHED_`. Not this leftover.
+pub const K_PARAM_AVOID: u16 = 95;
+
+/// Stock `SCHED_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `GPS`. Nested
+/// `AP_Scheduler` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const SCHED_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("SCHED_", K_PARAM_SCHEDULER)];
+
+/// First (only) row of the `SCHED_` leftover.
+#[must_use]
+pub fn sched_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    SCHED_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `SCHED_` leftover by group prefix.
+#[must_use]
+pub fn find_sched_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    SCHED_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `SCHED_` leftover as `ParamInfo` rows.
+pub fn for_each_sched_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in SCHED_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
