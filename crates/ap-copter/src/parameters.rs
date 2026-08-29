@@ -23,7 +23,9 @@
 //! next leftover is the stock `BATT` `GOBJECT`. After `BATT` the
 //! next leftover is the stock `BRD_` `GOBJECT`. After `BRD_` the
 //! next leftover is the stock `CAN_` `GOBJECT`
-//! (`HAL_MAX_CAN_PROTOCOL_DRIVERS`). Later groups, G2,
+//! (`HAL_MAX_CAN_PROTOCOL_DRIVERS`). After `CAN_` the
+//! next leftover is the stock `SPRAY_` `GOBJECT`
+//! (`HAL_SPRAYER_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1040,15 +1042,15 @@ pub fn for_each_brd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_sprayer` — next leftover after `CAN_`. Not this leftover.
+/// `Parameters::k_param_sprayer` — next `GOBJECT`, prefix `SPRAY_`.
 pub const K_PARAM_SPRAYER: u16 = 33;
 
 /// Stock `CAN_` leftover catalog.
 ///
 /// The next contiguous Multi `GOBJECT` after `BRD_`. `CAN_` is
 /// `HAL_MAX_CAN_PROTOCOL_DRIVERS` and a stock multicopter compiles it in. Nested
-/// `AP_CANManager` `var_info` is not this leftover. Later groups, G2, and
-/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+/// `AP_CANManager` `var_info` is not this leftover. `SPRAY_` stays later.
+/// Heli `IM_` is not a row of this leftover.
 pub const CAN_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("CAN_", K_PARAM_CAN_MGR)];
 
 /// First (only) row of the `CAN_` leftover.
@@ -1066,6 +1068,36 @@ pub fn find_can_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `CAN_` leftover as `ParamInfo` rows.
 pub fn for_each_can_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in CAN_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_sitl` — next leftover after `SPRAY_`. Not this leftover.
+pub const K_PARAM_SITL: u16 = 10;
+
+/// Stock `SPRAY_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `CAN_`. `SPRAY_` is
+/// `HAL_SPRAYER_ENABLED` and a stock multicopter compiles it in. Nested
+/// `AC_Sprayer` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const SPRAY_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("SPRAY_", K_PARAM_SPRAYER)];
+
+/// First (only) row of the `SPRAY_` leftover.
+#[must_use]
+pub fn spray_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    SPRAY_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `SPRAY_` leftover by group prefix.
+#[must_use]
+pub fn find_spray_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    SPRAY_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `SPRAY_` leftover as `ParamInfo` rows.
+pub fn for_each_spray_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in SPRAY_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
