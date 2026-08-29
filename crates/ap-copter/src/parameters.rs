@@ -43,7 +43,9 @@
 //! next leftover is the stock `EK3_` `GOBJECT`
 //! (`HAL_NAVEKF3_AVAILABLE`). After `EK3_` the
 //! next leftover is the stock `MIS_` `GOBJECT`
-//! (`MODE_AUTO_ENABLED`). Later groups, G2,
+//! (`MODE_AUTO_ENABLED`). After `MIS_` the
+//! next leftover is the stock `RSSI_` `GOBJECT`
+//! (`AP_RSSI_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1427,7 +1429,7 @@ pub fn for_each_ek3_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_rssi` — next leftover after `MIS_`. Not this leftover.
+/// `Parameters::k_param_rssi` — next `GOBJECT`, prefix `RSSI_`.
 pub const K_PARAM_RSSI: u16 = 97;
 
 /// Stock `MIS_` leftover catalog.
@@ -1453,6 +1455,38 @@ pub fn find_mis_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `MIS_` leftover as `ParamInfo` rows.
 pub fn for_each_mis_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in MIS_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_rangefinder` — next leftover after `RSSI_`. Not this leftover.
+pub const K_PARAM_RANGEFINDER: u16 = 53;
+
+/// Stock `RSSI_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `MIS_`. Upstream is
+/// `GOBJECT`. `RSSI_` is `AP_RSSI_ENABLED`. Nested `AP_RSSI`
+/// `var_info` is not this leftover. `RNGFND` stays later (`AP_RANGEFINDER_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const RSSI_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("RSSI_", K_PARAM_RSSI)];
+
+/// First (only) row of the `RSSI_` leftover.
+#[must_use]
+pub fn rssi_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    RSSI_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `RSSI_` leftover by group prefix.
+#[must_use]
+pub fn find_rssi_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    RSSI_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `RSSI_` leftover as `ParamInfo` rows.
+pub fn for_each_rssi_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in RSSI_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
