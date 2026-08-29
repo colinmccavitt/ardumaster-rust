@@ -1,7 +1,7 @@
 //! `AC_Avoid` enable bits, the fence-aware climb-rate leftover, the
 //! horizontal leftover (`limit_velocity_NE` plus proximity-backed STOP),
-//! and the full `adjust_velocity` leftover (NE / body proximity + Z +
-//! NEU backup mix).
+//! the full `adjust_velocity` leftover (NE / body proximity + Z +
+//! NEU backup mix), and fence NE (`adjust_velocity_fence`).
 //!
 //! Upstream `libraries/AC_Avoidance/AC_Avoid.cpp` (`adjust_velocity`,
 //! `adjust_velocity_NED_m`, `adjust_velocity_z`, `limit_velocity_NE`,
@@ -13,6 +13,8 @@ use ap_math::control::sqrt_controller;
 use ap_math::scalar::{constrain_value, is_negative, is_positive, is_zero, safe_sqrt, sq};
 use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
+
+use crate::fence_ne::FenceNeContext;
 
 /// Avoidance disabled. Upstream `AC_AVOID_DISABLED`.
 pub const DISABLED: u8 = 0;
@@ -161,14 +163,16 @@ pub struct AdjustVelocityNeLeftover {
 
 /// Injected leftovers for the full `AC_Avoid::adjust_velocity` leftover.
 ///
-/// ADR-0004 forbids the fence / proximity / AHRS singletons. Fence NE
-/// (circle / polygon / beacon) and `limit_accel_NEU_cm` stay later.
+/// ADR-0004 forbids the fence / proximity / AHRS / beacon singletons.
+/// `limit_accel_NEU_cm` stays later.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdjustVelocityContext {
     /// Leftover of `AP::proximity()` / AHRS yaw inside the proximity arm.
     pub proximity: ProximityStopContext,
     /// Leftover of `AP::fence()` / AHRS height inside `adjust_velocity_z`.
     pub vertical: AdjustVelocityZContext,
+    /// Leftover of fence / beacon NE inside `adjust_velocity_fence`.
+    pub fence_ne: FenceNeContext,
 }
 
 impl Default for AdjustVelocityContext {
@@ -176,14 +180,16 @@ impl Default for AdjustVelocityContext {
         Self {
             proximity: ProximityStopContext::default(),
             vertical: AdjustVelocityZContext::default(),
+            fence_ne: FenceNeContext::default(),
         }
     }
 }
 
 /// Leftover of one `AC_Avoid::adjust_velocity` call.
 ///
-/// Proximity (earth → body → earth) plus the vertical fence tail, then
-/// the NE / U backup mix. Circle / polygon / beacon NE stay later.
+/// Proximity (earth → body → earth) plus [`Avoid::adjust_velocity_fence`]
+/// (circle / polygon / beacon NE and the vertical fence tail), then the
+/// NE / U backup mix. `limit_accel_NEU_cm` stays later.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdjustVelocityLeftover {
     /// Desired NEU velocity after proximity, Z, and backup mix, cm/s.
@@ -690,9 +696,9 @@ impl Avoid {
     /// Full leftover of `AC_Avoid::adjust_velocity`.
     ///
     /// Disabled is identity. The proximity arm rotates earth NE through
-    /// body (obstacles are body-frame) and back. The fence tail is
-    /// [`Avoid::adjust_velocity_z`] only — circle / polygon / beacon NE
-    /// and `limit_accel_NEU_cm` stay later leftovers.
+    /// body (obstacles are body-frame) and back. The fence arm is
+    /// [`Avoid::adjust_velocity_fence`] (circle / polygon / beacon NE
+    /// plus [`Avoid::adjust_velocity_z`]). `limit_accel_NEU_cm` stays later.
     #[must_use]
     pub fn adjust_velocity(
         &self,
@@ -728,9 +734,17 @@ impl Avoid {
         );
         let mut desired = prox.desired_vel_neu_cms;
 
-        // `adjust_velocity_fence` tail: vertical fence only.
-        let z = self.adjust_velocity_z(k_p_z, accel_z_cmss, desired.z, dt, ctx.vertical);
-        desired.z = z.climb_rate_cms;
+        let fence = self.adjust_velocity_fence(
+            k_p,
+            accel_cmss,
+            desired,
+            k_p_z,
+            accel_z_cmss,
+            dt,
+            ctx.fence_ne,
+            ctx.vertical,
+        );
+        desired = fence.desired_vel_neu_cms;
 
         let mut q1 = Vector2f::zero();
         let mut q2 = Vector2f::zero();
@@ -748,7 +762,7 @@ impl Avoid {
             &mut back_down,
         );
         Self::find_max_quadrant_velocity_3d(
-            Vector3f::new(0.0, 0.0, z.backup_speed_cms),
+            fence.backup_vel_neu_cms,
             &mut q1,
             &mut q2,
             &mut q3,
@@ -759,13 +773,14 @@ impl Avoid {
 
         // A single NE source keeps the proximity backup vector. Upstream
         // quadrant binning requires both components non-zero, so an
-        // axis-aligned leftover would otherwise vanish before fence NE
-        // sources exist to combine.
-        let backup_ne = if prox.backup_vel_neu_cms.xy().is_zero() {
-            q1 + q2 + q3 + q4
-        } else {
-            prox.backup_vel_neu_cms.xy()
-        };
+        // axis-aligned leftover would otherwise vanish. Fence NE backup
+        // is already quadrant-binned inside `adjust_velocity_fence`.
+        let backup_ne =
+            if !prox.backup_vel_neu_cms.xy().is_zero() && fence.backup_vel_neu_cms.xy().is_zero() {
+                prox.backup_vel_neu_cms.xy()
+            } else {
+                q1 + q2 + q3 + q4
+            };
         let mut backup = Vector3f::new(backup_ne.x, backup_ne.y, back_down + back_up);
 
         let mut backing_up = false;
@@ -811,8 +826,8 @@ impl Avoid {
             backing_up,
             proximity_stopped: prox.stopped,
             proximity_limited: prox.limited,
-            limit_min_alt: z.limit_min_alt,
-            limit_max_alt: z.limit_max_alt,
+            limit_min_alt: fence.limit_min_alt,
+            limit_max_alt: fence.limit_max_alt,
         }
     }
 

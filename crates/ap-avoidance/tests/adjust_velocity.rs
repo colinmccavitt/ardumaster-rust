@@ -1,8 +1,8 @@
 //! Full `AC_Avoid::adjust_velocity` leftover: NE / body proximity, vertical
 //! fence tail, and NEU backup mix. Tracked as **COP-026**.
 //!
-//! Circle / polygon fence NE, beacon, `limit_accel_NEU_cm`, and the OA path
-//! planner stay later leftovers.
+//! Fence NE is in `adjust_velocity_fence`. `limit_accel_NEU_cm` and the OA
+//! path planner stay later leftovers.
 
 use ap_avoidance::{
     AdjustVelocityContext, AdjustVelocityLeftover, AdjustVelocityZContext, Avoid,
@@ -68,6 +68,7 @@ fn adjust_velocity_disabled_is_identity() {
         AdjustVelocityContext {
             proximity: obstacle_ahead(50.0),
             vertical: alt_max_ctx(100.5, 100.0),
+            ..Default::default()
         },
     );
     almost_neu(leftover.desired_vel_neu_cms, 500.0, 80.0, 40.0);
@@ -163,6 +164,7 @@ fn adjust_velocity_mixes_capped_ne_backup() {
                 ..obstacle_ahead(100.0)
             },
             vertical: AdjustVelocityZContext::default(),
+            ..Default::default()
         },
     );
     assert!(leftover.backing_up);
@@ -193,6 +195,7 @@ fn adjust_velocity_yaw_rotates_through_body_frame() {
                 ..obstacle_ahead(400.0)
             },
             vertical: AdjustVelocityZContext::default(),
+            ..Default::default()
         },
     );
     almost_neu(leftover.desired_vel_neu_cms, 500.0, 0.0, 0.0);
@@ -213,6 +216,7 @@ fn adjust_velocity_yaw_rotates_through_body_frame() {
                 ..obstacle_ahead(50.0)
             },
             vertical: AdjustVelocityZContext::default(),
+            ..Default::default()
         },
     );
     assert!(leftover.proximity_stopped);
@@ -238,6 +242,7 @@ fn adjust_velocity_applies_ceiling_and_mixes_u_backup() {
         AdjustVelocityContext {
             proximity: ProximityStopContext::default(),
             vertical: alt_max_ctx(100.5, 100.0),
+            ..Default::default()
         },
     );
     assert!(leftover.limit_max_alt);
@@ -262,6 +267,7 @@ fn adjust_velocity_applies_floor_and_mixes_u_backup() {
         AdjustVelocityContext {
             proximity: ProximityStopContext::default(),
             vertical: alt_min_ctx(19.5, 20.0),
+            ..Default::default()
         },
     );
     assert!(leftover.limit_min_alt);
@@ -289,6 +295,7 @@ fn adjust_velocity_combines_proximity_ne_and_fence_z() {
                 ..obstacle_ahead(100.0)
             },
             vertical: alt_max_ctx(100.5, 100.0),
+            ..Default::default()
         },
     );
     assert!(leftover.backing_up);
@@ -311,6 +318,7 @@ fn adjust_velocity_ned_m_ceiling_flips_down_positive() {
         AdjustVelocityContext {
             proximity: ProximityStopContext::default(),
             vertical: alt_max_ctx(100.5, 100.0),
+            ..Default::default()
         },
     );
     assert!(leftover.limit_max_alt);
