@@ -5,9 +5,6 @@
 //! vertical axis is a separate controller with its own limits, because a
 //! multirotor's authority in the two is not remotely the same.
 //!
-//! leftover: `var_info`.
-//! leftover: `update_terrain`.
-//!
 //! Lean-angle conversions and `get_thrust_vector` are already in — do not redo.
 
 use ap_math::control::{
@@ -889,9 +886,6 @@ impl PosControlNe {
     /// to roll/pitch. Yaw follows the velocity vector once the vehicle is
     /// moving faster than five percent of its configured maximum.
     ///
-    /// leftover: `var_info`.
-    /// leftover: `update_terrain`.
-    ///
     /// Lean-angle conversion uses [`accel_ne_to_lean_angles`];
     /// `get_thrust_vector` is already a free function. Neither is redone.
     pub fn update_controller(
@@ -1024,8 +1018,8 @@ pub struct DOffsets {
     pub accel_mss: f32,
 }
 
-/// Current terrain estimate along down. `init_terrain` zeros this;
-/// leftover: `update_terrain` still takes the values as given.
+/// Current terrain estimate along down. [`init_terrain`] zeros this;
+/// [`update_terrain`] advances it toward the target.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DTerrain {
     /// Terrain position along down, metres, upstream `_pos_terrain_d_m`.
@@ -1049,10 +1043,10 @@ pub struct DEstimates {
 ///
 /// AHRS, the motors, and the scheduler are passed in rather than reached
 /// for: ADR-0004 rules out singletons. Call [`DEkfReset::handle`],
-/// [`PosControlD::init_controller`] on timeout, and
-/// [`DOffsetState::update`] around this as upstream's
-/// `D_update_controller` does; they are not invoked here so the PID
-/// path can be tested on its own. leftover: `update_terrain`.
+/// [`PosControlD::init_controller`] on timeout, [`DOffsetState::update`],
+/// and [`update_terrain`] around this as upstream's `D_update_controller`
+/// does; they are not invoked here so the PID path can be tested on its
+/// own.
 #[derive(Debug, Clone, Copy)]
 pub struct DUpdateInputs {
     /// Loop period, seconds, upstream `_dt_s`.
@@ -1069,7 +1063,7 @@ pub struct DUpdateInputs {
     pub estimates: DEstimates,
     /// Current offsets (not advanced here; see [DOffsetState::update]).
     pub offsets: DOffsets,
-    /// Current terrain (not advanced — that is leftover).
+    /// Current terrain (not advanced here; see [`update_terrain`]).
     pub terrain: DTerrain,
     /// Gravity-compensated vertical acceleration, upstream
     /// `get_estimated_accel_D_mss` = `ahrs.get_accel_ef().z + g`.
@@ -1122,8 +1116,6 @@ impl PosControlD {
     /// controller because this axis is down-positive and throttle is
     /// up-positive.
     ///
-    /// leftover: `var_info`.
-    /// leftover: `update_terrain`.
     pub fn update_controller(
         &mut self,
         pos_p: &mut AcP1d,
@@ -1722,6 +1714,51 @@ impl DOffsetState {
 #[must_use]
 pub fn init_terrain() -> DTerrain {
     DTerrain::default()
+}
+
+/// Advance terrain pos/vel/accel toward a position target, upstream
+/// `update_terrain`.
+///
+/// [`DTerrain`] is accepted as given and mutated in place. The target
+/// is a position only — upstream assumes target velocity and
+/// acceleration are zero and does not integrate the target. Current is
+/// integrated first with the limit clipped to at most zero (an upward
+/// saturation must not freeze a descent), then shaped with the
+/// configured vertical speed/accel/jerk. [`PosControlD::update_controller`]
+/// already adds the resulting terrain into the feed-forward.
+pub fn update_terrain(
+    terrain: &mut DTerrain,
+    target_pos_m: Postype,
+    limits: &DLimits,
+    dt: f32,
+    limit: f32,
+    pos_error: f32,
+    vel_error: f32,
+) {
+    update_pos_vel_accel(
+        &mut terrain.pos_m,
+        &mut terrain.vel_ms,
+        terrain.accel_mss,
+        dt,
+        limit.min(0.0),
+        pos_error,
+        vel_error,
+    );
+    let _ = shape_pos_vel_accel(
+        target_pos_m,
+        0.0,
+        0.0,
+        terrain.pos_m,
+        terrain.vel_ms,
+        &mut terrain.accel_mss,
+        -limits.vel_max_up_ms,
+        limits.vel_max_down_ms,
+        -limits.accel_max_d_mss,
+        limits.accel_max_d_mss,
+        limits.jerk_max_d_msss,
+        dt,
+        false,
+    );
 }
 
 /// What [`PosControlD::init_controller`] reads from outside itself.

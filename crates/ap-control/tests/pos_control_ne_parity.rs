@@ -14,7 +14,7 @@ index fault is a test failure, which is the desired outcome"
 
 use ap_control::pos_control_ne::{
     accel_ne_to_lean_angles, controller_is_active, init_terrain, lean_angles_to_accel_ned,
-    offset_target_timed_out, stopping_point_d, stopping_point_ne, thrust_vector,
+    offset_target_timed_out, stopping_point_d, stopping_point_ne, thrust_vector, update_terrain,
     yaw_from_ne_motion, AttitudeCapability, DEkfReset, DEkfTargets, DEstimates, DInitInputs,
     DLimits, DOffsetState, DOffsets, DTerrain, DUpdateInputs, EkfResetMethod, NeDisturbance,
     NeEkfReset, NeEkfTargets, NeEstimates, NeInitInputs, NeLimits, NeOffsetState, NeOffsets,
@@ -593,7 +593,7 @@ fn the_angle_conversions_match_upstream() {
         rows.len()
     );
 }
-// leftover: var_info. leftover: update_terrain.
+// var_info and update_terrain are in.
 // Lean-angle conversions, get_thrust_vector, NE/D update_controller,
 // and NE/D init/offset/EKF reset are done.
 
@@ -1097,8 +1097,7 @@ fn the_health_ratio_walks_and_clamps() {
     assert!((out.vel_d_control_ratio - 0.021).abs() < 1e-5);
 }
 
-// leftover: var_info. leftover: update_terrain.
-// NE/D init_controller, update_offsets, and EKF reset are in.
+// var_info and update_terrain are in.
 
 fn ne_limits() -> NeLimits {
     NeLimits {
@@ -1765,4 +1764,56 @@ fn init_terrain_is_all_zeros() {
     assert_eq!(t.pos_m, 0.0);
     assert_eq!(t.vel_ms, 0.0);
     assert_eq!(t.accel_mss, 0.0);
+}
+
+#[test]
+fn update_terrain_is_idle_when_current_equals_target_at_rest() {
+    let mut terrain = init_terrain();
+    terrain.pos_m = -3.0;
+    update_terrain(&mut terrain, -3.0, &d_limits(), 0.02, 0.0, 0.0, 0.0);
+    assert!((terrain.pos_m + 3.0).abs() < 1e-6);
+    assert!(terrain.accel_mss.abs() < 1e-6);
+}
+
+#[test]
+fn update_terrain_shapes_toward_the_target() {
+    let mut terrain = init_terrain();
+    terrain.pos_m = -3.0;
+    update_terrain(&mut terrain, 0.0, &d_limits(), 0.02, 0.0, 0.0, 0.0);
+    assert!(
+        terrain.accel_mss > 0.0,
+        "terrain at -3 must accelerate down toward zero, got {}",
+        terrain.accel_mss
+    );
+}
+
+#[test]
+fn update_terrain_ignores_a_positive_limit() {
+    let mut frozen = init_terrain();
+    frozen.vel_ms = 1.0;
+    let mut unclipped = frozen;
+    update_terrain(&mut frozen, 0.0, &d_limits(), 0.02, 1.0, 1.0, 1.0);
+    update_terrain(&mut unclipped, 0.0, &d_limits(), 0.02, 0.0, 1.0, 1.0);
+    assert!(
+        (frozen.pos_m - unclipped.pos_m).abs() < 1e-6,
+        "positive limit must be clipped to zero before the advance"
+    );
+    assert!(
+        frozen.pos_m > 0.0,
+        "descent terrain must still advance, got {}",
+        frozen.pos_m
+    );
+}
+
+#[test]
+fn update_terrain_does_not_move_the_target() {
+    let mut terrain = init_terrain();
+    let target = -4.0;
+    update_terrain(&mut terrain, target, &d_limits(), 0.02, 0.0, 0.0, 0.0);
+    let first = terrain.accel_mss;
+    update_terrain(&mut terrain, target, &d_limits(), 0.02, 0.0, 0.0, 0.0);
+    assert!(
+        first < 0.0,
+        "zero current toward a negative target must accelerate up, got {first}"
+    );
 }
