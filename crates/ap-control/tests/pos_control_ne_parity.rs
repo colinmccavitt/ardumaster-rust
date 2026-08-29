@@ -14,12 +14,13 @@ index fault is a test failure, which is the desired outcome"
 
 use ap_control::pos_control_ne::{
     accel_ne_to_lean_angles, lean_angles_to_accel_ned, stopping_point_d, thrust_vector,
-    yaw_from_ne_motion, AttitudeCapability, DLimits, NeDisturbance, NeEstimates, NeLimits,
-    NeOffsets, NeUpdateInputs, PosControlNe, NE_POS_P,
+    yaw_from_ne_motion, AttitudeCapability, DEstimates, DLimits, DOffsets, DTerrain, DUpdateInputs,
+    NeDisturbance, NeEstimates, NeLimits, NeOffsets, NeUpdateInputs, PosControlD, PosControlNe,
+    NE_POS_P,
 };
 use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
-use ap_pid::{AcP2d, AcPid2d};
+use ap_pid::{AcP1d, AcP2d, AcPid, AcPid2d, AcPidBasic, PidGains};
 
 fn f(s: &str) -> f32 {
     f32::from_bits(s.trim().parse::<u32>().expect("float bits"))
@@ -590,9 +591,10 @@ fn the_angle_conversions_match_upstream() {
         rows.len()
     );
 }
-// leftover: D_update_controller (vertical PID + AHRS) is not this slice.
 // leftover: NE_init_controller / NE_update_offsets / EKF reset.
-// leftover: var_info. Lean-angle conversions and get_thrust_vector are done.
+// leftover: D_init_controller / D_update_offsets / EKF reset.
+// leftover: var_info. Lean-angle conversions, get_thrust_vector, NE and D
+// update_controller are done.
 
 fn update_inputs() -> NeUpdateInputs {
     NeUpdateInputs {
@@ -835,4 +837,261 @@ fn a_position_clamp_rewrites_desired() {
         (ne.pos_desired_m.x - (out.pos_target_m.x - 1.0)).abs() < 1e-9,
         "desired is the (clamped) target minus the offset"
     );
+}
+
+fn d_update_inputs() -> DUpdateInputs {
+    DUpdateInputs {
+        dt: 0.02,
+        now_ms: 0,
+        ahrs_control_scale_z: 1.0,
+        estimates: DEstimates::default(),
+        offsets: DOffsets::default(),
+        terrain: DTerrain::default(),
+        estimated_accel_d_mss: 0.0,
+        throttle_lower: false,
+        throttle_upper: false,
+        throttle_hover: 0.0,
+        vibe_comp_enabled: false,
+        vel_max_down_ms: 2.5,
+    }
+}
+
+fn accel_p(p: f32) -> AcPid {
+    AcPid::new(PidGains {
+        p,
+        imax: 1.0,
+        ..PidGains::default()
+    })
+}
+
+/// A one-metre down error at kp=1, no filters, no I, no D, must produce a
+/// 1 m/s down velocity demand and then a 1 m/s^2 down acceleration
+/// demand when the velocity PID is also kp=1 with I and D off. The
+/// acceleration PID, also kp=1 against a zero measurement, then produces
+/// a unit down-positive thrust which is negated for the attitude
+/// controller.
+#[test]
+fn the_d_pid_path_is_p_then_velocity_pid_then_accel_pid() {
+    let mut d = PosControlD::new();
+    d.pos_desired_m = 1.0;
+    let mut pos_p = AcP1d::new(1.0);
+    let mut vel_pid = AcPidBasic::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(1.0);
+    let inp = d_update_inputs();
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+
+    assert!((out.vel_target_ms - 1.0).abs() < 1e-5);
+    assert!((out.accel_target_mss - 1.0).abs() < 1e-5);
+    assert!((out.thrust_d_norm - 1.0).abs() < 1e-5);
+    assert!((out.throttle_out + 1.0).abs() < 1e-5);
+}
+
+/// The AHRS Z scale is applied to the P output *and* the velocity-PID
+/// output. A port that scaled only one of them would still look
+/// plausible on a quiet hover and fail here: with scale 0.5 the velocity
+/// demand is halved and the acceleration demand is quartered. The
+/// acceleration PID is *not* scaled — it works in thrust.
+#[test]
+fn the_d_ahrs_scale_applies_to_both_outer_loops() {
+    let mut d = PosControlD::new();
+    d.pos_desired_m = 1.0;
+    let mut pos_p = AcP1d::new(1.0);
+    let mut vel_pid = AcPidBasic::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(1.0);
+    let mut inp = d_update_inputs();
+    inp.ahrs_control_scale_z = 0.5;
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+
+    assert!(
+        (out.vel_target_ms - 0.5).abs() < 1e-5,
+        "P output must be scaled"
+    );
+    assert!(
+        (out.accel_target_mss - 0.25).abs() < 1e-5,
+        "velocity PID output must be scaled again, got {}",
+        out.accel_target_mss
+    );
+    assert!(
+        (out.thrust_d_norm - 0.25).abs() < 1e-5,
+        "accel PID sees the already-scaled target, not a third scale"
+    );
+}
+
+/// Offsets and terrain are added to desired to form the absolute target,
+/// and to the feed-forward velocity and acceleration. A port that
+/// treated desired as already-absolute would double-count them or drop
+/// them; a port that added only offsets would miss terrain.
+#[test]
+fn d_offsets_and_terrain_are_added_to_the_target_and_the_feedforward() {
+    let mut d = PosControlD::new();
+    d.vel_desired_ms = 0.5;
+    d.accel_desired_mss = 0.25;
+    let mut pos_p = AcP1d::new(0.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_update_inputs();
+    inp.offsets = DOffsets {
+        pos_m: 3.0,
+        vel_ms: 0.1,
+        accel_mss: 0.05,
+    };
+    inp.terrain = DTerrain {
+        pos_m: 1.0,
+        vel_ms: 0.2,
+        accel_mss: -0.05,
+    };
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((out.pos_target_m - 4.0).abs() < 1e-9);
+    assert!((out.vel_target_ms - 0.8).abs() < 1e-5);
+    assert!((out.accel_target_mss - 0.25).abs() < 1e-5);
+}
+
+/// A P-controller clamp rewrites the absolute target and therefore the
+/// desired position (target minus offset minus terrain). That is how a
+/// clamp on the *absolute* target becomes a clamp on the trajectory.
+#[test]
+fn a_d_position_clamp_rewrites_desired() {
+    let mut d = PosControlD::new();
+    d.pos_desired_m = 100.0;
+    let mut pos_p = AcP1d::new(1.0);
+    pos_p.set_limits(-2.0, 2.0, 0.0, 0.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_update_inputs();
+    inp.offsets.pos_m = 1.0;
+    inp.terrain.pos_m = 0.5;
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert!(
+        out.pos_target_m.abs() < 10.0,
+        "the absolute target must have been pulled in, got {}",
+        out.pos_target_m
+    );
+    assert!(
+        (d.pos_desired_m - (out.pos_target_m - 1.5)).abs() < 1e-9,
+        "desired is the (clamped) target minus offset minus terrain"
+    );
+}
+
+/// Hover throttle is subtracted from the accel-PID output so the
+/// attitude controller sees a delta from hover. On target with a
+/// 0.4 hover that delta is -0.4 (down-positive), and the throttle
+/// sent upward is therefore +0.4.
+#[test]
+fn hover_throttle_is_subtracted_and_the_sign_is_flipped() {
+    let mut d = PosControlD::new();
+    let mut pos_p = AcP1d::new(0.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_update_inputs();
+    inp.throttle_hover = 0.4;
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((out.thrust_d_norm + 0.4).abs() < 1e-5);
+    assert!((out.throttle_out - 0.4).abs() < 1e-5);
+}
+
+/// If the configured accel-PID IMAX is below hover, it is raised.
+/// Without that the integrator cannot produce enough thrust to hold
+/// the vehicle up.
+#[test]
+fn hover_raises_the_accel_pid_imax() {
+    let mut d = PosControlD::new();
+    let mut pos_p = AcP1d::new(0.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    accel_pid.gains.imax = 0.1;
+    let mut inp = d_update_inputs();
+    inp.throttle_hover = 0.35;
+
+    let _ = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((accel_pid.gains.imax - 0.35).abs() < 1e-6);
+}
+
+/// Throttle-upper stores -1 on the limit vector (cannot accelerate
+/// *up*, so down-positive limit is negative). Throttle-lower stores
+/// +1. Neither stores zero.
+#[test]
+fn throttle_limits_set_the_vertical_limit_vector() {
+    let mut d = PosControlD::new();
+    let mut pos_p = AcP1d::new(0.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_update_inputs();
+
+    inp.throttle_upper = true;
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert_eq!(out.limit, -1.0);
+    assert_eq!(d.limit, -1.0);
+
+    inp.throttle_upper = false;
+    inp.throttle_lower = true;
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert_eq!(out.limit, 1.0);
+
+    inp.throttle_lower = false;
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert_eq!(out.limit, 0.0);
+}
+
+/// Vibration compensation ignores the acceleration measurement and
+/// builds throttle from a scaled feed-forward on the *target* plus the
+/// accel-PID integrator. A port that still ran the acceleration PID
+/// would respond to `estimated_accel_d_mss` here; this test sets that
+/// measurement far from the target so the two paths cannot agree.
+#[test]
+fn vibe_compensation_ignores_the_acceleration_measurement() {
+    let mut d = PosControlD::new();
+    d.pos_desired_m = 1.0;
+    let mut pos_p = AcP1d::new(1.0);
+    let mut vel_pid = AcPidBasic::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(1.0);
+    let mut inp = d_update_inputs();
+    inp.vibe_comp_enabled = true;
+    inp.throttle_hover = 0.4;
+    inp.estimated_accel_d_mss = 50.0;
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    // vel_target = 1, accel_target = 1 (P=1, I=D=0).
+    // vibe thrust = 0.250 * 0.4 * 1 + I, I walks by
+    // dt * hover * vel_error * vel_kp * 0.125 = 0.02 * 0.4 * 1 * 1 * 0.125
+    // = 0.001. Then hover is subtracted.
+    let vibe_i = 0.02 * 0.4 * 1.0 * 1.0 * 0.125;
+    let expected_thrust = 0.250 * 0.4 * 1.0 + vibe_i - 0.4;
+    assert!(
+        (out.thrust_d_norm - expected_thrust).abs() < 1e-5,
+        "got {} want {expected_thrust}",
+        out.thrust_d_norm
+    );
+}
+
+/// The health ratio walks toward 0.5 of the configured descent speed
+/// of error and is clamped to 0..2. Starting at the default 2, a large
+/// positive velocity error pulls it down.
+#[test]
+fn the_health_ratio_walks_and_clamps() {
+    let mut d = PosControlD::new();
+    assert_eq!(d.vel_d_control_ratio, 2.0);
+    d.pos_desired_m = 10.0;
+    let mut pos_p = AcP1d::new(1.0);
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_update_inputs();
+    inp.vel_max_down_ms = 1.0;
+
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    // error = 10, error_ratio = 10, delta = 0.02 * 0.1 * (0.5 - 10) = -0.019
+    assert!((out.vel_d_control_ratio - (2.0 - 0.019)).abs() < 1e-5);
+
+    d.vel_d_control_ratio = 0.0;
+    d.pos_desired_m = -10.0;
+    pos_p = AcP1d::new(1.0);
+    vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    // error = -10, error_ratio = -10, delta = 0.02 * 0.1 * (0.5 - -10) = 0.021
+    // 0 + 0.021 stays above 0.
+    let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((out.vel_d_control_ratio - 0.021).abs() < 1e-5);
 }

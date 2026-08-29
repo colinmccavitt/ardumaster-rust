@@ -5,8 +5,8 @@
 //! vertical axis is a separate controller with its own limits, because a
 //! multirotor's authority in the two is not remotely the same.
 //!
-//! leftover: `D_update_controller` (vertical PID + AHRS).
 //! leftover: `NE_init_controller` / `NE_update_offsets` / EKF reset.
+//! leftover: `D_init_controller` / `D_update_offsets` / EKF reset.
 //! leftover: `var_info`.
 //!
 //! Lean-angle conversions and `get_thrust_vector` are already in — do not redo.
@@ -17,10 +17,10 @@ use ap_math::control::{
     stopping_distance, update_pos_vel_accel, update_pos_vel_accel_xy, update_vel_accel,
     update_vel_accel_xy, Postype, GRAVITY_MSS,
 };
-use ap_math::scalar::{is_positive, is_zero};
+use ap_math::scalar::{constrain_value, is_negative, is_positive, is_zero};
 use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
-use ap_pid::{AcP2d, AcPid2d};
+use ap_pid::{AcP1d, AcP2d, AcPid, AcPid2d, AcPidBasic, Scaling};
 
 /// Default horizontal jerk, upstream `POSCONTROL_JERK_NE_MSSS`.
 pub const JERK_NE_MSSS: f32 = 5.0;
@@ -472,6 +472,8 @@ pub struct PosControlD {
     pub accel_desired_mss: f32,
     /// Directional limit from the last controller run.
     pub limit: f32,
+    /// Vertical-axis health, upstream `_vel_d_control_ratio`. Starts at 2.
+    pub vel_d_control_ratio: f32,
 }
 
 impl Default for PosControlD {
@@ -489,6 +491,7 @@ impl PosControlD {
             vel_desired_ms: 0.0,
             accel_desired_mss: 0.0,
             limit: 0.0,
+            vel_d_control_ratio: 2.0,
         }
     }
 
@@ -888,7 +891,7 @@ impl PosControlNe {
     ///
     /// leftover: `NE_handle_ekf_reset` / `NE_init_controller` timeout.
     /// leftover: `NE_update_offsets` (offsets are taken as given).
-    /// leftover: `D_update_controller` (vertical PID + AHRS).
+    /// leftover: `D_init_controller` / `D_update_offsets` / EKF reset.
     /// leftover: `var_info`.
     ///
     /// Lean-angle conversion uses [`accel_ne_to_lean_angles`];
@@ -996,4 +999,235 @@ pub fn yaw_from_ne_motion(
         return (vel_desired_ms.angle(), turn_rate_rads);
     }
     (att_yaw_target_rad, 0.0)
+}
+
+/// Vibration-override P gain, upstream `POSCONTROL_VIBE_COMP_P_GAIN`.
+pub const VIBE_COMP_P_GAIN: f32 = 0.250;
+
+/// Vibration-override I gain, upstream `POSCONTROL_VIBE_COMP_I_GAIN`.
+pub const VIBE_COMP_I_GAIN: f32 = 0.125;
+
+/// Low-pass on the throttle sent to the attitude controller, upstream
+/// `POSCONTROL_THROTTLE_CUTOFF_FREQ_HZ`. The port returns the throttle
+/// rather than calling the attitude controller; a caller that does
+/// `set_throttle_out` should use this cutoff.
+pub const THROTTLE_CUTOFF_FREQ_HZ: f32 = 2.0;
+
+/// Current D offsets. The machinery that *moves* these toward their
+/// targets is a leftover (`D_update_offsets` / `D_init_offsets`); this
+/// slice takes the values as they stand.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DOffsets {
+    /// Position offset, metres, upstream `_pos_offset_ned_m.z`.
+    pub pos_m: Postype,
+    /// Velocity offset, metres per second.
+    pub vel_ms: f32,
+    /// Acceleration offset, metres per second squared.
+    pub accel_mss: f32,
+}
+
+/// Current terrain estimate along down. `update_terrain` is leftover;
+/// the values are taken as given.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DTerrain {
+    /// Terrain position along down, metres, upstream `_pos_terrain_d_m`.
+    pub pos_m: Postype,
+    /// Terrain velocity along down, metres per second.
+    pub vel_ms: f32,
+    /// Terrain acceleration along down, metres per second squared.
+    pub accel_mss: f32,
+}
+
+/// Position and velocity the vertical PID path reads.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DEstimates {
+    /// Position estimate, metres NED-down, upstream `_pos_estimate_ned_m.z`.
+    pub pos_m: Postype,
+    /// Velocity estimate, metres per second.
+    pub vel_ms: f32,
+}
+
+/// Everything `D_update_controller` reads from outside itself.
+///
+/// AHRS, the motors, and the scheduler are passed in rather than reached
+/// for: ADR-0004 rules out singletons. The timeout / init path, the
+/// EKF-reset handler, offset motion, and terrain motion are leftovers
+/// and are not invoked here — a caller that has not been running is
+/// expected to have initialised before this is called.
+#[derive(Debug, Clone, Copy)]
+pub struct DUpdateInputs {
+    /// Loop period, seconds, upstream `_dt_s`.
+    pub dt: f32,
+    /// Milliseconds since boot, for the acceleration PID's slew limiter.
+    pub now_ms: u32,
+    /// AHRS vertical control scaler, upstream `AP::ahrs().getControlScaleZ()`.
+    ///
+    /// Applied twice: once to the P-controller's velocity demand and once
+    /// to the velocity-PID's acceleration demand. The acceleration PID
+    /// itself is not scaled — it is already working in thrust units.
+    pub ahrs_control_scale_z: f32,
+    /// Position and velocity estimates.
+    pub estimates: DEstimates,
+    /// Current offsets (not advanced — that is leftover).
+    pub offsets: DOffsets,
+    /// Current terrain (not advanced — that is leftover).
+    pub terrain: DTerrain,
+    /// Gravity-compensated vertical acceleration, upstream
+    /// `get_estimated_accel_D_mss` = `ahrs.get_accel_ef().z + g`.
+    pub estimated_accel_d_mss: f32,
+    /// Motors at the lower throttle limit.
+    pub throttle_lower: bool,
+    /// Motors at the upper throttle limit.
+    pub throttle_upper: bool,
+    /// Hover throttle, used as the accel-PID IMAX floor and subtracted
+    /// from the thrust so the attitude controller sees a delta from hover.
+    pub throttle_hover: f32,
+    /// Use the vibration-resistant throttle estimator instead of the
+    /// acceleration PID, upstream `_vibe_comp_enabled`.
+    pub vibe_comp_enabled: bool,
+    /// Configured maximum descent speed, used only by the health ratio.
+    pub vel_max_down_ms: f32,
+}
+
+/// What `D_update_controller` wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DUpdateOutput {
+    /// Absolute position target, desired plus offset plus terrain,
+    /// possibly clamped by the P controller.
+    pub pos_target_m: Postype,
+    /// Velocity target after P, AHRS scale, and feed-forward.
+    pub vel_target_ms: f32,
+    /// Acceleration target after the velocity PID, AHRS scale, and
+    /// feed-forward.
+    pub accel_target_mss: f32,
+    /// Normalised down-positive thrust after hover is subtracted,
+    /// upstream `thrust_d_norm`.
+    pub thrust_d_norm: f32,
+    /// Throttle sent to the attitude controller, upstream
+    /// `set_throttle_out(-thrust_d_norm, ...)`.
+    pub throttle_out: f32,
+    /// Vertical-axis health indicator after this call, stored 0..2.
+    pub vel_d_control_ratio: f32,
+    /// Limit-vector z after this call: -1 upper, +1 lower, else 0.
+    pub limit: f32,
+}
+
+impl PosControlD {
+    /// The vertical PID path, upstream `D_update_controller`.
+    ///
+    /// Position P produces a velocity correction; velocity PID produces
+    /// an acceleration correction; both are scaled by the AHRS Z factor
+    /// and added to the kinematic feed-forward (desired plus offset plus
+    /// terrain). The acceleration PID then turns that demand into a
+    /// hover-relative thrust, which is negated for the attitude
+    /// controller because this axis is down-positive and throttle is
+    /// up-positive.
+    ///
+    /// leftover: `D_handle_ekf_reset` / `D_init_controller` timeout.
+    /// leftover: `D_update_offsets` / `update_terrain` (taken as given).
+    /// leftover: `NE_init_controller` / `NE_update_offsets` / EKF reset.
+    /// leftover: `var_info`.
+    pub fn update_controller(
+        &mut self,
+        pos_p: &mut AcP1d,
+        vel_pid: &mut AcPidBasic,
+        accel_pid: &mut AcPid,
+        inp: &DUpdateInputs,
+    ) -> DUpdateOutput {
+        let mut pos_target = self.pos_desired_m + inp.offsets.pos_m + inp.terrain.pos_m;
+
+        let mut vel_target = pos_p.update_all(&mut pos_target, inp.estimates.pos_m);
+        vel_target *= inp.ahrs_control_scale_z;
+
+        self.pos_desired_m = pos_target - (inp.offsets.pos_m + inp.terrain.pos_m);
+
+        vel_target += self.vel_desired_ms + inp.offsets.vel_ms + inp.terrain.vel_ms;
+
+        let mut accel_target = vel_pid.update_all(
+            vel_target,
+            inp.estimates.vel_ms,
+            inp.dt,
+            inp.throttle_lower,
+            inp.throttle_upper,
+        );
+        accel_target *= inp.ahrs_control_scale_z;
+        accel_target += self.accel_desired_mss + inp.offsets.accel_mss + inp.terrain.accel_mss;
+
+        if inp.throttle_hover > accel_pid.gains.imax {
+            accel_pid.gains.imax = inp.throttle_hover.abs();
+        }
+
+        let mut thrust_d_norm = if inp.vibe_comp_enabled {
+            throttle_with_vibration_override(
+                accel_pid,
+                vel_pid.error(),
+                vel_pid.kp,
+                accel_target,
+                inp.dt,
+                inp.throttle_hover,
+                inp.throttle_lower || inp.throttle_upper,
+            )
+        } else {
+            let mut thrust = accel_pid.update_all(
+                accel_target,
+                inp.estimated_accel_d_mss,
+                inp.dt,
+                inp.throttle_lower || inp.throttle_upper,
+                Scaling::default(),
+                inp.now_ms,
+            );
+            thrust += accel_pid.info().ff;
+            thrust
+        };
+        thrust_d_norm -= inp.throttle_hover;
+
+        let error_ratio = vel_pid.error() / inp.vel_max_down_ms;
+        self.vel_d_control_ratio += inp.dt * 0.1 * (0.5 - error_ratio);
+        self.vel_d_control_ratio = constrain_value(self.vel_d_control_ratio, 0.0, 2.0);
+
+        self.limit = if inp.throttle_upper {
+            -1.0
+        } else if inp.throttle_lower {
+            1.0
+        } else {
+            0.0
+        };
+
+        DUpdateOutput {
+            pos_target_m: pos_target,
+            vel_target_ms: vel_target,
+            accel_target_mss: accel_target,
+            thrust_d_norm,
+            throttle_out: -thrust_d_norm,
+            vel_d_control_ratio: self.vel_d_control_ratio,
+            limit: self.limit,
+        }
+    }
+}
+
+/// Vibration-resistant throttle, upstream `get_throttle_with_vibration_override`.
+///
+/// IMU vibration corrupts the acceleration measurement the inner PID
+/// needs, so this path drops the measurement entirely. Throttle is a
+/// scaled feed-forward on the acceleration *target* plus the accel-PID
+/// integrator, and the integrator is walked using the velocity error
+/// rather than the (untrusted) acceleration error — only while the
+/// motors are not saturated, or while the integrator is already
+/// helping against the velocity error.
+fn throttle_with_vibration_override(
+    accel_pid: &mut AcPid,
+    vel_error: f32,
+    vel_kp: f32,
+    accel_target_mss: f32,
+    dt: f32,
+    throttle_hover: f32,
+    throttle_limited: bool,
+) -> f32 {
+    let i = accel_pid.integrator();
+    let helping =
+        (is_positive(i) && is_negative(vel_error)) || (is_negative(i) && is_positive(vel_error));
+    if !throttle_limited || helping {
+        accel_pid.set_integrator(i + dt * throttle_hover * vel_error * vel_kp * VIBE_COMP_I_GAIN);
+    }
+    VIBE_COMP_P_GAIN * throttle_hover * accel_target_mss + accel_pid.integrator()
 }

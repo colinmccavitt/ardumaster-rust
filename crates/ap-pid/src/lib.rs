@@ -23,11 +23,15 @@
 
 #![no_std]
 
+pub mod p_1d;
 pub mod p_2d;
 pub mod pid_2d;
+pub mod pid_basic;
 
+pub use p_1d::AcP1d;
 pub use p_2d::AcP2d;
 pub use pid_2d::AcPid2d;
+pub use pid_basic::AcPidBasic;
 
 use ap_filter::notch::NotchFilter;
 use ap_filter::slew::{SlewLimiter, SlewParams};
