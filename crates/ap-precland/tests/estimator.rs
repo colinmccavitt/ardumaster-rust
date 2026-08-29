@@ -2,8 +2,8 @@
 //! `check_ekf_init_timeout`, `construct_pos_meas_using_rangefinder`,
 //! `retrieve_los_meas`.
 //!
-//! Tracked as **COP-028**. `run_output_prediction`, backends, and the
-//! retry state machine stay later. `PosVelEKF` is wired.
+//! Tracked as **COP-028**. Backends and the retry state machine stay
+//! later. `PosVelEKF` and `run_output_prediction` are wired.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::rotations_gen::Rotation;
@@ -455,8 +455,8 @@ fn leftover_catalog_drops_estimator_symbols() {
     assert!(!REMAINING.contains(&"AC_PrecLand::check_ekf_init_timeout"));
     assert!(!REMAINING.contains(&"AC_PrecLand::construct_pos_meas_using_rangefinder"));
     assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
-    assert!(REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
-    assert!(REMAINING.contains(&"AC_PrecLand::target_acquired"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::target_acquired"));
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));

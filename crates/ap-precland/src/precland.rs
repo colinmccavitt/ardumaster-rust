@@ -1,14 +1,19 @@
-//! `AC_PrecLand::init` / `update` / `handle_msg` / estimator leftovers,
-//! upstream `libraries/AC_PrecLand/AC_PrecLand.cpp`.
+//! `AC_PrecLand::init` / `update` / `handle_msg` / estimator /
+//! output-prediction leftovers, upstream
+//! `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. Sensor `update`, output prediction, getters,
+//! Tracked as **COP-028**. Sensor `update`, logging, the inertial ring,
 //! and the retry state machine stay in [`crate::leftover`]. Both
 //! [`PosVelEKF`](crate::PosVelEKF)s run with the Kalman path.
+//! `run_output_prediction` writes the lag-compensated output the
+//! getters read.
 
+use ap_math::location::Location;
 use ap_math::rotations_gen::{rotate, Rotation};
 use ap_math::scalar::{cd_to_rad, constrain_value, is_zero, sq};
 use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
+use ap_math::Ftype;
 
 use crate::estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
@@ -17,6 +22,10 @@ use crate::estimator::{
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
 use crate::pos_vel_ekf::PosVelEKF;
+use crate::prediction::{
+    OutputPredictionLeftover, OutputPredictionWorld, LANDING_TARGET_LOST_DIST_THRESH_M,
+    LANDING_TARGET_LOST_TIMEOUT_MS, SENSOR_MAX_ALT_M_DEFAULT, SENSOR_MIN_ALT_M_DEFAULT,
+};
 
 /// Default `PLND_LAG`, seconds. Upstream `AP_GROUPINFO` default.
 pub const LAG_S_DEFAULT: f32 = 0.02;
@@ -115,6 +124,16 @@ pub struct PrecLandParams {
     pub cam_offset_m: Vector3f,
     /// `PLND_ACC_P_NSE`.
     pub accel_noise: f32,
+    /// `PLND_LAND_OFS_X`, centimetres, body-forward of the target.
+    pub land_ofs_cm_x: f32,
+    /// `PLND_LAND_OFS_Y`, centimetres, body-right of the target.
+    pub land_ofs_cm_y: f32,
+    /// `PLND_OPTIONS` bitfield.
+    pub options: u16,
+    /// `PLND_ALT_MIN`, metres. Zero means no floor.
+    pub sensor_min_alt_m: f32,
+    /// `PLND_ALT_MAX`, metres. Zero means no ceiling.
+    pub sensor_max_alt_m: f32,
 }
 
 impl Default for PrecLandParams {
@@ -129,6 +148,11 @@ impl Default for PrecLandParams {
             yaw_align_cd: 0.0,
             cam_offset_m: Vector3f::zero(),
             accel_noise: ACCEL_NOISE_DEFAULT,
+            land_ofs_cm_x: 0.0,
+            land_ofs_cm_y: 0.0,
+            options: OPTION_DISABLED,
+            sensor_min_alt_m: SENSOR_MIN_ALT_M_DEFAULT,
+            sensor_max_alt_m: SENSOR_MAX_ALT_M_DEFAULT,
         }
     }
 }
@@ -257,8 +281,17 @@ pub struct PrecLand {
     target_pos_rel_meas_ned_m: Vector3f,
     target_pos_rel_est_ne_m: Vector2f,
     target_vel_rel_est_ne_ms: Vector2f,
+    target_pos_rel_out_ne_m: Vector2f,
+    target_vel_rel_out_ne_ms: Vector2f,
     last_target_pos_rel_origin_ned_m: Vector3f,
     last_vehicle_pos_ned_m: Vector3f,
+    last_veh_velocity_ned_ms: Vector3f,
+    last_valid_target_ms: u32,
+    land_ofs_cm_x: f32,
+    land_ofs_cm_y: f32,
+    options: u16,
+    sensor_min_alt_m: f32,
+    sensor_max_alt_m: f32,
     ekf_x: PosVelEKF,
     ekf_y: PosVelEKF,
 }
@@ -300,8 +333,17 @@ impl PrecLand {
             target_pos_rel_meas_ned_m: Vector3f::zero(),
             target_pos_rel_est_ne_m: Vector2f::zero(),
             target_vel_rel_est_ne_ms: Vector2f::zero(),
+            target_pos_rel_out_ne_m: Vector2f::zero(),
+            target_vel_rel_out_ne_ms: Vector2f::zero(),
             last_target_pos_rel_origin_ned_m: Vector3f::zero(),
             last_vehicle_pos_ned_m: Vector3f::zero(),
+            last_veh_velocity_ned_ms: Vector3f::zero(),
+            last_valid_target_ms: 0,
+            land_ofs_cm_x: params.land_ofs_cm_x,
+            land_ofs_cm_y: params.land_ofs_cm_y,
+            options: params.options,
+            sensor_min_alt_m: params.sensor_min_alt_m,
+            sensor_max_alt_m: params.sensor_max_alt_m,
             ekf_x: PosVelEKF::new(),
             ekf_y: PosVelEKF::new(),
         }
@@ -440,8 +482,9 @@ impl PrecLand {
     /// `AC_PrecLand::run_estimator`.
     ///
     /// RAW_SENSOR writes the relative NE estimate here. Kalman predict /
-    /// init / fuse / NIS run on `_ekf_x` / `_ekf_y`. Output prediction
-    /// after those estimates is still a leftover.
+    /// init / fuse / NIS run on `_ekf_x` / `_ekf_y`. Call
+    /// [`Self::run_output_prediction`] when
+    /// [`RunEstimatorLeftover::need_output_prediction`] is set.
     #[must_use]
     pub fn run_estimator(&mut self, input: EstimatorInput) -> RunEstimatorLeftover {
         let mut leftover = RunEstimatorLeftover::default();
@@ -645,8 +688,7 @@ impl PrecLand {
 
     /// `_target_acquired` flag without the public-getter timeout.
     ///
-    /// [`AC_PrecLand::target_acquired`](crate::leftover::REMAINING) stays
-    /// a leftover; this is the field `run_estimator` writes.
+    /// [`Self::target_acquired`] applies [`LANDING_TARGET_TIMEOUT_MS`].
     #[must_use]
     pub fn estimator_target_acquired(&self) -> bool {
         self.target_acquired
@@ -700,6 +742,30 @@ impl PrecLand {
         self.target_vel_rel_est_ne_ms
     }
 
+    /// Lag-compensated relative position after `run_output_prediction`.
+    #[must_use]
+    pub fn target_pos_rel_out_ne_m(&self) -> Vector2f {
+        self.target_pos_rel_out_ne_m
+    }
+
+    /// Lag-compensated relative velocity after `run_output_prediction`.
+    #[must_use]
+    pub fn target_vel_rel_out_ne_ms(&self) -> Vector2f {
+        self.target_vel_rel_out_ne_ms
+    }
+
+    /// `_last_valid_target_ms`.
+    #[must_use]
+    pub fn last_valid_target_ms(&self) -> u32 {
+        self.last_valid_target_ms
+    }
+
+    /// `_last_veh_velocity_NED_ms`.
+    #[must_use]
+    pub fn last_veh_velocity_ned_ms(&self) -> Vector3f {
+        self.last_veh_velocity_ned_ms
+    }
+
     /// `_last_target_pos_rel_origin_ned_m` down component lives in `.z`.
     #[must_use]
     pub fn last_target_pos_rel_origin_ned_m(&self) -> Vector3f {
@@ -743,6 +809,257 @@ impl PrecLand {
     /// Change `PLND_CAM_POS` the same way a param write would.
     pub fn set_cam_offset_m(&mut self, cam_offset_m: Vector3f) {
         self.cam_offset_m = cam_offset_m;
+    }
+
+    /// Change `PLND_OPTIONS` the same way a param write would.
+    pub fn set_options(&mut self, options: u16) {
+        self.options = options;
+    }
+
+    /// Change `PLND_LAND_OFS_*` the same way a param write would.
+    pub fn set_land_ofs_cm(&mut self, x: f32, y: f32) {
+        self.land_ofs_cm_x = x;
+        self.land_ofs_cm_y = y;
+    }
+
+    /// Change `PLND_ALT_MIN` / `PLND_ALT_MAX` the same way a param write would.
+    pub fn set_sensor_alt_limits_m(&mut self, min_m: f32, max_m: f32) {
+        self.sensor_min_alt_m = min_m;
+        self.sensor_max_alt_m = max_m;
+    }
+
+    /// `AC_PrecLand::run_output_prediction`.
+    ///
+    /// `later` is leftover of walking `(*_inertial_history)[1..available())`.
+    /// Index 0 is the delayed slot `run_estimator` already consumed.
+    #[must_use]
+    pub fn run_output_prediction(
+        &mut self,
+        later: &[InertialSample],
+        world: &OutputPredictionWorld,
+    ) -> OutputPredictionLeftover {
+        self.target_pos_rel_out_ne_m = self.target_pos_rel_est_ne_m;
+        self.target_vel_rel_out_ne_ms = self.target_vel_rel_est_ne_ms;
+
+        for inertial in later {
+            self.target_vel_rel_out_ne_ms.x -= inertial.corrected_vehicle_delta_velocity_ned.x;
+            self.target_vel_rel_out_ne_ms.y -= inertial.corrected_vehicle_delta_velocity_ned.y;
+            self.target_pos_rel_out_ne_m.x += self.target_vel_rel_out_ne_ms.x * inertial.dt;
+            self.target_pos_rel_out_ne_m.y += self.target_vel_rel_out_ne_ms.y * inertial.dt;
+        }
+
+        let tbn = world.newest_tbn;
+        let imu_pos_ned = tbn * world.imu_pos_offset;
+        self.target_pos_rel_out_ne_m.x += imu_pos_ned.x;
+        self.target_pos_rel_out_ne_m.y += imu_pos_ned.y;
+
+        let cam_horizontal = Vector3f::new(self.cam_offset_m.x, self.cam_offset_m.y, 0.0);
+        let cam_pos_horizontal_ned = tbn * cam_horizontal;
+        self.target_pos_rel_out_ne_m.x -= cam_pos_horizontal_ned.x;
+        self.target_pos_rel_out_ne_m.y -= cam_pos_horizontal_ned.y;
+
+        let vel_ned_rel_imu = tbn * world.gyro.cross(-world.imu_pos_offset);
+        self.target_vel_rel_out_ne_ms.x -= vel_ned_rel_imu.x;
+        self.target_vel_rel_out_ne_ms.y -= vel_ned_rel_imu.y;
+
+        let mut leftover = OutputPredictionLeftover::default();
+        if let Some(vel) = world.velocity_ned {
+            self.last_veh_velocity_ned_ms = vel;
+            leftover.stored_vehicle_velocity = true;
+        }
+
+        let land_ofs_body = Vector3f::new(self.land_ofs_cm_x, self.land_ofs_cm_y, 0.0) * 0.01;
+        let land_ofs_ned = world.rotation_body_to_ned * land_ofs_body;
+        self.target_pos_rel_out_ne_m.x += land_ofs_ned.x;
+        self.target_pos_rel_out_ne_m.y += land_ofs_ned.y;
+
+        if let Some(pos) = self.get_target_position_m(world.now_ms, world.relative_pos_ne_origin) {
+            self.last_target_pos_rel_origin_ned_m.x = pos.x;
+            self.last_target_pos_rel_origin_ned_m.y = pos.y;
+            leftover.stored_last_target_pos = true;
+        }
+
+        self.last_valid_target_ms = world.now_ms;
+        leftover
+    }
+
+    /// `AC_PrecLand::target_acquired`.
+    ///
+    /// Applies the [`LANDING_TARGET_TIMEOUT_MS`] side-effect. The GCS
+    /// "Target Lost" text is the leftover of
+    /// [`Self::refresh_target_acquired`] returning true.
+    pub fn target_acquired(&mut self, now_ms: u32) -> bool {
+        let _lost = self.refresh_target_acquired(now_ms);
+        self.target_acquired
+    }
+
+    /// `AC_PrecLand::get_target_position_measurement_NED_m`.
+    #[must_use]
+    pub fn get_target_position_measurement_ned_m(&self) -> Vector3f {
+        self.target_pos_rel_meas_ned_m
+    }
+
+    /// `AC_PrecLand::get_target_position_relative_NE_m`.
+    pub fn get_target_position_relative_ne_m(&mut self, now_ms: u32) -> Option<Vector2f> {
+        if !self.target_acquired(now_ms) {
+            return None;
+        }
+        Some(self.target_pos_rel_out_ne_m)
+    }
+
+    /// `AC_PrecLand::get_target_velocity_relative_NE_ms`.
+    pub fn get_target_velocity_relative_ne_ms(&mut self, now_ms: u32) -> Option<Vector2f> {
+        if !self.target_acquired(now_ms) {
+            return None;
+        }
+        Some(self.target_vel_rel_out_ne_ms)
+    }
+
+    /// `AC_PrecLand::get_target_position_m`.
+    ///
+    /// `curr_pos_ne` is leftover of `AP::ahrs().get_relative_position_NE_origin`.
+    pub fn get_target_position_m(
+        &mut self,
+        now_ms: u32,
+        curr_pos_ne: Option<Vector2f>,
+    ) -> Option<Vector2f> {
+        if !self.target_acquired(now_ms) {
+            return None;
+        }
+        let curr = curr_pos_ne?;
+        Some(Vector2f::new(
+            self.target_pos_rel_out_ne_m.x + curr.x,
+            self.target_pos_rel_out_ne_m.y + curr.y,
+        ))
+    }
+
+    /// `AC_PrecLand::get_target_velocity_ms`.
+    ///
+    /// Returns zero when the target is not moving, RAW_SENSOR, or unknown.
+    pub fn get_target_velocity_ms(
+        &mut self,
+        vehicle_velocity_ne_ms: Vector2f,
+        now_ms: u32,
+    ) -> Vector2f {
+        if self.options & OPTION_MOVING_TARGET == 0 {
+            return Vector2f::zero();
+        }
+        if self.estimator_type == EstimatorType::RawSensor {
+            return Vector2f::zero();
+        }
+        match self.get_target_velocity_relative_ne_ms(now_ms) {
+            Some(rel) => Vector2f::new(
+                rel.x + vehicle_velocity_ne_ms.x,
+                rel.y + vehicle_velocity_ne_ms.y,
+            ),
+            None => Vector2f::zero(),
+        }
+    }
+
+    /// `AC_PrecLand::get_target_velocity`.
+    pub fn get_target_velocity(&mut self, now_ms: u32) -> Option<Vector2f> {
+        if self.options & OPTION_MOVING_TARGET == 0 {
+            return None;
+        }
+        if self.estimator_type == EstimatorType::RawSensor {
+            return None;
+        }
+        let rel = self.get_target_velocity_relative_ne_ms(now_ms)?;
+        Some(Vector2f::new(
+            rel.x + self.last_veh_velocity_ned_ms.x,
+            rel.y + self.last_veh_velocity_ned_ms.y,
+        ))
+    }
+
+    /// `AC_PrecLand::get_target_location`.
+    ///
+    /// `origin` is leftover of `AP::ahrs().get_origin`. Altitude in the
+    /// returned location is not reliable (upstream comment).
+    pub fn get_target_location(
+        &mut self,
+        now_ms: u32,
+        origin: Option<Location>,
+    ) -> Option<Location> {
+        if !self.target_acquired(now_ms) {
+            return None;
+        }
+        let mut loc = origin?;
+        loc.offset(
+            Ftype::from(self.last_target_pos_rel_origin_ned_m.x),
+            Ftype::from(self.last_target_pos_rel_origin_ned_m.y),
+        );
+        loc.offset_up_m(-self.last_target_pos_rel_origin_ned_m.z);
+        Some(loc)
+    }
+
+    /// `AC_PrecLand::check_if_sensor_in_range`.
+    #[must_use]
+    pub fn check_if_sensor_in_range(
+        &self,
+        rangefinder_alt_m: f32,
+        rangefinder_alt_valid: bool,
+    ) -> bool {
+        if is_zero(self.sensor_max_alt_m) && is_zero(self.sensor_min_alt_m) {
+            return true;
+        }
+        if !rangefinder_alt_valid {
+            return false;
+        }
+        if rangefinder_alt_m > self.sensor_max_alt_m && !is_zero(self.sensor_max_alt_m) {
+            return false;
+        }
+        if rangefinder_alt_m < self.sensor_min_alt_m && !is_zero(self.sensor_min_alt_m) {
+            return false;
+        }
+        true
+    }
+
+    /// `AC_PrecLand::check_target_status`.
+    ///
+    /// `curr_pos_ne` is leftover of `AP::ahrs().get_relative_position_NE_origin`
+    /// on the recently-lost path.
+    pub fn check_target_status(
+        &mut self,
+        rangefinder_alt_m: f32,
+        rangefinder_alt_valid: bool,
+        now_ms: u32,
+        curr_pos_ne: Option<Vector2f>,
+    ) {
+        if self.target_acquired(now_ms) {
+            self.current_target_state = TargetState::Found;
+            return;
+        }
+
+        if self.current_target_state == TargetState::Found
+            || self.current_target_state == TargetState::RecentlyLost
+        {
+            self.current_target_state = TargetState::RecentlyLost;
+        } else {
+            self.current_target_state = TargetState::NeverSeen;
+        }
+
+        if !self.check_if_sensor_in_range(rangefinder_alt_m, rangefinder_alt_valid) {
+            self.current_target_state = TargetState::OutOfRange;
+            return;
+        }
+
+        if self.current_target_state == TargetState::RecentlyLost {
+            if let Some(curr) = curr_pos_ne {
+                let last_xy = self.last_target_pos_rel_origin_ned_m.xy();
+                let last_veh_xy = self.last_vehicle_pos_ned_m.xy();
+                let dist_to_last_target = (curr - last_xy).length();
+                let dist_to_last_veh = (curr - last_veh_xy).length();
+                if now_ms.wrapping_sub(self.last_valid_target_ms) > LANDING_TARGET_LOST_TIMEOUT_MS {
+                    self.current_target_state = TargetState::NeverSeen;
+                    return;
+                }
+                if dist_to_last_target > LANDING_TARGET_LOST_DIST_THRESH_M
+                    || dist_to_last_veh > LANDING_TARGET_LOST_DIST_THRESH_M
+                {
+                    self.current_target_state = TargetState::NeverSeen;
+                }
+            }
+        }
     }
 
     /// `target_acquired()` side-effect used by the estimator.

@@ -4,10 +4,12 @@
 //!
 //! This crate owns the first contiguous `AC_PrecLand` leftovers:
 //! [`PrecLand::init`], [`PrecLand::update`], the thin
-//! [`PrecLand::handle_msg`] dispatch, and the estimator frontend
+//! [`PrecLand::handle_msg`] dispatch, the estimator frontend
 //! ([`PrecLand::run_estimator`], [`PrecLand::check_ekf_init_timeout`],
 //! [`PrecLand::construct_pos_meas_using_rangefinder`],
-//! [`PrecLand::retrieve_los_meas`]). `init` is the constructor's
+//! [`PrecLand::retrieve_los_meas`]), Kalman [`PosVelEKF`],
+//! [`PrecLand::run_output_prediction`], and the getters /
+//! `check_target_status` leftover. `init` is the constructor's
 //! follow-on: constrain `PLND_LAG`, size the inertial history ring,
 //! pick a sensor backend from `PLND_TYPE`, run that backend's `init()`,
 //! and rotate the body-frame approach vector by `PLND_ORIENT`.
@@ -19,6 +21,8 @@
 //! The estimator leftover is the RAW / Kalman switch, the EKF init
 //! timeout, rangefinder NED construction, and LOS retrieve. Kalman
 //! `PosVelEKF` predict / init / fuse / NIS run here.
+//! `run_output_prediction` lag-compensates the estimate and the getters
+//! / `check_target_status` leftover consume that output.
 //!
 //! Copter Land's last 6% (`land_run_normal_or_precland`, `precland_run`,
 //! `precland_retry_position`) is blocked on this crate. This slice does
@@ -49,9 +53,8 @@
 //!
 //! # What this crate does not own yet
 //!
-//! [`leftover::REMAINING`] is the catalog: getters / target status,
-//! `run_output_prediction`, logging, the four sensor `update` paths,
-//! and `AC_PrecLand_StateMachine`.
+//! [`leftover::REMAINING`] is the catalog: logging, the inertial ring,
+//! the four sensor `update` paths, and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
@@ -59,6 +62,7 @@ pub mod estimator;
 pub mod leftover;
 pub mod pos_vel_ekf;
 pub mod precland;
+pub mod prediction;
 
 pub use estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
@@ -73,4 +77,8 @@ pub use precland::{
     TargetState, Type, UpdateLeftover, VectorFrame, LAG_S_DEFAULT, LAG_S_MAX, LAG_S_MIN,
     LOG_INTERVAL_MS, OPTION_DISABLED, OPTION_FAST_DESCEND, OPTION_MOVING_TARGET,
     OPTION_PRECLAND_AFTER_REPOSITION, ORIENT_DEFAULT_COPTER, XY_MAX_DIST_DESC_M_DEFAULT,
+};
+pub use prediction::{
+    OutputPredictionLeftover, OutputPredictionWorld, LANDING_TARGET_LOST_DIST_THRESH_M,
+    LANDING_TARGET_LOST_TIMEOUT_MS, SENSOR_MAX_ALT_M_DEFAULT, SENSOR_MIN_ALT_M_DEFAULT,
 };

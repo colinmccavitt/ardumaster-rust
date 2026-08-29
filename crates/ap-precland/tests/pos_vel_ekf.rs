@@ -1,7 +1,7 @@
 //! Standalone `PosVelEKF` leftover, upstream `PosVelEKF.cpp`.
 //!
 //! Tracked as **COP-028**. Algebra matches the C++ 1-D predict / fuse /
-//! NIS exactly. `run_output_prediction` stays later.
+//! NIS exactly. `run_output_prediction` is a separate leftover.
 
 use ap_math::scalar::is_equal;
 use ap_precland::{PosVelEKF, REMAINING};
@@ -62,7 +62,7 @@ fn leftover_catalog_drops_posvelekf() {
         "PosVelEKF slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"PosVelEKF"));
-    assert!(REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(REMAINING.contains(&"inertial_data_frame_s"));
 }

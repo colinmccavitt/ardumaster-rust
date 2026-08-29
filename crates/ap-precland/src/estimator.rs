@@ -4,8 +4,8 @@
 //! Tracked as **COP-028**. This slice owns the estimator switch,
 //! `check_ekf_init_timeout`, `construct_pos_meas_using_rangefinder`, and
 //! `retrieve_los_meas`. [`PosVelEKF`](crate::PosVelEKF) predict / init /
-//! fuse / NIS run with the Kalman path. `run_output_prediction` and the
-//! inertial ring stay later.
+//! fuse / NIS run with the Kalman path. `run_output_prediction` is a
+//! separate leftover; the inertial ring stays later.
 
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector2::Vector2f;
@@ -20,9 +20,6 @@ pub const EKF_INIT_TIME_MS: u32 = 2_000;
 /// fails. Upstream `EKF_INIT_SENSOR_MIN_UPDATE_MS`.
 pub const EKF_INIT_SENSOR_MIN_UPDATE_MS: u32 = 500;
 /// `target_acquired()` timeout. Upstream `LANDING_TARGET_TIMEOUT_MS`.
-///
-/// The public getter stays a leftover; `run_estimator` still needs this
-/// side-effect because it calls `target_acquired()`.
 pub const LANDING_TARGET_TIMEOUT_MS: u32 = 2_000;
 /// Default `PLND_ACC_P_NSE`. Upstream `AP_GROUPINFO` default.
 pub const ACCEL_NOISE_DEFAULT: f32 = 2.5;
@@ -154,7 +151,7 @@ pub struct RunEstimatorLeftover {
     pub constructed_pos_meas: bool,
     /// RAW_SENSOR early-return: some history slot had invalid velocity.
     pub raw_sensor_invalid_velocity: bool,
-    /// Leftover of `run_output_prediction()`.
+    /// `run_output_prediction` should run this tick (`target_acquired`).
     pub need_output_prediction: bool,
     /// `_ekf_x/_ekf_y.predict` ran this tick.
     pub need_ekf_predict: bool,
