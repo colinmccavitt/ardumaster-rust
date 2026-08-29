@@ -171,7 +171,11 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     );
     assert!(!REMAINING.contains(&"AC_PrecLand::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand::handle_msg"));
-    assert!(REMAINING.contains(&"AC_PrecLand::run_estimator"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::run_estimator"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::check_ekf_init_timeout"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::construct_pos_meas_using_rangefinder"));
+    assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
+    assert!(REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(REMAINING.contains(&"AC_PrecLand::check_target_status"));
     assert!(REMAINING.contains(&"AC_PrecLand::Write_Precland"));
     assert!(REMAINING.contains(&"AC_PrecLand_Backend::update"));

@@ -1,12 +1,21 @@
-//! `AC_PrecLand::init` / `update` / `handle_msg`, upstream
-//! `libraries/AC_PrecLand/AC_PrecLand.cpp`.
+//! `AC_PrecLand::init` / `update` / `handle_msg` / estimator leftovers,
+//! upstream `libraries/AC_PrecLand/AC_PrecLand.cpp`.
 //!
-//! Tracked as **COP-028**. Sensor `update`, the estimator, getters, and
-//! the retry state machine stay in [`crate::leftover`].
+//! Tracked as **COP-028**. Sensor `update`, `PosVelEKF`, output
+//! prediction, getters, and the retry state machine stay in
+//! [`crate::leftover`].
 
 use ap_math::rotations_gen::{rotate, Rotation};
-use ap_math::scalar::constrain_value;
+use ap_math::scalar::{cd_to_rad, constrain_value, is_zero, sq};
+use ap_math::vector2::Vector2f;
 use ap_math::vector3::Vector3f;
+
+use crate::estimator::{
+    EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
+    RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
+    EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
+    EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
+};
 
 /// Default `PLND_LAG`, seconds. Upstream `AP_GROUPINFO` default.
 pub const LAG_S_DEFAULT: f32 = 0.02;
@@ -97,6 +106,14 @@ pub struct PrecLandParams {
     pub orient: Rotation,
     /// `PLND_BUS`. `-1` is the default bus.
     pub bus: i8,
+    /// `PLND_EST_TYPE`. Default is Kalman.
+    pub estimator_type: EstimatorType,
+    /// `PLND_YAW_ALIGN`, centidegrees.
+    pub yaw_align_cd: f32,
+    /// `PLND_CAM_POS`, metres, camera relative to CG.
+    pub cam_offset_m: Vector3f,
+    /// `PLND_ACC_P_NSE`.
+    pub accel_noise: f32,
 }
 
 impl Default for PrecLandParams {
@@ -107,6 +124,10 @@ impl Default for PrecLandParams {
             lag_s: LAG_S_DEFAULT,
             orient: ORIENT_DEFAULT_COPTER,
             bus: -1,
+            estimator_type: EstimatorType::KalmanFilter,
+            yaw_align_cd: 0.0,
+            cam_offset_m: Vector3f::zero(),
+            accel_noise: ACCEL_NOISE_DEFAULT,
         }
     }
 }
@@ -215,6 +236,10 @@ pub struct PrecLand {
     lag_s: f32,
     orient: Rotation,
     bus: i8,
+    estimator_type: EstimatorType,
+    yaw_align_cd: f32,
+    cam_offset_m: Vector3f,
+    accel_noise: f32,
     backend: Option<Type>,
     backend_healthy: bool,
     current_target_state: TargetState,
@@ -222,6 +247,17 @@ pub struct PrecLand {
     inertial_history_ready: bool,
     approach_vector_body: Vector3f,
     last_log_ms: u32,
+    target_acquired: bool,
+    estimator_initialized: bool,
+    estimator_init_ms: u32,
+    last_update_ms: u32,
+    last_backend_los_meas_ms: u32,
+    outlier_reject_count: u32,
+    target_pos_rel_meas_ned_m: Vector3f,
+    target_pos_rel_est_ne_m: Vector2f,
+    target_vel_rel_est_ne_ms: Vector2f,
+    last_target_pos_rel_origin_ned_m: Vector3f,
+    last_vehicle_pos_ned_m: Vector3f,
 }
 
 impl PrecLand {
@@ -241,6 +277,10 @@ impl PrecLand {
             lag_s: params.lag_s,
             orient: params.orient,
             bus: params.bus,
+            estimator_type: params.estimator_type,
+            yaw_align_cd: params.yaw_align_cd,
+            cam_offset_m: params.cam_offset_m,
+            accel_noise: params.accel_noise,
             backend: None,
             backend_healthy: false,
             current_target_state: TargetState::NeverSeen,
@@ -248,6 +288,17 @@ impl PrecLand {
             inertial_history_ready: false,
             approach_vector_body: Vector3f::zero(),
             last_log_ms: 0,
+            target_acquired: false,
+            estimator_initialized: false,
+            estimator_init_ms: 0,
+            last_update_ms: 0,
+            last_backend_los_meas_ms: 0,
+            outlier_reject_count: 0,
+            target_pos_rel_meas_ned_m: Vector3f::zero(),
+            target_pos_rel_est_ne_m: Vector2f::zero(),
+            target_vel_rel_est_ne_ms: Vector2f::zero(),
+            last_target_pos_rel_origin_ned_m: Vector3f::zero(),
+            last_vehicle_pos_ned_m: Vector3f::zero(),
         }
     }
 
@@ -381,6 +432,139 @@ impl PrecLand {
         }
     }
 
+    /// `AC_PrecLand::run_estimator`.
+    ///
+    /// RAW_SENSOR writes the relative NE estimate here. Kalman predict /
+    /// init / fuse are recorded as [`RunEstimatorLeftover`] so
+    /// `PosVelEKF` can stay a later leftover.
+    #[must_use]
+    pub fn run_estimator(&mut self, input: EstimatorInput) -> RunEstimatorLeftover {
+        let mut leftover = RunEstimatorLeftover::default();
+        leftover.need_gcs_target_lost = self.refresh_target_acquired(input.now_ms);
+
+        match self.estimator_type {
+            EstimatorType::RawSensor => self.run_raw_sensor(input, &mut leftover),
+            EstimatorType::KalmanFilter => self.run_kalman_filter(input, &mut leftover),
+        }
+        leftover
+    }
+
+    /// `AC_PrecLand::check_ekf_init_timeout`.
+    ///
+    /// Expects the sensor to update within
+    /// [`EKF_INIT_SENSOR_MIN_UPDATE_MS`] until [`EKF_INIT_TIME_MS`] have
+    /// passed. After that the vehicle may consume the estimates.
+    #[must_use]
+    pub fn check_ekf_init_timeout(&mut self, now_ms: u32) -> EkfInitTimeoutLeftover {
+        let mut leftover = EkfInitTimeoutLeftover {
+            need_gcs_init_failed: false,
+            need_gcs_init_complete: false,
+        };
+        let _lost = self.refresh_target_acquired(now_ms);
+        if !self.target_acquired && self.estimator_initialized {
+            if now_ms.wrapping_sub(self.last_update_ms) > EKF_INIT_SENSOR_MIN_UPDATE_MS {
+                self.estimator_initialized = false;
+                leftover.need_gcs_init_failed = true;
+            } else if now_ms.wrapping_sub(self.estimator_init_ms) > EKF_INIT_TIME_MS {
+                self.target_acquired = true;
+                leftover.need_gcs_init_complete = true;
+            }
+        }
+        leftover
+    }
+
+    /// `AC_PrecLand::retrieve_los_meas`.
+    ///
+    /// Returns the (possibly yaw-aligned and orientation-rotated) unit
+    /// vector and frame when a *new* backend measurement is available.
+    pub fn retrieve_los_meas(&mut self, los: Option<LosSample>) -> Option<(Vector3f, VectorFrame)> {
+        let sample = los?;
+        if sample.time_ms == self.last_backend_los_meas_ms {
+            return None;
+        }
+        self.last_backend_los_meas_ms = sample.time_ms;
+
+        let mut target_vec_unit = sample.vec_unit;
+        if !is_zero(self.yaw_align_cd) {
+            target_vec_unit.rotate_xy(cd_to_rad(self.yaw_align_cd));
+        }
+
+        // Default construction is downwards in body frame. Pitch270 is
+        // that default, so it skips the extra rotations.
+        if self.orient != Rotation::Pitch270 {
+            let _ = rotate(&mut target_vec_unit, Rotation::Pitch90);
+            let _ = rotate(&mut target_vec_unit, self.orient);
+        }
+        Some((target_vec_unit, sample.frame))
+    }
+
+    /// `AC_PrecLand::construct_pos_meas_using_rangefinder`.
+    ///
+    /// On success writes [`Self::target_pos_rel_meas_ned_m`]. `Tbn`,
+    /// IMU offset, and origin position are leftovers of the inertial
+    /// ring / INS / AHRS.
+    #[must_use]
+    pub fn construct_pos_meas_using_rangefinder(
+        &mut self,
+        rangefinder_alt_m: f32,
+        rangefinder_alt_valid: bool,
+        delayed: &InertialSample,
+        los: Option<LosSample>,
+        world: &EstimatorWorld,
+    ) -> bool {
+        let distance_to_target = los.map(|s| s.distance_to_target_m).unwrap_or(0.0);
+        let Some((target_vec_unit, target_vec_frame)) = self.retrieve_los_meas(los) else {
+            return false;
+        };
+
+        let target_vec_valid = target_vec_unit
+            .projected(self.approach_vector_body)
+            .dot(self.approach_vector_body)
+            > 0.0;
+
+        let target_vec_unit_ned = match target_vec_frame {
+            VectorFrame::BodyFrd => delayed.tbn * target_vec_unit,
+            VectorFrame::LocalFrd => {
+                let (_roll, _pitch, yaw) = delayed.tbn.to_euler();
+                let mut ned = target_vec_unit;
+                ned.rotate_xy(yaw);
+                ned
+            }
+        };
+
+        let approach_vector_ned = delayed.tbn * self.approach_vector_body;
+        let alt_valid =
+            (rangefinder_alt_valid && rangefinder_alt_m > 0.0) || distance_to_target > 0.0;
+        if !(target_vec_valid && alt_valid) {
+            return false;
+        }
+
+        let cam_pos_ned = if self.cam_offset_m.is_zero() {
+            Vector3f::zero()
+        } else {
+            delayed.tbn * self.cam_offset_m
+        };
+
+        let dist_to_target_m = if distance_to_target > 0.0 {
+            distance_to_target
+        } else {
+            let dist_to_target_along_av_m =
+                (rangefinder_alt_m - cam_pos_ned.projected(approach_vector_ned).length()).max(0.0);
+            dist_to_target_along_av_m / target_vec_unit_ned.projected(approach_vector_ned).length()
+        };
+
+        let accel_pos_ned = delayed.tbn * world.imu_pos_offset;
+        let cam_pos_ned_rel_imu = cam_pos_ned - accel_pos_ned;
+        self.target_pos_rel_meas_ned_m =
+            target_vec_unit_ned * dist_to_target_m + cam_pos_ned_rel_imu;
+
+        if let Some(pos_ned) = world.relative_pos_ned {
+            self.last_target_pos_rel_origin_ned_m.z = pos_ned.z;
+            self.last_vehicle_pos_ned_m = pos_ned;
+        }
+        true
+    }
+
     /// Upstream `enabled()`.
     #[must_use]
     pub fn enabled(&self) -> bool {
@@ -442,6 +626,75 @@ impl PrecLand {
         self.last_log_ms
     }
 
+    /// `PLND_EST_TYPE`.
+    #[must_use]
+    pub fn estimator_type(&self) -> EstimatorType {
+        self.estimator_type
+    }
+
+    /// `_estimator_initialized` after the last estimator tick.
+    #[must_use]
+    pub fn estimator_initialized(&self) -> bool {
+        self.estimator_initialized
+    }
+
+    /// `_target_acquired` flag without the public-getter timeout.
+    ///
+    /// [`AC_PrecLand::target_acquired`](crate::leftover::REMAINING) stays
+    /// a leftover; this is the field `run_estimator` writes.
+    #[must_use]
+    pub fn estimator_target_acquired(&self) -> bool {
+        self.target_acquired
+    }
+
+    /// `_last_update_ms` after the last accepted measurement.
+    #[must_use]
+    pub fn last_update_ms(&self) -> u32 {
+        self.last_update_ms
+    }
+
+    /// `_last_backend_los_meas_ms`.
+    #[must_use]
+    pub fn last_backend_los_meas_ms(&self) -> u32 {
+        self.last_backend_los_meas_ms
+    }
+
+    /// `_outlier_reject_count`.
+    #[must_use]
+    pub fn outlier_reject_count(&self) -> u32 {
+        self.outlier_reject_count
+    }
+
+    /// `_target_pos_rel_meas_ned_m` after a successful construct.
+    #[must_use]
+    pub fn target_pos_rel_meas_ned_m(&self) -> Vector3f {
+        self.target_pos_rel_meas_ned_m
+    }
+
+    /// RAW_SENSOR estimate, IMU-relative, not lag-compensated.
+    #[must_use]
+    pub fn target_pos_rel_est_ne_m(&self) -> Vector2f {
+        self.target_pos_rel_est_ne_m
+    }
+
+    /// RAW_SENSOR relative velocity estimate.
+    #[must_use]
+    pub fn target_vel_rel_est_ne_ms(&self) -> Vector2f {
+        self.target_vel_rel_est_ne_ms
+    }
+
+    /// `_last_target_pos_rel_origin_ned_m` down component lives in `.z`.
+    #[must_use]
+    pub fn last_target_pos_rel_origin_ned_m(&self) -> Vector3f {
+        self.last_target_pos_rel_origin_ned_m
+    }
+
+    /// Vehicle NED when the last construct stored an AHRS origin.
+    #[must_use]
+    pub fn last_vehicle_pos_ned_m(&self) -> Vector3f {
+        self.last_vehicle_pos_ned_m
+    }
+
     /// Change `PLND_TYPE` the same way a param write would.
     ///
     /// Does not re-run `init`. A `NONE` instance can still `init` after
@@ -458,6 +711,130 @@ impl PrecLand {
     /// Change `PLND_ENABLED` the same way a param write would.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+    }
+
+    /// Change `PLND_EST_TYPE` the same way a param write would.
+    pub fn set_estimator_type(&mut self, estimator_type: EstimatorType) {
+        self.estimator_type = estimator_type;
+    }
+
+    /// Change `PLND_YAW_ALIGN` the same way a param write would.
+    pub fn set_yaw_align_cd(&mut self, yaw_align_cd: f32) {
+        self.yaw_align_cd = yaw_align_cd;
+    }
+
+    /// Change `PLND_CAM_POS` the same way a param write would.
+    pub fn set_cam_offset_m(&mut self, cam_offset_m: Vector3f) {
+        self.cam_offset_m = cam_offset_m;
+    }
+
+    /// `target_acquired()` side-effect used by the estimator.
+    ///
+    /// Returns `true` when this call just lost a previously acquired
+    /// target (the GCS "Target Lost" leftover).
+    fn refresh_target_acquired(&mut self, now_ms: u32) -> bool {
+        if now_ms.wrapping_sub(self.last_update_ms) > LANDING_TARGET_TIMEOUT_MS {
+            let lost = self.target_acquired;
+            self.estimator_initialized = false;
+            self.target_acquired = false;
+            return lost;
+        }
+        false
+    }
+
+    fn run_raw_sensor(&mut self, input: EstimatorInput, leftover: &mut RunEstimatorLeftover) {
+        if input.any_inertial_nav_invalid {
+            self.target_acquired = false;
+            leftover.raw_sensor_invalid_velocity = true;
+            return;
+        }
+
+        if self.target_acquired {
+            self.target_pos_rel_est_ne_m.x -=
+                input.delayed.inertial_nav_velocity.x * input.delayed.dt;
+            self.target_pos_rel_est_ne_m.y -=
+                input.delayed.inertial_nav_velocity.y * input.delayed.dt;
+            self.target_vel_rel_est_ne_ms.x = -input.delayed.inertial_nav_velocity.x;
+            self.target_vel_rel_est_ne_ms.y = -input.delayed.inertial_nav_velocity.y;
+        }
+
+        leftover.constructed_pos_meas = self.construct_pos_meas_using_rangefinder(
+            input.rangefinder_alt_m,
+            input.rangefinder_alt_valid,
+            &input.delayed,
+            input.los,
+            &input.world,
+        );
+        if leftover.constructed_pos_meas {
+            if !self.estimator_initialized {
+                leftover.need_gcs_target_found = true;
+                self.estimator_initialized = true;
+            }
+            self.target_pos_rel_est_ne_m.x = self.target_pos_rel_meas_ned_m.x;
+            self.target_pos_rel_est_ne_m.y = self.target_pos_rel_meas_ned_m.y;
+            self.target_vel_rel_est_ne_ms.x = -input.delayed.inertial_nav_velocity.x;
+            self.target_vel_rel_est_ne_ms.y = -input.delayed.inertial_nav_velocity.y;
+            self.last_update_ms = input.now_ms;
+            self.target_acquired = true;
+        }
+
+        leftover.need_output_prediction = self.target_acquired;
+    }
+
+    fn run_kalman_filter(&mut self, input: EstimatorInput, leftover: &mut RunEstimatorLeftover) {
+        if self.target_acquired || self.estimator_initialized {
+            leftover.need_ekf_predict = true;
+            leftover.ekf_predict_dt = input.delayed.dt;
+            leftover.ekf_predict_del_vel_ne = Vector2f::new(
+                -input.delayed.corrected_vehicle_delta_velocity_ned.x,
+                -input.delayed.corrected_vehicle_delta_velocity_ned.y,
+            );
+            leftover.ekf_predict_accel_noise = self.accel_noise * input.delayed.dt;
+        }
+
+        leftover.constructed_pos_meas = self.construct_pos_meas_using_rangefinder(
+            input.rangefinder_alt_m,
+            input.rangefinder_alt_valid,
+            &input.delayed,
+            input.los,
+            &input.world,
+        );
+        if leftover.constructed_pos_meas {
+            leftover.ekf_pos_var = sq(self.target_pos_rel_meas_ned_m.z
+                * (0.01 + 0.01 * input.world.gyro_length)
+                + 0.02);
+            if !self.estimator_initialized {
+                leftover.need_gcs_target_found = true;
+                leftover.need_ekf_init = true;
+                leftover.ekf_init_vel_var = if input.delayed.inertial_nav_velocity_valid {
+                    EKF_INIT_VEL_VAR_NAV_VALID
+                } else {
+                    EKF_INIT_VEL_VAR_NAV_INVALID
+                };
+                self.last_update_ms = input.now_ms;
+                self.estimator_init_ms = input.now_ms;
+                self.estimator_initialized = true;
+            } else if let Some(max_nis) = input.world.max_nis {
+                if max_nis < EKF_NIS_REJECT_THRESHOLD
+                    || self.outlier_reject_count >= EKF_OUTLIER_REJECT_LIMIT
+                {
+                    self.outlier_reject_count = 0;
+                    leftover.need_ekf_fuse = true;
+                    self.last_update_ms = input.now_ms;
+                } else {
+                    self.outlier_reject_count += 1;
+                    leftover.outlier_rejected = true;
+                }
+            } else {
+                leftover.need_ekf_nis = true;
+            }
+        }
+
+        let timeout = self.check_ekf_init_timeout(input.now_ms);
+        leftover.need_gcs_init_failed = timeout.need_gcs_init_failed;
+        leftover.need_gcs_init_complete = timeout.need_gcs_init_complete;
+
+        leftover.need_output_prediction = self.target_acquired;
     }
 }
 

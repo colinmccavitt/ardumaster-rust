@@ -2,9 +2,12 @@
 //!
 //! Tracked as **COP-028**.
 //!
-//! This crate owns the first two real `AC_PrecLand` leftovers:
-//! [`PrecLand::init`] and [`PrecLand::update`], plus the thin
-//! [`PrecLand::handle_msg`] dispatch. `init` is the constructor's
+//! This crate owns the first contiguous `AC_PrecLand` leftovers:
+//! [`PrecLand::init`], [`PrecLand::update`], the thin
+//! [`PrecLand::handle_msg`] dispatch, and the estimator frontend
+//! ([`PrecLand::run_estimator`], [`PrecLand::check_ekf_init_timeout`],
+//! [`PrecLand::construct_pos_meas_using_rangefinder`],
+//! [`PrecLand::retrieve_los_meas`]). `init` is the constructor's
 //! follow-on: constrain `PLND_LAG`, size the inertial history ring,
 //! pick a sensor backend from `PLND_TYPE`, run that backend's `init()`,
 //! and rotate the body-frame approach vector by `PLND_ORIENT`.
@@ -13,6 +16,9 @@
 //! from centimetres to metres, then record leftovers for the AHRS
 //! history push, `_backend->update()`, `run_estimator`,
 //! `check_target_status`, and 25 Hz `Write_Precland`.
+//! The estimator leftover is the RAW / Kalman switch, the EKF init
+//! timeout, rangefinder NED construction, and LOS retrieve. Kalman
+//! `PosVelEKF` predict / init / fuse stay later.
 //!
 //! Copter Land's last 6% (`land_run_normal_or_precland`, `precland_run`,
 //! `precland_retry_position`) is blocked on this crate. This slice does
@@ -43,15 +49,22 @@
 //!
 //! # What this crate does not own yet
 //!
-//! [`leftover::REMAINING`] is the catalog: getters / target status, the
-//! estimator / EKF, LOS construction, output prediction, logging, the
-//! four sensor `update` paths, `PosVelEKF`, and `AC_PrecLand_StateMachine`.
+//! [`leftover::REMAINING`] is the catalog: getters / target status,
+//! `run_output_prediction`, logging, the four sensor `update` paths,
+//! `PosVelEKF`, and `AC_PrecLand_StateMachine`.
 
 #![no_std]
 
+pub mod estimator;
 pub mod leftover;
 pub mod precland;
 
+pub use estimator::{
+    EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
+    RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
+    EKF_INIT_VEL_VAR_NAV_INVALID, EKF_INIT_VEL_VAR_NAV_VALID, EKF_NIS_REJECT_THRESHOLD,
+    EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
+};
 pub use leftover::REMAINING;
 pub use precland::{
     EstimatorType, HandleMsgLeftover, InitLeftover, LandingTargetMsg, PrecLand, PrecLandParams,
