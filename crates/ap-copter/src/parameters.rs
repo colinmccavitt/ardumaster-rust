@@ -49,7 +49,9 @@
 //! next leftover is the stock `RNGFND` `GOBJECT`
 //! (`AP_RANGEFINDER_ENABLED`). After `RNGFND` the
 //! next leftover is the stock `TERRAIN_` `GOBJECT`
-//! (`AP_TERRAIN_AVAILABLE`). Later groups, G2,
+//! (`AP_TERRAIN_AVAILABLE`). After `TERRAIN_` the
+//! next leftover is the stock `FLOW` `GOBJECT`
+//! (`AP_OPTICALFLOW_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1527,7 +1529,7 @@ pub fn for_each_rngfnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'stati
     }
 }
 
-/// `Parameters::k_param_optflow` — next leftover after `TERRAIN_`. Not this leftover.
+/// `Parameters::k_param_optflow` — next `GOBJECT`, prefix `FLOW`.
 pub const K_PARAM_OPTFLOW: u16 = 58;
 
 /// Stock `TERRAIN_` leftover catalog.
@@ -1555,6 +1557,38 @@ pub fn find_terrain_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `TERRAIN_` leftover as `ParamInfo` rows.
 pub fn for_each_terrain_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in TERRAIN_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_precland` — next leftover after `FLOW`. Not this leftover.
+pub const K_PARAM_PRECLAND: u16 = 74;
+
+/// Stock `FLOW` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `TERRAIN_`. Upstream is
+/// `GOBJECT`. `FLOW` is `AP_OPTICALFLOW_ENABLED`. Nested `AP_OpticalFlow`
+/// `var_info` is not this leftover. `PLND_` stays later (`AC_PRECLAND_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const FLOW_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("FLOW", K_PARAM_OPTFLOW)];
+
+/// First (only) row of the `FLOW` leftover.
+#[must_use]
+pub fn flow_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    FLOW_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `FLOW` leftover by group prefix.
+#[must_use]
+pub fn find_flow_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    FLOW_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `FLOW` leftover as `ParamInfo` rows.
+pub fn for_each_flow_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in FLOW_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
