@@ -62,8 +62,9 @@
 //! next leftover is the stock `OSD` `GOBJECT`
 //! (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). After `OSD` the
 //! next leftover is the stock `CC` `GOBJECT`
-//! (`AC_CUSTOMCONTROL_MULTI_ENABLED`). Later groups (G2),
-//! `load_parameters` conversions, and the rest of the enum stay later.
+//! (`AC_CUSTOMCONTROL_MULTI_ENABLED`). After `CC` the
+//! next leftover is the stock `G2` `GOBJECT`. `load_parameters`
+//! conversions and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -1767,7 +1768,7 @@ pub fn for_each_osd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_g2` — next leftover after `CC`. Not this leftover.
+/// `Parameters::k_param_g2` — next `GOBJECT`, empty prefix.
 pub const K_PARAM_G2: u16 = 6;
 
 /// Stock `CC` leftover catalog.
@@ -1796,6 +1797,38 @@ pub fn find_cc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `CC` leftover as `ParamInfo` rows.
 pub fn for_each_cc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in CC_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_vehicle` — next leftover after `G2`. Not this leftover.
+pub const K_PARAM_VEHICLE: u16 = 257;
+
+/// Stock `G2` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `CC`. Upstream is
+/// `GOBJECT` with an empty prefix. Nested `ParametersG2::var_info`
+/// (`TUNE_MIN` / `TUNE_MAX` at idx 31/32) and `var_info2`
+/// (`TUNE2_MIN` / `TUNE2_MAX` / `TUNE2`) are not this leftover.
+/// `PARAM_VEHICLE_INFO` / `MAV` stay later. Heli `H_` / `IM_` are
+/// not rows of this leftover.
+pub const G2_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("", K_PARAM_G2)];
+
+/// First (only) row of the `G2` leftover.
+#[must_use]
+pub fn g2_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    G2_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `G2` leftover by group prefix.
+#[must_use]
+pub fn find_g2_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    G2_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `G2` leftover as `ParamInfo` rows.
+pub fn for_each_g2_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in G2_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
