@@ -5,9 +5,8 @@
 //! vertical axis is a separate controller with its own limits, because a
 //! multirotor's authority in the two is not remotely the same.
 //!
-//! leftover: `NE_init_controller` / `NE_update_offsets` / EKF reset.
-//! leftover: `D_init_controller` / `D_update_offsets` / EKF reset.
 //! leftover: `var_info`.
+//! leftover: `update_terrain`.
 //!
 //! Lean-angle conversions and `get_thrust_vector` are already in — do not redo.
 
@@ -776,9 +775,9 @@ pub struct NeEstimates {
     pub vel_ms: Vector2f,
 }
 
-/// Current NE offsets. The machinery that *moves* these toward their
-/// targets is a leftover (`NE_update_offsets` / `NE_init_offsets`); this
-/// slice takes the values as they stand.
+/// Current NE offsets. [`NeOffsetState`] is what moves them toward
+/// their targets; [`PosControlNe::update_controller`] still takes the
+/// values as they stand so the PID-path tests stay isolated.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeOffsets {
     /// Position offset, metres, upstream `_pos_offset_ned_m.xy()`.
@@ -815,10 +814,11 @@ pub struct NeDisturbance {
 /// Everything `NE_update_controller` reads from outside itself.
 ///
 /// AHRS, the attitude controller, and the scheduler are passed in rather
-/// than reached for: ADR-0004 rules out singletons. The timeout / init
-/// path and the EKF-reset handler are leftovers and are not invoked here
-/// — a caller that has not been running is expected to have initialised
-/// before this is called.
+/// than reached for: ADR-0004 rules out singletons. Call
+/// [`NeEkfReset::handle`], [`PosControlNe::init_controller`] on timeout,
+/// and [`NeOffsetState::update`] around this as upstream's
+/// `NE_update_controller` does; they are not invoked here so the PID
+/// path can be tested on its own.
 #[derive(Debug, Clone, Copy)]
 pub struct NeUpdateInputs {
     /// Loop period, seconds, upstream `_dt_s`.
@@ -838,7 +838,7 @@ pub struct NeUpdateInputs {
     pub vel_max_ne_ms: f32,
     /// Position and velocity estimates.
     pub estimates: NeEstimates,
-    /// Current offsets (not advanced — that is leftover).
+    /// Current offsets (not advanced here; see [NeOffsetState::update]).
     pub offsets: NeOffsets,
     /// Already-min'd lean-angle limit, radians: the smaller of the
     /// attitude controller's althold max and `get_lean_angle_max_rad`.
@@ -889,10 +889,8 @@ impl PosControlNe {
     /// to roll/pitch. Yaw follows the velocity vector once the vehicle is
     /// moving faster than five percent of its configured maximum.
     ///
-    /// leftover: `NE_handle_ekf_reset` / `NE_init_controller` timeout.
-    /// leftover: `NE_update_offsets` (offsets are taken as given).
-    /// leftover: `D_init_controller` / `D_update_offsets` / EKF reset.
     /// leftover: `var_info`.
+    /// leftover: `update_terrain`.
     ///
     /// Lean-angle conversion uses [`accel_ne_to_lean_angles`];
     /// `get_thrust_vector` is already a free function. Neither is redone.
@@ -1013,9 +1011,9 @@ pub const VIBE_COMP_I_GAIN: f32 = 0.125;
 /// `set_throttle_out` should use this cutoff.
 pub const THROTTLE_CUTOFF_FREQ_HZ: f32 = 2.0;
 
-/// Current D offsets. The machinery that *moves* these toward their
-/// targets is a leftover (`D_update_offsets` / `D_init_offsets`); this
-/// slice takes the values as they stand.
+/// Current D offsets. [`DOffsetState`] is what moves them toward their
+/// targets; [`PosControlD::update_controller`] still takes the values
+/// as they stand so the PID-path tests stay isolated.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DOffsets {
     /// Position offset, metres, upstream `_pos_offset_ned_m.z`.
@@ -1026,8 +1024,8 @@ pub struct DOffsets {
     pub accel_mss: f32,
 }
 
-/// Current terrain estimate along down. `update_terrain` is leftover;
-/// the values are taken as given.
+/// Current terrain estimate along down. `init_terrain` zeros this;
+/// leftover: `update_terrain` still takes the values as given.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DTerrain {
     /// Terrain position along down, metres, upstream `_pos_terrain_d_m`.
@@ -1050,10 +1048,11 @@ pub struct DEstimates {
 /// Everything `D_update_controller` reads from outside itself.
 ///
 /// AHRS, the motors, and the scheduler are passed in rather than reached
-/// for: ADR-0004 rules out singletons. The timeout / init path, the
-/// EKF-reset handler, offset motion, and terrain motion are leftovers
-/// and are not invoked here — a caller that has not been running is
-/// expected to have initialised before this is called.
+/// for: ADR-0004 rules out singletons. Call [`DEkfReset::handle`],
+/// [`PosControlD::init_controller`] on timeout, and
+/// [`DOffsetState::update`] around this as upstream's
+/// `D_update_controller` does; they are not invoked here so the PID
+/// path can be tested on its own. leftover: `update_terrain`.
 #[derive(Debug, Clone, Copy)]
 pub struct DUpdateInputs {
     /// Loop period, seconds, upstream `_dt_s`.
@@ -1068,7 +1067,7 @@ pub struct DUpdateInputs {
     pub ahrs_control_scale_z: f32,
     /// Position and velocity estimates.
     pub estimates: DEstimates,
-    /// Current offsets (not advanced — that is leftover).
+    /// Current offsets (not advanced here; see [DOffsetState::update]).
     pub offsets: DOffsets,
     /// Current terrain (not advanced — that is leftover).
     pub terrain: DTerrain,
@@ -1123,10 +1122,8 @@ impl PosControlD {
     /// controller because this axis is down-positive and throttle is
     /// up-positive.
     ///
-    /// leftover: `D_handle_ekf_reset` / `D_init_controller` timeout.
-    /// leftover: `D_update_offsets` / `update_terrain` (taken as given).
-    /// leftover: `NE_init_controller` / `NE_update_offsets` / EKF reset.
     /// leftover: `var_info`.
+    /// leftover: `update_terrain`.
     pub fn update_controller(
         &mut self,
         pos_p: &mut AcP1d,
@@ -1230,4 +1227,648 @@ fn throttle_with_vibration_override(
         accel_pid.set_integrator(i + dt * throttle_hover * vel_error * vel_kp * VIBE_COMP_I_GAIN);
     }
     VIBE_COMP_P_GAIN * throttle_hover * accel_target_mss + accel_pid.integrator()
+}
+
+/// Offset-target timeout, upstream `POSCONTROL_POSVELACCEL_OFFSET_TARGET_TIMEOUT_MS`.
+///
+/// A scripted offset that nobody refreshes for three seconds is treated as
+/// abandoned: the target snaps to zero and the shaper brings the current
+/// offset home. Without this a crashed script would keep towing the vehicle.
+pub const POSVELACCEL_OFFSET_TARGET_TIMEOUT_MS: u32 = 3000;
+
+/// True when the last refresh is older than [`POSVELACCEL_OFFSET_TARGET_TIMEOUT_MS`].
+///
+/// Unsigned wrap matches `uint32_t` millis subtraction. The comparison is
+/// strictly greater than three seconds, so a refresh on the exact boundary
+/// is still live.
+#[must_use]
+pub fn offset_target_timed_out(now_ms: u32, target_ms: u32) -> bool {
+    now_ms.wrapping_sub(target_ms) > POSVELACCEL_OFFSET_TARGET_TIMEOUT_MS
+}
+
+/// True when the NE (or D) controller ran on this tick or the previous one,
+/// upstream `NE_is_active` / `D_is_active`.
+///
+/// The comment in the header says "five control loop cycles"; the body is
+/// `dt_ticks <= 1`. The body wins.
+#[must_use]
+pub fn controller_is_active(ticks: u32, last_update_ticks: u32) -> bool {
+    ticks.wrapping_sub(last_update_ticks) <= 1
+}
+
+/// How an EKF origin jump is absorbed, upstream `EKFResetMethod`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EkfResetMethod {
+    /// Shift the desired trajectory so the vehicle holds its error
+    /// (Loiter, PosHold).
+    MoveTarget,
+    /// Shift the offset so the vehicle slews onto the new estimate
+    /// (Auto, Guided).
+    MoveVehicle,
+}
+
+/// Last NE EKF reset timestamp, upstream `_ekf_ne_reset_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NeEkfReset {
+    /// System time of the last recorded NE position reset.
+    pub last_reset_ms: u32,
+}
+
+impl NeEkfReset {
+    /// Latch the AHRS's last NE reset time, upstream `NE_init_ekf_reset`.
+    #[must_use]
+    pub fn init(ahrs_last_reset_ms: u32) -> Self {
+        Self {
+            last_reset_ms: ahrs_last_reset_ms,
+        }
+    }
+
+    /// Reconstruct targets so the stored error survives an EKF origin jump,
+    /// upstream `NE_handle_ekf_reset`.
+    ///
+    /// The P and velocity-PID errors are the *previous* cycle's. After the
+    /// EKF moves the estimate, `target - estimate` would jump by that
+    /// shift; adding `error - (target - estimate)` to the target puts the
+    /// error back where it was. `MoveTarget` applies the same shift to
+    /// desired (the vehicle stays put relative to its hover point);
+    /// `MoveVehicle` applies it to the offset (the vehicle slews onto the
+    /// new origin, used in Auto).
+    ///
+    /// Unlike the vertical handler, a zero timestamp still fires. That is
+    /// not a slip: NE has no `reset_ms != 0` guard.
+    pub fn handle(
+        &mut self,
+        reset_ms: u32,
+        method: EkfResetMethod,
+        targets: &mut NeEkfTargets,
+        pos_error: Vector2f,
+        vel_error: Vector2f,
+        estimates: NeEstimates,
+    ) -> bool {
+        if reset_ms == self.last_reset_ms {
+            return false;
+        }
+        let delta_pos = Vector2::new(
+            Postype::from(pos_error.x) - (targets.pos_target_m.x - estimates.pos_m.x),
+            Postype::from(pos_error.y) - (targets.pos_target_m.y - estimates.pos_m.y),
+        );
+        targets.pos_target_m.x += delta_pos.x;
+        targets.pos_target_m.y += delta_pos.y;
+
+        let delta_vel = vel_error - (targets.vel_target_ms - estimates.vel_ms);
+        targets.vel_target_ms += delta_vel;
+
+        match method {
+            EkfResetMethod::MoveTarget => {
+                targets.pos_desired_m.x += delta_pos.x;
+                targets.pos_desired_m.y += delta_pos.y;
+                targets.vel_desired_ms += delta_vel;
+            }
+            EkfResetMethod::MoveVehicle => {
+                targets.offsets.pos_m.x += delta_pos.x;
+                targets.offsets.pos_m.y += delta_pos.y;
+                targets.offsets.vel_ms += delta_vel;
+            }
+        }
+        self.last_reset_ms = reset_ms;
+        true
+    }
+}
+
+/// NE targets the EKF handler rewrites.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeEkfTargets {
+    /// Absolute position target, metres.
+    pub pos_target_m: Vector2<Postype>,
+    /// Velocity target, metres per second.
+    pub vel_target_ms: Vector2f,
+    /// Desired position (target minus offset).
+    pub pos_desired_m: Vector2<Postype>,
+    /// Desired velocity.
+    pub vel_desired_ms: Vector2f,
+    /// Current offsets.
+    pub offsets: NeOffsets,
+}
+
+/// Current and target NE offsets, plus when the target was last set.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct NeOffsetState {
+    /// Current offset, upstream `_pos/vel/accel_offset_ned_m.xy()`.
+    pub current: NeOffsets,
+    /// Offset target the current is shaped toward.
+    pub target: NeOffsets,
+    /// Millis of the last `set_posvelaccel_offset_target`, upstream
+    /// `_posvelaccel_offset_target_ne_ms`.
+    pub target_ms: u32,
+}
+
+impl NeOffsetState {
+    /// Snap current to target, zeroing a stale target first, upstream
+    /// `NE_init_offsets`.
+    pub fn init(&mut self, now_ms: u32) {
+        if offset_target_timed_out(now_ms, self.target_ms) {
+            self.target = NeOffsets::default();
+        }
+        self.current = self.target;
+    }
+
+    /// Advance current toward target with the same shaper the trajectory
+    /// uses, upstream `NE_update_offsets`.
+    ///
+    /// The target is integrated first (no limits), then the current
+    /// (with the last cycle's limit vector and PID errors), then the
+    /// jerk-limited shaper writes the current acceleration. That order
+    /// is the opposite of the vertical updater and is not cosmetic:
+    /// swapping it would shape against a target that had not yet taken
+    /// this cycle's step.
+    pub fn update(
+        &mut self,
+        limits: &NeLimits,
+        dt: f32,
+        now_ms: u32,
+        limit_vector: Vector2f,
+        pos_error: Vector2f,
+        vel_error: Vector2f,
+    ) {
+        if offset_target_timed_out(now_ms, self.target_ms) {
+            self.target = NeOffsets::default();
+        }
+        update_pos_vel_accel_xy(
+            &mut self.target.pos_m,
+            &mut self.target.vel_ms,
+            self.target.accel_mss,
+            dt,
+            Vector2f::zero(),
+            Vector2f::zero(),
+            Vector2f::zero(),
+        );
+        update_pos_vel_accel_xy(
+            &mut self.current.pos_m,
+            &mut self.current.vel_ms,
+            self.current.accel_mss,
+            dt,
+            limit_vector,
+            pos_error,
+            vel_error,
+        );
+        shape_pos_vel_accel_xy(
+            self.target.pos_m,
+            self.target.vel_ms,
+            self.target.accel_mss,
+            self.current.pos_m,
+            self.current.vel_ms,
+            &mut self.current.accel_mss,
+            limits.vel_max_ne_ms,
+            limits.accel_max_ne_mss,
+            limits.jerk_max_ne_msss,
+            dt,
+            false,
+        );
+    }
+}
+
+/// What [`PosControlNe::init_controller`] reads from outside itself.
+#[derive(Debug, Clone, Copy)]
+pub struct NeInitInputs {
+    /// Position and velocity estimates.
+    pub estimates: NeEstimates,
+    /// Attitude-controller target euler, radians, used for the lean
+    /// targets and (with AHRS yaw swapped in) the inactive accel seed.
+    pub att_target_euler_rad: Vector3f,
+    /// AHRS yaw, radians, upstream `_ahrs.yaw`. Replaces the attitude
+    /// target's yaw when converting lean to acceleration.
+    pub ahrs_yaw: f32,
+    /// Already-min'd lean-angle limit, radians.
+    pub lean_angle_max_rad: f32,
+    /// Milliseconds since boot, for the offset-target timeout.
+    pub now_ms: u32,
+    /// Scheduler ticks, upstream `AP::scheduler().ticks32()`.
+    pub ticks: u32,
+    /// Ticks of the last NE update, for [`controller_is_active`].
+    pub last_update_ticks: u32,
+    /// AHRS last NE position-reset time, latched into the EKF handler.
+    pub ahrs_ekf_reset_ms: u32,
+    /// Existing acceleration target, kept when already active.
+    pub accel_target_mss: Vector2f,
+}
+
+/// What [`PosControlNe::init_controller`] wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeInitOutput {
+    /// Absolute position target, estimate at init.
+    pub pos_target_m: Vector2<Postype>,
+    /// Velocity target, estimate at init.
+    pub vel_target_ms: Vector2f,
+    /// Acceleration target after the lean-angle limit.
+    pub accel_target_mss: Vector2f,
+    /// Roll target, copied from the attitude controller.
+    pub roll_target_rad: f32,
+    /// Pitch target, copied from the attitude controller.
+    pub pitch_target_rad: f32,
+    /// Yaw target, copied from the attitude controller.
+    pub yaw_target_rad: f32,
+    /// Yaw rate, always zero at init.
+    pub yaw_rate_target_rads: f32,
+    /// Lean-angle override, always zero at init.
+    pub angle_max_override_rad: f32,
+    /// Ticks to store as `_last_update_ne_ticks`.
+    pub last_update_ticks: u32,
+    /// EKF handler latched to the AHRS reset time.
+    pub ekf: NeEkfReset,
+}
+
+impl PosControlNe {
+    /// Fully initialise the NE controller, upstream `NE_init_controller`.
+    ///
+    /// Offsets snap to their targets (or to zero if stale). Desired
+    /// position and velocity become estimate minus offset; desired
+    /// acceleration is zeroed because the raw IMU value is too noisy to
+    /// seed a trajectory. When the controller has not been running the
+    /// acceleration *target* is taken from the current lean so the
+    /// attitude command is continuous; when it has, the previous target
+    /// is kept. Either way it is then limited by the lean-angle budget
+    /// and written into the velocity-PID integrator so the first PID
+    /// step does not fight the lean that is already there.
+    pub fn init_controller(
+        &mut self,
+        offsets: &mut NeOffsetState,
+        vel_pid: &mut AcPid2d,
+        inp: &NeInitInputs,
+    ) -> NeInitOutput {
+        offsets.init(inp.now_ms);
+
+        let pos_target = inp.estimates.pos_m;
+        self.pos_desired_m = Vector2::new(
+            pos_target.x - offsets.current.pos_m.x,
+            pos_target.y - offsets.current.pos_m.y,
+        );
+
+        let vel_target = inp.estimates.vel_ms;
+        self.vel_desired_ms = vel_target - offsets.current.vel_ms;
+        self.accel_desired_mss = Vector2f::zero();
+
+        let mut accel_target = inp.accel_target_mss;
+        if !controller_is_active(inp.ticks, inp.last_update_ticks) {
+            let mut att = inp.att_target_euler_rad;
+            att.z = inp.ahrs_yaw;
+            let accel = lean_angles_to_accel_ned(att);
+            accel_target = Vector2f::new(accel.x, accel.y);
+        }
+
+        let accel_max = angle_rad_to_accel_mss(inp.lean_angle_max_rad);
+        accel_target.limit_length(accel_max);
+
+        vel_pid.reset_filter();
+        vel_pid.set_integrator(accel_target - vel_target * vel_pid.ff());
+
+        NeInitOutput {
+            pos_target_m: pos_target,
+            vel_target_ms: vel_target,
+            accel_target_mss: accel_target,
+            roll_target_rad: inp.att_target_euler_rad.x,
+            pitch_target_rad: inp.att_target_euler_rad.y,
+            yaw_target_rad: inp.att_target_euler_rad.z,
+            yaw_rate_target_rads: 0.0,
+            angle_max_override_rad: 0.0,
+            last_update_ticks: inp.ticks,
+            ekf: NeEkfReset::init(inp.ahrs_ekf_reset_ms),
+        }
+    }
+
+    /// Initialise at a stopping point, upstream
+    /// `NE_init_controller_stopping_point`.
+    ///
+    /// After the full init, desired is the place the vehicle would come
+    /// to rest and desired velocity/acceleration are zeroed. The
+    /// velocity *target* is left as the estimate — only the trajectory
+    /// is parked.
+    pub fn init_controller_stopping_point(
+        &mut self,
+        offsets: &mut NeOffsetState,
+        vel_pid: &mut AcPid2d,
+        inp: &NeInitInputs,
+        kp: f32,
+        limits: &NeLimits,
+    ) -> NeInitOutput {
+        let mut out = self.init_controller(offsets, vel_pid, inp);
+        self.pos_desired_m = stopping_point_ne(
+            inp.estimates.pos_m,
+            offsets.current.pos_m,
+            inp.estimates.vel_ms,
+            offsets.current.vel_ms,
+            kp,
+            limits,
+        );
+        out.pos_target_m = Vector2::new(
+            self.pos_desired_m.x + offsets.current.pos_m.x,
+            self.pos_desired_m.y + offsets.current.pos_m.y,
+        );
+        self.vel_desired_ms = Vector2f::zero();
+        self.accel_desired_mss = Vector2f::zero();
+        out
+    }
+}
+
+/// Last D EKF reset timestamp, upstream `_ekf_d_reset_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DEkfReset {
+    /// System time of the last recorded Down-axis reset.
+    pub last_reset_ms: u32,
+}
+
+impl DEkfReset {
+    /// Latch the AHRS's last Down reset time, upstream `D_init_ekf_reset`.
+    #[must_use]
+    pub fn init(ahrs_last_reset_ms: u32) -> Self {
+        Self {
+            last_reset_ms: ahrs_last_reset_ms,
+        }
+    }
+
+    /// Reconstruct vertical targets after an EKF origin jump, upstream
+    /// `D_handle_ekf_reset`.
+    ///
+    /// Same reconstruction as [`NeEkfReset::handle`], with one extra
+    /// guard: a zero timestamp is ignored. The first AHRS reading after
+    /// boot is often zero, and treating that as a reset would shove the
+    /// altitude target on the first loop.
+    pub fn handle(
+        &mut self,
+        reset_ms: u32,
+        method: EkfResetMethod,
+        targets: &mut DEkfTargets,
+        pos_error: f32,
+        vel_error: f32,
+        estimates: DEstimates,
+    ) -> bool {
+        if reset_ms == 0 || reset_ms == self.last_reset_ms {
+            return false;
+        }
+        let delta_pos = Postype::from(pos_error) - (targets.pos_target_m - estimates.pos_m);
+        targets.pos_target_m += delta_pos;
+
+        let delta_vel = vel_error - (targets.vel_target_ms - estimates.vel_ms);
+        targets.vel_target_ms += delta_vel;
+
+        match method {
+            EkfResetMethod::MoveTarget => {
+                targets.pos_desired_m += delta_pos;
+                targets.vel_desired_ms += delta_vel;
+            }
+            EkfResetMethod::MoveVehicle => {
+                targets.offsets.pos_m += delta_pos;
+                targets.offsets.vel_ms += delta_vel;
+            }
+        }
+        self.last_reset_ms = reset_ms;
+        true
+    }
+}
+
+/// D targets the EKF handler rewrites.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DEkfTargets {
+    /// Absolute position target along down, metres.
+    pub pos_target_m: Postype,
+    /// Velocity target along down.
+    pub vel_target_ms: f32,
+    /// Desired position (target minus offset minus terrain).
+    pub pos_desired_m: Postype,
+    /// Desired velocity.
+    pub vel_desired_ms: f32,
+    /// Current offsets.
+    pub offsets: DOffsets,
+}
+
+/// Current and target D offsets, plus when the target was last set.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DOffsetState {
+    /// Current offset, upstream `_pos/vel/accel_offset_ned_m.z`.
+    pub current: DOffsets,
+    /// Offset target the current is shaped toward.
+    pub target: DOffsets,
+    /// Millis of the last vertical offset-target set, upstream
+    /// `_posvelaccel_offset_target_d_ms`.
+    pub target_ms: u32,
+}
+
+impl DOffsetState {
+    /// Snap current to target, zeroing a stale target first, upstream
+    /// `D_init_offsets`.
+    pub fn init(&mut self, now_ms: u32) {
+        if offset_target_timed_out(now_ms, self.target_ms) {
+            self.target = DOffsets::default();
+        }
+        self.current = self.target;
+    }
+
+    /// Advance current toward target, upstream `D_update_offsets`.
+    ///
+    /// Order differs from the NE updater on purpose: current is
+    /// integrated first (limit clipped to at most zero, so an upward
+    /// saturation never freezes a descent offset), then shaped, then
+    /// the target is integrated. The accel limits are symmetric
+    /// `±accel_max` — the 7.5 m/s² descent cap on the trajectory
+    /// shaper is not applied to offsets.
+    pub fn update(
+        &mut self,
+        limits: &DLimits,
+        dt: f32,
+        now_ms: u32,
+        limit: f32,
+        pos_error: f32,
+        vel_error: f32,
+    ) {
+        if offset_target_timed_out(now_ms, self.target_ms) {
+            self.target = DOffsets::default();
+        }
+        update_pos_vel_accel(
+            &mut self.current.pos_m,
+            &mut self.current.vel_ms,
+            self.current.accel_mss,
+            dt,
+            limit.min(0.0),
+            pos_error,
+            vel_error,
+        );
+        let _ = shape_pos_vel_accel(
+            self.target.pos_m,
+            self.target.vel_ms,
+            self.target.accel_mss,
+            self.current.pos_m,
+            self.current.vel_ms,
+            &mut self.current.accel_mss,
+            -limits.vel_max_up_ms,
+            limits.vel_max_down_ms,
+            -limits.accel_max_d_mss,
+            limits.accel_max_d_mss,
+            limits.jerk_max_d_msss,
+            dt,
+            false,
+        );
+        update_pos_vel_accel(
+            &mut self.target.pos_m,
+            &mut self.target.vel_ms,
+            self.target.accel_mss,
+            dt,
+            0.0,
+            0.0,
+            0.0,
+        );
+    }
+}
+
+/// Zero the terrain estimate and its target, upstream `init_terrain`.
+#[must_use]
+pub fn init_terrain() -> DTerrain {
+    DTerrain::default()
+}
+
+/// What [`PosControlD::init_controller`] reads from outside itself.
+#[derive(Debug, Clone, Copy)]
+pub struct DInitInputs {
+    /// Position and velocity estimates.
+    pub estimates: DEstimates,
+    /// Milliseconds since boot, for the offset-target timeout.
+    pub now_ms: u32,
+    /// Scheduler ticks.
+    pub ticks: u32,
+    /// AHRS last Down position-reset time.
+    pub ahrs_ekf_reset_ms: u32,
+    /// Gravity-compensated vertical acceleration, upstream
+    /// `get_estimated_accel_D_mss`.
+    pub estimated_accel_d_mss: f32,
+    /// Configured vertical acceleration limit.
+    pub accel_max_d_mss: f32,
+    /// Attitude-controller throttle in, used to seed the accel-PID I term.
+    pub throttle_in: f32,
+    /// Hover throttle.
+    pub throttle_hover: f32,
+}
+
+/// What [`PosControlD::init_controller`] wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DInitOutput {
+    /// Absolute position target, estimate at init.
+    pub pos_target_m: Postype,
+    /// Velocity target, estimate at init.
+    pub vel_target_ms: f32,
+    /// Acceleration target, the estimate constrained to `±accel_max`.
+    pub accel_target_mss: f32,
+    /// Ticks to store as `_last_update_d_ticks`.
+    pub last_update_ticks: u32,
+    /// EKF handler latched to the AHRS reset time.
+    pub ekf: DEkfReset,
+    /// Terrain, zeroed by `init_terrain`.
+    pub terrain: DTerrain,
+}
+
+impl PosControlD {
+    /// Fully initialise the vertical controller, upstream `D_init_controller`.
+    ///
+    /// Terrain is zeroed. Offsets snap to their targets. Desired
+    /// position and velocity become estimate minus offset. The velocity
+    /// PID is reset with a zero integrator — vertical velocity error is
+    /// not a lean we have to match. The acceleration target is the
+    /// current estimate, constrained to the configured limit; desired
+    /// acceleration is that minus offset and terrain so the feed-forward
+    /// does not double-count them. The accel-PID integrator is seeded
+    /// from the current throttle minus hover, minus the P and FF the
+    /// PID would itself produce on the first step, so the first throttle
+    /// command equals the throttle already being sent.
+    pub fn init_controller(
+        &mut self,
+        offsets: &mut DOffsetState,
+        vel_pid: &mut AcPidBasic,
+        accel_pid: &mut AcPid,
+        inp: &DInitInputs,
+    ) -> DInitOutput {
+        let terrain = init_terrain();
+        offsets.init(inp.now_ms);
+
+        let pos_target = inp.estimates.pos_m;
+        self.pos_desired_m = pos_target - offsets.current.pos_m;
+
+        let vel_target = inp.estimates.vel_ms;
+        self.vel_desired_ms = vel_target - offsets.current.vel_ms;
+
+        vel_pid.reset_filter();
+        vel_pid.set_integrator(0.0);
+
+        let accel_target = constrain_value(
+            inp.estimated_accel_d_mss,
+            -inp.accel_max_d_mss,
+            inp.accel_max_d_mss,
+        );
+        self.accel_desired_mss = accel_target - (offsets.current.accel_mss + terrain.accel_mss);
+        accel_pid.reset_filter();
+        accel_pid.set_integrator(
+            -(inp.throttle_in - inp.throttle_hover)
+                - accel_pid.gains.p * (accel_target - inp.estimated_accel_d_mss)
+                - accel_pid.gains.ff * accel_target,
+        );
+
+        DInitOutput {
+            pos_target_m: pos_target,
+            vel_target_ms: vel_target,
+            accel_target_mss: accel_target,
+            last_update_ticks: inp.ticks,
+            ekf: DEkfReset::init(inp.ahrs_ekf_reset_ms),
+            terrain,
+        }
+    }
+
+    /// Initialise at a vertical stopping point, upstream
+    /// `D_init_controller_stopping_point`.
+    pub fn init_controller_stopping_point(
+        &mut self,
+        offsets: &mut DOffsetState,
+        vel_pid: &mut AcPidBasic,
+        accel_pid: &mut AcPid,
+        inp: &DInitInputs,
+        kp: f32,
+        limits: &DLimits,
+    ) -> DInitOutput {
+        let mut out = self.init_controller(offsets, vel_pid, accel_pid, inp);
+        self.pos_desired_m = Postype::from(stopping_point_d(
+            inp.estimates.pos_m as f32,
+            offsets.current.pos_m as f32,
+            inp.estimates.vel_ms,
+            offsets.current.vel_ms,
+            kp,
+            limits,
+        ));
+        out.pos_target_m = self.pos_desired_m + offsets.current.pos_m;
+        self.vel_desired_ms = 0.0;
+        self.accel_desired_mss = 0.0;
+        out
+    }
+
+    /// Initialise with no descent, upstream `D_init_controller_no_descent`.
+    ///
+    /// After the full init, every downward (positive) velocity and
+    /// acceleration — target, desired, terrain, and offset — is clipped
+    /// to at most zero. Used on takeoff, where a leftover descent
+    /// command would put the vehicle back on the ground.
+    pub fn init_controller_no_descent(
+        &mut self,
+        offsets: &mut DOffsetState,
+        vel_pid: &mut AcPidBasic,
+        accel_pid: &mut AcPid,
+        inp: &DInitInputs,
+        terrain: &mut DTerrain,
+    ) -> DInitOutput {
+        let mut out = self.init_controller(offsets, vel_pid, accel_pid, inp);
+        *terrain = out.terrain;
+        out.vel_target_ms = out.vel_target_ms.min(0.0);
+        self.vel_desired_ms = self.vel_desired_ms.min(0.0);
+        terrain.vel_ms = terrain.vel_ms.min(0.0);
+        offsets.current.vel_ms = offsets.current.vel_ms.min(0.0);
+        out.accel_target_mss = out.accel_target_mss.min(0.0);
+        self.accel_desired_mss = self.accel_desired_mss.min(0.0);
+        terrain.accel_mss = terrain.accel_mss.min(0.0);
+        offsets.current.accel_mss = offsets.current.accel_mss.min(0.0);
+        out.terrain = *terrain;
+        out
+    }
 }

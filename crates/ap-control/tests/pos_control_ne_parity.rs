@@ -13,10 +13,12 @@ index fault is a test failure, which is the desired outcome"
 )]
 
 use ap_control::pos_control_ne::{
-    accel_ne_to_lean_angles, lean_angles_to_accel_ned, stopping_point_d, thrust_vector,
-    yaw_from_ne_motion, AttitudeCapability, DEstimates, DLimits, DOffsets, DTerrain, DUpdateInputs,
-    NeDisturbance, NeEstimates, NeLimits, NeOffsets, NeUpdateInputs, PosControlD, PosControlNe,
-    NE_POS_P,
+    accel_ne_to_lean_angles, controller_is_active, init_terrain, lean_angles_to_accel_ned,
+    offset_target_timed_out, stopping_point_d, stopping_point_ne, thrust_vector,
+    yaw_from_ne_motion, AttitudeCapability, DEkfReset, DEkfTargets, DEstimates, DInitInputs,
+    DLimits, DOffsetState, DOffsets, DTerrain, DUpdateInputs, EkfResetMethod, NeDisturbance,
+    NeEkfReset, NeEkfTargets, NeEstimates, NeInitInputs, NeLimits, NeOffsetState, NeOffsets,
+    NeUpdateInputs, PosControlD, PosControlNe, NE_POS_P,
 };
 use ap_math::vector2::{Vector2, Vector2f};
 use ap_math::vector3::Vector3f;
@@ -591,10 +593,9 @@ fn the_angle_conversions_match_upstream() {
         rows.len()
     );
 }
-// leftover: NE_init_controller / NE_update_offsets / EKF reset.
-// leftover: D_init_controller / D_update_offsets / EKF reset.
-// leftover: var_info. Lean-angle conversions, get_thrust_vector, NE and D
-// update_controller are done.
+// leftover: var_info. leftover: update_terrain.
+// Lean-angle conversions, get_thrust_vector, NE/D update_controller,
+// and NE/D init/offset/EKF reset are done.
 
 fn update_inputs() -> NeUpdateInputs {
     NeUpdateInputs {
@@ -1094,4 +1095,674 @@ fn the_health_ratio_walks_and_clamps() {
     // 0 + 0.021 stays above 0.
     let out = d.update_controller(&mut pos_p, &mut vel_pid, &mut accel_pid, &inp);
     assert!((out.vel_d_control_ratio - 0.021).abs() < 1e-5);
+}
+
+// leftover: var_info. leftover: update_terrain.
+// NE/D init_controller, update_offsets, and EKF reset are in.
+
+fn ne_limits() -> NeLimits {
+    NeLimits {
+        vel_max_ne_ms: 5.0,
+        accel_max_ne_mss: 2.0,
+        jerk_max_ne_msss: 5.0,
+    }
+}
+
+fn d_limits() -> DLimits {
+    DLimits {
+        vel_max_down_ms: 1.5,
+        vel_max_up_ms: 2.5,
+        accel_max_d_mss: 2.5,
+        jerk_max_d_msss: 5.0,
+    }
+}
+
+fn ne_init_inputs() -> NeInitInputs {
+    NeInitInputs {
+        estimates: NeEstimates {
+            pos_m: Vector2::new(10.0, -4.0),
+            vel_ms: Vector2f::new(1.0, 0.5),
+        },
+        att_target_euler_rad: Vector3f::new(0.1, -0.2, 0.4),
+        ahrs_yaw: 0.0,
+        lean_angle_max_rad: 0.8,
+        now_ms: 1_000,
+        ticks: 50,
+        last_update_ticks: 50,
+        ahrs_ekf_reset_ms: 7,
+        accel_target_mss: Vector2f::new(0.3, 0.0),
+    }
+}
+
+fn d_init_inputs() -> DInitInputs {
+    DInitInputs {
+        estimates: DEstimates {
+            pos_m: 8.0,
+            vel_ms: 0.4,
+        },
+        now_ms: 1_000,
+        ticks: 50,
+        ahrs_ekf_reset_ms: 7,
+        estimated_accel_d_mss: 0.2,
+        accel_max_d_mss: 2.5,
+        throttle_in: 0.45,
+        throttle_hover: 0.35,
+    }
+}
+
+/// Three seconds is still live; one millisecond more is abandoned.
+#[test]
+fn the_offset_timeout_is_strictly_greater_than_three_seconds() {
+    assert!(!offset_target_timed_out(3_000, 0));
+    assert!(offset_target_timed_out(3_001, 0));
+    // Unsigned wrap: a clock that rolled past zero still measures 3001 ms.
+    assert!(offset_target_timed_out(100, 100u32.wrapping_sub(3_001)));
+    assert!(!offset_target_timed_out(100, 100u32.wrapping_sub(3_000)));
+}
+
+/// Active means this tick or the previous one. Two ticks is a timeout.
+#[test]
+fn the_controller_is_active_for_at_most_one_tick() {
+    assert!(controller_is_active(10, 10));
+    assert!(controller_is_active(11, 10));
+    assert!(!controller_is_active(12, 10));
+    assert!(controller_is_active(0, u32::MAX));
+}
+
+/// Init snaps current to target. A stale target is zeroed first so a
+/// crashed script cannot seed the controller with a leftover tow.
+#[test]
+fn ne_init_offsets_snaps_current_to_target_or_zero() {
+    let mut state = NeOffsetState {
+        current: NeOffsets {
+            pos_m: Vector2::new(1.0, 2.0),
+            vel_ms: Vector2f::new(0.1, 0.0),
+            accel_mss: Vector2f::zero(),
+        },
+        target: NeOffsets {
+            pos_m: Vector2::new(3.0, -1.0),
+            vel_ms: Vector2f::new(0.2, 0.3),
+            accel_mss: Vector2f::new(0.05, 0.0),
+        },
+        target_ms: 1_000,
+    };
+    state.init(1_500);
+    assert!((state.current.pos_m.x - 3.0).abs() < 1e-9);
+    assert!((state.current.vel_ms.y - 0.3).abs() < 1e-9);
+
+    state.target_ms = 0;
+    state.target.pos_m = Vector2::new(9.0, 9.0);
+    state.init(4_000);
+    assert_eq!(state.current.pos_m.x, 0.0);
+    assert_eq!(state.target.pos_m.x, 0.0);
+}
+
+/// A live offset with matching current and target and zero kinematics
+/// must not move. A port that always integrated something would fail.
+#[test]
+fn ne_update_offsets_is_idle_when_current_equals_target_at_rest() {
+    let mut state = NeOffsetState {
+        current: NeOffsets {
+            pos_m: Vector2::new(2.0, -1.0),
+            ..NeOffsets::default()
+        },
+        target: NeOffsets {
+            pos_m: Vector2::new(2.0, -1.0),
+            ..NeOffsets::default()
+        },
+        target_ms: 1_000,
+    };
+    state.update(
+        &ne_limits(),
+        0.02,
+        1_000,
+        Vector2f::zero(),
+        Vector2f::zero(),
+        Vector2f::zero(),
+    );
+    assert!((state.current.pos_m.x - 2.0).abs() < 1e-6);
+    assert!((state.current.pos_m.y + 1.0).abs() < 1e-6);
+    assert!(state.current.vel_ms.x.abs() < 1e-6);
+    assert!(state.current.accel_mss.x.abs() < 1e-6);
+}
+
+/// A timeout zeros the target and the shaper then pulls current toward
+/// the origin. After one step the acceleration must point home.
+#[test]
+fn ne_update_offsets_times_out_and_shapes_home() {
+    let mut state = NeOffsetState {
+        current: NeOffsets {
+            pos_m: Vector2::new(4.0, 0.0),
+            ..NeOffsets::default()
+        },
+        target: NeOffsets {
+            pos_m: Vector2::new(4.0, 0.0),
+            ..NeOffsets::default()
+        },
+        target_ms: 0,
+    };
+    state.update(
+        &ne_limits(),
+        0.02,
+        4_000,
+        Vector2f::zero(),
+        Vector2f::zero(),
+        Vector2f::zero(),
+    );
+    assert_eq!(state.target.pos_m.x, 0.0);
+    assert!(
+        state.current.accel_mss.x < 0.0,
+        "must accelerate toward zero, got {}",
+        state.current.accel_mss.x
+    );
+}
+
+/// Matching timestamps is a no-op. A port that always reconstructed
+/// would move the target on every loop.
+#[test]
+fn ne_ekf_reset_is_idle_when_the_timestamp_is_unchanged() {
+    let mut ekf = NeEkfReset::init(42);
+    let mut targets = NeEkfTargets {
+        pos_target_m: Vector2::new(1.0, 0.0),
+        vel_target_ms: Vector2f::new(0.5, 0.0),
+        pos_desired_m: Vector2::new(1.0, 0.0),
+        vel_desired_ms: Vector2f::new(0.5, 0.0),
+        offsets: NeOffsets::default(),
+    };
+    let fired = ekf.handle(
+        42,
+        EkfResetMethod::MoveTarget,
+        &mut targets,
+        Vector2f::zero(),
+        Vector2f::zero(),
+        NeEstimates {
+            pos_m: Vector2::new(0.0, 0.0),
+            vel_ms: Vector2f::zero(),
+        },
+    );
+    assert!(!fired);
+    assert!((targets.pos_target_m.x - 1.0).abs() < 1e-12);
+}
+
+/// When the stored error equals `target - old_estimate` and the estimate
+/// jumps, MoveTarget shifts desired and target by that jump so the
+/// error is unchanged.
+#[test]
+fn ne_ekf_move_target_preserves_the_stored_error() {
+    let mut ekf = NeEkfReset::init(1);
+    let mut targets = NeEkfTargets {
+        pos_target_m: Vector2::new(5.0, 1.0),
+        vel_target_ms: Vector2f::new(2.0, 0.0),
+        pos_desired_m: Vector2::new(4.0, 1.0),
+        vel_desired_ms: Vector2f::new(1.5, 0.0),
+        offsets: NeOffsets {
+            pos_m: Vector2::new(1.0, 0.0),
+            vel_ms: Vector2f::new(0.5, 0.0),
+            accel_mss: Vector2f::zero(),
+        },
+    };
+    // Stored error is target - old_estimate = (5,1) - (3,1) = (2,0)
+    // New estimate is (8,1); jump is +5 N.
+    let fired = ekf.handle(
+        99,
+        EkfResetMethod::MoveTarget,
+        &mut targets,
+        Vector2f::new(2.0, 0.0),
+        Vector2f::new(0.5, 0.0),
+        NeEstimates {
+            pos_m: Vector2::new(8.0, 1.0),
+            vel_ms: Vector2f::new(3.0, 0.0),
+        },
+    );
+    assert!(fired);
+    assert_eq!(ekf.last_reset_ms, 99);
+    // delta_pos = error - (target - new_est) = 2 - (5-8) = 5
+    assert!((targets.pos_target_m.x - 10.0).abs() < 1e-6);
+    assert!((targets.pos_desired_m.x - 9.0).abs() < 1e-6);
+    // new_error = 10 - 8 = 2, unchanged
+    assert!(((targets.pos_target_m.x - 8.0) - 2.0).abs() < 1e-6);
+    // offsets must not move
+    assert!((targets.offsets.pos_m.x - 1.0).abs() < 1e-12);
+}
+
+/// MoveVehicle puts the jump into the offset so Auto can slew onto the
+/// new origin instead of dragging the trajectory.
+#[test]
+fn ne_ekf_move_vehicle_shifts_the_offset_not_desired() {
+    let mut ekf = NeEkfReset::init(1);
+    let mut targets = NeEkfTargets {
+        pos_target_m: Vector2::new(5.0, 0.0),
+        vel_target_ms: Vector2f::new(0.0, 0.0),
+        pos_desired_m: Vector2::new(5.0, 0.0),
+        vel_desired_ms: Vector2f::zero(),
+        offsets: NeOffsets::default(),
+    };
+    let fired = ekf.handle(
+        3,
+        EkfResetMethod::MoveVehicle,
+        &mut targets,
+        Vector2f::new(1.0, 0.0),
+        Vector2f::zero(),
+        NeEstimates {
+            pos_m: Vector2::new(7.0, 0.0),
+            vel_ms: Vector2f::zero(),
+        },
+    );
+    assert!(fired);
+    // delta = 1 - (5-7) = 3
+    assert!((targets.pos_desired_m.x - 5.0).abs() < 1e-12);
+    assert!((targets.offsets.pos_m.x - 3.0).abs() < 1e-6);
+}
+
+/// NE fires on a zero timestamp if the latched value is not zero. The
+/// vertical handler does not; a port that shared the guard would fail.
+#[test]
+fn ne_ekf_reset_fires_on_a_zero_timestamp() {
+    let mut ekf = NeEkfReset::init(5);
+    let mut targets = NeEkfTargets {
+        pos_target_m: Vector2::new(0.0, 0.0),
+        vel_target_ms: Vector2f::zero(),
+        pos_desired_m: Vector2::new(0.0, 0.0),
+        vel_desired_ms: Vector2f::zero(),
+        offsets: NeOffsets::default(),
+    };
+    let fired = ekf.handle(
+        0,
+        EkfResetMethod::MoveTarget,
+        &mut targets,
+        Vector2f::zero(),
+        Vector2f::zero(),
+        NeEstimates {
+            pos_m: Vector2::new(1.0, 0.0),
+            vel_ms: Vector2f::zero(),
+        },
+    );
+    assert!(fired);
+    assert_eq!(ekf.last_reset_ms, 0);
+}
+
+/// When already active, init keeps the previous accel target (then
+/// limits it) and seeds desired from estimate minus offset.
+#[test]
+fn ne_init_keeps_accel_when_active_and_subtracts_offsets() {
+    let mut ne = PosControlNe::new();
+    let mut offsets = NeOffsetState {
+        current: NeOffsets::default(),
+        target: NeOffsets {
+            pos_m: Vector2::new(2.0, 1.0),
+            vel_ms: Vector2f::new(0.25, 0.0),
+            accel_mss: Vector2f::zero(),
+        },
+        target_ms: 1_000,
+    };
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let inp = ne_init_inputs();
+    let out = ne.init_controller(&mut offsets, &mut vel_pid, &inp);
+
+    assert!((out.pos_target_m.x - 10.0).abs() < 1e-12);
+    assert!((ne.pos_desired_m.x - 8.0).abs() < 1e-12);
+    assert!((ne.vel_desired_ms.x - 0.75).abs() < 1e-6);
+    assert_eq!(ne.accel_desired_mss.x, 0.0);
+    assert!((out.accel_target_mss.x - 0.3).abs() < 1e-6);
+    assert_eq!(out.last_update_ticks, 50);
+    assert_eq!(out.ekf.last_reset_ms, 7);
+    assert_eq!(out.yaw_rate_target_rads, 0.0);
+    assert_eq!(out.angle_max_override_rad, 0.0);
+    assert!((out.roll_target_rad - 0.1).abs() < 1e-12);
+}
+
+/// When inactive, the accel target is the lean-to-accel map of the
+/// attitude target with AHRS yaw swapped in — not the attitude yaw.
+/// Heading east, a pitch-down demand is a westward acceleration.
+#[test]
+fn ne_init_seeds_accel_from_lean_when_inactive_using_ahrs_yaw() {
+    let mut ne = PosControlNe::new();
+    let mut offsets = NeOffsetState::default();
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.25, 10.0, 0.0, 0.0);
+    let mut inp = ne_init_inputs();
+    inp.last_update_ticks = 0;
+    inp.ticks = 10;
+    inp.att_target_euler_rad = Vector3f::new(0.0, -0.2, 1.2);
+    inp.ahrs_yaw = core::f32::consts::FRAC_PI_2;
+    inp.accel_target_mss = Vector2f::new(9.0, 9.0);
+    inp.lean_angle_max_rad = 1.0;
+
+    let out = ne.init_controller(&mut offsets, &mut vel_pid, &inp);
+    let mut att = inp.att_target_euler_rad;
+    att.z = inp.ahrs_yaw;
+    let expect = lean_angles_to_accel_ned(att);
+    assert!(
+        (out.accel_target_mss.x - expect.x).abs() < 1e-5,
+        "got {} want {}",
+        out.accel_target_mss.x,
+        expect.x
+    );
+    assert!((out.accel_target_mss.y - expect.y).abs() < 1e-5);
+    // Integrator is accel_target - vel_target * ff
+    let expect_i = out.accel_target_mss - inp.estimates.vel_ms * vel_pid.ff();
+    assert!((vel_pid.integrator().x - expect_i.x).abs() < 1e-5);
+}
+
+/// The lean-angle budget shortens an over-long accel target. A port
+/// that skipped the limit would keep a command the attitude loop
+/// cannot fly.
+#[test]
+fn ne_init_limits_accel_to_the_lean_angle_budget() {
+    let mut ne = PosControlNe::new();
+    let mut offsets = NeOffsetState::default();
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut inp = ne_init_inputs();
+    inp.accel_target_mss = Vector2f::new(20.0, 0.0);
+    inp.lean_angle_max_rad = 0.2;
+    let out = ne.init_controller(&mut offsets, &mut vel_pid, &inp);
+    let max = ap_math::control::angle_rad_to_accel_mss(0.2);
+    assert!((out.accel_target_mss.length() - max).abs() < 1e-4);
+}
+
+/// Stopping-point init parks the trajectory at the kinematic stop and
+/// zeros desired velocity, leaving the velocity target as the estimate.
+#[test]
+fn ne_init_stopping_point_parks_desired() {
+    let mut ne = PosControlNe::new();
+    let mut offsets = NeOffsetState::default();
+    let mut vel_pid = AcPid2d::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let inp = ne_init_inputs();
+    let limits = ne_limits();
+    let expect = stopping_point_ne(
+        inp.estimates.pos_m,
+        Vector2::new(0.0, 0.0),
+        inp.estimates.vel_ms,
+        Vector2f::zero(),
+        1.0,
+        &limits,
+    );
+    let out = ne.init_controller_stopping_point(&mut offsets, &mut vel_pid, &inp, 1.0, &limits);
+    assert!((ne.pos_desired_m.x - expect.x).abs() < 1e-6);
+    assert!((out.pos_target_m.x - expect.x).abs() < 1e-6);
+    assert_eq!(ne.vel_desired_ms.x, 0.0);
+    assert!((out.vel_target_ms.x - inp.estimates.vel_ms.x).abs() < 1e-12);
+}
+
+#[test]
+fn d_init_offsets_snaps_or_zeros() {
+    let mut state = DOffsetState {
+        current: DOffsets {
+            pos_m: 1.0,
+            vel_ms: 0.1,
+            accel_mss: 0.0,
+        },
+        target: DOffsets {
+            pos_m: 2.5,
+            vel_ms: -0.2,
+            accel_mss: 0.05,
+        },
+        target_ms: 1_000,
+    };
+    state.init(1_200);
+    assert!((state.current.pos_m - 2.5).abs() < 1e-12);
+
+    state.target_ms = 0;
+    state.init(5_000);
+    assert_eq!(state.current.pos_m, 0.0);
+    assert_eq!(state.target.pos_m, 0.0);
+}
+
+/// D update integrates current first, then shapes, then the target.
+/// A matching at-rest pair must stay put; a timeout must pull home.
+#[test]
+fn d_update_offsets_is_idle_then_times_out_home() {
+    let mut state = DOffsetState {
+        current: DOffsets {
+            pos_m: -3.0,
+            ..DOffsets::default()
+        },
+        target: DOffsets {
+            pos_m: -3.0,
+            ..DOffsets::default()
+        },
+        target_ms: 1_000,
+    };
+    state.update(&d_limits(), 0.02, 1_000, 0.0, 0.0, 0.0);
+    assert!((state.current.pos_m + 3.0).abs() < 1e-6);
+    assert!(state.current.accel_mss.abs() < 1e-6);
+
+    state.target_ms = 0;
+    state.update(&d_limits(), 0.02, 5_000, 0.0, 0.0, 0.0);
+    assert_eq!(state.target.pos_m, 0.0);
+    assert!(
+        state.current.accel_mss > 0.0,
+        "offset at -3 must accelerate down toward zero, got {}",
+        state.current.accel_mss
+    );
+}
+
+/// A positive (downward) limit is ignored when advancing the current
+/// offset: only `min(limit, 0)` is passed. An upward saturation must
+/// still let a descent offset move.
+#[test]
+fn d_update_offsets_ignores_a_positive_limit() {
+    let mut frozen = DOffsetState {
+        current: DOffsets {
+            pos_m: 0.0,
+            vel_ms: 1.0,
+            accel_mss: 0.0,
+        },
+        target: DOffsets {
+            pos_m: 0.0,
+            vel_ms: 1.0,
+            accel_mss: 0.0,
+        },
+        target_ms: 1_000,
+    };
+    let mut unclipped = frozen;
+    // limit = +1 with pos_error = +1 would freeze a 1-D advance if the
+    // raw limit were used (delta_pos and pos_error both share the sign).
+    frozen.update(&d_limits(), 0.02, 1_000, 1.0, 1.0, 1.0);
+    unclipped.update(&d_limits(), 0.02, 1_000, 0.0, 1.0, 1.0);
+    assert!(
+        (frozen.current.pos_m - unclipped.current.pos_m).abs() < 1e-6,
+        "positive limit must be clipped to zero before the advance"
+    );
+    assert!(
+        frozen.current.pos_m > 0.0,
+        "descent offset must still advance, got {}",
+        frozen.current.pos_m
+    );
+}
+
+#[test]
+fn d_ekf_reset_ignores_a_zero_timestamp() {
+    let mut ekf = DEkfReset::init(5);
+    let mut targets = DEkfTargets {
+        pos_target_m: 1.0,
+        vel_target_ms: 0.0,
+        pos_desired_m: 1.0,
+        vel_desired_ms: 0.0,
+        offsets: DOffsets::default(),
+    };
+    let fired = ekf.handle(
+        0,
+        EkfResetMethod::MoveTarget,
+        &mut targets,
+        0.0,
+        0.0,
+        DEstimates {
+            pos_m: 4.0,
+            vel_ms: 0.0,
+        },
+    );
+    assert!(!fired);
+    assert!((targets.pos_target_m - 1.0).abs() < 1e-12);
+    assert_eq!(ekf.last_reset_ms, 5);
+}
+
+#[test]
+fn d_ekf_move_target_preserves_the_stored_error() {
+    let mut ekf = DEkfReset::init(1);
+    let mut targets = DEkfTargets {
+        pos_target_m: 5.0,
+        vel_target_ms: 1.0,
+        pos_desired_m: 4.0,
+        vel_desired_ms: 0.5,
+        offsets: DOffsets {
+            pos_m: 1.0,
+            vel_ms: 0.5,
+            accel_mss: 0.0,
+        },
+    };
+    // error = 2, new estimate = 8, delta = 2 - (5-8) = 5
+    let fired = ekf.handle(
+        9,
+        EkfResetMethod::MoveTarget,
+        &mut targets,
+        2.0,
+        0.5,
+        DEstimates {
+            pos_m: 8.0,
+            vel_ms: 2.0,
+        },
+    );
+    assert!(fired);
+    assert!((targets.pos_target_m - 10.0).abs() < 1e-6);
+    assert!((targets.pos_desired_m - 9.0).abs() < 1e-6);
+    assert!((targets.offsets.pos_m - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn d_ekf_move_vehicle_shifts_the_offset() {
+    let mut ekf = DEkfReset::init(1);
+    let mut targets = DEkfTargets {
+        pos_target_m: 5.0,
+        vel_target_ms: 0.0,
+        pos_desired_m: 5.0,
+        vel_desired_ms: 0.0,
+        offsets: DOffsets::default(),
+    };
+    let fired = ekf.handle(
+        4,
+        EkfResetMethod::MoveVehicle,
+        &mut targets,
+        1.0,
+        0.0,
+        DEstimates {
+            pos_m: 7.0,
+            vel_ms: 0.0,
+        },
+    );
+    assert!(fired);
+    assert!((targets.pos_desired_m - 5.0).abs() < 1e-12);
+    assert!((targets.offsets.pos_m - 3.0).abs() < 1e-6);
+}
+
+/// Vertical init zeros terrain, subtracts offsets, seeds the accel PID
+/// I term so the first throttle equals the throttle already being sent,
+/// and constrains the accel target.
+#[test]
+fn d_init_subtracts_offsets_and_seeds_the_accel_integrator() {
+    let mut d = PosControlD::new();
+    let mut offsets = DOffsetState {
+        current: DOffsets::default(),
+        target: DOffsets {
+            pos_m: 1.5,
+            vel_ms: 0.2,
+            accel_mss: 0.1,
+        },
+        target_ms: 1_000,
+    };
+    let mut vel_pid = AcPidBasic::new(1.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = AcPid::new(PidGains {
+        p: 0.5,
+        i: 0.0,
+        d: 0.0,
+        ff: 0.25,
+        dff: 0.0,
+        imax: 1.0,
+        pdmax: 0.0,
+        filt_t_hz: 0.0,
+        filt_e_hz: 0.0,
+        filt_d_hz: 0.0,
+        srmax: 0.0,
+        srtau: 1.0,
+    });
+    let inp = d_init_inputs();
+    let out = d.init_controller(&mut offsets, &mut vel_pid, &mut accel_pid, &inp);
+
+    assert!((out.pos_target_m - 8.0).abs() < 1e-12);
+    assert!((d.pos_desired_m - 6.5).abs() < 1e-12);
+    assert!((d.vel_desired_ms - 0.2).abs() < 1e-6);
+    assert!((out.accel_target_mss - 0.2).abs() < 1e-6);
+    assert!((d.accel_desired_mss - 0.1).abs() < 1e-6);
+    assert_eq!(out.terrain.pos_m, 0.0);
+    assert_eq!(vel_pid.integrator(), 0.0);
+    // I = -(0.45-0.35) - 0.5*(0.2-0.2) - 0.25*0.2 = -0.10 - 0.05 = -0.15
+    assert!((accel_pid.integrator() + 0.15).abs() < 1e-5);
+    assert_eq!(out.ekf.last_reset_ms, 7);
+}
+
+#[test]
+fn d_init_constrains_accel_to_the_configured_limit() {
+    let mut d = PosControlD::new();
+    let mut offsets = DOffsetState::default();
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_init_inputs();
+    inp.estimated_accel_d_mss = 9.0;
+    inp.accel_max_d_mss = 2.5;
+    let out = d.init_controller(&mut offsets, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((out.accel_target_mss - 2.5).abs() < 1e-6);
+
+    inp.estimated_accel_d_mss = -9.0;
+    let out = d.init_controller(&mut offsets, &mut vel_pid, &mut accel_pid, &inp);
+    assert!((out.accel_target_mss + 2.5).abs() < 1e-6);
+}
+
+/// no_descent clips every downward velocity and acceleration after init.
+#[test]
+fn d_init_no_descent_clips_positive_rates() {
+    let mut d = PosControlD::new();
+    let mut offsets = DOffsetState {
+        current: DOffsets::default(),
+        target: DOffsets {
+            pos_m: 0.0,
+            vel_ms: 1.0,
+            accel_mss: 0.5,
+        },
+        target_ms: 1_000,
+    };
+    let mut vel_pid = AcPidBasic::new(0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    let mut accel_pid = accel_p(0.0);
+    let mut inp = d_init_inputs();
+    inp.estimates.vel_ms = 0.8;
+    inp.estimated_accel_d_mss = 1.0;
+    let mut terrain = DTerrain {
+        pos_m: 0.0,
+        vel_ms: 0.3,
+        accel_mss: 0.2,
+    };
+    let out = d.init_controller_no_descent(
+        &mut offsets,
+        &mut vel_pid,
+        &mut accel_pid,
+        &inp,
+        &mut terrain,
+    );
+    // vel_target 0.8 clips to 0; desired is estimate-offset = -0.2 (climb)
+    // and MIN keeps negatives. Offset vel 1.0 clips to 0.
+    assert_eq!(out.vel_target_ms, 0.0);
+    assert!((d.vel_desired_ms + 0.2).abs() < 1e-6);
+    assert_eq!(offsets.current.vel_ms, 0.0);
+    assert_eq!(out.accel_target_mss, 0.0);
+    assert_eq!(d.accel_desired_mss, 0.0);
+    assert_eq!(offsets.current.accel_mss, 0.0);
+    // init_terrain zeros first; the clip then has nothing downward left.
+    assert_eq!(terrain.vel_ms, 0.0);
+    assert_eq!(terrain.accel_mss, 0.0);
+}
+
+#[test]
+fn init_terrain_is_all_zeros() {
+    let t = init_terrain();
+    assert_eq!(t.pos_m, 0.0);
+    assert_eq!(t.vel_ms, 0.0);
+    assert_eq!(t.accel_mss, 0.0);
 }
