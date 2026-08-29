@@ -20,6 +20,7 @@ pub mod altitude;
 pub mod arming;
 pub mod attitude;
 pub mod auto_yaw;
+pub mod aux;
 pub mod crash_check;
 pub mod failsafe;
 pub mod ground;

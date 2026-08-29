@@ -11,6 +11,7 @@ ap-math = { workspace = true }
 ap-control = { workspace = true }
 ap-motors = { workspace = true }
 ap-wpnav = { workspace = true }
+ap-rc = { workspace = true }
 libm = { workspace = true }
 
 [features]
