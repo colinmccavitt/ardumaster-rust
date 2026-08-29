@@ -36,8 +36,12 @@
 //! [`VisGraph`] (`AP_OAVisGraph`). [`DijkstraFenceContext`] injects the
 //! polyfence / EKF-origin reads.
 //!
-//! The OA database, vertical BendyRuler, and lean-angle avoidance in
-//! non-GPS modes stay later leftovers.
+//! The eighth leftover is the OA database: [`Database`] (`AP_OADatabase`)
+//! queue, match / refresh, and expiry. [`QueuePushContext`] is the leftover
+//! of `ahrs.get_relative_position_NED_home` for Copter `ALT_MIN`.
+//!
+//! Vertical BendyRuler and lean-angle avoidance in non-GPS modes stay
+//! later leftovers.
 //!
 //! ADR-0004 forbids the fence / AHRS / proximity / beacon / HAL singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
@@ -50,14 +54,14 @@
 //!
 //! # What this crate does not own
 //!
-//! The OA database, vertical BendyRuler, and lean-angle avoidance in
-//! non-GPS modes.
+//! Vertical BendyRuler and lean-angle avoidance in non-GPS modes.
 
 #![no_std]
 
 pub mod avoid;
 pub mod fence_ne;
 pub mod oa_bendy_ruler;
+pub mod oa_database;
 pub mod oa_dijkstra;
 pub mod oa_path_planner;
 pub mod oa_vis_graph;
@@ -79,6 +83,12 @@ pub use oa_bendy_ruler::{
     ANGLE_DEFAULT, BEARING_INC_XY_DEG, LOOKAHEAD_M_DEFAULT, LOOKAHEAD_PAST_DEST_M,
     LOOKAHEAD_STEP2_MIN_M, LOOKAHEAD_STEP2_RATIO, LOW_SPEED_SQUARED, OA_DB_ITEMS_MAX,
     RATIO_DEFAULT, TYPE_DEFAULT,
+};
+pub use oa_database::{
+    Database, OaDatabaseItem, OaDbImportance, OaDbOutputLevel, OaDbSource, QueuePushContext,
+    BEAM_WIDTH_DEFAULT_DEG, DATABASE_MAX, DISTANCE_FROM_HOME_M, DIST_MAX_DEFAULT_M,
+    MIN_ALT_DEFAULT_M, OUTPUT_DEFAULT, PROCESS_QUEUE_CAP, QUEUE_MAX, QUEUE_SIZE_DEFAULT,
+    RADIUS_MIN_DEFAULT_M, REFRESH_MS, SIZE_DEFAULT, TIMEOUT_SECONDS_DEFAULT,
 };
 pub use oa_dijkstra::{
     Dijkstra, DijkstraError, DijkstraFenceContext, DijkstraState, DijkstraUpdateLeftover,
