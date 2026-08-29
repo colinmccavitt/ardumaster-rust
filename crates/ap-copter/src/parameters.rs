@@ -45,7 +45,9 @@
 //! next leftover is the stock `MIS_` `GOBJECT`
 //! (`MODE_AUTO_ENABLED`). After `MIS_` the
 //! next leftover is the stock `RSSI_` `GOBJECT`
-//! (`AP_RSSI_ENABLED`). Later groups, G2,
+//! (`AP_RSSI_ENABLED`). After `RSSI_` the
+//! next leftover is the stock `RNGFND` `GOBJECT`
+//! (`AP_RANGEFINDER_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1459,7 +1461,7 @@ pub fn for_each_mis_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_rangefinder` — next leftover after `RSSI_`. Not this leftover.
+/// `Parameters::k_param_rangefinder` — next `GOBJECT`, prefix `RNGFND`.
 pub const K_PARAM_RANGEFINDER: u16 = 53;
 
 /// Stock `RSSI_` leftover catalog.
@@ -1487,6 +1489,38 @@ pub fn find_rssi_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `RSSI_` leftover as `ParamInfo` rows.
 pub fn for_each_rssi_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in RSSI_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_terrain` — next leftover after `RNGFND`. Not this leftover.
+pub const K_PARAM_TERRAIN: u16 = 55;
+
+/// Stock `RNGFND` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `RSSI_`. Upstream is
+/// `GOBJECT`. `RNGFND` is `AP_RANGEFINDER_ENABLED`. Nested `RangeFinder`
+/// `var_info` is not this leftover. `TERRAIN_` stays later (`AP_TERRAIN_AVAILABLE`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const RNGFND_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("RNGFND", K_PARAM_RANGEFINDER)];
+
+/// First (only) row of the `RNGFND` leftover.
+#[must_use]
+pub fn rngfnd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    RNGFND_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `RNGFND` leftover by group prefix.
+#[must_use]
+pub fn find_rngfnd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    RNGFND_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `RNGFND` leftover as `ParamInfo` rows.
+pub fn for_each_rngfnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in RNGFND_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
