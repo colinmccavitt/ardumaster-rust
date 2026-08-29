@@ -243,15 +243,15 @@ fn retrieve_los_meas_reads_irlock_sample() {
 #[test]
 fn leftover_catalog_drops_irlock_and_gazebo_update() {
     assert!(
-        REMAINING.len() >= 8,
+        REMAINING.is_empty(),
         "IRLock slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::init(irlock)"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::init(irlock)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::init(irlock)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::init(irlock)"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
     assert!(!REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }

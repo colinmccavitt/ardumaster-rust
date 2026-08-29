@@ -456,7 +456,7 @@ fn check_target_status_recently_lost_demotes_on_stale_ms() {
 
 #[test]
 fn remaining_drops_prediction_and_getters() {
-    assert!(REMAINING.len() >= 8, "backends and StateMachine stay later");
+    assert!(REMAINING.is_empty(), "COP-028 leftovers are closed");
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
     assert!(!REMAINING.contains(&"AC_PrecLand::get_target_position_m"));
     assert!(!REMAINING.contains(&"AC_PrecLand::get_target_position_measurement_NED_m"));
@@ -472,6 +472,6 @@ fn remaining_drops_prediction_and_getters() {
     assert!(!REMAINING.contains(&"inertial_data_frame_s"));
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }

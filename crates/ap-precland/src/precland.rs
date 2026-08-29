@@ -19,6 +19,7 @@ use ap_math::vector3::Vector3f;
 use ap_math::Ftype;
 
 use crate::inertial::InertialHistory;
+use crate::state_machine::{RetryAction, RetryStrictness, StateMachineFrontend};
 use crate::estimator::{
     EkfInitTimeoutLeftover, EstimatorInput, EstimatorWorld, InertialSample, LosSample,
     RunEstimatorLeftover, ACCEL_NOISE_DEFAULT, EKF_INIT_SENSOR_MIN_UPDATE_MS, EKF_INIT_TIME_MS,
@@ -141,6 +142,14 @@ pub struct PrecLandParams {
     pub sensor_min_alt_m: f32,
     /// `PLND_ALT_MAX`, metres. Zero means no ceiling.
     pub sensor_max_alt_m: f32,
+    /// `PLND_STRICT`.
+    pub retry_strictness: RetryStrictness,
+    /// `PLND_RET_MAX`.
+    pub retry_max: u8,
+    /// `PLND_TIMEOUT`, seconds.
+    pub retry_timeout_s: f32,
+    /// `PLND_RET_BEHAVE`.
+    pub retry_behave: RetryAction,
 }
 
 impl Default for PrecLandParams {
@@ -160,6 +169,10 @@ impl Default for PrecLandParams {
             options: OPTION_DISABLED,
             sensor_min_alt_m: SENSOR_MIN_ALT_M_DEFAULT,
             sensor_max_alt_m: SENSOR_MAX_ALT_M_DEFAULT,
+            retry_strictness: crate::STRICT_DEFAULT,
+            retry_max: crate::RETRY_MAX_DEFAULT,
+            retry_timeout_s: crate::RETRY_TIMEOUT_S_DEFAULT,
+            retry_behave: crate::RETRY_BEHAVE_DEFAULT,
         }
     }
 }
@@ -363,6 +376,10 @@ pub struct PrecLand {
     options: u16,
     sensor_min_alt_m: f32,
     sensor_max_alt_m: f32,
+    retry_strictness: RetryStrictness,
+    retry_max: u8,
+    retry_timeout_s: f32,
+    retry_behave: RetryAction,
     ekf_x: PosVelEKF,
     ekf_y: PosVelEKF,
 }
@@ -419,6 +436,10 @@ impl PrecLand {
             options: params.options,
             sensor_min_alt_m: params.sensor_min_alt_m,
             sensor_max_alt_m: params.sensor_max_alt_m,
+            retry_strictness: params.retry_strictness,
+            retry_max: params.retry_max,
+            retry_timeout_s: params.retry_timeout_s,
+            retry_behave: params.retry_behave,
             ekf_x: PosVelEKF::new(),
             ekf_y: PosVelEKF::new(),
         }
@@ -470,18 +491,21 @@ impl PrecLand {
             }
             Type::Irlock => {
                 self.backend = Some(Type::Irlock);
-                self.irlock.init();
-                leftover.irlock_bus = Some(self.bus);
+                let drv = self.irlock.init();
+                if drv.need_irlock_init {
+                    leftover.irlock_bus = Some(self.bus);
+                }
             }
             Type::SitlGazebo => {
                 self.backend = Some(Type::SitlGazebo);
-                self.irlock.init();
-                leftover.irlock_bus = Some(self.bus);
+                let drv = self.irlock.init();
+                if drv.need_irlock_init {
+                    leftover.irlock_bus = Some(self.bus);
+                }
             }
             Type::Sitl => {
                 self.backend = Some(Type::Sitl);
-                self.sitl.init();
-                leftover.need_sitl = true;
+                leftover.need_sitl = self.sitl.init().need_sitl;
             }
         }
 
@@ -1089,6 +1113,47 @@ impl PrecLand {
         self.last_vehicle_pos_ned_m
     }
 
+    /// `get_retry_strictness()` / `PLND_STRICT`.
+    #[must_use]
+    pub fn retry_strictness(&self) -> RetryStrictness {
+        self.retry_strictness
+    }
+
+    /// `get_max_retry_allowed()` / `PLND_RET_MAX`.
+    #[must_use]
+    pub fn max_retry_allowed(&self) -> u8 {
+        self.retry_max
+    }
+
+    /// `get_min_retry_time_sec()` / `PLND_TIMEOUT`.
+    #[must_use]
+    pub fn min_retry_time_sec(&self) -> f32 {
+        self.retry_timeout_s
+    }
+
+    /// `get_retry_behaviour()` / `PLND_RET_BEHAVE`.
+    #[must_use]
+    pub fn retry_behaviour(&self) -> RetryAction {
+        self.retry_behave
+    }
+
+    /// Snapshot for [`crate::StateMachine`]. Leftover of
+    /// `AP::ac_precland()` plus the retry getters.
+    #[must_use]
+    pub fn state_machine_frontend(&self) -> StateMachineFrontend {
+        StateMachineFrontend {
+            enabled: self.enabled,
+            target_state: self.current_target_state,
+            retry_strictness: self.retry_strictness,
+            last_valid_target_ms: self.last_valid_target_ms,
+            min_retry_time_sec: self.retry_timeout_s,
+            max_retry_allowed: self.retry_max,
+            retry_behaviour: self.retry_behave,
+            last_detected_landing_pos_ned_m: self.last_target_pos_rel_origin_ned_m,
+            last_vehicle_pos_when_target_detected_ned_m: self.last_vehicle_pos_ned_m,
+        }
+    }
+
     /// Change `PLND_TYPE` the same way a param write would.
     ///
     /// Does not re-run `init`. A `NONE` instance can still `init` after
@@ -1137,6 +1202,26 @@ impl PrecLand {
     pub fn set_sensor_alt_limits_m(&mut self, min_m: f32, max_m: f32) {
         self.sensor_min_alt_m = min_m;
         self.sensor_max_alt_m = max_m;
+    }
+
+    /// Change `PLND_STRICT` the same way a param write would.
+    pub fn set_retry_strictness(&mut self, retry_strictness: RetryStrictness) {
+        self.retry_strictness = retry_strictness;
+    }
+
+    /// Change `PLND_RET_MAX` the same way a param write would.
+    pub fn set_max_retry_allowed(&mut self, retry_max: u8) {
+        self.retry_max = retry_max;
+    }
+
+    /// Change `PLND_TIMEOUT` the same way a param write would.
+    pub fn set_min_retry_time_sec(&mut self, retry_timeout_s: f32) {
+        self.retry_timeout_s = retry_timeout_s;
+    }
+
+    /// Change `PLND_RET_BEHAVE` the same way a param write would.
+    pub fn set_retry_behaviour(&mut self, retry_behave: RetryAction) {
+        self.retry_behave = retry_behave;
     }
 
     /// `AC_PrecLand::run_output_prediction`.

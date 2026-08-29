@@ -176,7 +176,7 @@ fn handle_msg_dispatches_when_backend_exists() {
 #[test]
 fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(
-        REMAINING.len() >= 8,
+        REMAINING.is_empty(),
         "update slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand::update"));
@@ -192,8 +192,8 @@ fn leftover_catalog_drops_update_and_handle_msg() {
     assert!(!REMAINING.contains(&"AC_PrecLand_MAVLink::handle_msg"));
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }
 

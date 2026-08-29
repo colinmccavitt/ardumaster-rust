@@ -1,7 +1,6 @@
 //! `AC_PrecLand::init` leftover.
 //!
-//! Tracked as **COP-028**. Estimator, sensor backends, and the retry
-//! state machine stay later.
+//! Tracked as **COP-028**. COP-028 leftovers are closed.
 
 use ap_math::rotations_gen::Rotation;
 use ap_math::scalar::is_equal;
@@ -202,11 +201,8 @@ fn orient_none_leaves_approach_forward() {
 }
 
 #[test]
-fn leftover_catalog_is_not_empty() {
-    assert!(
-        REMAINING.len() >= 8,
-        "first stub must not claim the 1,133-loc ticket is done"
-    );
+fn leftover_catalog_is_empty() {
+    assert!(REMAINING.is_empty());
     assert!(!REMAINING.contains(&"AC_PrecLand::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand::handle_msg"));
     assert!(!REMAINING.contains(&"AC_PrecLand::run_estimator"));
@@ -214,6 +210,6 @@ fn leftover_catalog_is_not_empty() {
     assert!(!REMAINING.contains(&"AC_PrecLand::construct_pos_meas_using_rangefinder"));
     assert!(!REMAINING.contains(&"AC_PrecLand::retrieve_los_meas"));
     assert!(!REMAINING.contains(&"AC_PrecLand::run_output_prediction"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
     assert!(!REMAINING.contains(&"PosVelEKF"));
 }

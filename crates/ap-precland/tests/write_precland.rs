@@ -1,7 +1,7 @@
 //! `AC_PrecLand::Write_Precland` leftover.
 //!
 //! Tracked as **COP-028**. `AP::logger().WriteBlock` stays a logger
-//! leftover. Driver `init` and `AC_PrecLand_StateMachine` stay later.
+//! leftover. COP-028 leftovers are closed.
 
 use ap_math::scalar::is_equal;
 use ap_math::vector3::Vector3f;
@@ -155,5 +155,5 @@ fn update_cadence_skips_write_when_disabled() {
 #[test]
 fn leftover_catalog_drops_write_precland() {
     assert!(!REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }

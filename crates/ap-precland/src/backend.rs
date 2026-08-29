@@ -361,8 +361,12 @@ impl IrlockBackend {
     /// `AC_PrecLand_SITL_Gazebo::init`.
     ///
     /// Does not set healthy. The `irlock.init(get_bus())` driver call
-    /// is the leftover.
-    pub fn init(&mut self) {}
+    /// is the leftover on [`IrlockInitLeftover`].
+    pub fn init(&mut self) -> IrlockInitLeftover {
+        IrlockInitLeftover {
+            need_irlock_init: true,
+        }
+    }
 
     /// Upstream `_state.healthy` after `update`.
     #[must_use]
@@ -463,6 +467,24 @@ impl Default for SitlBackend {
     }
 }
 
+/// Leftover of `AC_PrecLand_IRLock::init` / `SITL_Gazebo::init`.
+///
+/// ADR-0004 forbids `AP_IRLock`. The vehicle owns `irlock.init(bus)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrlockInitLeftover {
+    /// `true` when `irlock.init(get_bus())` still needs to run.
+    pub need_irlock_init: bool,
+}
+
+/// Leftover of `AC_PrecLand_SITL::init`.
+///
+/// ADR-0004 forbids `AP::sitl()`. The vehicle owns the singleton fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SitlInitLeftover {
+    /// `true` when `AP::sitl()` still needs to run.
+    pub need_sitl: bool,
+}
+
 impl SitlBackend {
     /// Construct. Upstream `using AC_PrecLand_Backend::AC_PrecLand_Backend`.
     #[must_use]
@@ -473,8 +495,10 @@ impl SitlBackend {
     /// Upstream `AC_PrecLand_SITL::init`.
     ///
     /// Does not set healthy. The `AP::sitl()` singleton fetch is the
-    /// leftover.
-    pub fn init(&mut self) {}
+    /// leftover on [`SitlInitLeftover`].
+    pub fn init(&mut self) -> SitlInitLeftover {
+        SitlInitLeftover { need_sitl: true }
+    }
 
     /// Upstream `_state.healthy` after `update`.
     #[must_use]

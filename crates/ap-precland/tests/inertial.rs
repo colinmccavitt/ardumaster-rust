@@ -175,13 +175,13 @@ fn update_with_inertial_push_forces_newest() {
 #[test]
 fn leftover_catalog_drops_ring() {
     assert!(
-        REMAINING.len() >= 8,
+        REMAINING.is_empty(),
         "driver init and StateMachine stay later"
     );
     assert!(!REMAINING.contains(&"inertial_data_frame_s"));
     assert!(!REMAINING.contains(&"ObjectArray<inertial_data_frame_s>"));
     assert!(!REMAINING.contains(&"AC_PrecLand::Write_Precland"));
-    assert!(REMAINING.contains(&"AC_PrecLand_IRLock::init(irlock)"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::init(irlock)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }

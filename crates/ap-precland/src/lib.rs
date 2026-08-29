@@ -12,8 +12,9 @@
 //! `check_target_status` leftover, [`Backend`] LOS getters, the
 //! first real sensor path ([`MavlinkBackend`]), the IRLock /
 //! SITL-Gazebo path ([`IrlockBackend`]), and the SITL sim path
-//! ([`SitlBackend`]), [`PrecLand::write_precland`], and the inertial
-//! ring ([`InertialHistory`]). `init` is the
+//! ([`SitlBackend`]), [`PrecLand::write_precland`], the inertial
+//! ring ([`InertialHistory`]), and the retry
+//! [`StateMachine`]. `init` is the
 //! constructor's follow-on: constrain `PLND_LAG`, size the inertial
 //! history ring, pick a sensor backend from `PLND_TYPE`, run that
 //! backend's `init()`, and rotate the body-frame approach vector by
@@ -61,8 +62,10 @@
 //!
 //! # What this crate does not own yet
 //!
-//! [`leftover::REMAINING`] is the catalog: IRLock / SITL-Gazebo
-//! `init(irlock)`, SITL `init(AP::sitl)`, and `AC_PrecLand_StateMachine`.
+//! [`leftover::REMAINING`] is empty: the retry
+//! [`StateMachine`] and the driver-`init` leftover records close this
+//! ticket. ADR-0004 still forbids `AP_IRLock` / `AP::sitl()`; those
+//! stay on [`InitLeftover`].
 
 #![no_std]
 
@@ -73,10 +76,12 @@ pub mod leftover;
 pub mod pos_vel_ekf;
 pub mod precland;
 pub mod prediction;
+pub mod state_machine;
 
 pub use backend::{
-    Backend, IrlockBackend, IrlockSample, MavlinkBackend, MavlinkHandleMsgLeftover, SitlBackend,
-    SitlSample, LOS_MEAS_TIMEOUT_MS, MAV_FRAME_BODY_FRD, MAV_FRAME_LOCAL_FRD,
+    Backend, IrlockBackend, IrlockInitLeftover, IrlockSample, MavlinkBackend,
+    MavlinkHandleMsgLeftover, SitlBackend, SitlInitLeftover, SitlSample, LOS_MEAS_TIMEOUT_MS,
+    MAV_FRAME_BODY_FRD, MAV_FRAME_LOCAL_FRD,
 };
 pub use inertial::{InertialDataFrame, InertialHistory, INERTIAL_HISTORY_MAX};
 pub use estimator::{
@@ -86,6 +91,12 @@ pub use estimator::{
     EKF_OUTLIER_REJECT_LIMIT, LANDING_TARGET_TIMEOUT_MS,
 };
 pub use leftover::REMAINING;
+pub use state_machine::{
+    FailSafeAction, FailSafeLeftover, RetryAction, RetryStrictness, StateMachine,
+    StateMachineFrontend, StateMachineUpdate, StateMachineWorld, Status, FAILSAFE_INIT_TIMEOUT_MS,
+    MAX_POS_ERROR_M, RETRY_BEHAVE_DEFAULT, RETRY_MAX_DEFAULT, RETRY_OFFSET_ALT_M,
+    RETRY_TIMEOUT_S_DEFAULT, STRICT_DEFAULT,
+};
 pub use pos_vel_ekf::PosVelEKF;
 pub use precland::{
     EstimatorType, HandleMsgLeftover, InitLeftover, LandingTargetMsg, PrecLand, PrecLandParams,

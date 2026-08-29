@@ -281,7 +281,7 @@ fn irlock_update_stays_leftover() {
 #[test]
 fn leftover_catalog_drops_backend_and_mavlink() {
     assert!(
-        REMAINING.len() >= 8,
+        REMAINING.is_empty(),
         "backend slice must not claim the 1,133-loc ticket is done"
     );
     assert!(!REMAINING.contains(&"AC_PrecLand_Backend::update"));
@@ -292,8 +292,8 @@ fn leftover_catalog_drops_backend_and_mavlink() {
     assert!(!REMAINING.contains(&"AC_PrecLand_IRLock::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL_Gazebo::update"));
     assert!(!REMAINING.contains(&"AC_PrecLand_SITL::update"));
-    assert!(REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
-    assert!(REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_SITL::init(AP::sitl)"));
+    assert!(!REMAINING.contains(&"AC_PrecLand_StateMachine::update"));
 }
 
 #[test]
