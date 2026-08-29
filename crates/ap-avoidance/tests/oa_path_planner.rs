@@ -1,12 +1,12 @@
-//! OA path-planner stub + BendyRuler leftover. Tracked as **COP-026**.
+//! OA path-planner + BendyRuler leftover. Tracked as **COP-026**.
 //!
-//! Dijkstra, the OA database, vertical BendyRuler, and lean-angle
-//! avoidance stay later leftovers.
+//! Dijkstra coverage lives in `oa_dijkstra.rs`. The OA database, vertical
+//! BendyRuler, and lean-angle avoidance stay later leftovers.
 
 use ap_avoidance::{
-    BendyMarginContext, BendyRuler, OaBendyType, OaDbItem, OaPathPlanType, OaPathPlannerUsed,
-    OaRetState, PathPlanner, LOOKAHEAD_M_DEFAULT, MARGIN_MAX_M_DEFAULT, OPTIONS_DEFAULT,
-    OPTION_WP_RESET, TIMEOUT_MS, UPDATE_MS,
+    BendyMarginContext, BendyRuler, DijkstraFenceContext, OaBendyType, OaDbItem, OaPathPlanType,
+    OaPathPlannerUsed, OaRetState, PathPlanner, LOOKAHEAD_M_DEFAULT, MARGIN_MAX_M_DEFAULT,
+    OPTIONS_DEFAULT, OPTION_WP_RESET, TIMEOUT_MS, UPDATE_MS,
 };
 use ap_math::location::Location;
 use ap_math::scalar::is_equal;
@@ -30,6 +30,10 @@ fn almost(a: f32, b: f32) {
     assert!(is_equal(a, b), "{a} != {b}");
 }
 
+fn empty_fence() -> DijkstraFenceContext {
+    DijkstraFenceContext::default()
+}
+
 #[test]
 fn planner_defaults_match_upstream() {
     let planner = PathPlanner::new();
@@ -39,6 +43,7 @@ fn planner_defaults_match_upstream() {
     assert_eq!(planner.options() & OPTION_WP_RESET, OPTION_WP_RESET);
     assert!(!planner.thread_created());
     assert!(planner.bendy().is_none());
+    assert!(planner.dijkstra().is_none());
 }
 
 #[test]
@@ -67,24 +72,6 @@ fn bendy_pre_arm_requires_init() {
     let after = planner.pre_arm_check();
     assert!(after.ok);
     assert_eq!(after.failure_msg, "");
-}
-
-#[test]
-fn dijkstra_type_stays_later_leftover() {
-    let mut planner = PathPlanner::new();
-    planner.set_plan_type(OaPathPlanType::Dijkstra);
-    planner.init();
-    assert!(planner.thread_created());
-    assert!(planner.bendy().is_none());
-    let check = planner.pre_arm_check();
-    assert!(!check.ok);
-    assert_eq!(check.failure_msg, "Dijkstra OA requires reboot");
-
-    let here = origin();
-    let dest = offset(here, 0.0, 40.0);
-    let first = planner.mission_avoidance(here, here, dest, dest, Vector2f::zero(), 5_000);
-    assert_eq!(first.ret_state, OaRetState::Processing);
-    assert!(!planner.process(5_000, &BendyMarginContext::default(), 0.0));
 }
 
 #[test]
@@ -132,7 +119,7 @@ fn clear_path_returns_not_required_after_bendy_tick() {
         origin: here,
         ..BendyMarginContext::default()
     };
-    assert!(planner.process(now, &ctx, 0.0));
+    assert!(planner.process(now, &ctx, 0.0, &empty_fence()));
     let leftover = planner.mission_avoidance(here, here, dest, dest, Vector2f::zero(), now + 10);
     assert_eq!(leftover.ret_state, OaRetState::NotRequired);
     assert_eq!(
@@ -159,7 +146,7 @@ fn obstacle_ahead_returns_success_and_deflects() {
     let now = 6_000;
     let pending = planner.mission_avoidance(here, here, dest, dest, Vector2f::new(5.0, 0.0), now);
     assert_eq!(pending.ret_state, OaRetState::Processing);
-    assert!(planner.process(now, &ctx, 0.0));
+    assert!(planner.process(now, &ctx, 0.0, &empty_fence()));
     let leftover =
         planner.mission_avoidance(here, here, dest, dest, Vector2f::new(5.0, 0.0), now + 10);
     assert_eq!(leftover.ret_state, OaRetState::Success);
@@ -188,9 +175,9 @@ fn process_respects_update_period() {
     };
     let now = 8_000;
     let _ = planner.mission_avoidance(here, here, dest, dest, Vector2f::zero(), now);
-    assert!(planner.process(now, &ctx, 0.0));
-    assert!(!planner.process(now + UPDATE_MS - 1, &ctx, 0.0));
-    assert!(planner.process(now + UPDATE_MS, &ctx, 0.0));
+    assert!(planner.process(now, &ctx, 0.0, &empty_fence()));
+    assert!(!planner.process(now + UPDATE_MS - 1, &ctx, 0.0, &empty_fence()));
+    assert!(planner.process(now + UPDATE_MS, &ctx, 0.0, &empty_fence()));
 }
 
 #[test]
@@ -267,8 +254,9 @@ fn combined_type_uses_bendy_arm() {
     planner.set_plan_type(OaPathPlanType::DijkstraBendyRuler);
     planner.init();
     assert!(planner.bendy().is_some());
+    assert!(planner.dijkstra().is_some());
     let check = planner.pre_arm_check();
-    assert!(!check.ok);
+    assert!(check.ok);
 
     let here = origin();
     let dest = offset(here, 0.0, 80.0);
@@ -279,7 +267,7 @@ fn combined_type_uses_bendy_arm() {
     let ctx = BendyMarginContext::one_item(here, item);
     let now = 9_000;
     let _ = planner.mission_avoidance(here, here, dest, dest, Vector2f::new(4.0, 0.0), now);
-    assert!(planner.process(now, &ctx, 0.0));
+    assert!(planner.process(now, &ctx, 0.0, &empty_fence()));
     let leftover =
         planner.mission_avoidance(here, here, dest, dest, Vector2f::new(4.0, 0.0), now + 10);
     assert_eq!(leftover.ret_state, OaRetState::Success);

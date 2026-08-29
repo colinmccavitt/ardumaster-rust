@@ -1,12 +1,14 @@
-//! OA path-planner stub leftover. Upstream `AP_OAPathPlanner`.
+//! OA path-planner leftover. Upstream `AP_OAPathPlanner`.
 //!
-//! This slice is the frontend: type / margin / options, `init`,
-//! `pre_arm_check`, `mission_avoidance`, and one tick of
-//! `avoidance_thread` as [`PathPlanner::process`]. The BendyRuler arm
-//! ([`crate::oa_bendy_ruler`]) is the first real planner leftover.
-//! Dijkstra, the OA database, and the background HAL thread stay later.
+//! Frontend: type / margin / options, `init`, `pre_arm_check`,
+//! `mission_avoidance`, and one tick of `avoidance_thread` as
+//! [`PathPlanner::process`]. Planner arms are [`crate::oa_bendy_ruler`]
+//! (horizontal) and [`crate::oa_dijkstra`].
 //!
-//! ADR-0004 forbids the AHRS / HAL / database singletons.
+//! The OA database, vertical BendyRuler, and the background HAL thread
+//! stay later leftovers. ADR-0004 forbids the AHRS / HAL / database
+//! singletons.
+//!
 //! [`PathPlanner::process`] is the leftover of one avoidance-thread
 //! iteration; [`MissionAvoidanceLeftover`] is the leftover of the
 //! request / result handshake.
@@ -17,6 +19,7 @@ use ap_math::vector2::Vector2f;
 use crate::oa_bendy_ruler::{
     same_latlon, BendyMarginContext, BendyRuler, OaBendyType, LOOKAHEAD_M_DEFAULT,
 };
+use crate::oa_dijkstra::{Dijkstra, DijkstraFenceContext, DijkstraState};
 
 /// Default `OA_MARGIN_MAX`, metres. Upstream `OA_MARGIN_MAX_DEFAULT`.
 pub const MARGIN_MAX_M_DEFAULT: f32 = 5.0;
@@ -36,7 +39,7 @@ pub enum OaPathPlanType {
     Disabled = 0,
     /// BendyRuler only. Upstream `OA_PATHPLAN_BENDYRULER`.
     BendyRuler = 1,
-    /// Dijkstra only. Upstream `OA_PATHPLAN_DIJKSTRA`. Later leftover.
+    /// Dijkstra only. Upstream `OA_PATHPLAN_DIJKSTRA`.
     Dijkstra = 2,
     /// Dijkstra with BendyRuler. Upstream `OA_PATHPLAN_DJIKSTRA_BENDYRULER`.
     DijkstraBendyRuler = 3,
@@ -73,7 +76,7 @@ pub enum OaPathPlannerUsed {
     BendyRulerHorizontal = 1,
     /// Vertical BendyRuler. Upstream `BendyRulerVertical`.
     BendyRulerVertical = 2,
-    /// Dijkstra. Upstream `Dijkstras`. Later leftover.
+    /// Dijkstra. Upstream `Dijkstras`.
     Dijkstras = 3,
 }
 
@@ -168,6 +171,8 @@ pub struct PathPlanner {
     thread_created: bool,
     /// BendyRuler instance. `None` until [`PathPlanner::init`].
     bendy: Option<BendyRuler>,
+    /// Dijkstra instance. `None` until [`PathPlanner::init`].
+    dijkstra: Option<Dijkstra>,
     /// Combined-type proximity-only latch. Upstream `proximity_only`.
     proximity_only: bool,
     last_update_ms: u32,
@@ -193,6 +198,7 @@ impl PathPlanner {
             options: OPTIONS_DEFAULT,
             thread_created: false,
             bendy: None,
+            dijkstra: None,
             proximity_only: true,
             last_update_ms: 0,
             activated_ms: 0,
@@ -233,6 +239,9 @@ impl PathPlanner {
     /// `OA_OPTIONS` setter.
     pub fn set_options(&mut self, options: u16) {
         self.options = options;
+        if let Some(dijkstra) = self.dijkstra.as_mut() {
+            dijkstra.set_options(options);
+        }
     }
 
     /// Leftover of `_thread_created`.
@@ -252,28 +261,50 @@ impl PathPlanner {
         self.bendy.as_mut()
     }
 
-    /// Leftover of `AP_OAPathPlanner::init` for Disabled / BendyRuler.
-    ///
-    /// Dijkstra construction stays a later leftover. Combined type still
-    /// constructs BendyRuler (the first half of that switch).
+    /// Dijkstra instance after [`PathPlanner::init`].
+    #[must_use]
+    pub fn dijkstra(&self) -> Option<&Dijkstra> {
+        self.dijkstra.as_ref()
+    }
+
+    /// Mutable Dijkstra after [`PathPlanner::init`].
+    pub fn dijkstra_mut(&mut self) -> Option<&mut Dijkstra> {
+        self.dijkstra.as_mut()
+    }
+
+    /// Leftover of `AP_OAPathPlanner::init`.
     pub fn init(&mut self) {
         match self.plan_type {
             OaPathPlanType::Disabled => {
                 self.thread_created = false;
                 return;
             }
-            OaPathPlanType::BendyRuler | OaPathPlanType::DijkstraBendyRuler => {
-                if self.bendy.is_none() {
-                    let mut bendy = BendyRuler::new();
-                    bendy.set_lookahead_m(LOOKAHEAD_M_DEFAULT);
-                    self.bendy = Some(bendy);
-                }
+            OaPathPlanType::BendyRuler => {
+                self.ensure_bendy();
             }
             OaPathPlanType::Dijkstra => {
-                // Dijkstra instance stays a later leftover.
+                self.ensure_dijkstra();
+            }
+            OaPathPlanType::DijkstraBendyRuler => {
+                self.ensure_dijkstra();
+                self.ensure_bendy();
             }
         }
         self.thread_created = true;
+    }
+
+    fn ensure_bendy(&mut self) {
+        if self.bendy.is_none() {
+            let mut bendy = BendyRuler::new();
+            bendy.set_lookahead_m(LOOKAHEAD_M_DEFAULT);
+            self.bendy = Some(bendy);
+        }
+    }
+
+    fn ensure_dijkstra(&mut self) {
+        if self.dijkstra.is_none() {
+            self.dijkstra = Some(Dijkstra::new(self.options));
+        }
     }
 
     /// Leftover of `AP_OAPathPlanner::pre_arm_check`.
@@ -297,21 +328,29 @@ impl PathPlanner {
                     }
                 }
             }
-            OaPathPlanType::Dijkstra => PreArmCheckLeftover {
-                ok: false,
-                failure_msg: "Dijkstra OA requires reboot",
-            },
+            OaPathPlanType::Dijkstra => {
+                if self.dijkstra.is_none() {
+                    PreArmCheckLeftover {
+                        ok: false,
+                        failure_msg: "Dijkstra OA requires reboot",
+                    }
+                } else {
+                    PreArmCheckLeftover {
+                        ok: true,
+                        failure_msg: "",
+                    }
+                }
+            }
             OaPathPlanType::DijkstraBendyRuler => {
-                if self.bendy.is_none() {
+                if self.dijkstra.is_none() || self.bendy.is_none() {
                     PreArmCheckLeftover {
                         ok: false,
                         failure_msg: "OA requires reboot",
                     }
                 } else {
-                    // Dijkstra half stays a later leftover.
                     PreArmCheckLeftover {
-                        ok: false,
-                        failure_msg: "OA requires reboot",
+                        ok: true,
+                        failure_msg: "",
                     }
                 }
             }
@@ -397,10 +436,17 @@ impl PathPlanner {
     /// Leftover of one `AP_OAPathPlanner::avoidance_thread` iteration.
     ///
     /// `yaw_deg` is the leftover of `AP::ahrs().get_yaw_deg` inside
-    /// BendyRuler. Dijkstra ticks stay a later leftover.
+    /// BendyRuler. `fence` is the leftover of `AP::fence()->polyfence()`
+    /// inside Dijkstra.
     ///
-    /// Returns `true` when a planner tick ran and wrote [`AvoidanceResult`].
-    pub fn process(&mut self, now_ms: u32, margin: &BendyMarginContext, yaw_deg: f32) -> bool {
+    /// Returns `true` when a planner tick ran and wrote the result.
+    pub fn process(
+        &mut self,
+        now_ms: u32,
+        margin: &BendyMarginContext,
+        yaw_deg: f32,
+        fence: &DijkstraFenceContext,
+    ) -> bool {
         if self.plan_type == OaPathPlanType::Disabled || !self.thread_created {
             return false;
         }
@@ -417,8 +463,8 @@ impl PathPlanner {
 
         let mut origin_new = request.origin;
         let mut destination_new = request.destination;
-        let next_destination_new = request.next_destination;
-        let dest_to_next_dest_clear = false;
+        let mut next_destination_new = request.next_destination;
+        let mut dest_to_next_dest_clear = false;
         let mut res = OaRetState::NotRequired;
         let mut path_planner_used = OaPathPlannerUsed::None;
 
@@ -444,23 +490,40 @@ impl PathPlanner {
                 path_planner_used = Self::map_bendytype_to_pathplannerused(leftover.bendy_type);
             }
             OaPathPlanType::Dijkstra => {
-                // Dijkstra update stays a later leftover.
-                return false;
-            }
-            OaPathPlanType::DijkstraBendyRuler => {
-                let Some(bendy) = self.bendy.as_mut() else {
+                let Some(dijkstra) = self.dijkstra.as_mut() else {
                     return false;
                 };
-                bendy.set_config(self.margin_max_m);
-                let mut margin_br = *margin;
-                margin_br.proximity_only = self.proximity_only;
-                let leftover = bendy.update(
+                let leftover = Self::run_dijkstra(
+                    dijkstra,
+                    self.margin_max_m,
                     request.current_loc,
                     request.destination,
-                    request.ground_speed_vec,
-                    yaw_deg,
-                    &margin_br,
+                    request.next_destination,
+                    fence,
                 );
+                origin_new = leftover.origin_new;
+                destination_new = leftover.destination_new;
+                next_destination_new = leftover.next_destination_new;
+                dest_to_next_dest_clear = leftover.dest_to_next_dest_clear;
+                res = leftover.ret_state;
+                path_planner_used = OaPathPlannerUsed::Dijkstras;
+            }
+            OaPathPlanType::DijkstraBendyRuler => {
+                let leftover = {
+                    let Some(bendy) = self.bendy.as_mut() else {
+                        return false;
+                    };
+                    bendy.set_config(self.margin_max_m);
+                    let mut margin_br = *margin;
+                    margin_br.proximity_only = self.proximity_only;
+                    bendy.update(
+                        request.current_loc,
+                        request.destination,
+                        request.ground_speed_vec,
+                        yaw_deg,
+                        &margin_br,
+                    )
+                };
                 if leftover.required {
                     self.proximity_only = false;
                     origin_new = leftover.origin_new;
@@ -468,8 +531,29 @@ impl PathPlanner {
                     res = OaRetState::Success;
                     path_planner_used = Self::map_bendytype_to_pathplannerused(leftover.bendy_type);
                 } else {
+                    if !self.proximity_only {
+                        if let Some(dijkstra) = self.dijkstra.as_mut() {
+                            dijkstra.recalculate_path();
+                        }
+                    }
                     self.proximity_only = true;
-                    // Dijkstra fallback stays a later leftover.
+                    let Some(dijkstra) = self.dijkstra.as_mut() else {
+                        return false;
+                    };
+                    let dleft = Self::run_dijkstra(
+                        dijkstra,
+                        self.margin_max_m,
+                        request.current_loc,
+                        request.destination,
+                        request.next_destination,
+                        fence,
+                    );
+                    origin_new = dleft.origin_new;
+                    destination_new = dleft.destination_new;
+                    next_destination_new = dleft.next_destination_new;
+                    dest_to_next_dest_clear = dleft.dest_to_next_dest_clear;
+                    res = dleft.ret_state;
+                    path_planner_used = OaPathPlannerUsed::Dijkstras;
                 }
             }
         }
@@ -497,4 +581,35 @@ impl PathPlanner {
         self.result.ret_state = res;
         true
     }
+
+    fn run_dijkstra(
+        dijkstra: &mut Dijkstra,
+        margin_max_m: f32,
+        current_loc: Location,
+        destination: Location,
+        next_destination: Location,
+        fence: &DijkstraFenceContext,
+    ) -> DijkstraTick {
+        dijkstra.set_fence_margin(margin_max_m);
+        let leftover = dijkstra.update(current_loc, destination, next_destination, fence);
+        DijkstraTick {
+            origin_new: leftover.origin_new,
+            destination_new: leftover.destination_new,
+            next_destination_new: leftover.next_destination_new,
+            dest_to_next_dest_clear: leftover.dest_to_next_dest_clear,
+            ret_state: match leftover.state {
+                DijkstraState::NotRequired => OaRetState::NotRequired,
+                DijkstraState::Error => OaRetState::Error,
+                DijkstraState::Success => OaRetState::Success,
+            },
+        }
+    }
+}
+
+struct DijkstraTick {
+    origin_new: Location,
+    destination_new: Location,
+    next_destination_new: Location,
+    dest_to_next_dest_clear: bool,
+    ret_state: OaRetState,
 }

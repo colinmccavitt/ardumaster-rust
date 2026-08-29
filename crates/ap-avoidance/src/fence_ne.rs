@@ -9,7 +9,7 @@
 //! [`FenceNeContext`] injects those reads. The vertical fence tail stays
 //! [`crate::avoid::Avoid::adjust_velocity_z`]. Accel-jerk limiting is
 //! [`crate::avoid::Avoid::limit_accel_neu_cm`]. The OA path planner leftover is
-//! [`crate::oa_path_planner`] / [`crate::oa_bendy_ruler`].
+//! [`crate::oa_path_planner`] / [`crate::oa_bendy_ruler`] / [`crate::oa_dijkstra`].
 
 use ap_fence::{TYPE_CIRCLE, TYPE_POLYGON};
 use ap_math::polygon::polygon_outside;

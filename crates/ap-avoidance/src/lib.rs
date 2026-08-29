@@ -30,8 +30,14 @@
 //!
 //! The sixth leftover is the OA path planner: [`PathPlanner`] (the
 //! `AP_OAPathPlanner` frontend) plus [`BendyRuler`] (`AP_OABendyRuler`
-//! horizontal search). Dijkstra, the OA database, vertical BendyRuler,
-//! and lean-angle avoidance in non-GPS modes stay later leftovers.
+//! horizontal search).
+//!
+//! The seventh leftover is Dijkstra: [`Dijkstra`] (`AP_OADijkstra`) plus
+//! [`VisGraph`] (`AP_OAVisGraph`). [`DijkstraFenceContext`] injects the
+//! polyfence / EKF-origin reads.
+//!
+//! The OA database, vertical BendyRuler, and lean-angle avoidance in
+//! non-GPS modes stay later leftovers.
 //!
 //! ADR-0004 forbids the fence / AHRS / proximity / beacon / HAL singletons.
 //! [`AdjustVelocityZContext`] is the leftover of `AP::fence()`,
@@ -44,15 +50,17 @@
 //!
 //! # What this crate does not own
 //!
-//! Dijkstra, the OA database, vertical BendyRuler, and lean-angle
-//! avoidance in non-GPS modes.
+//! The OA database, vertical BendyRuler, and lean-angle avoidance in
+//! non-GPS modes.
 
 #![no_std]
 
 pub mod avoid;
 pub mod fence_ne;
 pub mod oa_bendy_ruler;
+pub mod oa_dijkstra;
 pub mod oa_path_planner;
+pub mod oa_vis_graph;
 
 pub use avoid::{
     get_avoidance_adjusted_climbrate_ms, AdjustVelocityContext, AdjustVelocityLeftover,
@@ -72,9 +80,15 @@ pub use oa_bendy_ruler::{
     LOOKAHEAD_STEP2_MIN_M, LOOKAHEAD_STEP2_RATIO, LOW_SPEED_SQUARED, OA_DB_ITEMS_MAX,
     RATIO_DEFAULT, TYPE_DEFAULT,
 };
+pub use oa_dijkstra::{
+    Dijkstra, DijkstraError, DijkstraFenceContext, DijkstraState, DijkstraUpdateLeftover,
+    CIRCLES_MAX, CIRCLE_POINTS, EXPANDING_CHUNK, NEAR_OA_WP_M, PATH_MAX, POINTS_MAX,
+    POLYFENCE_MARGIN_M_DEFAULT, POLYGONS_MAX, SHORTPATH_MAX, SHORTPATH_NOTSET_IDX,
+};
 pub use oa_path_planner::{
     MissionAvoidanceLeftover, OaPathPlanType, OaPathPlannerUsed, OaRetState, PathPlanner,
     PreArmCheckLeftover, MARGIN_MAX_M_DEFAULT, OPTIONS_DEFAULT, OPTION_DISABLED,
     OPTION_FAST_WAYPOINTS, OPTION_LOG_DIJKSTRA_POINTS, OPTION_WP_RESET, REACTIVATE_GAP_MS,
     TIMEOUT_MS, UPDATE_MS,
 };
+pub use oa_vis_graph::{OaItemId, OaType, VisGraph, VisGraphItem, VISGRAPH_ITEMS_MAX};

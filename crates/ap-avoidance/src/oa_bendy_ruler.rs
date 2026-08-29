@@ -5,7 +5,7 @@
 //! [`BendyMarginContext`] is the leftover of `calc_avoidance_margin` /
 //! `calc_margin_from_object_database`. Fence-circle / polygon / alt-fence
 //! margin arms, vertical search, and the OA database itself stay later
-//! leftovers.
+//! leftovers. Dijkstra is [`crate::oa_dijkstra`].
 //!
 //! ADR-0004 forbids the AHRS / fence / OA-database singletons.
 
