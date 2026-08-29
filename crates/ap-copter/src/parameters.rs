@@ -32,7 +32,9 @@
 //! next leftover is the stock `GPS` `GOBJECT`. After `GPS` the
 //! next leftover is the stock `SCHED_` `GOBJECT`. After `SCHED_` the
 //! next leftover is the stock `AVOID_` `GOBJECT`
-//! (`AP_AVOIDANCE_ENABLED`). Later groups, G2,
+//! (`AP_AVOIDANCE_ENABLED`). After `AVOID_` the
+//! next leftover is the stock `RALLY_` `GOBJECT`
+//! (`HAL_RALLY_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1232,7 +1234,7 @@ pub fn for_each_sched_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static
     }
 }
 
-/// `Parameters::k_param_rally` — next leftover after `AVOID_`. Not this leftover.
+/// `Parameters::k_param_rally` — next `GOBJECT`, prefix `RALLY_`.
 pub const K_PARAM_RALLY: u16 = 45;
 
 /// Stock `AVOID_` leftover catalog.
@@ -1260,6 +1262,38 @@ pub fn find_avoid_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `AVOID_` leftover as `ParamInfo` rows.
 pub fn for_each_avoid_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in AVOID_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_motors` — next leftover after `RALLY_`. Not this leftover.
+pub const K_PARAM_MOTORS: u16 = 90;
+
+/// Stock `RALLY_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `AVOID_`. `RALLY_` is
+/// `HAL_RALLY_ENABLED` and a stock multicopter compiles it in. Nested
+/// `AP_Rally` / `AP_Rally_Copter` `var_info` is not this leftover. `MOT_`
+/// stays later. Heli `IM_` is not a row of this leftover.
+pub const RALLY_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("RALLY_", K_PARAM_RALLY)];
+
+/// First (only) row of the `RALLY_` leftover.
+#[must_use]
+pub fn rally_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    RALLY_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `RALLY_` leftover by group prefix.
+#[must_use]
+pub fn find_rally_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    RALLY_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `RALLY_` leftover as `ParamInfo` rows.
+pub fn for_each_rally_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in RALLY_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
