@@ -1,14 +1,16 @@
 //! Copter aux-function leftover, upstream `RC_Channel_Copter.cpp`.
 
 use ap_copter::aux::{
-    arming_check_throttle, do_aux_function, do_aux_function_change_air_mode,
-    do_aux_function_change_force_flying, do_aux_function_change_mode, do_aux_function_option,
-    get_arming_channel, has_valid_input, in_rc_failsafe, init_aux_kind, AirMode, ArmingChannel,
-    AuxDispatch, AuxLeftover, CopterAuxFunc, InitAuxKind, SimpleMode, MODE_ACRO, MODE_ALT_HOLD,
-    MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE, MODE_CIRCLE, MODE_DRIFT, MODE_FLIP, MODE_FLOWHOLD,
-    MODE_FOLLOW, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_POSHOLD, MODE_REASON_AUX_FUNCTION,
-    MODE_RTL, MODE_SMART_RTL, MODE_STABILIZE, MODE_THROW, MODE_TURTLE, MODE_ZIGZAG,
-    THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
+    arming_check_throttle, do_aux_function, do_aux_function_acro_trainer,
+    do_aux_function_change_air_mode, do_aux_function_change_force_flying,
+    do_aux_function_change_mode, do_aux_function_option, eeprom_simple_mode, get_arming_channel,
+    has_valid_input, in_rc_failsafe, init_aux_function, init_aux_kind, mode_switch_changed,
+    AcroTrainer, AirMode, ArmingChannel, AuxDispatch, AuxLeftover, CopterAuxFunc, InitAuxKind,
+    ModeSwitchLeftover, Parachute3Pos, SimpleMode, SurfaceTracking, WinchEnableAction, MODE_ACRO,
+    MODE_ALT_HOLD, MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE, MODE_CIRCLE, MODE_DRIFT, MODE_FLIP,
+    MODE_FLOWHOLD, MODE_FOLLOW, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_POSHOLD,
+    MODE_REASON_AUX_FUNCTION, MODE_REASON_RC_COMMAND, MODE_RTL, MODE_SMART_RTL, MODE_STABILIZE,
+    MODE_THROW, MODE_TURTLE, MODE_ZIGZAG, THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
 };
 use ap_rc::AuxSwitchPos;
 
@@ -46,6 +48,7 @@ fn option_numbers_match_upstream() {
         "FENCE is the RC base leftover"
     );
     assert_eq!(MODE_REASON_AUX_FUNCTION, 53);
+    assert_eq!(MODE_REASON_RC_COMMAND, 1);
     assert_eq!(MODE_FLIP, 14);
     assert_eq!(MODE_AUTO_RTL, 27);
 }
@@ -287,7 +290,7 @@ fn later_copter_bodies_are_pending_not_base() {
         AuxLeftover::Pending
     );
     assert_eq!(
-        dispatch(CopterAuxFunc::Standby, AuxSwitchPos::High, 0),
+        dispatch(CopterAuxFunc::AutotuneTestGains, AuxSwitchPos::High, 0),
         AuxLeftover::Pending
     );
     assert_eq!(
@@ -327,4 +330,266 @@ fn sprung_throttle_skips_the_library_arming_check() {
     assert!(arming_check_throttle(0, true));
     assert!(!arming_check_throttle(0, false));
     assert_eq!(get_arming_channel(), ArmingChannel::Yaw);
+}
+
+fn init_dispatch(func: CopterAuxFunc, pos: AuxSwitchPos, tuning: bool) -> AuxLeftover {
+    init_aux_function(
+        AuxDispatch {
+            func,
+            pos,
+            current_mode: MODE_STABILIZE,
+            acro_air_mode_hook: true,
+        },
+        tuning,
+    )
+}
+
+#[test]
+fn init_aux_function_must_not_fire_noinit_from_a_boot_high() {
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::Rtl, AuxSwitchPos::High, true),
+        AuxLeftover::None,
+        "RTL HIGH on boot must not set_mode"
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::Flip, AuxSwitchPos::High, true),
+        AuxLeftover::None,
+        "Flip HIGH on boot must not enter Flip"
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::Land, AuxSwitchPos::High, true),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::ParachuteRelease, AuxSwitchPos::High, true),
+        AuxLeftover::None,
+        "chute release is NoInit so boot HIGH cannot dump the canopy"
+    );
+}
+
+#[test]
+fn init_aux_function_runs_runnow_when_tuning_is_compiled_in() {
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::AirMode, AuxSwitchPos::High, true),
+        AuxLeftover::SetAirMode {
+            air_mode: AirMode::Enabled,
+            notify_acro: true,
+        }
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::AcroTrainer, AuxSwitchPos::High, true),
+        AuxLeftover::SetAcroTrainer(AcroTrainer::Limited)
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::MotorInterlock, AuxSwitchPos::Middle, true),
+        AuxLeftover::SetMotorInterlock(true)
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::SimpleMode, AuxSwitchPos::High, true),
+        AuxLeftover::SetSimpleMode(SimpleMode::Simple)
+    );
+}
+
+#[test]
+fn init_aux_function_falls_to_base_when_tuning_is_compiled_out() {
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::AirMode, AuxSwitchPos::High, false),
+        AuxLeftover::DelegateToBase
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::AcroTrainer, AuxSwitchPos::Low, false),
+        AuxLeftover::DelegateToBase
+    );
+    assert_eq!(
+        init_dispatch(CopterAuxFunc::Rtl, AuxSwitchPos::High, false),
+        AuxLeftover::None,
+        "NoInit stays quiet even when the RunNow group falls through"
+    );
+}
+
+#[test]
+fn acro_trainer_maps_all_three_positions() {
+    assert_eq!(
+        do_aux_function_acro_trainer(AuxSwitchPos::Low),
+        AuxLeftover::SetAcroTrainer(AcroTrainer::Off)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AcroTrainer, AuxSwitchPos::Middle, 0),
+        AuxLeftover::SetAcroTrainer(AcroTrainer::Leveling)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AcroTrainer, AuxSwitchPos::High, 0),
+        AuxLeftover::SetAcroTrainer(AcroTrainer::Limited)
+    );
+}
+
+#[test]
+fn runnow_high_enables_and_interlock_middle() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::AttconFeedfwd, AuxSwitchPos::High, 0),
+        AuxLeftover::SetAttconFeedfwd(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AttconAccelLim, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetAttconAccelLim(false)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::MotorInterlock, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetMotorInterlock(false)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::MotorInterlock, AuxSwitchPos::Middle, 0),
+        AuxLeftover::SetMotorInterlock(true),
+        "interlock is on above LOW, not HIGH-only"
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Rangefinder, AuxSwitchPos::High, 0),
+        AuxLeftover::SetRangefinderHigh(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ParachuteEnable, AuxSwitchPos::High, 0),
+        AuxLeftover::SetParachuteEnabled(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::CustomController, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetCustomController(false)
+    );
+}
+
+#[test]
+fn parachute_3pos_and_surface_tracking_maps() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::Parachute3pos, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetParachute3pos(Parachute3Pos::Disable)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Parachute3pos, AuxSwitchPos::Middle, 0),
+        AuxLeftover::SetParachute3pos(Parachute3Pos::Enable)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Parachute3pos, AuxSwitchPos::High, 0),
+        AuxLeftover::SetParachute3pos(Parachute3Pos::EnableAndRelease)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SurfaceTracking, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetSurfaceTracking(SurfaceTracking::Ground)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SurfaceTracking, AuxSwitchPos::Middle, 0),
+        AuxLeftover::SetSurfaceTracking(SurfaceTracking::None)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SurfaceTracking, AuxSwitchPos::High, 0),
+        AuxLeftover::SetSurfaceTracking(SurfaceTracking::Ceiling)
+    );
+}
+
+#[test]
+fn high_low_hold_middle_is_noop() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::PrecisionLoiter, AuxSwitchPos::High, 0),
+        AuxLeftover::SetPrecisionLoiter(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::PrecisionLoiter, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::WeatherVaneEnable, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetWeatherVane(false)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::WeatherVaneEnable, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Inverted, AuxSwitchPos::High, 0),
+        AuxLeftover::SetInverted(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Inverted, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+}
+
+#[test]
+fn standby_winch_and_tuning_bodies() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::Standby, AuxSwitchPos::High, 0),
+        AuxLeftover::SetStandby(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::Standby, AuxSwitchPos::Middle, 0),
+        AuxLeftover::SetStandby(false)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::WinchEnable, AuxSwitchPos::High, 0),
+        AuxLeftover::SetWinchEnable(WinchEnableAction::Stop)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::WinchEnable, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetWinchEnable(WinchEnableAction::Relax)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::TransmitterTuning, AuxSwitchPos::High, 0),
+        AuxLeftover::None,
+        "tuning PWM is consumed in tuning.cpp, not here"
+    );
+}
+
+#[test]
+fn mode_switch_changed_rejects_out_of_range() {
+    assert_eq!(
+        mode_switch_changed(-1, 6, MODE_STABILIZE, false, false, 0, 0),
+        ModeSwitchLeftover::Invalid
+    );
+    assert_eq!(
+        mode_switch_changed(7, 6, MODE_RTL, false, false, 0, 0),
+        ModeSwitchLeftover::Invalid
+    );
+    assert_eq!(
+        mode_switch_changed(6, 6, MODE_LOITER, false, false, 0, 0),
+        ModeSwitchLeftover::Engage {
+            mode: MODE_LOITER,
+            simple: Some(SimpleMode::None),
+        },
+        "upstream compares `>` not `>=`, so pos == num_flight_modes is in range"
+    );
+}
+
+#[test]
+fn mode_switch_changed_eeprom_simple_and_aux_override() {
+    assert_eq!(MODE_REASON_RC_COMMAND, 1);
+    assert_eq!(
+        eeprom_simple_mode(0, 0b0000_0001, 0),
+        SimpleMode::SuperSimple
+    );
+    assert_eq!(eeprom_simple_mode(1, 0, 0b0000_0010), SimpleMode::Simple);
+    assert_eq!(
+        eeprom_simple_mode(2, 0b0000_0100, 0b0000_0100),
+        SimpleMode::SuperSimple,
+        "super_simple wins when both bits are set"
+    );
+    assert_eq!(
+        mode_switch_changed(1, 6, MODE_ALT_HOLD, false, false, 0, 0b0000_0010),
+        ModeSwitchLeftover::Engage {
+            mode: MODE_ALT_HOLD,
+            simple: Some(SimpleMode::Simple),
+        }
+    );
+    assert_eq!(
+        mode_switch_changed(0, 6, MODE_STABILIZE, true, false, 0b0000_0001, 0),
+        ModeSwitchLeftover::Engage {
+            mode: MODE_STABILIZE,
+            simple: None,
+        },
+        "a SIMPLE aux channel owns Simple; EEPROM bits must not run"
+    );
+    assert_eq!(
+        mode_switch_changed(0, 6, MODE_STABILIZE, false, true, 0b0000_0001, 0),
+        ModeSwitchLeftover::Engage {
+            mode: MODE_STABILIZE,
+            simple: None,
+        }
+    );
 }

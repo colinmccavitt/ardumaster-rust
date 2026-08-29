@@ -28,6 +28,9 @@ use ap_rc::AuxSwitchPos;
 /// Upstream `ModeReason::AUX_FUNCTION`.
 pub const MODE_REASON_AUX_FUNCTION: u8 = 53;
 
+/// Upstream `ModeReason::RC_COMMAND` — flight-mode switch, not an aux option.
+pub const MODE_REASON_RC_COMMAND: u8 = 1;
+
 /// `Mode::Number::STABILIZE`.
 pub const MODE_STABILIZE: u8 = 0;
 /// `Mode::Number::ACRO`.
@@ -439,10 +442,82 @@ pub enum AuxLeftover {
     },
     /// `do_aux_function_change_force_flying`.
     SetForceFlying(bool),
+    /// `g.acro_trainer.set` from `AUX_FUNC::ACRO_TRAINER`.
+    SetAcroTrainer(AcroTrainer),
+    /// `attitude_control->bf_feedforward(ch_flag == HIGH)`.
+    SetAttconFeedfwd(bool),
+    /// `attitude_control->accel_limiting(ch_flag == HIGH)`.
+    SetAttconAccelLim(bool),
+    /// `ap.motor_interlock_switch` — HIGH or MIDDLE is on.
+    SetMotorInterlock(bool),
+    /// `rangefinder_state.enabled`. Vehicle ANDs HIGH with a downward sensor.
+    SetRangefinderHigh(bool),
+    /// `parachute.enabled(ch_flag == HIGH)`.
+    SetParachuteEnabled(bool),
+    /// `AUX_FUNC::PARACHUTE_3POS`.
+    SetParachute3pos(Parachute3Pos),
+    /// `mode_loiter.set_precision_loiter_enabled`. MIDDLE is a no-op.
+    SetPrecisionLoiter(bool),
+    /// `copter.standby_active` — HIGH is on, anything else is off.
+    SetStandby(bool),
+    /// `surface_tracking.set_surface`.
+    SetSurfaceTracking(SurfaceTracking),
+    /// `g2.winch` stop-vs-relax from `WINCH_ENABLE`.
+    SetWinchEnable(WinchEnableAction),
+    /// `custom_control.set_custom_controller(ch_flag == HIGH)`.
+    SetCustomController(bool),
+    /// `weathervane.allow_weathervaning`. MIDDLE is a no-op.
+    SetWeatherVane(bool),
+    /// `attitude_control->set_inverted_flight`. Vehicle checks `allows_inverted` on true.
+    SetInverted(bool),
     /// Copter owns this option; a later COP-022 slice fills the body.
     Pending,
     /// `return RC_Channel::do_aux_function(trigger)`.
     DelegateToBase,
+}
+
+/// `ModeAcro::Trainer` written by `AUX_FUNC::ACRO_TRAINER`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AcroTrainer {
+    /// 0 — `Trainer::OFF`. LOW.
+    Off = 0,
+    /// 1 — `Trainer::LEVELING`. MIDDLE.
+    Leveling = 1,
+    /// 2 — `Trainer::LIMITED`. HIGH.
+    Limited = 2,
+}
+
+/// `AUX_FUNC::PARACHUTE_3POS` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parachute3Pos {
+    /// LOW — disable.
+    Disable,
+    /// MIDDLE — enable, do not release.
+    Enable,
+    /// HIGH — enable and `parachute_manual_release`.
+    EnableAndRelease,
+}
+
+/// `Copter::SurfaceTracking::Surface`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SurfaceTracking {
+    /// MIDDLE — tracking off.
+    None = 0,
+    /// LOW — ground.
+    Ground = 1,
+    /// HIGH — ceiling.
+    Ceiling = 2,
+}
+
+/// `AUX_FUNC::WINCH_ENABLE` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinchEnableAction {
+    /// HIGH — `set_desired_rate(0)`.
+    Stop,
+    /// LOW or MIDDLE — `relax()`.
+    Relax,
 }
 
 /// Inputs [`do_aux_function`] reads besides the trigger itself.
@@ -503,13 +578,90 @@ pub const fn do_aux_function_change_force_flying(pos: AuxSwitchPos) -> Option<bo
     }
 }
 
-/// `RC_Channel_Copter::do_aux_function` leftover for this slice.
+/// `RC_Channel_Copter::do_aux_function_acro_trainer`.
 ///
-/// Mode-change options, Flip, Simple / SuperSimple, AirMode and ForceFlying
-/// are the first real Copter dispatch. Other Copter-owned cases return
-/// [`AuxLeftover::Pending`]. Codes this file does not switch on are not in
-/// [`CopterAuxFunc`]; the caller treats `from_option == None` as
-/// [`AuxLeftover::DelegateToBase`].
+/// LOW / MIDDLE / HIGH are Off / Leveling / Limited. Folding this into a
+/// HIGH-only toggle would leave LEVELING unreachable.
+#[must_use]
+pub const fn do_aux_function_acro_trainer(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetAcroTrainer(match pos {
+        AuxSwitchPos::Low => AcroTrainer::Off,
+        AuxSwitchPos::Middle => AcroTrainer::Leveling,
+        AuxSwitchPos::High => AcroTrainer::Limited,
+    })
+}
+
+/// HIGH-is-on leftover shared by feed-forward, accel-limit, parachute-enable
+/// and the custom controller.
+#[must_use]
+pub const fn do_aux_function_high_enables(pos: AuxSwitchPos) -> bool {
+    matches!(pos, AuxSwitchPos::High)
+}
+
+/// `AUX_FUNC::MOTOR_INTERLOCK` — on in HIGH or MIDDLE.
+///
+/// The vehicle still skips the write in heli passthrough RSC; the leftover
+/// reports the switch, not the rotor-speed mode.
+#[must_use]
+pub const fn do_aux_function_motor_interlock(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetMotorInterlock(matches!(pos, AuxSwitchPos::High | AuxSwitchPos::Middle))
+}
+
+/// `AUX_FUNC::PARACHUTE_3POS`.
+#[must_use]
+pub const fn do_aux_function_parachute_3pos(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetParachute3pos(match pos {
+        AuxSwitchPos::Low => Parachute3Pos::Disable,
+        AuxSwitchPos::Middle => Parachute3Pos::Enable,
+        AuxSwitchPos::High => Parachute3Pos::EnableAndRelease,
+    })
+}
+
+/// HIGH / LOW write a bool; MIDDLE is a no-op (precision loiter, weathervane,
+/// inverted).
+#[must_use]
+pub const fn do_aux_function_high_low_hold(pos: AuxSwitchPos) -> Option<bool> {
+    match pos {
+        AuxSwitchPos::High => Some(true),
+        AuxSwitchPos::Low => Some(false),
+        AuxSwitchPos::Middle => None,
+    }
+}
+
+/// `AUX_FUNC::STANDBY` — HIGH on, any other position off.
+#[must_use]
+pub const fn do_aux_function_standby(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetStandby(matches!(pos, AuxSwitchPos::High))
+}
+
+/// `AUX_FUNC::SURFACE_TRACKING`.
+///
+/// LOW is ground, MIDDLE is off, HIGH is ceiling. Swapping LOW/HIGH would
+/// track the ceiling when the switch is down.
+#[must_use]
+pub const fn do_aux_function_surface_tracking(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetSurfaceTracking(match pos {
+        AuxSwitchPos::Low => SurfaceTracking::Ground,
+        AuxSwitchPos::Middle => SurfaceTracking::None,
+        AuxSwitchPos::High => SurfaceTracking::Ceiling,
+    })
+}
+
+/// `AUX_FUNC::WINCH_ENABLE`.
+#[must_use]
+pub const fn do_aux_function_winch_enable(pos: AuxSwitchPos) -> AuxLeftover {
+    AuxLeftover::SetWinchEnable(match pos {
+        AuxSwitchPos::High => WinchEnableAction::Stop,
+        AuxSwitchPos::Low | AuxSwitchPos::Middle => WinchEnableAction::Relax,
+    })
+}
+
+/// `RC_Channel_Copter::do_aux_function` leftover.
+///
+/// Mode-change, Flip, Simple / SuperSimple, AirMode and ForceFlying stay
+/// the first dispatch. This slice fills the `init_aux_function` RunNow
+/// bodies (AcroTrainer, interlock, rangefinder, parachute, attcon, …).
+/// Later Copter-owned cases still return [`AuxLeftover::Pending`].
 #[must_use]
 pub const fn do_aux_function(dispatch: AuxDispatch) -> AuxLeftover {
     if let Some(mode) = dispatch.func.change_mode_number() {
@@ -543,7 +695,60 @@ pub const fn do_aux_function(dispatch: AuxDispatch) -> AuxLeftover {
             Some(force) => AuxLeftover::SetForceFlying(force),
             None => AuxLeftover::None,
         },
+        CopterAuxFunc::AcroTrainer => do_aux_function_acro_trainer(dispatch.pos),
+        CopterAuxFunc::AttconFeedfwd => {
+            AuxLeftover::SetAttconFeedfwd(do_aux_function_high_enables(dispatch.pos))
+        }
+        CopterAuxFunc::AttconAccelLim => {
+            AuxLeftover::SetAttconAccelLim(do_aux_function_high_enables(dispatch.pos))
+        }
+        CopterAuxFunc::MotorInterlock => do_aux_function_motor_interlock(dispatch.pos),
+        CopterAuxFunc::Rangefinder => {
+            AuxLeftover::SetRangefinderHigh(do_aux_function_high_enables(dispatch.pos))
+        }
+        CopterAuxFunc::ParachuteEnable => {
+            AuxLeftover::SetParachuteEnabled(do_aux_function_high_enables(dispatch.pos))
+        }
+        CopterAuxFunc::Parachute3pos => do_aux_function_parachute_3pos(dispatch.pos),
+        CopterAuxFunc::PrecisionLoiter => match do_aux_function_high_low_hold(dispatch.pos) {
+            Some(on) => AuxLeftover::SetPrecisionLoiter(on),
+            None => AuxLeftover::None,
+        },
+        CopterAuxFunc::Standby => do_aux_function_standby(dispatch.pos),
+        CopterAuxFunc::SurfaceTracking => do_aux_function_surface_tracking(dispatch.pos),
+        CopterAuxFunc::WinchEnable => do_aux_function_winch_enable(dispatch.pos),
+        CopterAuxFunc::CustomController => {
+            AuxLeftover::SetCustomController(do_aux_function_high_enables(dispatch.pos))
+        }
+        CopterAuxFunc::WeatherVaneEnable => match do_aux_function_high_low_hold(dispatch.pos) {
+            Some(on) => AuxLeftover::SetWeatherVane(on),
+            None => AuxLeftover::None,
+        },
+        CopterAuxFunc::Inverted => match do_aux_function_high_low_hold(dispatch.pos) {
+            Some(on) => AuxLeftover::SetInverted(on),
+            None => AuxLeftover::None,
+        },
+        CopterAuxFunc::TransmitterTuning | CopterAuxFunc::TransmitterTuning2 => AuxLeftover::None,
         _ => AuxLeftover::Pending,
+    }
+}
+
+/// `RC_Channel_Copter::init_aux_function`.
+///
+/// [`init_aux_kind`] is the classifier; this is the leftover that *uses* it.
+/// NoInit options (`Flip`, RTL, Land, …) must not fire from a boot-time
+/// HIGH switch. RunNow options *do* run so trainer / interlock / airmode
+/// match the switch before the first `read_aux`. When transmitter-tuning
+/// is compiled out, the RunNow group falls through to the base leftover.
+#[must_use]
+pub const fn init_aux_function(
+    dispatch: AuxDispatch,
+    transmitter_tuning_enabled: bool,
+) -> AuxLeftover {
+    match init_aux_kind(dispatch.func, transmitter_tuning_enabled) {
+        InitAuxKind::NoInit => AuxLeftover::None,
+        InitAuxKind::RunNow => do_aux_function(dispatch),
+        InitAuxKind::DelegateToBase => AuxLeftover::DelegateToBase,
     }
 }
 
@@ -621,4 +826,71 @@ pub enum ArmingChannel {
 #[must_use]
 pub const fn get_arming_channel() -> ArmingChannel {
     ArmingChannel::Yaw
+}
+
+/// What `RC_Channel_Copter::mode_switch_changed` asked the vehicle to do.
+///
+/// `set_mode` can still fail; the vehicle applies [`ModeSwitchLeftover::Engage`]
+/// simple only after the mode change succeeds. Applying EEPROM Simple bits
+/// first would arm SuperSimple in a mode that never entered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeSwitchLeftover {
+    /// `new_pos < 0` or `new_pos > num_flight_modes`.
+    Invalid,
+    /// `set_mode(flight_modes[new_pos], ModeReason::RC_COMMAND)`.
+    Engage {
+        /// `Mode::Number` from `flight_modes[new_pos]`.
+        mode: u8,
+        /// EEPROM Simple / SuperSimple, or `None` when an aux channel owns it.
+        simple: Option<SimpleMode>,
+    },
+}
+
+/// EEPROM Simple bits for one flight-mode-switch position.
+///
+/// SuperSimple wins when both `g.super_simple` and `g.simple_modes` have
+/// the bit: that is the `BIT_IS_SET` order in `mode_switch_changed`.
+#[must_use]
+pub const fn eeprom_simple_mode(pos: u8, super_simple: u8, simple_modes: u8) -> SimpleMode {
+    if (super_simple & (1 << pos)) != 0 {
+        SimpleMode::SuperSimple
+    } else if (simple_modes & (1 << pos)) != 0 {
+        SimpleMode::Simple
+    } else {
+        SimpleMode::None
+    }
+}
+
+/// `RC_Channel_Copter::mode_switch_changed`.
+///
+/// The six-position switch is `ModeReason::RC_COMMAND`, not AUX_FUNCTION.
+/// When neither SIMPLE nor SUPERSIMPLE is assigned to an aux channel,
+/// Simple comes from the EEPROM bitmasks for *this* switch position.
+/// An aux assignment owns Simple and the EEPROM bits must not run.
+#[must_use]
+pub const fn mode_switch_changed(
+    new_pos: i8,
+    num_flight_modes: u8,
+    flight_mode: u8,
+    simple_aux: bool,
+    supersimple_aux: bool,
+    super_simple_bits: u8,
+    simple_modes_bits: u8,
+) -> ModeSwitchLeftover {
+    if new_pos < 0 || (new_pos as u8) > num_flight_modes {
+        return ModeSwitchLeftover::Invalid;
+    }
+    let simple = if !simple_aux && !supersimple_aux {
+        Some(eeprom_simple_mode(
+            new_pos as u8,
+            super_simple_bits,
+            simple_modes_bits,
+        ))
+    } else {
+        None
+    };
+    ModeSwitchLeftover::Engage {
+        mode: flight_mode,
+        simple,
+    }
 }
