@@ -1,6 +1,6 @@
 //! Geofence type bits, enable leftover, circle / alt-max / alt-min checks,
-//! and `check()` orchestration. Upstream `libraries/AC_Fence`. Tracked as
-//! **COP-025**.
+//! `check()` orchestration, pre-arm, dest-inside, and auto-enable-on-arm/
+//! takeoff leftovers. Upstream `libraries/AC_Fence`. Tracked as **COP-025**.
 //!
 //! This is the first real `AC_Fence` leftover. Plane already has a
 //! `FENCE_ACTION` table in `ap-plane::fence_failsafe_hookup`; that hookup
@@ -36,20 +36,22 @@
 //!
 //! # What this crate does not own
 //!
-//! `AC_PolyFence_loader`, EEPROM / SD storage, pre-arm, destination-inside,
-//! auto-enable-on-arm/takeoff, and the polygon checker stay later leftovers.
+//! `AC_PolyFence_loader`, EEPROM / SD storage, and the polygon checker
+//! stay later leftovers.
 
 #![no_std]
 
 pub mod fence;
 
 pub use fence::{
-    Action, AutoEnable, CheckAltMaxContext, CheckAltMaxLeftover, CheckAltMinContext,
-    CheckAltMinLeftover, CheckCircleContext, CheckCircleLeftover, CheckContext, CheckLeftover,
-    EnableLeftover, Fence, MinAltState, ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M,
-    ALT_MIN_BACKUP_DISTANCE_M, ALT_MIN_DEFAULT_M, ARMING_FENCES,
-    CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M, CIRCLE_RADIUS_BACKUP_DISTANCE_PLANE_M,
-    CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE,
-    FENCE_TYPE_DEFAULT_ROVER, GIVE_UP_DISTANCE_M, MANUAL_RECOVERY_TIME_MIN_MS, MARGIN_DEFAULT_M,
-    TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
+    Action, AutoEnable, AutoEnableLeftover, AutoEnablePrint, CheckAltMaxContext,
+    CheckAltMaxLeftover, CheckAltMinContext, CheckAltMinLeftover, CheckCircleContext,
+    CheckCircleLeftover, CheckContext, CheckLeftover, DestFenceContext, DestFenceLeftover,
+    EnableLeftover, Fence, MinAltState, PreArmContext, PreArmFailure, PreArmLeftover,
+    ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M, ALT_MIN_DEFAULT_M,
+    ARMING_FENCES, AUTOENABLE_WARN_INTERVAL_MS, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M,
+    CIRCLE_RADIUS_BACKUP_DISTANCE_PLANE_M, CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER,
+    FENCE_TYPE_DEFAULT_PLANE, FENCE_TYPE_DEFAULT_ROVER, GIVE_UP_DISTANCE_M,
+    MANUAL_RECOVERY_TIME_MIN_MS, MARGIN_DEFAULT_M, TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN,
+    TYPE_CIRCLE, TYPE_POLYGON,
 };

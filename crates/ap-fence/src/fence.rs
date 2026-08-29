@@ -1,4 +1,5 @@
-//! `AC_Fence` type bits, enable leftover, circle / alt-max / alt-min checks, and `check()` orchestration.
+//! `AC_Fence` type bits, enable leftover, circle / alt-max / alt-min checks, `check()` orchestration,
+//! plus pre-arm, dest-inside, and auto-enable-on-arm/takeoff leftovers.
 
 use ap_math::location::AltFrame;
 use ap_math::scalar::{is_positive, is_zero};
@@ -298,7 +299,6 @@ pub struct CheckAltMinLeftover {
     pub cleared_breach: bool,
 }
 
-
 /// Inputs [`Fence::check`] reads from the vehicle / AHRS.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CheckContext {
@@ -377,6 +377,176 @@ pub struct CheckLeftover {
     pub manual_recovery_expired: bool,
 }
 
+/// Rate-limit leftover of the `FENCE_AUTOENABLE` 4.6 deprecation warning.
+pub const AUTOENABLE_WARN_INTERVAL_MS: u32 = 60_000;
+
+/// `snprintf` leftover of `AC_Fence::pre_arm_check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreArmFailure {
+    /// "Fences enabled, but none selected"
+    NoneSelected,
+    /// "Fence requires position"
+    RequiresPosition,
+    /// "Polygon fence(s) invalid"
+    PolygonInvalid,
+    /// "Polygon fence margin is greater than inclusion circle radius"
+    PolygonMargin,
+    /// "Invalid Circle FENCE_RADIUS value"
+    CircleRadius,
+    /// "Circle FENCE_MARGIN is greater than FENCE_RADIUS"
+    CircleMargin,
+    /// "Invalid FENCE_ALT_MAX value"
+    AltMax,
+    /// "Invalid FENCE_ALT_MIN value"
+    AltMin,
+    /// "Vehicle breaching %s"
+    Breaching,
+    /// "Invalid FENCE_MARGIN value"
+    Margin,
+    /// "Invalid FENCE_MARGIN_XY value"
+    MarginXy,
+    /// "FENCE_ALT_MAX < FENCE_ALT_MIN"
+    AltMaxLtMin,
+    /// "FENCE_MARGIN too big"
+    MarginTooBig,
+}
+
+/// Inputs [`Fence::pre_arm_check`] reads from AHRS / the poly loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreArmContext {
+    /// `AP_HAL::millis()` leftover of the AUTOENABLE warn static.
+    pub now_ms: u32,
+    /// Leftover of `ahrs.get_relative_position_NE_home`.
+    pub has_relative_position: bool,
+    /// Leftover of `ahrs.get_location` when auto-enable is OnlyWhenArmed.
+    pub has_location: bool,
+    /// Leftover of `_poly_loader.loaded()`.
+    pub poly_loaded: bool,
+    /// Leftover of `_poly_loader.check_inclusion_circle_margin`.
+    pub poly_inclusion_circle_ok: bool,
+    /// Leftover of `_poly_loader.breached(loc)` on the OnlyWhenArmed path.
+    pub poly_breached: bool,
+}
+
+impl Default for PreArmContext {
+    fn default() -> Self {
+        Self {
+            now_ms: 1_001,
+            has_relative_position: true,
+            has_location: true,
+            poly_loaded: true,
+            poly_inclusion_circle_ok: true,
+            poly_breached: false,
+        }
+    }
+}
+
+/// `AC_Fence::pre_arm_check` leftover. Loader EEPROM stays later, so
+/// polygon validity is injected through [`PreArmContext`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreArmLeftover {
+    /// The C++ return.
+    pub allowed: bool,
+    /// `failure_msg` leftover. `None` when [`Self::allowed`].
+    pub failure: Option<PreArmFailure>,
+    /// Circle / polygon configured, so AHRS relative-home was required.
+    pub need_relative_position: bool,
+    /// OnlyWhenArmed asked `ahrs.get_location`.
+    pub need_location: bool,
+    /// [`Fence::configured_fences`] includes [`TYPE_POLYGON`].
+    pub polygon_checked: bool,
+    /// Circle radius / margin leftover ran.
+    pub circle_checked: bool,
+    /// Alt-max / alt-min leftover ran.
+    pub alt_checked: bool,
+    /// Leftover of the 60 s `FENCE_AUTOENABLE` deprecation GCS text.
+    pub autoenable_warn: bool,
+    /// Param value printed in that warning (`1` or `2`).
+    pub autoenable_warn_value: Option<u8>,
+    /// Mask passed to `get_fence_names` — `_breached_fences`, not the
+    /// local OnlyWhenArmed OR of a poly breach.
+    pub breached_mask_reported: u8,
+}
+
+/// Inputs [`Fence::check_destination_within_fence`] reads from the dest
+/// `Location` and home. Polygon breach is the loader leftover.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DestFenceContext {
+    /// `loc.get_alt_m(_alt_max_type)`. `None` skips the ceiling check.
+    pub dest_alt_max_m: Option<f32>,
+    /// `loc.get_alt_m(_alt_min_type)`. `None` skips the floor check.
+    pub dest_alt_min_m: Option<f32>,
+    /// `ahrs.get_home().get_distance(loc)`.
+    pub home_distance_m: f32,
+    /// Leftover of `_poly_loader.breached(loc)`.
+    pub poly_breached: bool,
+}
+
+impl Default for DestFenceContext {
+    fn default() -> Self {
+        Self {
+            dest_alt_max_m: Some(50.0),
+            dest_alt_min_m: Some(50.0),
+            home_distance_m: 0.0,
+            poly_breached: false,
+        }
+    }
+}
+
+/// `AC_Fence::check_destination_within_fence` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DestFenceLeftover {
+    /// The C++ return. `true` means the dest is inside every enabled fence.
+    pub inside: bool,
+    /// Alt-max bit was in [`Fence::get_enabled_fences`].
+    pub alt_max_checked: bool,
+    pub alt_max_outside: bool,
+    pub alt_max_unavailable: bool,
+    /// Alt-min bit was in [`Fence::get_enabled_fences`].
+    pub alt_min_checked: bool,
+    pub alt_min_outside: bool,
+    pub alt_min_unavailable: bool,
+    /// Circle bit was in [`Fence::get_enabled_fences`].
+    pub circle_checked: bool,
+    pub circle_outside: bool,
+    /// Polygon bit was in [`Fence::get_enabled_fences`].
+    pub polygon_checked: bool,
+    pub polygon_outside: bool,
+    /// Leftover of `loc.get_alt_m` for the ceiling.
+    pub need_dest_alt_max: bool,
+    /// Leftover of `loc.get_alt_m` for the floor.
+    pub need_dest_alt_min: bool,
+    /// Leftover of `ahrs.get_home().get_distance`.
+    pub need_home_distance: bool,
+}
+
+/// Verb leftover of `print_fence_message` on the auto-enable / disable path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoEnablePrint {
+    /// `enable` returned 0, so C++ `print_fence_message` is a no-op.
+    None,
+    /// `"auto-enabled"`.
+    AutoEnabled,
+    /// `"auto-disabled"`.
+    AutoDisabled,
+}
+
+/// `auto_enable_fence_on_arming` / `after_takeoff` / `on_disarming` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoEnableLeftover {
+    /// Auto-enable mode did not match this entry point.
+    pub skipped: bool,
+    /// `enable(...)` leftover. Idle when [`Self::skipped`].
+    pub enable: EnableLeftover,
+    /// Bits handed to `print_fence_message` (the `enable` return).
+    pub print_mask: u8,
+    /// Leftover of the print verb. [`AutoEnablePrint::None`] when the
+    /// mask is 0 — C++ returns early from `print_fence_message`.
+    pub print: AutoEnablePrint,
+    /// `_min_alt_state` was reset to [`MinAltState::Default`].
+    pub min_alt_reset: bool,
+}
+
 /// Geofence state. Upstream `AC_Fence` without the poly loader.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fence {
@@ -415,6 +585,7 @@ pub struct Fence {
     /// `FENCE_ENABLE` param leftover. Distinct from [`Self::enabled`].
     enable_param: bool,
     last_fence_check_loc_valid: bool,
+    last_autoenable_warn_ms: u32,
 }
 
 impl Default for Fence {
@@ -478,6 +649,7 @@ impl Fence {
             auto_enabled: AutoEnable::AlwaysDisabled,
             enable_param,
             last_fence_check_loc_valid: false,
+            last_autoenable_warn_ms: 0,
         }
     }
 
@@ -1104,7 +1276,6 @@ impl Fence {
         }
     }
 
-
     /// `AC_Fence::check` leftover.
     ///
     /// Clears stale breaches, optionally auto-disables the landing
@@ -1227,10 +1398,7 @@ impl Fence {
         let mut manual_recovery_active = false;
         let mut manual_recovery_expired = false;
         if self.manual_recovery_start_ms != 0 {
-            if ctx
-                .now_ms
-                .wrapping_sub(self.manual_recovery_start_ms)
-                < MANUAL_RECOVERY_TIME_MIN_MS
+            if ctx.now_ms.wrapping_sub(self.manual_recovery_start_ms) < MANUAL_RECOVERY_TIME_MIN_MS
             {
                 manual_recovery_active = true;
                 new_breaches = 0;
@@ -1264,7 +1432,7 @@ impl Fence {
     }
 
     /// `AC_Fence::auto_enable_fence_floor` leftover. Arm / takeoff
-    /// auto-enable stays a later slice; `check()` still calls this.
+    /// auto-enable is a sibling leftover on this crate.
     fn auto_enable_fence_floor(&mut self, ctx: CheckContext) -> (bool, bool, bool) {
         if self.configured_fences & TYPE_ALT_MIN == 0
             || self.get_enabled_fences() & TYPE_ALT_MIN != 0
@@ -1294,6 +1462,414 @@ impl Fence {
         }
 
         (false, false, false)
+    }
+
+    /// Seed `_poly_loader.total_fence_count` so [`Self::present`] can
+    /// expose [`TYPE_POLYGON`]. The loader / EEPROM stays later.
+    pub fn set_poly_fence_count(&mut self, count: u8) {
+        self.poly_fence_count = count;
+    }
+
+    /// `AC_Fence::pre_arm_check` leftover.
+    ///
+    /// AHRS and the poly loader are injected through [`PreArmContext`].
+    /// The C++ `static last_autoenable_warn_ms` lives on this fence.
+    pub fn pre_arm_check(&mut self, ctx: PreArmContext) -> PreArmLeftover {
+        if self.enable_param && self.present() == 0 {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::NoneSelected),
+                need_relative_position: false,
+                need_location: false,
+                polygon_checked: false,
+                circle_checked: false,
+                alt_checked: false,
+                autoenable_warn: false,
+                autoenable_warn_value: None,
+                breached_mask_reported: 0,
+            };
+        }
+
+        let mut autoenable_warn = false;
+        let mut autoenable_warn_value = None;
+        let auto_u8 = self.auto_enabled as u8;
+        if auto_u8 == 1 || auto_u8 == 2 {
+            if ctx.now_ms.wrapping_sub(self.last_autoenable_warn_ms) > AUTOENABLE_WARN_INTERVAL_MS {
+                autoenable_warn = true;
+                autoenable_warn_value = Some(auto_u8);
+                self.last_autoenable_warn_ms = ctx.now_ms;
+            }
+        }
+
+        let auto_on = !matches!(self.auto_enabled, AutoEnable::AlwaysDisabled);
+        if (!self.enabled() && !auto_on) || self.configured_fences == 0 {
+            return PreArmLeftover {
+                allowed: true,
+                failure: None,
+                need_relative_position: false,
+                need_location: false,
+                polygon_checked: false,
+                circle_checked: false,
+                alt_checked: false,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        let need_horizontal = (self.configured_fences & TYPE_CIRCLE) != 0
+            || (self.configured_fences & TYPE_POLYGON) != 0;
+        if need_horizontal && !ctx.has_relative_position {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::RequiresPosition),
+                need_relative_position: true,
+                need_location: false,
+                polygon_checked: false,
+                circle_checked: false,
+                alt_checked: false,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        let polygon_checked = (self.configured_fences & TYPE_POLYGON) != 0;
+        if let Some(failure) = self.pre_arm_check_polygon(ctx) {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(failure),
+                need_relative_position: need_horizontal,
+                need_location: false,
+                polygon_checked,
+                circle_checked: false,
+                alt_checked: false,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        if let Some(failure) = self.pre_arm_check_circle() {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(failure),
+                need_relative_position: need_horizontal,
+                need_location: false,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: false,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        if let Some(failure) = self.pre_arm_check_alt() {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(failure),
+                need_relative_position: need_horizontal,
+                need_location: false,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        let mut breached_fences = self.breached_fences;
+        let mut need_location = false;
+        if matches!(self.auto_enabled, AutoEnable::OnlyWhenArmed) {
+            need_location = true;
+            if !ctx.has_location {
+                return PreArmLeftover {
+                    allowed: false,
+                    failure: Some(PreArmFailure::RequiresPosition),
+                    need_relative_position: need_horizontal,
+                    need_location: true,
+                    polygon_checked,
+                    circle_checked: true,
+                    alt_checked: true,
+                    autoenable_warn,
+                    autoenable_warn_value,
+                    breached_mask_reported: 0,
+                };
+            }
+            if ctx.poly_breached {
+                breached_fences |= TYPE_POLYGON;
+            }
+        }
+
+        if breached_fences != 0 {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::Breaching),
+                need_relative_position: need_horizontal,
+                need_location,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: self.breached_fences,
+            };
+        }
+
+        if self.margin_m < 0.0 {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::Margin),
+                need_relative_position: need_horizontal,
+                need_location,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        if self.margin_ne_m < 0.0 {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::MarginXy),
+                need_relative_position: need_horizontal,
+                need_location,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        if self.alt_max_m < self.alt_min_m {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::AltMaxLtMin),
+                need_relative_position: need_horizontal,
+                need_location,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        if self.alt_max_m - self.alt_min_m <= 2.0 * self.margin_m {
+            return PreArmLeftover {
+                allowed: false,
+                failure: Some(PreArmFailure::MarginTooBig),
+                need_relative_position: need_horizontal,
+                need_location,
+                polygon_checked,
+                circle_checked: true,
+                alt_checked: true,
+                autoenable_warn,
+                autoenable_warn_value,
+                breached_mask_reported: 0,
+            };
+        }
+
+        PreArmLeftover {
+            allowed: true,
+            failure: None,
+            need_relative_position: need_horizontal,
+            need_location,
+            polygon_checked,
+            circle_checked: true,
+            alt_checked: true,
+            autoenable_warn,
+            autoenable_warn_value,
+            breached_mask_reported: 0,
+        }
+    }
+
+    fn pre_arm_check_polygon(&self, ctx: PreArmContext) -> Option<PreArmFailure> {
+        if self.configured_fences & TYPE_POLYGON == 0 {
+            return None;
+        }
+        if !ctx.poly_loaded {
+            return Some(PreArmFailure::PolygonInvalid);
+        }
+        if !ctx.poly_inclusion_circle_ok {
+            return Some(PreArmFailure::PolygonMargin);
+        }
+        None
+    }
+
+    fn pre_arm_check_circle(&self) -> Option<PreArmFailure> {
+        if self.circle_radius_m < 0.0 {
+            return Some(PreArmFailure::CircleRadius);
+        }
+        if self.circle_radius_m < self.get_margin_ne_m() {
+            return Some(PreArmFailure::CircleMargin);
+        }
+        None
+    }
+
+    fn pre_arm_check_alt(&self) -> Option<PreArmFailure> {
+        if self.alt_max_m < 0.0 {
+            return Some(PreArmFailure::AltMax);
+        }
+        if self.alt_min_m < -100.0 {
+            return Some(PreArmFailure::AltMin);
+        }
+        None
+    }
+
+    /// `AC_Fence::check_destination_within_fence` leftover.
+    ///
+    /// A missing dest altitude skips that axis (C++ `get_alt_m` failed).
+    /// Polygon EEPROM stays later; [`DestFenceContext::poly_breached`]
+    /// is the loader leftover.
+    pub fn check_destination_within_fence(&self, ctx: DestFenceContext) -> DestFenceLeftover {
+        let enabled = self.get_enabled_fences();
+        let mut leftover = DestFenceLeftover {
+            inside: true,
+            alt_max_checked: false,
+            alt_max_outside: false,
+            alt_max_unavailable: false,
+            alt_min_checked: false,
+            alt_min_outside: false,
+            alt_min_unavailable: false,
+            circle_checked: false,
+            circle_outside: false,
+            polygon_checked: false,
+            polygon_outside: false,
+            need_dest_alt_max: false,
+            need_dest_alt_min: false,
+            need_home_distance: false,
+        };
+
+        if enabled & TYPE_ALT_MAX != 0 {
+            leftover.alt_max_checked = true;
+            leftover.need_dest_alt_max = true;
+            match ctx.dest_alt_max_m {
+                Some(alt_m) if alt_m > self.alt_max_m => {
+                    leftover.alt_max_outside = true;
+                    leftover.inside = false;
+                    return leftover;
+                }
+                None => leftover.alt_max_unavailable = true,
+                Some(_) => {}
+            }
+        }
+
+        if enabled & TYPE_ALT_MIN != 0 {
+            leftover.alt_min_checked = true;
+            leftover.need_dest_alt_min = true;
+            match ctx.dest_alt_min_m {
+                Some(alt_m) if alt_m < self.alt_min_m => {
+                    leftover.alt_min_outside = true;
+                    leftover.inside = false;
+                    return leftover;
+                }
+                None => leftover.alt_min_unavailable = true,
+                Some(_) => {}
+            }
+        }
+
+        if enabled & TYPE_CIRCLE != 0 {
+            leftover.circle_checked = true;
+            leftover.need_home_distance = true;
+            if ctx.home_distance_m > self.circle_radius_m {
+                leftover.circle_outside = true;
+                leftover.inside = false;
+                return leftover;
+            }
+        }
+
+        if enabled & TYPE_POLYGON != 0 {
+            leftover.polygon_checked = true;
+            if ctx.poly_breached {
+                leftover.polygon_outside = true;
+                leftover.inside = false;
+                return leftover;
+            }
+        }
+
+        leftover
+    }
+
+    /// `AC_Fence::auto_enable_fence_on_arming` leftover.
+    pub fn auto_enable_fence_on_arming(&mut self) -> AutoEnableLeftover {
+        if !matches!(self.auto_enabled, AutoEnable::OnlyWhenArmed) {
+            return self.idle_auto_enable_leftover();
+        }
+        self.min_alt_state = MinAltState::Default;
+        let enable = self.enable(true, ARMING_FENCES, false);
+        self.auto_enable_print(enable, AutoEnablePrint::AutoEnabled, true)
+    }
+
+    /// `AC_Fence::auto_enable_fence_after_takeoff` leftover.
+    pub fn auto_enable_fence_after_takeoff(&mut self) -> AutoEnableLeftover {
+        if !matches!(
+            self.auto_enabled,
+            AutoEnable::EnableOnAutoTakeoff | AutoEnable::EnableDisableFloorOnly
+        ) {
+            return self.idle_auto_enable_leftover();
+        }
+        self.min_alt_state = MinAltState::Default;
+        let enable = self.enable(true, TYPE_ALL, false);
+        self.auto_enable_print(enable, AutoEnablePrint::AutoEnabled, true)
+    }
+
+    /// `AC_Fence::auto_disable_fence_on_disarming` leftover.
+    pub fn auto_disable_fence_on_disarming(&mut self) -> AutoEnableLeftover {
+        if !matches!(self.auto_enabled, AutoEnable::OnlyWhenArmed) {
+            return self.idle_auto_enable_leftover();
+        }
+        let enable = self.enable(false, TYPE_ALL, false);
+        self.auto_enable_print(enable, AutoEnablePrint::AutoDisabled, false)
+    }
+
+    fn auto_enable_print(
+        &self,
+        enable: EnableLeftover,
+        verb: AutoEnablePrint,
+        min_alt_reset: bool,
+    ) -> AutoEnableLeftover {
+        let print = if enable.changed_mask == 0 {
+            AutoEnablePrint::None
+        } else {
+            verb
+        };
+        AutoEnableLeftover {
+            skipped: false,
+            print_mask: enable.changed_mask,
+            print,
+            min_alt_reset,
+            enable,
+        }
+    }
+
+    fn idle_auto_enable_leftover(&self) -> AutoEnableLeftover {
+        AutoEnableLeftover {
+            skipped: true,
+            enable: EnableLeftover {
+                changed_mask: 0,
+                enabled_fences: self.enabled_fences,
+                min_alt_state: self.min_alt_state,
+                clear_breach_mask: 0,
+                reset_manual_recovery: false,
+                log_enable: None,
+                log_alt_max: None,
+                log_circle: None,
+                log_alt_min: None,
+                log_polygon: None,
+            },
+            print_mask: 0,
+            print: AutoEnablePrint::None,
+            min_alt_reset: false,
+        }
     }
 
     fn idle_circle_leftover(&self) -> CheckCircleLeftover {

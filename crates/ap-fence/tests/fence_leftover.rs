@@ -1,16 +1,17 @@
 //! AC_Fence type bits, enable leftover, circle / alt-max / alt-min checks,
-//! and `check()` orchestration.
+//! `check()` orchestration, pre-arm, dest-inside, and auto-enable leftovers.
 //!
 //! Tracked as **COP-025**. Polygon EEPROM / `AC_PolyFence_loader` is not
 //! in this slice.
 
 use ap_fence::{
-    Action, AutoEnable, CheckAltMaxContext, CheckAltMinContext, CheckCircleContext, CheckContext,
-    Fence, MinAltState, ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M,
-    ALT_MIN_DEFAULT_M, ARMING_FENCES, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M,
-    CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE,
-    FENCE_TYPE_DEFAULT_ROVER, MANUAL_RECOVERY_TIME_MIN_MS, MARGIN_DEFAULT_M, TYPE_ALL,
-    TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
+    Action, AutoEnable, AutoEnablePrint, CheckAltMaxContext, CheckAltMinContext,
+    CheckCircleContext, CheckContext, DestFenceContext, Fence, MinAltState, PreArmContext,
+    PreArmFailure, ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M,
+    ALT_MIN_DEFAULT_M, ARMING_FENCES, AUTOENABLE_WARN_INTERVAL_MS,
+    CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M, CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER,
+    FENCE_TYPE_DEFAULT_PLANE, FENCE_TYPE_DEFAULT_ROVER, MANUAL_RECOVERY_TIME_MIN_MS,
+    MARGIN_DEFAULT_M, TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
 };
 use ap_math::location::AltFrame;
 use ap_math::scalar::is_equal;
@@ -475,7 +476,10 @@ fn alt_min_absolute_frame_is_a_home_alt_leftover() {
         now_ms: 1_001,
     });
     assert!(leftover.need_home_alt);
-    almost(leftover.safe_relhome_alt_min_m, 20.0 - 10.0 - MARGIN_DEFAULT_M);
+    almost(
+        leftover.safe_relhome_alt_min_m,
+        20.0 - 10.0 - MARGIN_DEFAULT_M,
+    );
 }
 
 #[test]
@@ -562,7 +566,6 @@ fn alt_min_disabled_does_not_clear_or_record() {
     almost(fence.alt_min_m(), 20.0);
     almost(ALT_MIN_DEFAULT_M, -10.0);
 }
-
 
 fn check_ctx(alt_max_u_m: f32, alt_min_u_m: f32, north_m: f32, east_m: f32) -> CheckContext {
     CheckContext {
@@ -744,4 +747,364 @@ fn check_polygon_bit_stays_a_loader_leftover() {
 #[test]
 fn manual_recovery_time_is_ten_seconds() {
     assert_eq!(MANUAL_RECOVERY_TIME_MIN_MS, 10_000);
+}
+
+fn dest_ctx(alt_max_m: f32, alt_min_m: f32, home_distance_m: f32) -> DestFenceContext {
+    DestFenceContext {
+        dest_alt_max_m: Some(alt_max_m),
+        dest_alt_min_m: Some(alt_min_m),
+        home_distance_m,
+        poly_breached: false,
+    }
+}
+
+#[test]
+fn pre_arm_passes_when_disabled_and_autoenable_off() {
+    let mut fence = Fence::new();
+    let leftover = fence.pre_arm_check(PreArmContext::default());
+    assert!(leftover.allowed);
+    assert_eq!(leftover.failure, None);
+    assert!(!leftover.circle_checked);
+    assert!(!leftover.autoenable_warn);
+}
+
+#[test]
+fn pre_arm_fails_when_enable_param_is_on_but_nothing_is_present() {
+    let mut fence = Fence::from_params(true, TYPE_POLYGON);
+    assert_eq!(fence.present(), 0);
+    let leftover = fence.pre_arm_check(PreArmContext::default());
+    assert!(!leftover.allowed);
+    assert_eq!(leftover.failure, Some(PreArmFailure::NoneSelected));
+    assert!(!leftover.autoenable_warn);
+}
+
+#[test]
+fn pre_arm_warns_once_per_minute_for_legacy_autoenable() {
+    let mut fence = Fence::from_params(false, TYPE_ALT_MAX);
+    fence.set_auto_enabled(AutoEnable::EnableOnAutoTakeoff);
+    // C++ static starts at 0, so the first warn is now_ms > 60s of uptime.
+    let first = fence.pre_arm_check(PreArmContext {
+        now_ms: AUTOENABLE_WARN_INTERVAL_MS + 1,
+        ..PreArmContext::default()
+    });
+    assert!(first.allowed);
+    assert!(first.autoenable_warn);
+    assert_eq!(first.autoenable_warn_value, Some(1));
+
+    let soon = fence.pre_arm_check(PreArmContext {
+        now_ms: (AUTOENABLE_WARN_INTERVAL_MS + 1) + AUTOENABLE_WARN_INTERVAL_MS,
+        ..PreArmContext::default()
+    });
+    assert!(soon.allowed);
+    assert!(!soon.autoenable_warn);
+
+    let later = fence.pre_arm_check(PreArmContext {
+        now_ms: (AUTOENABLE_WARN_INTERVAL_MS + 1) + AUTOENABLE_WARN_INTERVAL_MS + 1,
+        ..PreArmContext::default()
+    });
+    assert!(later.autoenable_warn);
+    assert_eq!(later.autoenable_warn_value, Some(1));
+}
+
+#[test]
+fn pre_arm_requires_relative_home_for_circle_or_polygon() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    let leftover = fence.pre_arm_check(PreArmContext {
+        has_relative_position: false,
+        ..PreArmContext::default()
+    });
+    assert!(!leftover.allowed);
+    assert_eq!(leftover.failure, Some(PreArmFailure::RequiresPosition));
+    assert!(leftover.need_relative_position);
+}
+
+#[test]
+fn pre_arm_polygon_loader_leftovers_refuse_invalid_or_tight_margin() {
+    let mut fence = Fence::new();
+    fence.set_configured_fences(TYPE_POLYGON | TYPE_ALT_MAX);
+    fence.enable(true, TYPE_POLYGON | TYPE_ALT_MAX, false);
+
+    let invalid = fence.pre_arm_check(PreArmContext {
+        poly_loaded: false,
+        ..PreArmContext::default()
+    });
+    assert_eq!(invalid.failure, Some(PreArmFailure::PolygonInvalid));
+    assert!(invalid.polygon_checked);
+
+    let margin = fence.pre_arm_check(PreArmContext {
+        poly_inclusion_circle_ok: false,
+        ..PreArmContext::default()
+    });
+    assert_eq!(margin.failure, Some(PreArmFailure::PolygonMargin));
+}
+
+#[test]
+fn pre_arm_circle_and_alt_param_range_leftovers() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+
+    fence.set_circle_radius_m(-1.0);
+    let radius = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(radius.failure, Some(PreArmFailure::CircleRadius));
+    assert!(radius.circle_checked);
+
+    fence.set_circle_radius_m(1.0);
+    fence.set_margin_m(2.0);
+    let circle_margin = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(circle_margin.failure, Some(PreArmFailure::CircleMargin));
+
+    fence.set_circle_radius_m(CIRCLE_RADIUS_DEFAULT_M);
+    fence.set_alt_max_m(-1.0);
+    let alt_max = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(alt_max.failure, Some(PreArmFailure::AltMax));
+    assert!(alt_max.alt_checked);
+
+    fence.set_alt_max_m(ALT_MAX_DEFAULT_M);
+    fence.set_alt_min_m(-101.0);
+    let alt_min = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(alt_min.failure, Some(PreArmFailure::AltMin));
+}
+
+#[test]
+fn pre_arm_refuses_a_live_breach_and_reports_stored_mask() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    assert!(
+        fence
+            .check_fence_alt_max(CheckAltMaxContext {
+                alt_u_m: Some(200.0),
+                home_alt_amsl_m: 0.0,
+                now_ms: 1_001,
+            })
+            .newly_breached
+    );
+    let leftover = fence.pre_arm_check(PreArmContext::default());
+    assert!(!leftover.allowed);
+    assert_eq!(leftover.failure, Some(PreArmFailure::Breaching));
+    assert_eq!(leftover.breached_mask_reported, TYPE_ALT_MAX);
+}
+
+#[test]
+fn pre_arm_only_when_armed_ors_poly_breach_but_names_stored_mask() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    fence.set_auto_enabled(AutoEnable::OnlyWhenArmed);
+
+    let no_loc = fence.pre_arm_check(PreArmContext {
+        has_location: false,
+        ..PreArmContext::default()
+    });
+    assert_eq!(no_loc.failure, Some(PreArmFailure::RequiresPosition));
+    assert!(no_loc.need_location);
+
+    let poly = fence.pre_arm_check(PreArmContext {
+        poly_breached: true,
+        ..PreArmContext::default()
+    });
+    assert_eq!(poly.failure, Some(PreArmFailure::Breaching));
+    assert_eq!(poly.breached_mask_reported, 0);
+    assert!(poly.need_location);
+}
+
+#[test]
+fn pre_arm_margin_and_alt_band_leftovers() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+
+    fence.set_margin_m(-1.0);
+    let margin = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(margin.failure, Some(PreArmFailure::Margin));
+
+    fence.set_margin_m(MARGIN_DEFAULT_M);
+    fence.set_margin_ne_m(-1.0);
+    let margin_xy = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(margin_xy.failure, Some(PreArmFailure::MarginXy));
+
+    fence.set_margin_ne_m(0.0);
+    fence.set_alt_max_m(10.0);
+    fence.set_alt_min_m(20.0);
+    let order = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(order.failure, Some(PreArmFailure::AltMaxLtMin));
+
+    fence.set_alt_max_m(24.0);
+    fence.set_alt_min_m(20.0);
+    fence.set_margin_m(2.0);
+    let band = fence.pre_arm_check(PreArmContext::default());
+    assert_eq!(band.failure, Some(PreArmFailure::MarginTooBig));
+}
+
+#[test]
+fn pre_arm_allows_a_healthy_circle_and_ceiling() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    let leftover = fence.pre_arm_check(PreArmContext::default());
+    assert!(leftover.allowed);
+    assert_eq!(leftover.failure, None);
+    assert!(leftover.need_relative_position);
+    assert!(leftover.circle_checked);
+    assert!(leftover.alt_checked);
+    assert!(!leftover.polygon_checked);
+}
+
+#[test]
+fn dest_inside_when_no_fence_is_enabled() {
+    let fence = Fence::new();
+    let leftover = fence.check_destination_within_fence(DestFenceContext::default());
+    assert!(leftover.inside);
+    assert!(!leftover.alt_max_checked);
+    assert!(!leftover.circle_checked);
+    assert!(!leftover.polygon_checked);
+}
+
+#[test]
+fn dest_refuses_ceiling_floor_and_circle() {
+    let mut fence = Fence::new();
+    fence.set_configured_fences(TYPE_ALT_MAX | TYPE_ALT_MIN | TYPE_CIRCLE);
+    fence.set_alt_min_m(20.0);
+    fence.enable(true, TYPE_ALT_MAX | TYPE_ALT_MIN | TYPE_CIRCLE, false);
+
+    let ceiling = fence.check_destination_within_fence(dest_ctx(120.0, 50.0, 0.0));
+    assert!(!ceiling.inside);
+    assert!(ceiling.alt_max_outside);
+    assert!(ceiling.need_dest_alt_max);
+    assert!(!ceiling.alt_min_checked);
+
+    let floor = fence.check_destination_within_fence(dest_ctx(50.0, 10.0, 0.0));
+    assert!(!floor.inside);
+    assert!(floor.alt_min_outside);
+    assert!(floor.need_dest_alt_min);
+
+    let circle =
+        fence.check_destination_within_fence(dest_ctx(50.0, 50.0, CIRCLE_RADIUS_DEFAULT_M + 1.0));
+    assert!(!circle.inside);
+    assert!(circle.circle_outside);
+    assert!(circle.need_home_distance);
+}
+
+#[test]
+fn dest_skips_an_axis_when_loc_get_alt_fails() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    let leftover = fence.check_destination_within_fence(DestFenceContext {
+        dest_alt_max_m: None,
+        dest_alt_min_m: None,
+        home_distance_m: 0.0,
+        poly_breached: false,
+    });
+    assert!(leftover.inside);
+    assert!(leftover.alt_max_checked);
+    assert!(leftover.alt_max_unavailable);
+    assert!(leftover.need_dest_alt_max);
+    assert!(!leftover.alt_max_outside);
+}
+
+#[test]
+fn dest_equal_to_the_limit_is_still_inside() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    let leftover = fence.check_destination_within_fence(dest_ctx(
+        ALT_MAX_DEFAULT_M,
+        0.0,
+        CIRCLE_RADIUS_DEFAULT_M,
+    ));
+    assert!(leftover.inside);
+    assert!(leftover.alt_max_checked);
+    assert!(leftover.circle_checked);
+    assert!(!leftover.alt_max_outside);
+    assert!(!leftover.circle_outside);
+}
+
+#[test]
+fn dest_polygon_bit_is_a_loader_leftover() {
+    let mut fence = Fence::new();
+    fence.set_configured_fences(TYPE_POLYGON);
+    fence.set_poly_fence_count(4);
+    fence.enable(true, TYPE_POLYGON, false);
+    assert_eq!(fence.get_enabled_fences() & TYPE_POLYGON, TYPE_POLYGON);
+
+    let inside = fence.check_destination_within_fence(DestFenceContext::default());
+    assert!(inside.inside);
+    assert!(inside.polygon_checked);
+    assert!(!inside.polygon_outside);
+
+    let hit = fence.check_destination_within_fence(DestFenceContext {
+        poly_breached: true,
+        ..DestFenceContext::default()
+    });
+    assert!(!hit.inside);
+    assert!(hit.polygon_outside);
+}
+
+#[test]
+fn auto_enable_on_arming_only_when_armed() {
+    let mut fence = Fence::from_params(false, TYPE_ALL);
+    fence.set_poly_fence_count(4);
+    fence.set_auto_enabled(AutoEnable::EnableOnAutoTakeoff);
+    let skip = fence.auto_enable_fence_on_arming();
+    assert!(skip.skipped);
+    assert!(!fence.enabled());
+
+    fence.set_auto_enabled(AutoEnable::OnlyWhenArmed);
+    fence.enable(true, TYPE_ALT_MIN, true);
+    assert_eq!(fence.min_alt_state(), MinAltState::ManuallyEnabled);
+    let leftover = fence.auto_enable_fence_on_arming();
+    assert!(!leftover.skipped);
+    assert!(leftover.min_alt_reset);
+    assert_eq!(fence.min_alt_state(), MinAltState::Default);
+    assert_eq!(leftover.enable.changed_mask, ARMING_FENCES);
+    assert_eq!(leftover.print, AutoEnablePrint::AutoEnabled);
+    assert_eq!(leftover.print_mask, ARMING_FENCES);
+    assert!(fence.floor_enabled());
+    assert_eq!(fence.get_enabled_fences() & ARMING_FENCES, ARMING_FENCES);
+}
+
+#[test]
+fn auto_enable_after_takeoff_turns_on_the_floor() {
+    let mut fence = Fence::from_params(false, TYPE_ALL);
+    fence.set_poly_fence_count(4);
+    let skip = fence.auto_enable_fence_after_takeoff();
+    assert!(skip.skipped);
+
+    fence.set_auto_enabled(AutoEnable::EnableOnAutoTakeoff);
+    let leftover = fence.auto_enable_fence_after_takeoff();
+    assert!(!leftover.skipped);
+    assert_eq!(leftover.enable.changed_mask, TYPE_ALL);
+    assert_eq!(leftover.print, AutoEnablePrint::AutoEnabled);
+    assert!(leftover.min_alt_reset);
+    assert_eq!(fence.min_alt_state(), MinAltState::Default);
+    assert!(fence.floor_enabled());
+
+    fence.set_auto_enabled(AutoEnable::EnableDisableFloorOnly);
+    fence.enable(false, TYPE_ALL, false);
+    let again = fence.auto_enable_fence_after_takeoff();
+    assert!(!again.skipped);
+    assert_eq!(again.enable.changed_mask, TYPE_ALL);
+}
+
+#[test]
+fn auto_disable_on_disarming_only_when_armed() {
+    let mut fence = Fence::from_params(false, TYPE_ALL);
+    fence.set_poly_fence_count(4);
+    fence.set_auto_enabled(AutoEnable::OnlyWhenArmed);
+    let on = fence.auto_enable_fence_on_arming();
+    assert_eq!(on.enable.changed_mask, ARMING_FENCES);
+
+    fence.set_auto_enabled(AutoEnable::EnableOnAutoTakeoff);
+    let skip = fence.auto_disable_fence_on_disarming();
+    assert!(skip.skipped);
+    assert!(fence.enabled());
+
+    fence.set_auto_enabled(AutoEnable::OnlyWhenArmed);
+    let leftover = fence.auto_disable_fence_on_disarming();
+    assert!(!leftover.skipped);
+    assert_eq!(leftover.enable.changed_mask, ARMING_FENCES);
+    assert_eq!(leftover.print, AutoEnablePrint::AutoDisabled);
+    assert!(!leftover.min_alt_reset);
+    assert!(!fence.enabled());
+}
+
+#[test]
+fn autoenable_warn_interval_is_one_minute() {
+    assert_eq!(AUTOENABLE_WARN_INTERVAL_MS, 60_000);
 }
