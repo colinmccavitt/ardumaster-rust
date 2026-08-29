@@ -6,8 +6,9 @@
 //! Sequencing (`next_tune_type` / next-axis / backoff) lives in
 //! [`crate::autotune_next`]. Multi load/save leftover lives in
 //! [`crate::autotune_load_save`]. Multi `test_init` leftover lives in
-//! [`crate::autotune_test_init`]. PosHold lean, GCS, and the rest of
-//! the Multi library stay for a later slice. What this file owns is `init`
+//! [`crate::autotune_test_init`]. PosHold lean lives in
+//! [`crate::autotune_poshold`]. GCS and the rest of the Multi library stay
+//! for a later slice. What this file owns is `init`
 //! (from-mode / throttle / flying gates, Loiter-or-PosHold, TuneMode /
 //! first-axis), `run` (Copter land/disarm wrapper, TuneMode dispatch,
 //! pilot override, and the level / execute / abort loop), and the Multi
@@ -1236,6 +1237,18 @@ pub struct AutoTuneRunView {
     pub have_position: bool,
     /// `position_ok()` — Copter `copter.position_ok()`.
     pub position_ok: bool,
+    /// Latched `start_position_ned_m.x` (north), metres.
+    pub poshold_start_n_m: f32,
+    /// Latched `start_position_ned_m.y` (east), metres.
+    pub poshold_start_e_m: f32,
+    /// `pos_control->get_pos_estimate_NED_m().x` (north), metres.
+    pub pos_n_m: f32,
+    /// `pos_control->get_pos_estimate_NED_m().y` (east), metres.
+    pub pos_e_m: f32,
+    /// `ahrs_view->cos_yaw()`.
+    pub cos_yaw: f32,
+    /// `ahrs_view->sin_yaw()`.
+    pub sin_yaw: f32,
     /// Pilot roll after SIMPLE, rad. Read before poshold overwrites it.
     pub desired_roll_rad: f32,
     /// Pilot pitch after SIMPLE, rad.
@@ -1356,6 +1369,12 @@ impl AutoTuneRunView {
             use_poshold: false,
             have_position: false,
             position_ok: false,
+            poshold_start_n_m: 0.0,
+            poshold_start_e_m: 0.0,
+            pos_n_m: 0.0,
+            pos_e_m: 0.0,
+            cos_yaw: 1.0,
+            sin_yaw: 0.0,
             desired_roll_rad: 0.0,
             desired_pitch_rad: 0.0,
             desired_yaw_rate_rads: 0.0,
@@ -1438,6 +1457,10 @@ pub struct AutoTuneRun {
     pub poshold_called: bool,
     /// `have_position` after the tick.
     pub have_position: bool,
+    /// PosHold lean roll after [`crate::autotune_poshold`].
+    pub poshold_roll_rad: f32,
+    /// PosHold lean pitch after [`crate::autotune_poshold`].
+    pub poshold_pitch_rad: f32,
     /// `INTERNAL_ERROR(flow_of_control)` — `UNINITIALISED` on `run`.
     pub flow_of_control: bool,
     /// Tuner `mode` after the tick.
@@ -1554,6 +1577,8 @@ fn run_passthrough(view: &AutoTuneRunView) -> AutoTuneRun {
         d_update: false,
         poshold_called: false,
         have_position: view.have_position,
+        poshold_roll_rad: 0.0,
+        poshold_pitch_rad: 0.0,
         flow_of_control: false,
         mode: view.mode,
         step: view.step,
@@ -1776,8 +1801,7 @@ fn abort_to_level(view: &AutoTuneRunView, out: &mut AutoTuneRun, now: u32) {
 ///
 /// UPDATE_GAINS runs the Multi `updating_*` leftover, then
 /// [`crate::autotune_next`] when a tune-type freezes. Poshold lean math
-/// (`get_poshold_attitude_rad` 10° / 20 m) is also leftover — this
-/// catalogs the call and the `have_position` latch.
+/// (`get_poshold_attitude_rad` 10° / 20 m) is [`crate::autotune_poshold`].
 #[must_use]
 pub fn mode_autotune_run(view: &AutoTuneRunView) -> AutoTuneRun {
     let mut out = run_passthrough(view);
@@ -1802,14 +1826,30 @@ pub fn mode_autotune_run(view: &AutoTuneRunView) -> AutoTuneRun {
     }
 
     let zero_rp = is_zero(view.desired_roll_rad) && is_zero(view.desired_pitch_rad);
+    let mut desired_yaw_rad = view.desired_yaw_rad;
     if zero_rp {
         out.poshold_called = true;
-        if view.use_poshold && view.position_ok && !view.have_position {
-            out.have_position = true;
-        }
+        let poshold = crate::autotune_poshold::get_poshold_attitude_rad(
+            &crate::autotune_poshold::PosHoldAttitudeView {
+                use_poshold: view.use_poshold,
+                position_ok: view.position_ok,
+                have_position: view.have_position,
+                start_n_m: view.poshold_start_n_m,
+                start_e_m: view.poshold_start_e_m,
+                pos_n_m: view.pos_n_m,
+                pos_e_m: view.pos_e_m,
+                cos_yaw: view.cos_yaw,
+                sin_yaw: view.sin_yaw,
+                desired_yaw_rad,
+                axis: view.axis,
+            },
+        );
+        out.have_position = poshold.have_position;
+        out.poshold_roll_rad = poshold.roll_out_rad;
+        out.poshold_pitch_rad = poshold.pitch_out_rad;
+        desired_yaw_rad = poshold.yaw_out_rad;
+        out.desired_yaw_rad = desired_yaw_rad;
     }
-
-    let mut desired_yaw_rad = view.desired_yaw_rad;
     let mut pilot_override = view.pilot_override;
     let mut override_time = view.override_time;
     let mut last_warn = view.last_pilot_override_warning;

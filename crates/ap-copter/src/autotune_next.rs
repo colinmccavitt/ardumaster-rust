@@ -5,8 +5,8 @@
 //! [`set_tuning_gains_with_backoff`], walks [`next_tune_type`], and
 //! either starts the next Multi step or the next enabled axis. Multi
 //! `reset_update_gain_variables` is a no-op. Heli sequence / backoff
-//! stay out of scope. The rest of `AC_AutoTune_Multi` (load/save
-//! gains, `test_init`, poshold lean, GCS report) stays leftover.
+//! stay out of scope. The rest of `AC_AutoTune_Multi` (GCS report)
+//! stays leftover. PosHold lean is [`crate::autotune_poshold`].
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 

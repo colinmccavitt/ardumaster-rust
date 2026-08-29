@@ -8,8 +8,9 @@
 //!
 //! `max_rate_step_bf_*` / `max_angle_step_bf_*` stay attitude-control
 //! reads. The LPF object itself stays leftover — this tick records
-//! `set_cutoff_frequency` and `reset`. GCS announcements and PosHold
-//! lean stay for a later slice. Heli `test_init` is out of scope.
+//! `set_cutoff_frequency` and `reset`. GCS announcements stay for a
+//! later slice. PosHold lean is [`crate::autotune_poshold`]. Heli
+//! `test_init` is out of scope.
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 

@@ -22,6 +22,7 @@ pub mod attitude;
 pub mod auto_yaw;
 pub mod autotune_load_save;
 pub mod autotune_next;
+pub mod autotune_poshold;
 pub mod autotune_test_init;
 pub mod autotune_update_gains;
 pub mod aux;
