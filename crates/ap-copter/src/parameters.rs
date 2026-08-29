@@ -60,7 +60,9 @@
 //! (`AP_ADSB_AVOIDANCE_ENABLED`). After `AVD_` the
 //! next leftover is the stock `NTF_` `GOBJECT`. After `NTF_` the
 //! next leftover is the stock `OSD` `GOBJECT`
-//! (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). Later groups (`CC`), G2,
+//! (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). After `OSD` the
+//! next leftover is the stock `CC` `GOBJECT`
+//! (`AC_CUSTOMCONTROL_MULTI_ENABLED`). Later groups (G2),
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1730,7 +1732,7 @@ pub fn for_each_ntf_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_custom_control` — next leftover after `OSD`. Not this leftover.
+/// `Parameters::k_param_custom_control` — next `GOBJECT`, prefix `CC`.
 pub const K_PARAM_CUSTOM_CONTROL: u16 = 106;
 
 /// Stock `OSD` leftover catalog.
@@ -1761,6 +1763,39 @@ pub fn find_osd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `OSD` leftover as `ParamInfo` rows.
 pub fn for_each_osd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in OSD_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_g2` — next leftover after `CC`. Not this leftover.
+pub const K_PARAM_G2: u16 = 6;
+
+/// Stock `CC` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `OSD`. Upstream is
+/// `GOBJECT`. `CC` is `AC_CUSTOMCONTROL_MULTI_ENABLED`. Nested
+/// `AC_CustomControl` `var_info` is not this leftover. G2 stays later
+/// (`TUNE_MIN` / `TUNE_MAX` live there). Heli `H_` / `IM_` are not
+/// rows of this leftover.
+pub const CC_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("CC", K_PARAM_CUSTOM_CONTROL)];
+
+/// First (only) row of the `CC` leftover.
+#[must_use]
+pub fn cc_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    CC_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `CC` leftover by group prefix.
+#[must_use]
+pub fn find_cc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    CC_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `CC` leftover as `ParamInfo` rows.
+pub fn for_each_cc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in CC_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
