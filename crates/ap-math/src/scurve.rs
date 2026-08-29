@@ -26,14 +26,14 @@
 //!
 //! # This slice
 //!
-//! `set_speed_max` — rewrite the 23-segment path when the speed limit
-//! changes mid-leg, including the seven speed-change slots that
-//! `add_segments` left empty. `set_origin_speed_max` and
-//! `set_destination_speed_max` sit next to it: they are the spline-join
-//! entry / exit speeds, and the time-zero path of `set_speed_max` calls
-//! both.
-//!
-//! The 3-D `move_*` helpers and `project_scurve_onto_track` stay leftovers.
+//! `project_scurve_onto_track` — turn the scalar S-curve (accel, vel,
+//! path distance) into 3-D position, velocity and acceleration along
+//! the stored track. A straight leg is `path_unit * (P, V, A)`. An arc
+//! rotates the start radial by progress around the NE circle, then adds
+//! the tangent kinematics plus the centripetal term `V²/R` toward the
+//! centre. `move_from_*` / `move_to_*` wrap that: they evaluate the
+//! scalar profile at a time and project, with `move_to` subtracting
+//! `seg_delta` so the result is destination-relative.
 
 use crate::control::{kinematic_limit, kinematic_limit_xyz};
 use crate::scalar::{
@@ -829,8 +829,8 @@ pub fn calculate_path(
 
 /// Circular-arc geometry in the NE plane, upstream's anonymous `arc` struct.
 ///
-/// The scalar S-curve still runs on path length. Projecting that motion
-/// onto this circle is a later leftover (`project_scurve_onto_track`).
+/// The scalar S-curve still runs on path length.
+/// [`SCurve::project_scurve_onto_track`] maps that motion onto this circle.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Arc {
     /// Signed central angle, radians. Upstream: +CCW, −CW, 0 = straight.
@@ -845,9 +845,10 @@ pub struct Arc {
 
 /// Leftover of one [`SCurve::advance_target_along_track`] tick.
 ///
-/// Time on the three legs is advanced here. The 3-D `move_*` /
-/// `project_scurve_onto_track` writes into the caller's pos / vel / accel
-/// stay later leftovers — the flags say which of those still need to run.
+/// Time on the three legs is advanced here. The flags say which 3-D
+/// [`SCurve::move_from_pos_vel_accel`] / [`SCurve::move_to_pos_vel_accel`]
+/// / [`SCurve::move_from_time_pos_vel_accel`] writes the caller still
+/// needs to run into pos / vel / accel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdvanceTargetLeftover {
     /// C++ return: this leg has finished, or the turn apex is passed.
@@ -857,8 +858,8 @@ pub struct AdvanceTargetLeftover {
     /// Always: `this.move_from_pos_vel_accel`.
     pub need_this_move_from: bool,
     /// Fast-waypoint time gates passed. The turn-midpoint
-    /// `move_from_time_pos_vel_accel` pair and the spatial accept check
-    /// need `project_scurve_onto_track`.
+    /// [`SCurve::move_from_time_pos_vel_accel`] pair and the spatial
+    /// accept check still belong to the caller.
     pub need_turn_midpoint: bool,
     /// `next_leg.move_from_pos_vel_accel` — next already running.
     pub need_next_move_from: bool,
@@ -866,9 +867,8 @@ pub struct AdvanceTargetLeftover {
 
 /// A snap-limited 3-D track between two points, upstream `SCurve`.
 ///
-/// Speed mid-leg and origin / dest speed are in this slice. Projecting
-/// the scalar path onto an arc (`project_scurve_onto_track` / `move_*`)
-/// stays a later leftover.
+/// Speed mid-leg, origin / dest speed, and 3-D projection of the
+/// scalar path onto a straight or arc track are in this crate.
 #[derive(Debug, Clone)]
 pub struct SCurve {
     snap_max: f32,
@@ -1202,22 +1202,123 @@ impl SCurve {
         self.time = cpp_min(self.time + dt, self.time_end());
     }
 
+    /// Project scalar S-curve kinematics onto the active track, upstream
+    /// `project_scurve_onto_track`.
+    ///
+    /// Adds the 3-D position, velocity and acceleration at path distance
+    /// `scurve_p1` into `pos` / `vel` / `accel`. A zero-length path is a
+    /// no-op. A stored arc with a non-positive radius is a programming
+    /// error — upstream logs `INTERNAL_ERROR`; we skip the log and
+    /// [`init`] the path the same way.
+    pub fn project_scurve_onto_track(
+        &mut self,
+        scurve_a1: f32,
+        scurve_v1: f32,
+        scurve_p1: f32,
+        pos: &mut Vector3f,
+        vel: &mut Vector3f,
+        accel: &mut Vector3f,
+    ) {
+        if is_zero(self.seg_length) {
+            return;
+        }
+
+        if self.is_arc_segment {
+            if !is_positive(self.arc.radius_ne) {
+                self.init();
+                return;
+            }
+
+            let mut center_to_pos_ne = -self.arc.center_ne;
+            let turn_dir = if is_negative(self.arc.angle_rad) {
+                -1.0
+            } else {
+                1.0
+            };
+            center_to_pos_ne
+                .rotate(turn_dir * self.arc.angle_rad.abs() * (scurve_p1 / self.seg_length));
+
+            let dz_ds = self.seg_delta.z / self.seg_length;
+            let delta_xy = self.arc.center_ne + center_to_pos_ne;
+            *pos += Vector3f::new(delta_xy.x, delta_xy.y, scurve_p1 * dz_ds);
+
+            let mut arc_tangent_ne =
+                Vector2f::new(-center_to_pos_ne.y, center_to_pos_ne.x) * turn_dir;
+            arc_tangent_ne /= self.arc.radius_ne;
+            let mut path_unit = Vector3f::new(arc_tangent_ne.x, arc_tangent_ne.y, dz_ds);
+            let _ = path_unit.normalize();
+
+            *vel += path_unit * scurve_v1;
+            *accel += path_unit * scurve_a1;
+
+            let centripetal = sq(scurve_v1 / self.arc.radius_ne);
+            accel.x -= center_to_pos_ne.x * centripetal;
+            accel.y -= center_to_pos_ne.y * centripetal;
+            return;
+        }
+
+        let path_unit = self.seg_delta.normalized_or_zero();
+        *pos += path_unit * scurve_p1;
+        *vel += path_unit * scurve_v1;
+        *accel += path_unit * scurve_a1;
+    }
+
+    /// Increment time and add origin-relative pos / vel / accel, upstream
+    /// `move_from_pos_vel_accel`.
+    pub fn move_from_pos_vel_accel(
+        &mut self,
+        dt: f32,
+        pos: &mut Vector3f,
+        vel: &mut Vector3f,
+        accel: &mut Vector3f,
+    ) {
+        self.advance_time(dt);
+        let j = self.track.javp_at_time(self.time);
+        self.project_scurve_onto_track(j.accel, j.vel, j.pos, pos, vel, accel);
+    }
+
+    /// Increment time and add destination-relative pos / vel / accel,
+    /// upstream `move_to_pos_vel_accel`.
+    pub fn move_to_pos_vel_accel(
+        &mut self,
+        dt: f32,
+        pos: &mut Vector3f,
+        vel: &mut Vector3f,
+        accel: &mut Vector3f,
+    ) {
+        self.advance_time(dt);
+        let j = self.track.javp_at_time(self.time);
+        self.project_scurve_onto_track(j.accel, j.vel, j.pos, pos, vel, accel);
+        *pos -= self.seg_delta;
+    }
+
+    /// Origin-relative pos / vel / accel at `time_now` without moving the
+    /// time pointer, upstream `move_from_time_pos_vel_accel`.
+    pub fn move_from_time_pos_vel_accel(
+        &mut self,
+        time_now: f32,
+        pos: &mut Vector3f,
+        vel: &mut Vector3f,
+        accel: &mut Vector3f,
+    ) {
+        let j = self.track.javp_at_time(time_now);
+        self.project_scurve_onto_track(j.accel, j.vel, j.pos, pos, vel, accel);
+    }
+
     /// Per-tick stepper, leftover of upstream `advance_target_along_track`.
     ///
     /// Advances time on `prev_leg` and `self` (the time half of
-    /// `move_to` / `move_from`). The 3-D projection into the caller's
-    /// pos / vel / accel is a later leftover. Fast-waypoint time gates
-    /// are evaluated here; the spatial turn-midpoint accept check is
-    /// not — that needs `project_scurve_onto_track` — so a passing gate
-    /// records [`AdvanceTargetLeftover::need_turn_midpoint`] and does
-    /// not start `next_leg`. When `next_leg` is already running, its
+    /// `move_to` / `move_from`). Fast-waypoint time gates are evaluated
+    /// here; the spatial turn-midpoint accept check is not, so a passing
+    /// gate records [`AdvanceTargetLeftover::need_turn_midpoint`] and
+    /// does not start `next_leg`. When `next_leg` is already running, its
     /// time is advanced and the C++ "passed the apex" finish rule runs.
     ///
     /// `wp_radius` and `accel_corner` are the spatial-check limits; they
-    /// are unused until the project leftover lands.
+    /// stay unused until a caller wires the 3-D `move_*` writes.
     #[allow(
         unused_variables,
-        reason = "wp_radius / accel_corner wait on the project leftover"
+        reason = "wp_radius / accel_corner wait on a caller spatial check"
     )]
     pub fn advance_target_along_track(
         &mut self,
@@ -2192,8 +2293,7 @@ epsilon would accept a drift, which is the failure"
     }
 
     /// A 90° arc stores the circle (radius = chord / √2) and still
-    /// builds a valid scalar track of the arc length. Projection onto
-    /// the circle is the later leftover.
+    /// builds a valid scalar track of the arc length.
     #[test]
     fn calculate_track_arc_sets_radius() {
         let mut s = SCurve::new();
@@ -2656,5 +2756,251 @@ epsilon would accept a drift, which is the failure"
         assert!(is_equal(s.vel_max(), 10.0));
         assert!((s.track().segment(SEG_INIT).unwrap().end_vel - 4.0).abs() < 0.05);
         assert!((s.track().segment(SEG_DECEL_END).unwrap().end_vel - 3.0).abs() < 0.05);
+    }
+
+    fn project(s: &mut SCurve, a: f32, v: f32, p: f32) -> (Vector3f, Vector3f, Vector3f) {
+        let mut pos = Vector3f::zero();
+        let mut vel = Vector3f::zero();
+        let mut accel = Vector3f::zero();
+        s.project_scurve_onto_track(a, v, p, &mut pos, &mut vel, &mut accel);
+        (pos, vel, accel)
+    }
+
+    fn ninety_east_arc() -> SCurve {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(100.0, 0.0, 0.0),
+            core::f32::consts::FRAC_PI_2,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.is_arc_segment());
+        assert!(s.valid());
+        s
+    }
+
+    /// A zero-length path does not touch the caller's pos / vel / accel.
+    #[test]
+    fn project_zero_length_is_a_noop() {
+        let mut s = SCurve::new();
+        let mut pos = Vector3f::new(1.0, 2.0, 3.0);
+        let mut vel = Vector3f::new(4.0, 5.0, 6.0);
+        let mut accel = Vector3f::new(7.0, 8.0, 9.0);
+        s.project_scurve_onto_track(1.0, 2.0, 3.0, &mut pos, &mut vel, &mut accel);
+        assert_eq!(pos, Vector3f::new(1.0, 2.0, 3.0));
+        assert_eq!(vel, Vector3f::new(4.0, 5.0, 6.0));
+        assert_eq!(accel, Vector3f::new(7.0, 8.0, 9.0));
+    }
+
+    /// Straight-leg projection is `path_unit * (P, V, A)` added into the
+    /// caller's vectors. At P = 0 that is the origin; at P = length it
+    /// is the destination.
+    #[test]
+    fn project_straight_is_path_unit_times_scalar() {
+        let mut s = east_leg(100.0);
+        let (pos0, vel0, acc0) = project(&mut s, 2.0, 3.0, 0.0);
+        assert!(pos0.is_zero());
+        assert_eq!(vel0, Vector3f::new(3.0, 0.0, 0.0));
+        assert_eq!(acc0, Vector3f::new(2.0, 0.0, 0.0));
+
+        let (pos1, vel1, acc1) = project(&mut s, -1.0, 4.0, 100.0);
+        assert_eq!(pos1, Vector3f::new(100.0, 0.0, 0.0));
+        assert_eq!(vel1, Vector3f::new(4.0, 0.0, 0.0));
+        assert_eq!(acc1, Vector3f::new(-1.0, 0.0, 0.0));
+    }
+
+    /// A vertical climb (NED −Z) uses the down-axis unit, so P = 10 m
+    /// of a 20 m climb sits at z = −10.
+    #[test]
+    fn project_straight_vertical_follows_ned_down() {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(0.0, 0.0, -20.0),
+            0.0,
+            15.0,
+            3.0,
+            4.0,
+            5.0,
+            2.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        let (pos, vel, accel) = project(&mut s, 1.0, 2.0, 10.0);
+        assert!((pos.z + 10.0).abs() < 1e-4);
+        assert!(pos.xy().is_zero());
+        assert!((vel.z + 2.0).abs() < 1e-4);
+        assert!((accel.z + 1.0).abs() < 1e-4);
+    }
+
+    /// Arc ends are the origin and the destination. Mid-arc the NE
+    /// point sits on the stored circle, and z follows `P · Δz / L`.
+    #[test]
+    fn project_arc_ends_and_midpoint_sit_on_the_circle() {
+        let mut s = ninety_east_arc();
+        let r = s.arc().radius_ne;
+        let center = s.arc().center_ne;
+        let dest = s.seg_delta();
+
+        let len = s.seg_length();
+        let (pos0, _, _) = project(&mut s, 0.0, 0.0, 0.0);
+        assert!(pos0.is_zero(), "start {pos0:?}");
+
+        let (pos1, _, _) = project(&mut s, 0.0, 0.0, len);
+        assert!((pos1 - dest).length() < 1e-3, "end {pos1:?} dest {dest:?}");
+
+        let (pos_m, _, _) = project(&mut s, 0.0, 0.0, len * 0.5);
+        let radial = pos_m.xy() - center;
+        assert!(
+            (radial.length() - r).abs() < 1e-3,
+            "mid radial {} against r {r}",
+            radial.length()
+        );
+        assert!(is_zero(pos_m.z));
+    }
+
+    /// Climbing arc: z is the linear fraction of path length, NE stays
+    /// on the circle.
+    #[test]
+    fn project_climbing_arc_interpolates_z() {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(100.0, 0.0, -20.0),
+            core::f32::consts::FRAC_PI_2,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.is_arc_segment());
+        let len = s.seg_length();
+        let (pos0, _, _) = project(&mut s, 0.0, 0.0, 0.0);
+        assert!(is_zero(pos0.z));
+        let (pos1, _, _) = project(&mut s, 0.0, 0.0, len);
+        assert!((pos1.z + 20.0).abs() < 1e-3, "end z {}", pos1.z);
+        let (pos_m, _, _) = project(&mut s, 0.0, 0.0, len * 0.5);
+        assert!((pos_m.z + 10.0).abs() < 1e-3, "mid z {}", pos_m.z);
+        let radial = pos_m.xy() - s.arc().center_ne;
+        assert!((radial.length() - s.arc().radius_ne).abs() < 1e-3);
+    }
+
+    /// On an arc the centripetal term is `V²/R` toward the centre, and
+    /// the velocity is along the tangent (perpendicular to the radial).
+    #[test]
+    fn project_arc_centripetal_points_at_center() {
+        let mut s = ninety_east_arc();
+        let v = 10.0_f32;
+        let (pos, vel, accel) = project(&mut s, 0.0, v, 0.0);
+        assert!(pos.is_zero());
+        let center = s.arc().center_ne;
+        let r = s.arc().radius_ne;
+        // At P = 0 the radial is −center, so accel.xy = center * (V/R)².
+        let want = center * sq(v / r);
+        assert!(
+            (accel.xy() - want).length() < 1e-4,
+            "accel xy {:?}",
+            accel.xy()
+        );
+        assert!(is_zero(accel.z));
+        assert!((accel.xy().length() - sq(v) / r).abs() < 1e-4);
+        // Tangent ⟂ radial.
+        assert!(vel.xy().dot(center).abs() < 1e-3, "vel {:?}", vel);
+        assert!((vel.length() - v).abs() < 1e-4);
+    }
+
+    /// `move_from` at the end of a rest-to-rest east leg sits on the
+    /// destination at rest. `move_to` reports the same state relative
+    /// to the destination, so position is the origin.
+    #[test]
+    fn move_from_finishes_on_the_destination() {
+        let mut s = east_leg(100.0);
+        let mut pos = Vector3f::zero();
+        let mut vel = Vector3f::zero();
+        let mut accel = Vector3f::zero();
+        s.move_from_pos_vel_accel(s.time_end(), &mut pos, &mut vel, &mut accel);
+        assert!(s.finished());
+        assert!((pos - Vector3f::new(100.0, 0.0, 0.0)).length() < 0.05);
+        assert!(vel.length() < 0.05);
+        assert!(accel.length() < 0.2);
+    }
+
+    #[test]
+    fn move_to_finishes_at_the_origin() {
+        let mut s = east_leg(100.0);
+        let mut pos = Vector3f::zero();
+        let mut vel = Vector3f::zero();
+        let mut accel = Vector3f::zero();
+        s.move_to_pos_vel_accel(s.time_end(), &mut pos, &mut vel, &mut accel);
+        assert!(pos.length() < 0.05, "dest-relative end {pos:?}");
+        assert!(vel.length() < 0.05);
+    }
+
+    /// `move_from` and `move_to` differ by `seg_delta` at every time;
+    /// vel and accel match. That is the C++ `pos -= seg_delta` after
+    /// the same projection.
+    #[test]
+    fn move_from_minus_move_to_is_seg_delta() {
+        let mut from = east_leg(80.0);
+        let mut to = from.clone();
+        let dt = from.time_end() * 0.4;
+        let mut p_from = Vector3f::zero();
+        let mut v_from = Vector3f::zero();
+        let mut a_from = Vector3f::zero();
+        let mut p_to = Vector3f::zero();
+        let mut v_to = Vector3f::zero();
+        let mut a_to = Vector3f::zero();
+        from.move_from_pos_vel_accel(dt, &mut p_from, &mut v_from, &mut a_from);
+        to.move_to_pos_vel_accel(dt, &mut p_to, &mut v_to, &mut a_to);
+        assert!((p_from - p_to - from.seg_delta()).length() < 1e-4);
+        assert!((v_from - v_to).length() < 1e-4);
+        assert!((a_from - a_to).length() < 1e-4);
+    }
+
+    /// `move_from_time` does not advance the time pointer.
+    #[test]
+    fn move_from_time_leaves_the_time_pointer() {
+        let mut s = east_leg(60.0);
+        let t0 = s.time();
+        let mut pos = Vector3f::zero();
+        let mut vel = Vector3f::zero();
+        let mut accel = Vector3f::zero();
+        s.move_from_time_pos_vel_accel(s.time_end() * 0.5, &mut pos, &mut vel, &mut accel);
+        assert!(is_equal(s.time(), t0));
+        assert!(pos.x > 0.0);
+        assert!(pos.x < 60.0);
+        assert!(is_zero(pos.y) && is_zero(pos.z));
+    }
+
+    /// Arc `move_from` at t = 0 is the origin; at `time_end` it is the
+    /// destination, not a point on the chord.
+    #[test]
+    fn move_from_arc_ends_are_origin_and_destination() {
+        let mut s = ninety_east_arc();
+        let dest = s.seg_delta();
+        let mut pos = Vector3f::zero();
+        let mut vel = Vector3f::zero();
+        let mut accel = Vector3f::zero();
+        s.move_from_time_pos_vel_accel(0.0, &mut pos, &mut vel, &mut accel);
+        assert!(pos.is_zero());
+
+        pos = Vector3f::zero();
+        vel = Vector3f::zero();
+        accel = Vector3f::zero();
+        s.move_from_time_pos_vel_accel(s.time_end(), &mut pos, &mut vel, &mut accel);
+        assert!((pos - dest).length() < 0.05, "end {pos:?}");
+        assert!(vel.length() < 0.05);
     }
 }
