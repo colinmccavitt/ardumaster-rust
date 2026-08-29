@@ -36,7 +36,8 @@
 //! next leftover is the stock `RALLY_` `GOBJECT`
 //! (`HAL_RALLY_ENABLED`). After `RALLY_` the
 //! next leftover is the stock `MOT_` `GOBJECT`
-//! (`GOBJECTVARPTR`; heli `H_` is a `FRAME_CONFIG` row). Later groups, G2,
+//! (`GOBJECTVARPTR`; heli `H_` is a `FRAME_CONFIG` row). After `MOT_` the
+//! next leftover is the stock `RCMAP_` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1300,7 +1301,7 @@ pub fn for_each_rally_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static
     }
 }
 
-/// `Parameters::k_param_rcmap` — next leftover after `MOT_`. Not this leftover.
+/// `Parameters::k_param_rcmap` — next `GOBJECT`, prefix `RCMAP_`.
 pub const K_PARAM_RCMAP: u16 = 199;
 
 /// Stock `MOT_` leftover catalog.
@@ -1325,6 +1326,37 @@ pub fn find_mot_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `MOT_` leftover as `ParamInfo` rows.
 pub fn for_each_mot_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in MOT_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_NavEKF2` — next leftover after `RCMAP_`. Not this leftover.
+pub const K_PARAM_NAVEKF2: u16 = 5;
+
+/// Stock `RCMAP_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `MOT_`. Nested `RCMapper`
+/// `var_info` is not this leftover. `EK2_` stays later (`HAL_NAVEKF2_AVAILABLE`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const RCMAP_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("RCMAP_", K_PARAM_RCMAP)];
+
+/// First (only) row of the `RCMAP_` leftover.
+#[must_use]
+pub fn rcmap_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    RCMAP_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `RCMAP_` leftover by group prefix.
+#[must_use]
+pub fn find_rcmap_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    RCMAP_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `RCMAP_` leftover as `ParamInfo` rows.
+pub fn for_each_rcmap_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in RCMAP_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
