@@ -47,7 +47,9 @@
 //! next leftover is the stock `RSSI_` `GOBJECT`
 //! (`AP_RSSI_ENABLED`). After `RSSI_` the
 //! next leftover is the stock `RNGFND` `GOBJECT`
-//! (`AP_RANGEFINDER_ENABLED`). Later groups, G2,
+//! (`AP_RANGEFINDER_ENABLED`). After `RNGFND` the
+//! next leftover is the stock `TERRAIN_` `GOBJECT`
+//! (`AP_TERRAIN_AVAILABLE`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1493,7 +1495,7 @@ pub fn for_each_rssi_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_terrain` — next leftover after `RNGFND`. Not this leftover.
+/// `Parameters::k_param_terrain` — next `GOBJECT`, prefix `TERRAIN_`.
 pub const K_PARAM_TERRAIN: u16 = 55;
 
 /// Stock `RNGFND` leftover catalog.
@@ -1521,6 +1523,38 @@ pub fn find_rngfnd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `RNGFND` leftover as `ParamInfo` rows.
 pub fn for_each_rngfnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in RNGFND_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_optflow` — next leftover after `TERRAIN_`. Not this leftover.
+pub const K_PARAM_OPTFLOW: u16 = 58;
+
+/// Stock `TERRAIN_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `RNGFND`. Upstream is
+/// `GOBJECT`. `TERRAIN_` is `AP_TERRAIN_AVAILABLE`. Nested `AP_Terrain`
+/// `var_info` is not this leftover. `FLOW` stays later (`AP_OPTICALFLOW_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const TERRAIN_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("TERRAIN_", K_PARAM_TERRAIN)];
+
+/// First (only) row of the `TERRAIN_` leftover.
+#[must_use]
+pub fn terrain_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    TERRAIN_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `TERRAIN_` leftover by group prefix.
+#[must_use]
+pub fn find_terrain_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    TERRAIN_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `TERRAIN_` leftover as `ParamInfo` rows.
+pub fn for_each_terrain_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in TERRAIN_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
