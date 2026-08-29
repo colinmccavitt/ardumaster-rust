@@ -6,7 +6,7 @@ use ap_copter::vehicle_loop::{
     copter_first_fast_tasks, copter_first_scheduled_tasks, copter_logging_tasks,
     copter_next_fast_tasks, copter_next_scheduled_tasks, copter_periodic_loop_tasks,
     copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks, get_wp_distance_m,
-    init_ardupilot, startup_ins_ground,
+    allocate_motors, init_ardupilot, startup_ins_ground,
     loop_rate_logging, lost_vehicle_check, motors_output, motors_output_main, one_hz_loop, rc_loop,
     read_ahrs, read_inertia, read_mode_switch, run_nav_updates, run_scheduler_tick, set_home,
     set_home_to_current_location, set_home_to_current_location_inflight, should_log,
@@ -14,6 +14,7 @@ use ap_copter::vehicle_loop::{
     throttle_loop, twentyfive_hz_logging, update_altitude, update_auto_armed, update_batt_compass,
     update_flight_mode, update_home_from_ekf, update_land_and_crash_detectors,
     update_rangefinder_terrain_offset, ApState, AutoDisarmCheckInputs, AutoDisarmCheckPath,
+    AllocateMotorsInputs, AllocatedAttitudeKind, AllocatedMotorsKind,
     CheckEkfResetInputs, CopterVehicleLoop, EkfResetMethod, InitArdupilotInputs, InitArdupilotPath,
     InterlockEdge, LoopRateLoggingInputs,
     LostVehicleCheckInputs, ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive,
@@ -23,7 +24,11 @@ use ap_copter::vehicle_loop::{
     TakeoffCheckInputs, TakeoffCheckPath, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs,
     UpdateAltitudeInputs, UpdateAutoArmedInputs, UpdateBattCompassInputs, UpdateFlightModeInputs,
     UpdateHomeFromEkfInputs, UpdateHomeFromEkfPath, UpdateRangefinderTerrainOffsetInputs,
-    ARMING_DELAY_MS, AUTO_DISARMING_DELAY, AUTO_DISARM_CHECK_MAX_TIME_MICROS,
+    ALLOCATE_MOTORS_BRUSHED_RC_SPEED_HZ, ALLOCATE_MOTORS_TRI_YAW_FILT_D_HZ,
+    ALLOCATE_MOTORS_Y6_RATE_RP_KD, ALLOCATE_MOTORS_Y6_RATE_RP_KP,
+    ALLOCATE_MOTORS_Y6_RATE_YAW_KI, ALLOCATE_MOTORS_Y6_RATE_YAW_KP,
+    AP_PARAM_FRAME_TRICOPTER, ARMING_DELAY_MS, AUTO_DISARMING_DELAY,
+    AUTO_DISARM_CHECK_MAX_TIME_MICROS,
     AUTO_DISARM_CHECK_PRIORITY, AUTO_DISARM_CHECK_RATE_HZ, COPTER_LOOP_RATE_HZ,
     DEFAULT_LOG_BITMASK, DISARM_DELAY_MAX_S, FAST_TASK_PRI0, INIT_ARDUPILOT_FAILSAFE_US,
     LOOP_RATE_LOGGING_MAX_TIME_MICROS,
@@ -31,7 +36,13 @@ use ap_copter::vehicle_loop::{
     LOST_VEHICLE_CHECK_RATE_HZ, LOST_VEHICLE_DELAY, LOST_VEHICLE_STICK_MAX, MASK_LOG_ANY,
     MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED, MASK_LOG_IMU, MASK_LOG_IMU_FAST,
     MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_REASON_INITIALISED, MODE_REASON_UNAVAILABLE,
-    MODE_STABILIZE, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS,
+    MODE_STABILIZE, MODE_THROW, MOTOR_FRAME_6DOF_SCRIPTING, MOTOR_FRAME_COAX,
+    MOTOR_FRAME_DECA, MOTOR_FRAME_DODECAHEXA, MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX,
+    MOTOR_FRAME_HELI, MOTOR_FRAME_HELI_DUAL, MOTOR_FRAME_HELI_QUAD,
+    MOTOR_FRAME_HEXA, MOTOR_FRAME_OCTA, MOTOR_FRAME_OCTAQUAD, MOTOR_FRAME_QUAD,
+    MOTOR_FRAME_SCRIPTING_MATRIX, MOTOR_FRAME_SINGLE, MOTOR_FRAME_TAILSITTER,
+    MOTOR_FRAME_TRI, MOTOR_FRAME_UNDEFINED, MOTOR_FRAME_Y6,
+    ONE_HZ_LOOP_MAX_TIME_MICROS,
     ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY,
     RC_LOOP_RATE_HZ, REMAINING, RUN_NAV_UPDATES_MAX_TIME_MICROS, RUN_NAV_UPDATES_PRIORITY,
     RUN_NAV_UPDATES_RATE_HZ, SCHEDULER_TASKS, STANDBY_UPDATE_MAX_TIME_MICROS,
@@ -174,7 +185,10 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::startup_INS_ground"));
-    assert!(REMAINING.contains(&"Copter::allocate_motors"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::allocate_motors"));
+    assert!(REMAINING.is_empty());
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::init_simple_bearing"));
@@ -2130,4 +2144,208 @@ fn startup_ins_ground_hands_scheduler_loop_rate_to_ins() {
     let leftover = startup_ins_ground(StartupInsGroundInputs { loop_rate_hz: 200 });
     assert_eq!(leftover.ins_loop_rate_hz, 200);
     assert_eq!(leftover.vehicle_class, VEHICLE_CLASS_COPTER);
+}
+
+
+fn typical_allocate_motors() -> AllocateMotorsInputs {
+    AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_QUAD,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: false,
+    }
+}
+
+#[test]
+fn allocate_motors_frame_class_enum_matches_upstream() {
+    assert_eq!(MOTOR_FRAME_UNDEFINED, 0);
+    assert_eq!(MOTOR_FRAME_QUAD, 1);
+    assert_eq!(MOTOR_FRAME_HEXA, 2);
+    assert_eq!(MOTOR_FRAME_OCTA, 3);
+    assert_eq!(MOTOR_FRAME_OCTAQUAD, 4);
+    assert_eq!(MOTOR_FRAME_Y6, 5);
+    assert_eq!(MOTOR_FRAME_HELI, 6);
+    assert_eq!(MOTOR_FRAME_TRI, 7);
+    assert_eq!(MOTOR_FRAME_SINGLE, 8);
+    assert_eq!(MOTOR_FRAME_COAX, 9);
+    assert_eq!(MOTOR_FRAME_TAILSITTER, 10);
+    assert_eq!(MOTOR_FRAME_HELI_DUAL, 11);
+    assert_eq!(MOTOR_FRAME_DODECAHEXA, 12);
+    assert_eq!(MOTOR_FRAME_HELI_QUAD, 13);
+    assert_eq!(MOTOR_FRAME_DECA, 14);
+    assert_eq!(MOTOR_FRAME_SCRIPTING_MATRIX, 15);
+    assert_eq!(MOTOR_FRAME_6DOF_SCRIPTING, 16);
+    assert_eq!(MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX, 17);
+    assert_eq!(AP_PARAM_FRAME_TRICOPTER, 1 << 4);
+    assert_eq!(ALLOCATE_MOTORS_Y6_RATE_RP_KP, 0.1);
+    assert_eq!(ALLOCATE_MOTORS_Y6_RATE_RP_KD, 0.006);
+    assert_eq!(ALLOCATE_MOTORS_Y6_RATE_YAW_KP, 0.15);
+    assert_eq!(ALLOCATE_MOTORS_Y6_RATE_YAW_KI, 0.015);
+    assert_eq!(ALLOCATE_MOTORS_TRI_YAW_FILT_D_HZ, 100.0);
+    assert_eq!(ALLOCATE_MOTORS_BRUSHED_RC_SPEED_HZ, 16_000);
+}
+
+#[test]
+fn allocate_motors_quad_builds_matrix_and_multi_attitude() {
+    let leftover = allocate_motors(typical_allocate_motors());
+    assert_eq!(leftover.motors_kind, AllocatedMotorsKind::Matrix);
+    assert!(leftover.motors_allocated);
+    assert!(!leftover.allocation_error);
+    assert_eq!(leftover.motors_loop_rate_hz, COPTER_LOOP_RATE_HZ);
+    assert_eq!(leftover.frame_type_flags, 0);
+    assert_eq!(leftover.attitude_kind, AllocatedAttitudeKind::Multi);
+    assert!(leftover.load_motors_eeprom);
+    assert!(leftover.ahrs_view);
+    assert!(leftover.pos_control);
+    assert!(leftover.wp_nav);
+    assert!(leftover.loiter_nav);
+    assert!(leftover.circle_nav);
+    assert!(leftover.reload_defaults_file);
+    assert!(!leftover.y6_rate_defaults);
+    assert!(!leftover.tri_yaw_filt_d);
+    assert!(!leftover.brushed_rc_speed);
+    assert!(leftover.convert_pid_parameters);
+    assert!(leftover.invalidate_count);
+}
+
+#[test]
+fn allocate_motors_matrix_classes_share_motors_matrix() {
+    for class in [
+        MOTOR_FRAME_QUAD,
+        MOTOR_FRAME_HEXA,
+        MOTOR_FRAME_Y6,
+        MOTOR_FRAME_OCTA,
+        MOTOR_FRAME_OCTAQUAD,
+        MOTOR_FRAME_DODECAHEXA,
+        MOTOR_FRAME_DECA,
+        MOTOR_FRAME_SCRIPTING_MATRIX,
+    ] {
+        let leftover = allocate_motors(AllocateMotorsInputs {
+            frame_class: class,
+            loop_rate_hz: COPTER_LOOP_RATE_HZ,
+            brushed_pwm: false,
+        });
+        assert_eq!(leftover.motors_kind, AllocatedMotorsKind::Matrix);
+        assert_eq!(leftover.frame_type_flags, 0);
+        assert_eq!(leftover.y6_rate_defaults, class == MOTOR_FRAME_Y6);
+    }
+}
+
+#[test]
+fn allocate_motors_default_and_heli_class_fall_through_to_matrix() {
+    for class in [
+        MOTOR_FRAME_UNDEFINED,
+        MOTOR_FRAME_HELI,
+        MOTOR_FRAME_HELI_DUAL,
+        MOTOR_FRAME_HELI_QUAD,
+        99,
+    ] {
+        let leftover = allocate_motors(AllocateMotorsInputs {
+            frame_class: class,
+            loop_rate_hz: COPTER_LOOP_RATE_HZ,
+            brushed_pwm: false,
+        });
+        assert_eq!(leftover.motors_kind, AllocatedMotorsKind::Matrix);
+        assert_eq!(leftover.frame_type_flags, 0);
+        assert!(!leftover.heli_motors_param_conversions);
+    }
+}
+
+#[test]
+fn allocate_motors_tri_sets_tricopter_frame_flag() {
+    let leftover = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_TRI,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: false,
+    });
+    assert_eq!(leftover.motors_kind, AllocatedMotorsKind::Tri);
+    assert_eq!(leftover.frame_type_flags, AP_PARAM_FRAME_TRICOPTER);
+    assert!(leftover.tri_yaw_filt_d);
+    assert!(!leftover.y6_rate_defaults);
+    assert_eq!(leftover.attitude_kind, AllocatedAttitudeKind::Multi);
+}
+
+#[test]
+fn allocate_motors_single_coax_tailsitter_pick_dedicated_classes() {
+    let single = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_SINGLE,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: false,
+    });
+    assert_eq!(single.motors_kind, AllocatedMotorsKind::Single);
+    assert_eq!(single.frame_type_flags, 0);
+
+    let coax = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_COAX,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: false,
+    });
+    assert_eq!(coax.motors_kind, AllocatedMotorsKind::Coax);
+
+    let tailsitter = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_TAILSITTER,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: false,
+    });
+    assert_eq!(tailsitter.motors_kind, AllocatedMotorsKind::Tailsitter);
+    assert_eq!(tailsitter.attitude_kind, AllocatedAttitudeKind::Multi);
+}
+
+#[test]
+fn allocate_motors_scripting_classes_fail_without_scripting() {
+    for class in [
+        MOTOR_FRAME_6DOF_SCRIPTING,
+        MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX,
+    ] {
+        let leftover = allocate_motors(AllocateMotorsInputs {
+            frame_class: class,
+            loop_rate_hz: COPTER_LOOP_RATE_HZ,
+            brushed_pwm: true,
+        });
+        assert_eq!(leftover.motors_kind, AllocatedMotorsKind::None);
+        assert!(!leftover.motors_allocated);
+        assert!(leftover.allocation_error);
+        assert_eq!(leftover.motors_loop_rate_hz, 0);
+        assert_eq!(leftover.attitude_kind, AllocatedAttitudeKind::None);
+        assert!(!leftover.pos_control);
+        assert!(!leftover.wp_nav);
+        assert!(!leftover.convert_pid_parameters);
+        assert!(!leftover.brushed_rc_speed);
+        assert!(!leftover.invalidate_count);
+    }
+}
+
+#[test]
+fn allocate_motors_stock_follow_ons_skip_heli_oa_and_proximity() {
+    let leftover = allocate_motors(typical_allocate_motors());
+    assert!(!leftover.wp_nav_oa);
+    assert!(!leftover.heli_motors_param_conversions);
+    assert!(!leftover.convert_prx_parameters);
+    assert!(leftover.convert_attitude_parameters);
+    assert!(leftover.convert_pos_parameters);
+    assert!(leftover.convert_wp_nav_parameters);
+    assert!(leftover.convert_loiter_parameters);
+    assert!(leftover.convert_circle_parameters);
+    assert!(leftover.load_attitude_eeprom);
+}
+
+#[test]
+fn allocate_motors_brushed_pwm_defaults_rc_speed() {
+    let leftover = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_QUAD,
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+        brushed_pwm: true,
+    });
+    assert!(leftover.brushed_rc_speed);
+    assert_eq!(ALLOCATE_MOTORS_BRUSHED_RC_SPEED_HZ, 16_000);
+}
+
+#[test]
+fn allocate_motors_hands_scheduler_loop_rate_to_motors() {
+    let leftover = allocate_motors(AllocateMotorsInputs {
+        frame_class: MOTOR_FRAME_HEXA,
+        loop_rate_hz: 200,
+        brushed_pwm: false,
+    });
+    assert_eq!(leftover.motors_loop_rate_hz, 200);
+    assert_eq!(leftover.motors_kind, AllocatedMotorsKind::Matrix);
 }

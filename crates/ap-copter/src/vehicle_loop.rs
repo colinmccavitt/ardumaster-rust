@@ -25,7 +25,7 @@
 //! is the next always-on scheduled leftover after those. [`update_auto_armed`]
 //! is the `throttle_loop` callee leftover from `system.cpp`. [`init_ardupilot`]
 //! and [`startup_ins_ground`] are the next `system.cpp` leftovers after that.
-//! `allocate_motors` stays later.
+//! [`allocate_motors`] is the last `system.cpp` leftover after those.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -607,8 +607,9 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 /// the logging / 3 Hz / 1 Hz leftovers, simple-mode, `update_altitude`,
 /// `get_wp_distance_m`, `run_nav_updates`, `auto_disarm_check`,
 /// `standby_update`, `lost_vehicle_check`, `takeoff_check`,
-/// `update_auto_armed`, `init_ardupilot`, and `startup_INS_ground`.
-pub const REMAINING: &[&str] = &["Copter::allocate_motors"];
+/// `update_auto_armed`, `init_ardupilot`, `startup_INS_ground`, and
+/// `allocate_motors`.
+pub const REMAINING: &[&str] = &[];
 
 /// What `Copter::get_scheduler_tasks` hands the vehicle scheduler.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2578,8 +2579,8 @@ pub const fn startup_ins_ground(inputs: StartupInsGroundInputs) -> StartupInsGro
 /// compiled out, not a runtime `if`. Feature-gated inits (winch, OSD,
 /// airspeed, OA, optflow, mount, camera, PrecLand, landing gear,
 /// userhook, proximity, beacon, custom-control) stay compiled out of
-/// this leftover — later leftovers own those bodies. `allocate_motors`
-/// stays a later leftover; this leftover records that the call happens
+/// this leftover — later leftovers own those bodies. [`allocate_motors`]
+/// is published below; this leftover records that the call happens
 /// before RC out. [`startup_ins_ground`] is published above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InitArdupilotInputs {
@@ -2630,7 +2631,7 @@ pub struct InitArdupilotLeftover {
     pub init_rc_in: bool,
     /// `surface_tracking.init` — stock `AP_RANGEFINDER_ENABLED`, before RC init.
     pub surface_tracking_init: bool,
-    /// Always: later leftover `allocate_motors()`.
+    /// Always: [`allocate_motors`].
     pub allocate_motors: bool,
     /// Always: `rc().convert_options` then `rc().init()`.
     pub rc_init: bool,
@@ -2658,7 +2659,7 @@ pub struct InitArdupilotLeftover {
     pub smart_rtl_init: bool,
     /// Always: logger vehicle-startup writer — `HAL_LOGGING_ENABLED`.
     pub logger_startup_writer: bool,
-    /// Always: later leftover `startup_INS_ground()`.
+    /// Always: [`startup_ins_ground`].
     pub startup_ins_ground: bool,
     /// Always: `set_land_complete(true)`.
     pub land_complete: bool,
@@ -2746,6 +2747,278 @@ pub const fn init_ardupilot(inputs: InitArdupilotInputs) -> InitArdupilotLeftove
         initialised: true,
         winch_init: false,
         custom_control_init: false,
+    }
+}
+
+/// `AP_Motors::MOTOR_FRAME_UNDEFINED`.
+pub const MOTOR_FRAME_UNDEFINED: u8 = 0;
+/// `AP_Motors::MOTOR_FRAME_QUAD`.
+pub const MOTOR_FRAME_QUAD: u8 = 1;
+/// `AP_Motors::MOTOR_FRAME_HEXA`.
+pub const MOTOR_FRAME_HEXA: u8 = 2;
+/// `AP_Motors::MOTOR_FRAME_OCTA`.
+pub const MOTOR_FRAME_OCTA: u8 = 3;
+/// `AP_Motors::MOTOR_FRAME_OCTAQUAD`.
+pub const MOTOR_FRAME_OCTAQUAD: u8 = 4;
+/// `AP_Motors::MOTOR_FRAME_Y6`.
+pub const MOTOR_FRAME_Y6: u8 = 5;
+/// `AP_Motors::MOTOR_FRAME_HELI`.
+pub const MOTOR_FRAME_HELI: u8 = 6;
+/// `AP_Motors::MOTOR_FRAME_TRI`.
+pub const MOTOR_FRAME_TRI: u8 = 7;
+/// `AP_Motors::MOTOR_FRAME_SINGLE`.
+pub const MOTOR_FRAME_SINGLE: u8 = 8;
+/// `AP_Motors::MOTOR_FRAME_COAX`.
+pub const MOTOR_FRAME_COAX: u8 = 9;
+/// `AP_Motors::MOTOR_FRAME_TAILSITTER`.
+pub const MOTOR_FRAME_TAILSITTER: u8 = 10;
+/// `AP_Motors::MOTOR_FRAME_HELI_DUAL`.
+pub const MOTOR_FRAME_HELI_DUAL: u8 = 11;
+/// `AP_Motors::MOTOR_FRAME_DODECAHEXA`.
+pub const MOTOR_FRAME_DODECAHEXA: u8 = 12;
+/// `AP_Motors::MOTOR_FRAME_HELI_QUAD`.
+pub const MOTOR_FRAME_HELI_QUAD: u8 = 13;
+/// `AP_Motors::MOTOR_FRAME_DECA`.
+pub const MOTOR_FRAME_DECA: u8 = 14;
+/// `AP_Motors::MOTOR_FRAME_SCRIPTING_MATRIX`.
+pub const MOTOR_FRAME_SCRIPTING_MATRIX: u8 = 15;
+/// `AP_Motors::MOTOR_FRAME_6DOF_SCRIPTING`.
+pub const MOTOR_FRAME_6DOF_SCRIPTING: u8 = 16;
+/// `AP_Motors::MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX`.
+pub const MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX: u8 = 17;
+
+/// `AP_PARAM_FRAME_TRICOPTER` — TRI `set_frame_type_flags`.
+pub const AP_PARAM_FRAME_TRICOPTER: u8 = 1 << 4;
+
+/// `AP_PARAM_FRAME_HELI` — heli `FRAME_CONFIG` only; compiled out here.
+pub const AP_PARAM_FRAME_HELI: u8 = 1 << 5;
+
+/// Y6 rate-roll / rate-pitch `kP` default from `allocate_motors`.
+pub const ALLOCATE_MOTORS_Y6_RATE_RP_KP: f32 = 0.1;
+/// Y6 rate-roll / rate-pitch `kD` default from `allocate_motors`.
+pub const ALLOCATE_MOTORS_Y6_RATE_RP_KD: f32 = 0.006;
+/// Y6 rate-yaw `kP` default from `allocate_motors`.
+pub const ALLOCATE_MOTORS_Y6_RATE_YAW_KP: f32 = 0.15;
+/// Y6 rate-yaw `kI` default from `allocate_motors`.
+pub const ALLOCATE_MOTORS_Y6_RATE_YAW_KI: f32 = 0.015;
+/// TRI rate-yaw `filt_D_hz` default from `allocate_motors`.
+pub const ALLOCATE_MOTORS_TRI_YAW_FILT_D_HZ: f32 = 100.0;
+/// Brushed PWM `g.rc_speed` default, Hz.
+pub const ALLOCATE_MOTORS_BRUSHED_RC_SPEED_HZ: u16 = 16_000;
+
+/// Which motors class `Copter::allocate_motors` constructed.
+///
+/// Stock multicopter (`FRAME_CONFIG != HELI_FRAME`): the heli constructors
+/// are compiled out, not a runtime `if`. Scripting motors
+/// (`AP_MotorsMatrix_6DoF_Scripting` /
+/// `AP_MotorsMatrix_Scripting_Dynamic`) stay compiled out of this leftover
+/// the same way `init_ardupilot` compiled out winch / custom-control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatedMotorsKind {
+    /// `AP_MotorsMatrix` — quad / hexa / y6 / octa / default.
+    Matrix,
+    /// `AP_MotorsTri` — `AP_MOTORS_TRI_ENABLED`.
+    Tri,
+    /// `AP_MotorsSingle`.
+    Single,
+    /// `AP_MotorsCoax`.
+    Coax,
+    /// `AP_MotorsTailsitter`.
+    Tailsitter,
+    /// Scripting compiled out — `motors` stays `nullptr`.
+    None,
+}
+
+/// Which attitude controller `allocate_motors` constructed.
+///
+/// Stock multicopter always builds `AC_AttitudeControl_Multi`. The 6DoF
+/// branch is behind both `FRAME_CLASS == 6DOF_SCRIPTING` *and*
+/// `AP_SCRIPTING_ENABLED`; with scripting compiled out the motors pointer
+/// is already null and `allocation_error` returns before this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatedAttitudeKind {
+    /// `AC_AttitudeControl_Multi`.
+    Multi,
+    /// Motors allocation failed — attitude is not constructed.
+    None,
+}
+
+/// Inputs to `Copter::allocate_motors`.
+///
+/// `frame_class` is `g2.frame_class`. `loop_rate_hz` is
+/// `scheduler.get_loop_rate_hz()` — every motors constructor takes it.
+/// `brushed_pwm` is `motors->is_brushed_pwm_type()` after construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocateMotorsInputs {
+    /// `g2.frame_class`.
+    pub frame_class: u8,
+    /// `scheduler.get_loop_rate_hz()`.
+    pub loop_rate_hz: u16,
+    /// `motors->is_brushed_pwm_type()`.
+    pub brushed_pwm: bool,
+}
+
+/// What `Copter::allocate_motors` asked later leftovers to do.
+///
+/// The frame-class switch picks the mixer *before* AHRS view / attitude /
+/// pos / WP / loiter / circle. A port that built `AC_AttitudeControl_Multi`
+/// first would construct it against a null motors pointer. TRI is the only
+/// stock multicopter class that sets `AP_PARAM_FRAME_TRICOPTER`; HELI
+/// flags stay compiled out — a HELI `FRAME_CLASS` on this build falls
+/// through to `AP_MotorsMatrix`, it does not construct a heli mixer.
+/// Scripting 6DoF / dynamic-matrix leave `motors == nullptr` and
+/// `allocation_error` — the follow-on objects are not constructed.
+/// Y6 / TRI PID defaults run after `reload_defaults_file`, not before
+/// EEPROM load. Brushed PWM rewrites `g.rc_speed` to 16 kHz only when
+/// the mixer reports brushed. `convert_pid_parameters` is after those
+/// defaults; heli / PRX conversions stay compiled out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocateMotorsLeftover {
+    /// Motors class the frame-class switch constructed.
+    pub motors_kind: AllocatedMotorsKind,
+    /// `motors != nullptr`.
+    pub motors_allocated: bool,
+    /// `AP_BoardConfig::allocation_error("FRAME_CLASS=%u")`.
+    pub allocation_error: bool,
+    /// Loop rate handed to the motors constructor; 0 when allocation failed.
+    pub motors_loop_rate_hz: u16,
+    /// `AP_Param::set_frame_type_flags` — TRI only on this build.
+    pub frame_type_flags: u8,
+    /// `AP_Param::load_object_from_eeprom(motors, motors_var_info)`.
+    pub load_motors_eeprom: bool,
+    /// `ahrs.create_view(ROTATION_NONE)`.
+    pub ahrs_view: bool,
+    /// Attitude controller constructed after the AHRS view.
+    pub attitude_kind: AllocatedAttitudeKind,
+    /// `load_object_from_eeprom(attitude_control, ...)`.
+    pub load_attitude_eeprom: bool,
+    /// `NEW AC_PosControl`.
+    pub pos_control: bool,
+    /// `NEW AC_WPNav` — stock, not `AC_WPNav_OA`.
+    pub wp_nav: bool,
+    /// `AC_WPNav_OA` — `AP_OAPATHPLANNER_ENABLED`, compiled out.
+    pub wp_nav_oa: bool,
+    /// `NEW AC_Loiter`.
+    pub loiter_nav: bool,
+    /// `NEW AC_Circle` — stock `MODE_CIRCLE_ENABLED`.
+    pub circle_nav: bool,
+    /// `AP_Param::reload_defaults_file(true)`.
+    pub reload_defaults_file: bool,
+    /// Y6 rate PID `set_default` leftovers.
+    pub y6_rate_defaults: bool,
+    /// TRI yaw `filt_D_hz` `set_default`.
+    pub tri_yaw_filt_d: bool,
+    /// Brushed PWM `g.rc_speed.set_default(16000)`.
+    pub brushed_rc_speed: bool,
+    /// Always after the mixer exists: `convert_pid_parameters()`.
+    pub convert_pid_parameters: bool,
+    /// `motors->heli_motors_param_conversions()` — heli only.
+    pub heli_motors_param_conversions: bool,
+    /// `convert_prx_parameters()` — `HAL_PROXIMITY_ENABLED`, compiled out.
+    pub convert_prx_parameters: bool,
+    /// `attitude_control->convert_parameters()`.
+    pub convert_attitude_parameters: bool,
+    /// `pos_control->convert_parameters()`.
+    pub convert_pos_parameters: bool,
+    /// `wp_nav->convert_parameters()`.
+    pub convert_wp_nav_parameters: bool,
+    /// `loiter_nav->convert_parameters()`.
+    pub convert_loiter_parameters: bool,
+    /// `circle_nav->convert_parameters()` — stock `MODE_CIRCLE_ENABLED`.
+    pub convert_circle_parameters: bool,
+    /// `AP_Param::invalidate_count()`.
+    pub invalidate_count: bool,
+}
+
+const fn motors_kind_for(frame_class: u8) -> (AllocatedMotorsKind, u8) {
+    match frame_class {
+        MOTOR_FRAME_TRI => (AllocatedMotorsKind::Tri, AP_PARAM_FRAME_TRICOPTER),
+        MOTOR_FRAME_SINGLE => (AllocatedMotorsKind::Single, 0),
+        MOTOR_FRAME_COAX => (AllocatedMotorsKind::Coax, 0),
+        MOTOR_FRAME_TAILSITTER => (AllocatedMotorsKind::Tailsitter, 0),
+        MOTOR_FRAME_6DOF_SCRIPTING | MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX => {
+            (AllocatedMotorsKind::None, 0)
+        }
+        // QUAD / HEXA / Y6 / OCTA / OCTAQUAD / DODECAHEXA / DECA /
+        // SCRIPTING_MATRIX, plus default (UNDEFINED / HELI* on this build).
+        _ => (AllocatedMotorsKind::Matrix, 0),
+    }
+}
+
+const fn allocate_motors_failed(motors_kind: AllocatedMotorsKind) -> AllocateMotorsLeftover {
+    AllocateMotorsLeftover {
+        motors_kind,
+        motors_allocated: false,
+        allocation_error: true,
+        motors_loop_rate_hz: 0,
+        frame_type_flags: 0,
+        load_motors_eeprom: false,
+        ahrs_view: false,
+        attitude_kind: AllocatedAttitudeKind::None,
+        load_attitude_eeprom: false,
+        pos_control: false,
+        wp_nav: false,
+        wp_nav_oa: false,
+        loiter_nav: false,
+        circle_nav: false,
+        reload_defaults_file: false,
+        y6_rate_defaults: false,
+        tri_yaw_filt_d: false,
+        brushed_rc_speed: false,
+        convert_pid_parameters: false,
+        heli_motors_param_conversions: false,
+        convert_prx_parameters: false,
+        convert_attitude_parameters: false,
+        convert_pos_parameters: false,
+        convert_wp_nav_parameters: false,
+        convert_loiter_parameters: false,
+        convert_circle_parameters: false,
+        invalidate_count: false,
+    }
+}
+
+/// `Copter::allocate_motors`.
+///
+/// Stock multicopter walks the frame-class switch, then AHRS view /
+/// Multi attitude / pos / WP / loiter / circle, then the Y6 / TRI
+/// defaults and the parameter conversions. Scripting 6DoF / dynamic
+/// classes fail allocation. Heli constructors and HELI frame flags are
+/// compiled out of this leftover, not skipped at runtime — a runtime
+/// `if heli` would be a different function.
+#[must_use]
+pub const fn allocate_motors(inputs: AllocateMotorsInputs) -> AllocateMotorsLeftover {
+    let (motors_kind, frame_type_flags) = motors_kind_for(inputs.frame_class);
+    if matches!(motors_kind, AllocatedMotorsKind::None) {
+        return allocate_motors_failed(motors_kind);
+    }
+    AllocateMotorsLeftover {
+        motors_kind,
+        motors_allocated: true,
+        allocation_error: false,
+        motors_loop_rate_hz: inputs.loop_rate_hz,
+        frame_type_flags,
+        load_motors_eeprom: true,
+        ahrs_view: true,
+        attitude_kind: AllocatedAttitudeKind::Multi,
+        load_attitude_eeprom: true,
+        pos_control: true,
+        wp_nav: true,
+        wp_nav_oa: false,
+        loiter_nav: true,
+        circle_nav: true,
+        reload_defaults_file: true,
+        y6_rate_defaults: inputs.frame_class == MOTOR_FRAME_Y6,
+        tri_yaw_filt_d: inputs.frame_class == MOTOR_FRAME_TRI,
+        brushed_rc_speed: inputs.brushed_pwm,
+        convert_pid_parameters: true,
+        heli_motors_param_conversions: false,
+        convert_prx_parameters: false,
+        convert_attitude_parameters: true,
+        convert_pos_parameters: true,
+        convert_wp_nav_parameters: true,
+        convert_loiter_parameters: true,
+        convert_circle_parameters: true,
+        invalidate_count: true,
     }
 }
 
