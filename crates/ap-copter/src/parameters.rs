@@ -58,7 +58,9 @@
 //! (`HAL_ADSB_ENABLED`). After `ADSB_` the
 //! next leftover is the stock `AVD_` `GOBJECT`
 //! (`AP_ADSB_AVOIDANCE_ENABLED`). After `AVD_` the
-//! next leftover is the stock `NTF_` `GOBJECT`. Later groups, G2,
+//! next leftover is the stock `NTF_` `GOBJECT`. After `NTF_` the
+//! next leftover is the stock `OSD` `GOBJECT`
+//! (`OSD_ENABLED` / `OSD_PARAM_ENABLED`). Later groups (`CC`), G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1696,7 +1698,7 @@ pub fn for_each_avd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)
     }
 }
 
-/// `Parameters::k_param_osd` — next leftover after `NTF_`. Not this leftover.
+/// `Parameters::k_param_osd` — next `GOBJECT`, prefix `OSD`.
 pub const K_PARAM_OSD: u16 = 9;
 
 /// Stock `NTF_` leftover catalog.
@@ -1724,6 +1726,41 @@ pub fn find_ntf_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `NTF_` leftover as `ParamInfo` rows.
 pub fn for_each_ntf_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in NTF_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_custom_control` — next leftover after `OSD`. Not this leftover.
+pub const K_PARAM_CUSTOM_CONTROL: u16 = 106;
+
+/// Stock `OSD` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `NTF_`. Upstream is
+/// `GOBJECT`. `OSD` is `OSD_ENABLED` / `OSD_PARAM_ENABLED`. Nested `AP_OSD`
+/// `var_info` is not this leftover. `THROW_MOT_START` / `THROW_ALT_MIN` /
+/// `THROW_ALT_MAX` sit between `NTF_` and `OSD` on the stock table
+/// (`MODE_THROW_ENABLED`) and are not rows of this leftover. `CC` stays
+/// later (`AC_CUSTOMCONTROL_MULTI_ENABLED`). Heli `H_` / `IM_` are not
+/// rows of this leftover.
+pub const OSD_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("OSD", K_PARAM_OSD)];
+
+/// First (only) row of the `OSD` leftover.
+#[must_use]
+pub fn osd_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    OSD_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `OSD` leftover by group prefix.
+#[must_use]
+pub fn find_osd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    OSD_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `OSD` leftover as `ParamInfo` rows.
+pub fn for_each_osd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in OSD_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
