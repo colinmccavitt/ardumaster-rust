@@ -124,6 +124,7 @@ pub mod rtl_mode_hookup;
 pub mod loiter_mode_hookup;
 pub mod guided_mode_hookup;
 pub mod guided_heading_slew;
+pub mod guided_offboard_alt;
 pub mod takeoff_mode_hookup;
 pub mod autoland_mode_hookup;
 pub mod avoid_adsb_mode_hookup;

@@ -23,7 +23,7 @@
 //! [`GuidedModeOffboardTickInputs::heading_slew_nav_roll_cd`].
 //! `ModeGuided::handle_change_airspeed` (real lines 123-151) and the
 //! offboard incremental-stepping branch of `update_target_altitude` (real
-//! lines 170-202) stay deferred.
+//! lines 170-202) live in [`crate::guided_offboard_alt`].
 
 use ap_math::scalar::constrain_int32;
 use ap_servo::function::Function;
