@@ -2,14 +2,17 @@
 
 use ap_copter::mode_autotune::{
     allows_autotune, autotune_currently_level, autotune_has_user_takeoff, autotune_mode_flags,
-    autotune_use_poshold, first_enabled_axis, mode_autotune_init, mode_autotune_run, pitch_enabled,
-    reverse_test_direction, roll_enabled, yaw_d_enabled, yaw_enabled, AutoTuneInitFail,
-    AutoTuneInitView, AutoTuneRunView, AxisType, CurrentlyLevelView, GainType, Step, TuneMode,
-    TwitchTick, AUTOTUNE_AXIS_BITMASK_DEFAULT, AUTOTUNE_AXIS_BITMASK_PITCH,
-    AUTOTUNE_AXIS_BITMASK_YAW, AUTOTUNE_AXIS_BITMASK_YAW_D, AUTOTUNE_LEVEL_ANGLE_CD,
-    AUTOTUNE_LEVEL_RATE_RP_CD, AUTOTUNE_LEVEL_TIMEOUT_MS, AUTOTUNE_MESSAGE_STARTED,
-    AUTOTUNE_MESSAGE_TESTING, AUTOTUNE_PILOT_OVERRIDE_TIMEOUT_MS, AUTOTUNE_REQUIRED_LEVEL_TIME_MS,
-    AUTOTUNE_SUCCESS_COUNT, AUTOTUNE_TESTING_STEP_TIMEOUT_MS, MODE_NUMBER_ALT_HOLD,
+    autotune_test_run, autotune_use_poshold, direction_sign, first_enabled_axis,
+    mode_autotune_init, mode_autotune_run, pitch_enabled, reverse_test_direction, roll_enabled,
+    twitch_is_angle_p, twitch_is_heli_only, twitch_lean_angle_cd, twitching_abort_rate,
+    twitching_measure_acceleration, twitching_test_angle, twitching_test_rate, yaw_d_enabled,
+    yaw_enabled, AutoTuneInitFail, AutoTuneInitView, AutoTuneRunView, AutoTuneTwitchView, AxisType,
+    CurrentlyLevelView, GainType, Step, TuneMode, TuneType, TwitchTick, AUTOTUNE_AGGR_DEFAULT,
+    AUTOTUNE_AXIS_BITMASK_DEFAULT, AUTOTUNE_AXIS_BITMASK_PITCH, AUTOTUNE_AXIS_BITMASK_YAW,
+    AUTOTUNE_AXIS_BITMASK_YAW_D, AUTOTUNE_LEVEL_ANGLE_CD, AUTOTUNE_LEVEL_RATE_RP_CD,
+    AUTOTUNE_LEVEL_TIMEOUT_MS, AUTOTUNE_MESSAGE_STARTED, AUTOTUNE_MESSAGE_TESTING,
+    AUTOTUNE_PILOT_OVERRIDE_TIMEOUT_MS, AUTOTUNE_REQUIRED_LEVEL_TIME_MS, AUTOTUNE_SUCCESS_COUNT,
+    AUTOTUNE_TARGET_RATE_RLLPIT_CDS, AUTOTUNE_TESTING_STEP_TIMEOUT_MS, MODE_NUMBER_ALT_HOLD,
     MODE_NUMBER_AUTOTUNE, MODE_NUMBER_STABILIZE,
 };
 use ap_copter::mode_loiter::MODE_NUMBER_LOITER;
@@ -547,20 +550,21 @@ fn uninitialised_is_flow_of_control_then_original() {
 fn executing_test_stays_until_twitch_decides() {
     let mut view = AutoTuneRunView::typical();
     view.step = Step::ExecutingTest;
-    view.twitch = TwitchTick::Running;
     let out = mode_autotune_run(&view);
     assert!(out.test_run);
     assert!(!out.test_init);
     assert!(!out.update_gains);
     assert_eq!(out.step, Step::ExecutingTest);
     assert_eq!(out.loaded_gains, Some(GainType::Test));
+    assert!(out.input_rate_step);
+    assert!(!out.input_angle_step);
 }
 
 #[test]
 fn executing_test_done_writes_update_gains_same_tick() {
     let mut view = AutoTuneRunView::typical();
     view.step = Step::ExecutingTest;
-    view.twitch = TwitchTick::Done;
+    view.rotation_rate = view.target_rate + 1.0;
     let out = mode_autotune_run(&view);
     assert!(out.test_run);
     assert!(!out.update_gains);
@@ -571,17 +575,19 @@ fn executing_test_done_writes_update_gains_same_tick() {
 fn executing_test_twitch_abort_writes_abort() {
     let mut view = AutoTuneRunView::typical();
     view.step = Step::ExecutingTest;
-    view.twitch = TwitchTick::Aborted;
+    view.roll_rad = cd_to_rad(view.angle_abort);
+    view.rotation_rate = 10.0;
     let out = mode_autotune_run(&view);
     assert_eq!(out.step, Step::Abort);
     assert!(!out.update_gains);
+    assert!((out.step_scaler - 0.9).abs() < f32::EPSILON);
 }
 
 #[test]
 fn lean_abort_overrides_twitch_done() {
     let mut view = AutoTuneRunView::typical();
     view.step = Step::ExecutingTest;
-    view.twitch = TwitchTick::Done;
+    view.rotation_rate = view.target_rate + 1.0;
     view.lean_angle_deg = 40.0;
     view.angle_lim_max_rp_cd = 3750.0;
     let out = mode_autotune_run(&view);
@@ -589,8 +595,7 @@ fn lean_abort_overrides_twitch_done() {
 
     let mut neg = AutoTuneRunView::typical();
     neg.step = Step::ExecutingTest;
-    neg.twitch = TwitchTick::Done;
-    neg.lean_angle_cd = -901.0;
+    neg.roll_rad = cd_to_rad(-901.0);
     neg.angle_lim_neg_rpy_cd = 900.0;
     assert_eq!(mode_autotune_run(&neg).step, Step::Abort);
 }
@@ -664,4 +669,242 @@ fn copter_level_constants_are_not_plane() {
     assert_eq!(AUTOTUNE_LEVEL_RATE_RP_CD, 500.0);
     assert_eq!(AUTOTUNE_REQUIRED_LEVEL_TIME_MS, 250);
     assert_eq!(AUTOTUNE_PILOT_OVERRIDE_TIMEOUT_MS, 500);
+}
+
+#[test]
+fn direction_sign_follows_positive_direction() {
+    assert_eq!(direction_sign(true), 1.0);
+    assert_eq!(direction_sign(false), -1.0);
+}
+
+#[test]
+fn twitch_type_helpers_split_angle_p_and_heli() {
+    assert!(twitch_is_angle_p(TuneType::AnglePUp));
+    assert!(twitch_is_angle_p(TuneType::AnglePDown));
+    assert!(!twitch_is_angle_p(TuneType::RateDUp));
+    assert!(twitch_is_heli_only(TuneType::RateFfUp));
+    assert!(twitch_is_heli_only(TuneType::MaxGains));
+    assert!(twitch_is_heli_only(TuneType::TuneCheck));
+    assert!(!twitch_is_heli_only(TuneType::RatePUp));
+}
+
+#[test]
+fn twitch_lean_angle_uses_dir_sign_and_start() {
+    let lean = twitch_lean_angle_cd(AxisType::Roll, 1.0, cd_to_rad(500.0), 0.0, 0.0, 100.0);
+    assert_eq!(lean, 400.0);
+
+    let neg = twitch_lean_angle_cd(AxisType::Pitch, -1.0, 0.0, cd_to_rad(300.0), 0.0, 0.0);
+    assert_eq!(neg, -300.0);
+}
+
+#[test]
+fn twitch_lean_angle_yaw_wraps_180_cd() {
+    let lean = twitch_lean_angle_cd(AxisType::Yaw, 1.0, 0.0, 0.0, cd_to_rad(19000.0), 0.0);
+    assert_eq!(lean, -17000.0);
+}
+
+#[test]
+fn twitching_rate_stays_running_under_target() {
+    let out = twitching_test_rate(
+        100.0,
+        1_000.0,
+        AUTOTUNE_TARGET_RATE_RLLPIT_CDS,
+        0.0,
+        0.0,
+        0.0,
+        10_000,
+        9_800,
+        AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+        AUTOTUNE_AGGR_DEFAULT,
+    );
+    assert!(!out.done);
+    assert_eq!(out.meas_rate_max, 1_000.0);
+    assert_eq!(out.meas_rate_min, 1_000.0);
+    assert_eq!(out.meas_angle_min, 100.0);
+    assert_eq!(out.step_timeout_ms, 600);
+}
+
+#[test]
+fn twitching_rate_done_when_rate_exceeds_target() {
+    let out = twitching_test_rate(
+        200.0,
+        18_001.0,
+        AUTOTUNE_TARGET_RATE_RLLPIT_CDS,
+        0.0,
+        0.0,
+        0.0,
+        10_000,
+        9_800,
+        AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+        AUTOTUNE_AGGR_DEFAULT,
+    );
+    assert!(out.done);
+    assert_eq!(out.meas_rate_max, 18_001.0);
+}
+
+#[test]
+fn twitching_rate_done_on_bounce_back() {
+    let out = twitching_test_rate(
+        150.0,
+        4_000.0,
+        10_000.0,
+        8_000.0,
+        8_000.0,
+        200.0,
+        10_000,
+        9_800,
+        AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+        0.1,
+    );
+    assert!(out.done);
+    assert_eq!(out.meas_rate_min, 4_000.0);
+    assert_eq!(out.meas_angle_min, 150.0);
+}
+
+#[test]
+fn twitching_rate_done_on_timeout() {
+    let out = twitching_test_rate(
+        0.0,
+        12_000.0,
+        AUTOTUNE_TARGET_RATE_RLLPIT_CDS,
+        12_000.0,
+        12_000.0,
+        0.0,
+        12_000,
+        10_000,
+        2_000,
+        AUTOTUNE_AGGR_DEFAULT,
+    );
+    assert!(out.done);
+    assert_eq!(out.step_timeout_ms, 2_000);
+}
+
+#[test]
+fn twitching_abort_ignores_angle_below_max() {
+    let out = twitching_abort_rate(1_999.0, 10.0, 2_000.0, 10.0, 0.0, 1.0);
+    assert!(out.tick.is_none());
+    assert_eq!(out.step_scaler, 1.0);
+}
+
+#[test]
+fn twitching_abort_shrinks_scaler_when_rate_still_at_min() {
+    let out = twitching_abort_rate(2_000.0, 10.0, 2_000.0, 10.0, 0.0, 1.0);
+    assert_eq!(out.tick, Some(TwitchTick::Aborted));
+    assert!((out.step_scaler - 0.9).abs() < f32::EPSILON);
+    assert!(!out.failed);
+}
+
+#[test]
+fn twitching_abort_fails_when_scaler_at_floor() {
+    let out = twitching_abort_rate(2_000.0, 10.0, 2_000.0, 10.0, 0.0, 0.2);
+    assert_eq!(out.tick, Some(TwitchTick::Aborted));
+    assert!(out.failed);
+    assert!(out.reached_limit);
+    assert_eq!(out.step_scaler, 0.2);
+}
+
+#[test]
+fn twitching_abort_completes_when_bounce_already_measured() {
+    let out = twitching_abort_rate(2_000.0, 4_000.0, 2_000.0, 1_000.0, 100.0, 1.0);
+    assert_eq!(out.tick, Some(TwitchTick::Done));
+    assert!(!out.failed);
+}
+
+#[test]
+fn twitching_angle_done_when_angle_exceeds_target() {
+    let out = twitching_test_angle(
+        2_100.0,
+        100.0,
+        2_000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        10_000,
+        9_800,
+        AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+        AUTOTUNE_AGGR_DEFAULT,
+    );
+    assert!(out.done);
+    assert_eq!(out.meas_angle_max, 2_100.0);
+}
+
+#[test]
+fn twitching_accel_updates_only_on_new_max() {
+    let first = twitching_measure_acceleration(0.0, 200.0, 0.0, 10_200, 10_000);
+    assert_eq!(first.rate_max, 200.0);
+    assert!((first.accel_average - 1_000.0).abs() < 1e-3);
+
+    let held =
+        twitching_measure_acceleration(first.accel_average, 150.0, first.rate_max, 10_400, 10_000);
+    assert_eq!(held.rate_max, 200.0);
+    assert_eq!(held.accel_average, first.accel_average);
+}
+
+#[test]
+fn test_run_rate_d_up_commands_rate_step() {
+    let view = AutoTuneTwitchView::typical();
+    let out = autotune_test_run(&view);
+    assert_eq!(out.tick, TwitchTick::Running);
+    assert!(out.input_rate_step);
+    assert!(!out.input_angle_step);
+    assert_eq!(out.lean_angle, 0.0);
+    assert_eq!(out.step_timeout_ms, 600);
+}
+
+#[test]
+fn test_run_rate_p_up_uses_aggressiveness_target() {
+    let mut view = AutoTuneTwitchView::typical();
+    view.tune_type = TuneType::RatePUp;
+    view.rotation_rate = view.target_rate + 1.0;
+    let under = autotune_test_run(&view);
+    assert_eq!(under.tick, TwitchTick::Running);
+
+    view.rotation_rate = view.target_rate * (1.0 + 0.5 * view.aggressiveness) + 1.0;
+    let over = autotune_test_run(&view);
+    assert_eq!(over.tick, TwitchTick::Done);
+}
+
+#[test]
+fn test_run_angle_p_steps_once_then_holds() {
+    let mut view = AutoTuneTwitchView::typical();
+    view.tune_type = TuneType::AnglePUp;
+    let first = autotune_test_run(&view);
+    assert!(first.input_angle_step);
+    assert!(!first.input_rate_hold);
+    assert!(first.angle_step_commanded);
+
+    view.angle_step_commanded = true;
+    let hold = autotune_test_run(&view);
+    assert!(!hold.input_angle_step);
+    assert!(hold.input_rate_hold);
+}
+
+#[test]
+fn test_run_heli_type_is_flow_of_control() {
+    let mut view = AutoTuneTwitchView::typical();
+    view.tune_type = TuneType::MaxGains;
+    let out = autotune_test_run(&view);
+    assert!(out.flow_of_control);
+    assert_eq!(out.tick, TwitchTick::Running);
+    assert!(!out.input_rate_step);
+}
+
+#[test]
+fn test_run_abort_overwrites_rate_done() {
+    let mut view = AutoTuneTwitchView::typical();
+    view.rotation_rate = view.target_rate + 1.0;
+    view.roll_rad = cd_to_rad(view.angle_abort);
+    let out = autotune_test_run(&view);
+    assert_eq!(out.tick, TwitchTick::Aborted);
+    assert!((out.step_scaler - 0.9).abs() < f32::EPSILON);
+}
+
+#[test]
+fn executing_test_propagates_twitch_timeout() {
+    let mut view = AutoTuneRunView::typical();
+    view.step = Step::ExecutingTest;
+    let out = mode_autotune_run(&view);
+    assert_eq!(out.step_timeout_ms, 600);
+    assert_eq!(out.lean_angle, 0.0);
 }

@@ -2,12 +2,12 @@
 //!
 //! Tracked as **COP-027**. Copter AutoTune is a thin wrapper around
 //! `AC_AutoTune` / `AC_AutoTune_Multi` (`libraries/AC_AutoTune/`). The
-//! twitch tests (`test_run` / `Step::EXECUTING_TEST` physics), the
-//! `Step::UPDATE_GAINS` tune-type switch, and the Multi library stay
+//! `Step::UPDATE_GAINS` tune-type switch and the Multi library stay
 //! for a later slice. What this file owns is `init` (from-mode /
-//! throttle / flying gates, Loiter-or-PosHold, TuneMode / first-axis)
-//! and `run` (Copter land/disarm wrapper, TuneMode dispatch, pilot
-//! override, and the level / execute / abort loop).
+//! throttle / flying gates, Loiter-or-PosHold, TuneMode / first-axis),
+//! `run` (Copter land/disarm wrapper, TuneMode dispatch, pilot
+//! override, and the level / execute / abort loop), and the Multi
+//! `test_run` / twitching leftover that decides [`TwitchTick`].
 //!
 //! # `init` ignores `ignore_checks`
 //!
@@ -40,16 +40,21 @@
 //! `control_attitude` is the twitch / level / execute / abort loop.
 //! WAITING_FOR_LEVEL holds intra-test gains until [`currently_level`]
 //! has been true for [`AUTOTUNE_REQUIRED_LEVEL_TIME_MS`], then starts
-//! EXECUTING_TEST. The twitch body is a later leftover — this tick
-//! takes an already-decided [`TwitchTick`]. UPDATE_GAINS is catalogued
-//! as a flag and falls through into ABORT, which returns to
-//! WAITING_FOR_LEVEL and reverses the Multi test direction.
+//! EXECUTING_TEST. Multi `test_run` leftover then captures lean
+//! angle, catalogues the attitude command, and runs the twitching
+//! helpers that write [`TwitchTick`]. The rotation-rate LPF stays
+//! leftover — this tick takes the already-filtered `rotation_rate`.
+//! UPDATE_GAINS is catalogued as a flag and falls through into ABORT,
+//! which returns to WAITING_FOR_LEVEL and reverses the Multi test
+//! direction.
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 
 use crate::mode_loiter::MODE_NUMBER_LOITER;
 use crate::mode_poshold::MODE_NUMBER_POSHOLD;
-use ap_math::scalar::{cd_to_rad, constrain_value, is_zero, wrap_pi};
+use ap_math::scalar::{
+    cd_to_rad, constrain_value, is_equal, is_zero, rad_to_cd, wrap_180_cd, wrap_pi,
+};
 use ap_motors::spool::{DesiredSpoolState, SpoolState};
 
 /// `Mode::Number::AUTOTUNE`.
@@ -244,11 +249,7 @@ pub enum GainType {
     Tuned = 3,
 }
 
-/// What Multi `test_run` decided this tick.
-///
-/// The twitch body (`AC_AutoTune_Multi::test_run`) stays a later
-/// leftover. `control_attitude` takes the already-decided step write
-/// the same way SystemID takes an already-computed chirp sample.
+/// What Multi `test_run` leftover writes onto `step`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TwitchTick {
     /// Still running. `step` stays [`Step::ExecutingTest`].
@@ -257,6 +258,630 @@ pub enum TwitchTick {
     Done,
     /// `test_run` wrote [`Step::Abort`].
     Aborted,
+}
+
+/// Multi `AC_AutoTune::TuneType`.
+///
+/// `test_run` switches on these. `RATE_FF_UP` / `MAX_GAINS` /
+/// `TUNE_CHECK` are Heli leftovers and trip
+/// `INTERNAL_ERROR(flow_of_control)` on Multi. `TUNE_COMPLETE` is the
+/// sequence terminator and is not a twitch type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TuneType {
+    /// `RATE_D_UP`.
+    RateDUp = 0,
+    /// `RATE_D_DOWN`.
+    RateDDown = 1,
+    /// `RATE_P_UP`.
+    RatePUp = 2,
+    /// `RATE_FF_UP` — Heli. Multi `test_run` treats this as flow-of-control.
+    RateFfUp = 3,
+    /// `ANGLE_P_DOWN`.
+    AnglePDown = 4,
+    /// `ANGLE_P_UP`.
+    AnglePUp = 5,
+    /// `MAX_GAINS` — Heli. Multi `test_run` treats this as flow-of-control.
+    MaxGains = 6,
+    /// `TUNE_CHECK` — Heli. Multi `test_run` treats this as flow-of-control.
+    TuneCheck = 7,
+    /// `TUNE_COMPLETE`.
+    TuneComplete = 8,
+}
+
+/// Default `AUTOTUNE_AGGR`.
+pub const AUTOTUNE_AGGR_DEFAULT: f32 = 0.075;
+
+/// `AUTOTUNE_TARGET_RATE_RLLPIT_CDS`.
+pub const AUTOTUNE_TARGET_RATE_RLLPIT_CDS: f32 = 18_000.0;
+
+/// `AUTOTUNE_TARGET_MIN_RATE_RLLPIT_CDS`.
+pub const AUTOTUNE_TARGET_MIN_RATE_RLLPIT_CDS: f32 = 4_500.0;
+
+/// `AUTOTUNE_TARGET_RATE_YAW_CDS`.
+pub const AUTOTUNE_TARGET_RATE_YAW_CDS: f32 = 9_000.0;
+
+/// `AUTOTUNE_TARGET_MIN_RATE_YAW_CDS`.
+pub const AUTOTUNE_TARGET_MIN_RATE_YAW_CDS: f32 = 1_500.0;
+
+/// `AUTOTUNE_Y_FILT_FREQ` — yaw rate-filter leftover input, not LPF math.
+pub const AUTOTUNE_Y_FILT_FREQ: f32 = 10.0;
+
+/// Multi `direction_sign` from `positive_direction`.
+#[must_use]
+pub const fn direction_sign(positive_direction: bool) -> f32 {
+    if positive_direction {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// Whether this Multi tune type steps an angle target instead of a rate.
+#[must_use]
+pub const fn twitch_is_angle_p(tune_type: TuneType) -> bool {
+    matches!(tune_type, TuneType::AnglePDown | TuneType::AnglePUp)
+}
+
+/// Heli-only tune types that Multi `test_run` must not see.
+#[must_use]
+pub const fn twitch_is_heli_only(tune_type: TuneType) -> bool {
+    matches!(
+        tune_type,
+        TuneType::RateFfUp | TuneType::MaxGains | TuneType::TuneCheck
+    )
+}
+
+/// Axis lean angle in centidegrees after `dir_sign * (sensor - start)`.
+///
+/// Yaw uses integer `wrap_180_cd`. Roll and pitch are raw sensor
+/// subtraction. `start_angle` is truncated to `int32` the same way
+/// upstream casts it.
+#[must_use]
+pub fn twitch_lean_angle_cd(
+    axis: AxisType,
+    dir_sign: f32,
+    roll_rad: f32,
+    pitch_rad: f32,
+    yaw_rad: f32,
+    start_angle: f32,
+) -> f32 {
+    let start = start_angle as i32;
+    match axis {
+        AxisType::Roll => dir_sign * (rad_to_cd(roll_rad) as i32 - start) as f32,
+        AxisType::Pitch => dir_sign * (rad_to_cd(pitch_rad) as i32 - start) as f32,
+        AxisType::Yaw | AxisType::YawD => {
+            dir_sign * wrap_180_cd(rad_to_cd(yaw_rad) as i32 - start) as f32
+        }
+    }
+}
+
+/// What `twitching_test_rate` writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwitchingRate {
+    /// `meas_rate_min` after the tick.
+    pub meas_rate_min: f32,
+    /// `meas_rate_max` after the tick.
+    pub meas_rate_max: f32,
+    /// `meas_angle_min` after the tick.
+    pub meas_angle_min: f32,
+    /// `step_timeout_ms` after the 63.21% stretch.
+    pub step_timeout_ms: u32,
+    /// `Step::UPDATE_GAINS` when the rate, bounce, or timeout fires.
+    pub done: bool,
+}
+
+/// Upstream `AC_AutoTune_Multi::twitching_test_rate`.
+#[must_use]
+pub fn twitching_test_rate(
+    angle: f32,
+    rate: f32,
+    rate_target_max: f32,
+    meas_rate_min: f32,
+    meas_rate_max: f32,
+    meas_angle_min: f32,
+    now_ms: u32,
+    step_start_time_ms: u32,
+    step_timeout_ms: u32,
+    aggressiveness: f32,
+) -> TwitchingRate {
+    let mut meas_rate_min = meas_rate_min;
+    let mut meas_rate_max = meas_rate_max;
+    let mut meas_angle_min = meas_angle_min;
+    let mut step_timeout_ms = step_timeout_ms;
+    let mut done = false;
+
+    if rate > meas_rate_max {
+        meas_rate_max = rate;
+        meas_rate_min = rate;
+        meas_angle_min = angle;
+    }
+    if rate < meas_rate_min && meas_rate_max > rate_target_max * 0.25 {
+        meas_rate_min = rate;
+        meas_angle_min = angle;
+    }
+
+    let elapsed = now_ms.wrapping_sub(step_start_time_ms);
+    if meas_rate_max < rate_target_max * 0.6321 {
+        step_timeout_ms = elapsed
+            .wrapping_mul(3)
+            .min(AUTOTUNE_TESTING_STEP_TIMEOUT_MS);
+    }
+    if meas_rate_max > rate_target_max {
+        done = true;
+    }
+    if meas_rate_max - meas_rate_min > meas_rate_max * aggressiveness {
+        done = true;
+    }
+    if elapsed >= step_timeout_ms {
+        done = true;
+    }
+
+    TwitchingRate {
+        meas_rate_min,
+        meas_rate_max,
+        meas_angle_min,
+        step_timeout_ms,
+        done,
+    }
+}
+
+/// What `twitching_abort_rate` writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwitchingAbort {
+    /// `step_scaler` after a 0.9 shrink, if any.
+    pub step_scaler: f32,
+    /// `mode` was written to [`TuneMode::Failed`].
+    pub failed: bool,
+    /// `LogEvent::AUTOTUNE_REACHED_LIMIT` / GCS critical.
+    pub reached_limit: bool,
+    /// Step write. `None` when `angle < angle_max`.
+    pub tick: Option<TwitchTick>,
+}
+
+/// Upstream `AC_AutoTune_Multi::twitching_abort_rate`.
+#[must_use]
+pub fn twitching_abort_rate(
+    angle: f32,
+    rate: f32,
+    angle_max: f32,
+    meas_rate_min: f32,
+    angle_min: f32,
+    step_scaler: f32,
+) -> TwitchingAbort {
+    if angle < angle_max {
+        return TwitchingAbort {
+            step_scaler,
+            failed: false,
+            reached_limit: false,
+            tick: None,
+        };
+    }
+    if is_equal(rate, meas_rate_min) || angle_min > 0.95 * angle_max {
+        if step_scaler > 0.2 {
+            TwitchingAbort {
+                step_scaler: step_scaler * 0.9,
+                failed: false,
+                reached_limit: false,
+                tick: Some(TwitchTick::Aborted),
+            }
+        } else {
+            TwitchingAbort {
+                step_scaler,
+                failed: true,
+                reached_limit: true,
+                tick: Some(TwitchTick::Aborted),
+            }
+        }
+    } else {
+        TwitchingAbort {
+            step_scaler,
+            failed: false,
+            reached_limit: false,
+            tick: Some(TwitchTick::Done),
+        }
+    }
+}
+
+/// What `twitching_test_angle` writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwitchingAngle {
+    /// `meas_angle_min` after the tick.
+    pub meas_angle_min: f32,
+    /// `meas_angle_max` after the tick.
+    pub meas_angle_max: f32,
+    /// `meas_rate_min` after the tick.
+    pub meas_rate_min: f32,
+    /// `meas_rate_max` after the tick.
+    pub meas_rate_max: f32,
+    /// `step_timeout_ms` after the 63.21% stretch.
+    pub step_timeout_ms: u32,
+    /// `Step::UPDATE_GAINS` when the angle, bounce, or timeout fires.
+    pub done: bool,
+}
+
+/// Upstream `AC_AutoTune_Multi::twitching_test_angle`.
+#[must_use]
+pub fn twitching_test_angle(
+    angle: f32,
+    rate: f32,
+    angle_target_max: f32,
+    meas_angle_min: f32,
+    meas_angle_max: f32,
+    meas_rate_min: f32,
+    meas_rate_max: f32,
+    now_ms: u32,
+    step_start_time_ms: u32,
+    step_timeout_ms: u32,
+    aggressiveness: f32,
+) -> TwitchingAngle {
+    let mut meas_angle_min = meas_angle_min;
+    let mut meas_angle_max = meas_angle_max;
+    let mut meas_rate_min = meas_rate_min;
+    let mut meas_rate_max = meas_rate_max;
+    let mut step_timeout_ms = step_timeout_ms;
+    let mut done = false;
+
+    if angle > meas_angle_max {
+        meas_angle_max = angle;
+        meas_angle_min = angle;
+    }
+    if angle < meas_angle_min && meas_angle_max > angle_target_max * 0.25 {
+        meas_angle_min = angle;
+    }
+    if rate > meas_rate_max {
+        meas_rate_max = rate;
+        meas_rate_min = rate;
+    }
+    if rate < meas_rate_min {
+        meas_rate_min = rate;
+    }
+
+    let elapsed = now_ms.wrapping_sub(step_start_time_ms);
+    if meas_angle_max < angle_target_max * 0.6321 {
+        step_timeout_ms = elapsed
+            .wrapping_mul(3)
+            .min(AUTOTUNE_TESTING_STEP_TIMEOUT_MS);
+    }
+    if meas_angle_max > angle_target_max {
+        done = true;
+    }
+    if meas_angle_max - meas_angle_min > meas_angle_max * aggressiveness {
+        done = true;
+    }
+    if elapsed >= step_timeout_ms {
+        done = true;
+    }
+
+    TwitchingAngle {
+        meas_angle_min,
+        meas_angle_max,
+        meas_rate_min,
+        meas_rate_max,
+        step_timeout_ms,
+        done,
+    }
+}
+
+/// What `twitching_measure_acceleration` writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwitchingAccel {
+    /// `test_accel_max_cdss` after the tick.
+    pub accel_average: f32,
+    /// `accel_measure_rate_max` after the tick.
+    pub rate_max: f32,
+}
+
+/// Upstream `AC_AutoTune_Multi::twitching_measure_acceleration`.
+///
+/// When `now_ms == step_start_time_ms` the C++ divide is by zero and
+/// the leftover keeps that Inf write.
+#[must_use]
+pub fn twitching_measure_acceleration(
+    accel_average: f32,
+    rate: f32,
+    rate_max: f32,
+    now_ms: u32,
+    step_start_time_ms: u32,
+) -> TwitchingAccel {
+    if rate_max < rate {
+        let rate_max = rate;
+        let elapsed = now_ms.wrapping_sub(step_start_time_ms) as f32;
+        TwitchingAccel {
+            accel_average: (1000.0 * rate_max) / elapsed,
+            rate_max,
+        }
+    } else {
+        TwitchingAccel {
+            accel_average,
+            rate_max,
+        }
+    }
+}
+
+/// What Multi `test_run` reads. The rotation-rate LPF stays leftover
+/// — this takes the already-filtered `rotation_rate` the same way
+/// SystemID takes an already-computed chirp sample.
+#[derive(Debug, Clone, Copy)]
+pub struct AutoTuneTwitchView {
+    /// Current axis.
+    pub axis: AxisType,
+    /// Current Multi tune type.
+    pub tune_type: TuneType,
+    /// `positive_direction` before this tick.
+    pub positive_direction: bool,
+    /// `AP_HAL::millis()`.
+    pub now_ms: u32,
+    /// `step_start_time_ms` before this tick.
+    pub step_start_time_ms: u32,
+    /// `step_timeout_ms` before this tick.
+    pub step_timeout_ms: u32,
+    /// `aggressiveness` (already constrained 0.05..0.2 on backup).
+    pub aggressiveness: f32,
+    /// `target_rate` from `test_init`, centidegrees/s.
+    pub target_rate: f32,
+    /// `target_angle` from `test_init`, centidegrees.
+    pub target_angle: f32,
+    /// `angle_abort` from `test_init`.
+    pub angle_abort: f32,
+    /// `start_angle` at test start, centidegrees.
+    pub start_angle: f32,
+    /// `start_rate` at test start, centidegrees/s.
+    pub start_rate: f32,
+    /// Already-filtered `rotation_rate`.
+    pub rotation_rate: f32,
+    /// `ahrs_view->get_roll_rad()`.
+    pub roll_rad: f32,
+    /// `ahrs_view->get_pitch_rad()`.
+    pub pitch_rad: f32,
+    /// `ahrs_view->get_yaw_rad()`.
+    pub yaw_rad: f32,
+    /// `test_rate_min` before this tick.
+    pub test_rate_min: f32,
+    /// `test_rate_max` before this tick.
+    pub test_rate_max: f32,
+    /// `test_angle_min` before this tick.
+    pub test_angle_min: f32,
+    /// `test_angle_max` before this tick.
+    pub test_angle_max: f32,
+    /// `accel_measure_rate_max` before this tick.
+    pub accel_measure_rate_max: f32,
+    /// `test_accel_max_cdss` before this tick.
+    pub test_accel_max_cdss: f32,
+    /// `step_scaler` before this tick.
+    pub step_scaler: f32,
+    /// `angle_step_commanded` before this tick.
+    pub angle_step_commanded: bool,
+}
+
+impl AutoTuneTwitchView {
+    /// Rate-D-up roll twitch, just started, still well under target.
+    #[must_use]
+    pub const fn typical() -> Self {
+        Self {
+            axis: AxisType::Roll,
+            tune_type: TuneType::RateDUp,
+            positive_direction: true,
+            now_ms: 10_000,
+            step_start_time_ms: 9_800,
+            step_timeout_ms: AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+            aggressiveness: AUTOTUNE_AGGR_DEFAULT,
+            target_rate: AUTOTUNE_TARGET_RATE_RLLPIT_CDS,
+            target_angle: 2_000.0,
+            angle_abort: 2_000.0,
+            start_angle: 0.0,
+            start_rate: 0.0,
+            rotation_rate: 0.0,
+            roll_rad: 0.0,
+            pitch_rad: 0.0,
+            yaw_rad: 0.0,
+            test_rate_min: 0.0,
+            test_rate_max: 0.0,
+            test_angle_min: 0.0,
+            test_angle_max: 0.0,
+            accel_measure_rate_max: 0.0,
+            test_accel_max_cdss: 0.0,
+            step_scaler: 1.0,
+            angle_step_commanded: false,
+        }
+    }
+}
+
+/// Leftover of one Multi `test_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoTuneTwitch {
+    /// `lean_angle` after the sensor capture.
+    pub lean_angle: f32,
+    /// Step write `test_run` decided.
+    pub tick: TwitchTick,
+    /// `step_timeout_ms` after the twitching helper.
+    pub step_timeout_ms: u32,
+    /// `step_scaler` after an abort shrink.
+    pub step_scaler: f32,
+    /// `test_rate_min` after the tick.
+    pub test_rate_min: f32,
+    /// `test_rate_max` after the tick.
+    pub test_rate_max: f32,
+    /// `test_angle_min` after the tick.
+    pub test_angle_min: f32,
+    /// `test_angle_max` after the tick.
+    pub test_angle_max: f32,
+    /// `accel_measure_rate_max` after the tick.
+    pub accel_measure_rate_max: f32,
+    /// `test_accel_max_cdss` after the tick.
+    pub test_accel_max_cdss: f32,
+    /// `input_angle_step_bf_roll_pitch_yaw_rad` this tick.
+    pub input_angle_step: bool,
+    /// `input_rate_step_bf_roll_pitch_yaw_rads` this tick.
+    pub input_rate_step: bool,
+    /// `input_rate_bf_roll_pitch_yaw_rads(0,0,0)` hold after the angle step.
+    pub input_rate_hold: bool,
+    /// `INTERNAL_ERROR(flow_of_control)` — Heli type on Multi.
+    pub flow_of_control: bool,
+    /// `mode` was written to [`TuneMode::Failed`].
+    pub failed: bool,
+    /// `LogEvent::AUTOTUNE_REACHED_LIMIT`.
+    pub reached_limit: bool,
+    /// `angle_step_commanded` after the tick.
+    pub angle_step_commanded: bool,
+}
+
+/// Upstream `AC_AutoTune_Multi::test_run`.
+///
+/// Attitude command is catalogued (angle step vs rate step vs hold).
+/// Lean angle is captured from the AHRS leftover. The rotation-rate
+/// LPF stays leftover — `rotation_rate` is already filtered. The
+/// twitching helpers then write [`TwitchTick`].
+#[must_use]
+pub fn autotune_test_run(view: &AutoTuneTwitchView) -> AutoTuneTwitch {
+    let dir_sign = direction_sign(view.positive_direction);
+    let mut input_angle_step = false;
+    let mut input_rate_step = false;
+    let mut input_rate_hold = false;
+    let mut angle_step_commanded = view.angle_step_commanded;
+
+    if twitch_is_angle_p(view.tune_type) {
+        if !angle_step_commanded {
+            angle_step_commanded = true;
+            input_angle_step = true;
+        } else {
+            input_rate_hold = true;
+        }
+    } else if !twitch_is_heli_only(view.tune_type) && view.tune_type != TuneType::TuneComplete {
+        input_rate_step = true;
+    }
+
+    let lean_angle = twitch_lean_angle_cd(
+        view.axis,
+        dir_sign,
+        view.roll_rad,
+        view.pitch_rad,
+        view.yaw_rad,
+        view.start_angle,
+    );
+
+    let mut out = AutoTuneTwitch {
+        lean_angle,
+        tick: TwitchTick::Running,
+        step_timeout_ms: view.step_timeout_ms,
+        step_scaler: view.step_scaler,
+        test_rate_min: view.test_rate_min,
+        test_rate_max: view.test_rate_max,
+        test_angle_min: view.test_angle_min,
+        test_angle_max: view.test_angle_max,
+        accel_measure_rate_max: view.accel_measure_rate_max,
+        test_accel_max_cdss: view.test_accel_max_cdss,
+        input_angle_step,
+        input_rate_step,
+        input_rate_hold,
+        flow_of_control: false,
+        failed: false,
+        reached_limit: false,
+        angle_step_commanded,
+    };
+
+    match view.tune_type {
+        TuneType::RateDUp | TuneType::RateDDown => {
+            apply_rate_twitch(view, &mut out, view.target_rate);
+        }
+        TuneType::RatePUp => {
+            apply_rate_twitch(
+                view,
+                &mut out,
+                view.target_rate * (1.0 + 0.5 * view.aggressiveness),
+            );
+        }
+        TuneType::AnglePDown | TuneType::AnglePUp => {
+            apply_angle_twitch(view, &mut out, dir_sign);
+        }
+        TuneType::RateFfUp | TuneType::MaxGains | TuneType::TuneCheck => {
+            out.flow_of_control = true;
+        }
+        TuneType::TuneComplete => {}
+    }
+
+    out
+}
+
+fn apply_rate_twitch(view: &AutoTuneTwitchView, out: &mut AutoTuneTwitch, rate_target: f32) {
+    let rate = twitching_test_rate(
+        out.lean_angle,
+        view.rotation_rate,
+        rate_target,
+        view.test_rate_min,
+        view.test_rate_max,
+        view.test_angle_min,
+        view.now_ms,
+        view.step_start_time_ms,
+        view.step_timeout_ms,
+        view.aggressiveness,
+    );
+    out.test_rate_min = rate.meas_rate_min;
+    out.test_rate_max = rate.meas_rate_max;
+    out.test_angle_min = rate.meas_angle_min;
+    out.step_timeout_ms = rate.step_timeout_ms;
+    if rate.done {
+        out.tick = TwitchTick::Done;
+    }
+
+    let accel = twitching_measure_acceleration(
+        view.test_accel_max_cdss,
+        view.rotation_rate,
+        view.accel_measure_rate_max,
+        view.now_ms,
+        view.step_start_time_ms,
+    );
+    out.test_accel_max_cdss = accel.accel_average;
+    out.accel_measure_rate_max = accel.rate_max;
+
+    let abort = twitching_abort_rate(
+        out.lean_angle,
+        view.rotation_rate,
+        view.angle_abort,
+        out.test_rate_min,
+        out.test_angle_min,
+        view.step_scaler,
+    );
+    out.step_scaler = abort.step_scaler;
+    out.failed = abort.failed;
+    out.reached_limit = abort.reached_limit;
+    if let Some(tick) = abort.tick {
+        out.tick = tick;
+    }
+}
+
+fn apply_angle_twitch(view: &AutoTuneTwitchView, out: &mut AutoTuneTwitch, dir_sign: f32) {
+    let angle = twitching_test_angle(
+        out.lean_angle,
+        view.rotation_rate,
+        view.target_angle * (1.0 + 0.5 * view.aggressiveness),
+        view.test_angle_min,
+        view.test_angle_max,
+        view.test_rate_min,
+        view.test_rate_max,
+        view.now_ms,
+        view.step_start_time_ms,
+        view.step_timeout_ms,
+        view.aggressiveness,
+    );
+    out.test_angle_min = angle.meas_angle_min;
+    out.test_angle_max = angle.meas_angle_max;
+    out.test_rate_min = angle.meas_rate_min;
+    out.test_rate_max = angle.meas_rate_max;
+    out.step_timeout_ms = angle.step_timeout_ms;
+    if angle.done {
+        out.tick = TwitchTick::Done;
+    }
+
+    let accel = twitching_measure_acceleration(
+        view.test_accel_max_cdss,
+        view.rotation_rate - dir_sign * view.start_rate,
+        view.accel_measure_rate_max,
+        view.now_ms,
+        view.step_start_time_ms,
+    );
+    out.test_accel_max_cdss = accel.accel_average;
+    out.accel_measure_rate_max = accel.rate_max;
 }
 
 /// Why `ModeAutoTune::init` / `AutoTune::init` returned false.
@@ -615,8 +1240,40 @@ pub struct AutoTuneRunView {
     pub level_start_time_ms: u32,
     /// `step_timeout_ms` before this tick.
     pub step_timeout_ms: u32,
-    /// Multi `get_testing_step_timeout_ms()`. Twitch leftover input.
+    /// Multi `get_testing_step_timeout_ms()`.
     pub testing_step_timeout_ms: u32,
+    /// Current Multi [`TuneType`].
+    pub tune_type: TuneType,
+    /// `target_rate` from `test_init`, centidegrees/s.
+    pub target_rate: f32,
+    /// `target_angle` from `test_init`, centidegrees.
+    pub target_angle: f32,
+    /// `aggressiveness` after backup constrain.
+    pub aggressiveness: f32,
+    /// `angle_abort` from `test_init`.
+    pub angle_abort: f32,
+    /// `start_angle` at test start, centidegrees.
+    pub start_angle: f32,
+    /// `start_rate` at test start, centidegrees/s.
+    pub start_rate: f32,
+    /// Already-filtered `rotation_rate`.
+    pub rotation_rate: f32,
+    /// `test_rate_min` before this tick.
+    pub test_rate_min: f32,
+    /// `test_rate_max` before this tick.
+    pub test_rate_max: f32,
+    /// `test_angle_min` before this tick.
+    pub test_angle_min: f32,
+    /// `test_angle_max` before this tick.
+    pub test_angle_max: f32,
+    /// `accel_measure_rate_max` before this tick.
+    pub accel_measure_rate_max: f32,
+    /// `test_accel_max_cdss` before this tick.
+    pub test_accel_max_cdss: f32,
+    /// `step_scaler` before this tick.
+    pub step_scaler: f32,
+    /// `angle_step_commanded` before this tick.
+    pub angle_step_commanded: bool,
     /// `positive_direction` before this tick.
     pub positive_direction: bool,
     /// `ahrs_view->get_roll_rad()`.
@@ -635,10 +1292,6 @@ pub struct AutoTuneRunView {
     pub yaw_rate_ef_target_rads: f32,
     /// `attitude_control->get_slew_yaw_max_rads()`.
     pub slew_yaw_max_rads: f32,
-    /// Already-decided Multi `test_run` leftover.
-    pub twitch: TwitchTick,
-    /// `lean_angle` member after `test_run`, centidegrees.
-    pub lean_angle_cd: f32,
     /// `attitude_control->lean_angle_deg()`.
     pub lean_angle_deg: f32,
     /// Multi `angle_lim_neg_rpy_cd()`.
@@ -676,6 +1329,22 @@ impl AutoTuneRunView {
             level_start_time_ms: 8_000,
             step_timeout_ms: AUTOTUNE_REQUIRED_LEVEL_TIME_MS,
             testing_step_timeout_ms: AUTOTUNE_TESTING_STEP_TIMEOUT_MS,
+            tune_type: TuneType::RateDUp,
+            target_rate: AUTOTUNE_TARGET_RATE_RLLPIT_CDS,
+            target_angle: 2_000.0,
+            aggressiveness: AUTOTUNE_AGGR_DEFAULT,
+            angle_abort: 2_000.0,
+            start_angle: 0.0,
+            start_rate: 0.0,
+            rotation_rate: 0.0,
+            test_rate_min: 0.0,
+            test_rate_max: 0.0,
+            test_angle_min: 0.0,
+            test_angle_max: 0.0,
+            accel_measure_rate_max: 0.0,
+            test_accel_max_cdss: 0.0,
+            step_scaler: 1.0,
+            angle_step_commanded: false,
             positive_direction: true,
             roll_rad: 0.0,
             pitch_rad: 0.0,
@@ -685,8 +1354,6 @@ impl AutoTuneRunView {
             gyro_z: 0.0,
             yaw_rate_ef_target_rads: 0.0,
             slew_yaw_max_rads: 1.0,
-            twitch: TwitchTick::Running,
-            lean_angle_cd: 0.0,
             lean_angle_deg: 0.0,
             angle_lim_neg_rpy_cd: 900.0,
             angle_lim_max_rp_cd: 3750.0,
@@ -753,6 +1420,22 @@ pub struct AutoTuneRun {
     pub test_init: bool,
     /// `test_run()` leftover was invoked.
     pub test_run: bool,
+    /// `lean_angle` after Multi `test_run`.
+    pub lean_angle: f32,
+    /// `input_angle_step_bf_roll_pitch_yaw_rad` this tick.
+    pub input_angle_step: bool,
+    /// `input_rate_step_bf_roll_pitch_yaw_rads` this tick.
+    pub input_rate_step: bool,
+    /// `input_rate_bf_roll_pitch_yaw_rads(0,0,0)` after the angle step.
+    pub input_rate_hold: bool,
+    /// Heli tune type on Multi `test_run`.
+    pub twitch_flow_of_control: bool,
+    /// Twitch abort wrote [`TuneMode::Failed`].
+    pub twitch_failed: bool,
+    /// `LogEvent::AUTOTUNE_REACHED_LIMIT`.
+    pub twitch_reached_limit: bool,
+    /// `step_scaler` after a twitch abort shrink.
+    pub step_scaler: f32,
     /// `Step::UPDATE_GAINS` body ran. The tune-type switch stays leftover.
     pub update_gains: bool,
     /// `positive_direction` after Multi reverse, if ABORT ran.
@@ -797,12 +1480,49 @@ fn run_passthrough(view: &AutoTuneRunView) -> AutoTuneRun {
         failed_to_level: false,
         test_init: false,
         test_run: false,
+        lean_angle: 0.0,
+        input_angle_step: false,
+        input_rate_step: false,
+        input_rate_hold: false,
+        twitch_flow_of_control: false,
+        twitch_failed: false,
+        twitch_reached_limit: false,
+        step_scaler: view.step_scaler,
         update_gains: false,
         positive_direction: view.positive_direction,
         desired_yaw_rad: view.desired_yaw_rad,
         step_start_time_ms: view.step_start_time_ms,
         level_start_time_ms: view.level_start_time_ms,
         step_timeout_ms: view.step_timeout_ms,
+    }
+}
+
+fn twitch_view_from_run(view: &AutoTuneRunView) -> AutoTuneTwitchView {
+    AutoTuneTwitchView {
+        axis: view.axis,
+        tune_type: view.tune_type,
+        positive_direction: view.positive_direction,
+        now_ms: view.now_ms,
+        step_start_time_ms: view.step_start_time_ms,
+        step_timeout_ms: view.step_timeout_ms,
+        aggressiveness: view.aggressiveness,
+        target_rate: view.target_rate,
+        target_angle: view.target_angle,
+        angle_abort: view.angle_abort,
+        start_angle: view.start_angle,
+        start_rate: view.start_rate,
+        rotation_rate: view.rotation_rate,
+        roll_rad: view.roll_rad,
+        pitch_rad: view.pitch_rad,
+        yaw_rad: view.yaw_rad,
+        test_rate_min: view.test_rate_min,
+        test_rate_max: view.test_rate_max,
+        test_angle_min: view.test_angle_min,
+        test_angle_max: view.test_angle_max,
+        accel_measure_rate_max: view.accel_measure_rate_max,
+        test_accel_max_cdss: view.test_accel_max_cdss,
+        step_scaler: view.step_scaler,
+        angle_step_commanded: view.angle_step_commanded,
     }
 }
 
@@ -850,12 +1570,25 @@ fn control_attitude(view: &AutoTuneRunView, out: &mut AutoTuneRun) {
         Step::ExecutingTest => {
             out.loaded_gains = Some(GainType::Test);
             out.test_run = true;
-            out.step = match view.twitch {
+            let twitch = autotune_test_run(&twitch_view_from_run(view));
+            out.lean_angle = twitch.lean_angle;
+            out.input_angle_step = twitch.input_angle_step;
+            out.input_rate_step = twitch.input_rate_step;
+            out.input_rate_hold = twitch.input_rate_hold;
+            out.twitch_flow_of_control = twitch.flow_of_control;
+            out.twitch_failed = twitch.failed;
+            out.twitch_reached_limit = twitch.reached_limit;
+            out.step_scaler = twitch.step_scaler;
+            out.step_timeout_ms = twitch.step_timeout_ms;
+            if twitch.failed {
+                out.mode = TuneMode::Failed;
+            }
+            out.step = match twitch.tick {
                 TwitchTick::Running => Step::ExecutingTest,
                 TwitchTick::Done => Step::UpdateGains,
                 TwitchTick::Aborted => Step::Abort,
             };
-            if view.lean_angle_cd <= -view.angle_lim_neg_rpy_cd
+            if twitch.lean_angle <= -view.angle_lim_neg_rpy_cd
                 || view.lean_angle_deg * 100.0 > view.angle_lim_max_rp_cd
             {
                 out.step = Step::Abort;
@@ -887,9 +1620,9 @@ fn abort_to_level(view: &AutoTuneRunView, out: &mut AutoTuneRun, now: u32) {
 
 /// Upstream `ModeAutoTune::run` → Copter `AutoTune::run` → `AC_AutoTune::run`.
 ///
-/// Twitch physics and the UPDATE_GAINS tune-type switch stay leftovers.
-/// Poshold lean math (`get_poshold_attitude_rad` 10° / 20 m) is also
-/// leftover — this catalogs the call and the `have_position` latch.
+/// The UPDATE_GAINS tune-type switch stays leftover. Poshold lean
+/// math (`get_poshold_attitude_rad` 10° / 20 m) is also leftover —
+/// this catalogs the call and the `have_position` latch.
 #[must_use]
 pub fn mode_autotune_run(view: &AutoTuneRunView) -> AutoTuneRun {
     let mut out = run_passthrough(view);
