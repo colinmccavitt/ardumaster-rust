@@ -1,18 +1,23 @@
 //! Copter aux-function leftover, upstream `RC_Channel_Copter.cpp`.
 
 use ap_copter::aux::{
-    arming_check_throttle, do_aux_function, do_aux_function_acro_trainer,
-    do_aux_function_ahrs_auto_trim, do_aux_function_change_air_mode,
+    arming_check_throttle, auto_trim_cancel, auto_trim_run, do_aux_function,
+    do_aux_function_acro_trainer, do_aux_function_ahrs_auto_trim, do_aux_function_change_air_mode,
     do_aux_function_change_force_flying, do_aux_function_change_mode, do_aux_function_option,
     do_aux_function_parachute_release, do_aux_function_zigzag_save_wp, eeprom_simple_mode,
-    get_arming_channel, has_valid_input, in_rc_failsafe, init_aux_function, init_aux_kind,
-    mode_switch_changed, AcroTrainer, AhrsAutoTrimAction, AirMode, ArmingChannel, AuxDispatch,
-    AuxLeftover, CopterAuxFunc, FlightmodePauseAction, InitAuxKind, ModeSwitchLeftover,
-    Parachute3Pos, SimpleMode, SurfaceTracking, WinchEnableAction, ZigzagAutoAction, ZigzagSaveWp,
-    MODE_ACRO, MODE_ALT_HOLD, MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE, MODE_CIRCLE, MODE_DRIFT,
-    MODE_FLIP, MODE_FLOWHOLD, MODE_FOLLOW, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_POSHOLD,
-    MODE_REASON_AUX_FUNCTION, MODE_REASON_RC_COMMAND, MODE_RTL, MODE_SMART_RTL, MODE_STABILIZE,
-    MODE_THROW, MODE_TURTLE, MODE_ZIGZAG, THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
+    flight_mode_channel, flight_mode_channel_number, get_arming_channel, get_control_in,
+    get_control_in_zero_dz, get_control_mid, get_throttle_mid, has_valid_input, in_rc_failsafe,
+    init_aux_function, init_aux_kind, init_rc_in_map, mode_switch_changed, save_trim, AcroTrainer,
+    AhrsAutoTrimAction, AirMode, ArmingChannel, AutoTrimCancelReason, AutoTrimRunLeftover,
+    AuxDispatch, AuxLeftover, ControlType, CopterAuxFunc, FlightmodePauseAction, InitAuxKind,
+    ModeSwitchLeftover, Parachute3Pos, SaveTrimLeftover, SimpleMode, SurfaceTracking,
+    WinchEnableAction, ZigzagAutoAction, ZigzagSaveWp, CH_MODE_DEFAULT, DEADZONE_ROLL_PITCH,
+    DEADZONE_THROTTLE_HELI, DEADZONE_THROTTLE_MULTICOPTER, DEADZONE_YAW_HELI,
+    DEADZONE_YAW_MULTICOPTER, MODE_ACRO, MODE_ALT_HOLD, MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE,
+    MODE_CIRCLE, MODE_DRIFT, MODE_FLIP, MODE_FLOWHOLD, MODE_FOLLOW, MODE_GUIDED, MODE_LAND,
+    MODE_LOITER, MODE_POSHOLD, MODE_REASON_AUX_FUNCTION, MODE_REASON_RC_COMMAND, MODE_RTL,
+    MODE_SMART_RTL, MODE_STABILIZE, MODE_THROW, MODE_TURTLE, MODE_ZIGZAG, NUM_FLIGHT_MODES,
+    ROLL_PITCH_YAW_INPUT_MAX, THROTTLE_CONTROL_RANGE, THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
 };
 use ap_rc::AuxSwitchPos;
 
@@ -729,4 +734,155 @@ fn mode_switch_changed_eeprom_simple_and_aux_override() {
             simple: None,
         }
     );
+}
+
+#[test]
+fn flight_mode_channel_is_copter_chan_five_not_plane_eight() {
+    assert_eq!(CH_MODE_DEFAULT, 5);
+    assert_eq!(NUM_FLIGHT_MODES, 6);
+    assert_eq!(flight_mode_channel_number(CH_MODE_DEFAULT), 5);
+    assert_eq!(flight_mode_channel(CH_MODE_DEFAULT), Some(4));
+    assert_eq!(
+        flight_mode_channel(0),
+        None,
+        "FLTMODE_CH 0 disables the switch"
+    );
+    assert_eq!(
+        flight_mode_channel(16),
+        None,
+        "channel 16 is >= NUM_RC_CHANNELS"
+    );
+    assert_eq!(flight_mode_channel(15), Some(14));
+    assert_ne!(
+        CH_MODE_DEFAULT,
+        ap_rc::FLTMODE_CH_DEFAULT,
+        "Plane default 8 must not become Copter's mode switch"
+    );
+}
+
+#[test]
+fn init_rc_in_maps_angle_4500_and_range_1000() {
+    let map = init_rc_in_map(false);
+    assert_eq!(map.roll.type_in, ControlType::Angle);
+    assert_eq!(map.pitch.type_in, ControlType::Angle);
+    assert_eq!(map.yaw.type_in, ControlType::Angle);
+    assert_eq!(map.throttle.type_in, ControlType::Range);
+    assert_eq!(map.roll.high_in, ROLL_PITCH_YAW_INPUT_MAX);
+    assert_eq!(map.throttle.high_in, THROTTLE_CONTROL_RANGE);
+    assert_eq!(map.roll.cal.deadzone, DEADZONE_ROLL_PITCH);
+    assert_eq!(map.yaw.cal.deadzone, DEADZONE_YAW_MULTICOPTER);
+    assert_eq!(map.throttle.cal.deadzone, DEADZONE_THROTTLE_MULTICOPTER);
+    let heli = init_rc_in_map(true);
+    assert_eq!(heli.throttle.cal.deadzone, DEADZONE_THROTTLE_HELI);
+    assert_eq!(heli.yaw.cal.deadzone, DEADZONE_YAW_HELI);
+    assert_eq!(heli.roll.cal.deadzone, DEADZONE_ROLL_PITCH);
+}
+
+#[test]
+fn get_control_in_throttle_is_range_not_signed_stick() {
+    let thr = init_rc_in_map(false).throttle;
+    assert_eq!(get_control_in(&thr, 1100), 0);
+    assert_eq!(get_control_in(&thr, 1130), 0, "min+dz is still zero");
+    assert_eq!(get_control_in(&thr, 1900), 1000);
+    // float 1000*370/770 = 480.519… truncated, matching int16 control_in
+    assert_eq!(get_control_in(&thr, 1500), 480);
+    assert_eq!(
+        get_control_mid(&thr),
+        480,
+        "get_control_mid is int32 1000*370/770"
+    );
+    assert!(
+        (get_control_in_zero_dz(&thr, 1500) - 500.0).abs() < 1e-4,
+        "zero-dz mid-stick is 500, not the deadzoned 480"
+    );
+    assert_eq!(get_throttle_mid(&thr, None), 480);
+    assert_eq!(get_throttle_mid(&thr, Some(512)), 512);
+}
+
+#[test]
+fn get_control_in_angle_is_centidegrees_about_trim() {
+    let roll = init_rc_in_map(false).roll;
+    assert_eq!(get_control_in(&roll, 1500), 0);
+    assert_eq!(get_control_in(&roll, 1520), 0, "trim+dz is still zero");
+    assert_eq!(get_control_in(&roll, 1900), 4500);
+    assert_eq!(get_control_in(&roll, 1100), -4500);
+    assert_eq!(
+        get_control_mid(&roll),
+        0,
+        "ANGLE get_control_mid is always 0"
+    );
+    // 4500 * 1 / 380 ≈ 11.84 → 11
+    assert_eq!(get_control_in(&roll, 1521), 11);
+    assert!((get_control_in_zero_dz(&roll, 1700) - 2250.0).abs() < 1e-3);
+}
+
+#[test]
+fn reversed_range_mirrors_pwm_before_control_in() {
+    let mut thr = init_rc_in_map(false).throttle;
+    thr.cal.reversed = true;
+    assert_eq!(
+        get_control_in(&thr, 1100),
+        1000,
+        "reversed min PWM is full RANGE"
+    );
+    assert_eq!(get_control_in(&thr, 1900), 0);
+}
+
+#[test]
+fn save_trim_skips_stick_lean_when_auto_trim_is_running() {
+    assert_eq!(
+        save_trim(false),
+        SaveTrimLeftover {
+            auto_trim_running: false,
+            need_pilot_lean: true,
+            persist: true,
+        }
+    );
+    assert_eq!(
+        save_trim(true),
+        SaveTrimLeftover {
+            auto_trim_running: false,
+            need_pilot_lean: false,
+            persist: true,
+        },
+        "running auto-trim already applied the increments; do not sample sticks"
+    );
+    assert_eq!(
+        auto_trim_cancel(),
+        SaveTrimLeftover {
+            auto_trim_running: false,
+            need_pilot_lean: false,
+            persist: false,
+        }
+    );
+}
+
+#[test]
+fn auto_trim_run_gates_and_divides_att_target_by_twenty() {
+    assert_eq!(
+        auto_trim_run(false, true, false, 0.4, -0.2),
+        AutoTrimRunLeftover::Idle
+    );
+    assert_eq!(
+        auto_trim_run(true, false, false, 0.4, -0.2),
+        AutoTrimRunLeftover::Cancel {
+            reason: AutoTrimCancelReason::ModeDisallows,
+        }
+    );
+    assert_eq!(
+        auto_trim_run(true, true, true, 0.4, -0.2),
+        AutoTrimRunLeftover::Cancel {
+            reason: AutoTrimCancelReason::LandCompleteMaybe,
+        }
+    );
+    match auto_trim_run(true, true, false, 0.4, -0.2) {
+        AutoTrimRunLeftover::Apply {
+            roll_trim_adj_rad,
+            pitch_trim_adj_rad,
+        } => {
+            assert!((roll_trim_adj_rad - 0.02).abs() < 1e-6);
+            assert!((pitch_trim_adj_rad + 0.01).abs() < 1e-6);
+        }
+        other => panic!("expected Apply, got {other:?}"),
+    }
 }

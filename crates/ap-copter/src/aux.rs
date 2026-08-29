@@ -23,7 +23,9 @@
 //! `SUPERSIMPLE_MODE` is a real 3-position map (off / Simple / SuperSimple).
 //! Sharing one decoder would give SuperSimple on MIDDLE.
 
-use ap_rc::AuxSwitchPos;
+use ap_rc::{
+    flight_mode_channel_index, reverse_range_pwm, AuxSwitchPos, RcChannel, NUM_RC_CHANNELS,
+};
 
 /// Upstream `ModeReason::AUX_FUNCTION`.
 pub const MODE_REASON_AUX_FUNCTION: u8 = 53;
@@ -1098,5 +1100,380 @@ pub const fn mode_switch_changed(
     ModeSwitchLeftover::Engage {
         mode: flight_mode,
         simple,
+    }
+}
+
+/// Copter `CH_MODE_DEFAULT` / `FLTMODE_CH` default.
+///
+/// Channel 5, not Plane's 8. Reusing `ap_rc::FLTMODE_CH_DEFAULT` would
+/// read the wrong receiver channel for the six-position switch.
+pub const CH_MODE_DEFAULT: i8 = 5;
+
+/// `Copter::num_flight_modes` — slots `FLTMODE1` through `FLTMODE6`.
+pub const NUM_FLIGHT_MODES: u8 = 6;
+
+/// `ROLL_PITCH_YAW_INPUT_MAX` — ANGLE `high_in` for roll / pitch / yaw.
+pub const ROLL_PITCH_YAW_INPUT_MAX: u16 = 4500;
+
+/// `channel_throttle->set_range(1000)` — RANGE `high_in` for throttle.
+pub const THROTTLE_CONTROL_RANGE: u16 = 1000;
+
+/// Multicopter / heli `default_dead_zones` for roll and pitch.
+pub const DEADZONE_ROLL_PITCH: u16 = 20;
+
+/// Multicopter `channel_throttle` deadzone.
+pub const DEADZONE_THROTTLE_MULTICOPTER: u16 = 30;
+
+/// Multicopter `channel_yaw` deadzone.
+pub const DEADZONE_YAW_MULTICOPTER: u16 = 20;
+
+/// Heli `channel_throttle` deadzone.
+pub const DEADZONE_THROTTLE_HELI: u16 = 10;
+
+/// Heli `channel_yaw` deadzone.
+pub const DEADZONE_YAW_HELI: u16 = 15;
+
+/// `auto_trim_run` divisor — att-target radians / 20.
+pub const AUTO_TRIM_DIVISOR: f32 = 20.0;
+
+/// `RC_Channels_Copter::flight_mode_channel_number` — `g.flight_mode_chan`.
+#[must_use]
+pub const fn flight_mode_channel_number(flight_mode_chan: i8) -> i8 {
+    flight_mode_chan
+}
+
+/// 0-based receiver index for Copter's `FLTMODE_CH`.
+///
+/// `RC_Channels::flight_mode_channel` rejects `<= 0` and
+/// `>= NUM_RC_CHANNELS`, so channel 16 is never the mode switch.
+#[must_use]
+pub const fn flight_mode_channel(flight_mode_chan: i8) -> Option<usize> {
+    // Same exclusive max as `RC_Channels::flight_mode_channel`.
+    const _: () = assert!(NUM_RC_CHANNELS == 16);
+    flight_mode_channel_index(flight_mode_channel_number(flight_mode_chan))
+}
+
+/// `RC_Channel::ControlType` — ANGLE (roll/pitch/yaw) vs RANGE (throttle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlType {
+    /// `set_angle` — `control_in` is centidegrees about trim.
+    Angle,
+    /// `set_range` — `control_in` is 0..`high_in` above min+deadzone.
+    Range,
+}
+
+/// One Copter stick after `init_rc_in` mapping, plus the PWM calibration.
+///
+/// `RcChannel` is min/trim/max/deadzone/reverse. Copter then stamps
+/// ANGLE 4500 on roll/pitch/yaw and RANGE 1000 on throttle so
+/// [`get_control_in`] is not a signed stick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopterRcChannel {
+    /// Radio min/trim/max/deadzone/reverse.
+    pub cal: RcChannel,
+    /// `type_in` after `set_angle` / `set_range`.
+    pub type_in: ControlType,
+    /// `high_in` — 4500 for ANGLE, 1000 for throttle RANGE.
+    pub high_in: u16,
+}
+
+impl CopterRcChannel {
+    /// `set_angle(high)` on a default-calibrated channel with `deadzone`.
+    #[must_use]
+    pub const fn angle(high_in: u16, deadzone: u16) -> Self {
+        let mut cal = RcChannel {
+            radio_min: ap_rc::RC_CHAN_MIN_DEFAULT,
+            radio_trim: ap_rc::RC_CHAN_TRIM_DEFAULT,
+            radio_max: ap_rc::RC_CHAN_MAX_DEFAULT,
+            deadzone: ap_rc::RC_CHAN_DEADZONE_DEFAULT,
+            reversed: false,
+        };
+        cal.deadzone = deadzone;
+        Self {
+            cal,
+            type_in: ControlType::Angle,
+            high_in,
+        }
+    }
+
+    /// `set_range(high)` on a default-calibrated channel with `deadzone`.
+    #[must_use]
+    pub const fn range(high_in: u16, deadzone: u16) -> Self {
+        let mut cal = RcChannel {
+            radio_min: ap_rc::RC_CHAN_MIN_DEFAULT,
+            radio_trim: ap_rc::RC_CHAN_TRIM_DEFAULT,
+            radio_max: ap_rc::RC_CHAN_MAX_DEFAULT,
+            deadzone: ap_rc::RC_CHAN_DEADZONE_DEFAULT,
+            reversed: false,
+        };
+        cal.deadzone = deadzone;
+        Self {
+            cal,
+            type_in: ControlType::Range,
+            high_in,
+        }
+    }
+}
+
+/// Roll / pitch / yaw / throttle after `Copter::init_rc_in` + `default_dead_zones`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopterStickMap {
+    /// `channel_roll` — ANGLE 4500.
+    pub roll: CopterRcChannel,
+    /// `channel_pitch` — ANGLE 4500.
+    pub pitch: CopterRcChannel,
+    /// `channel_yaw` — ANGLE 4500.
+    pub yaw: CopterRcChannel,
+    /// `channel_throttle` — RANGE 1000.
+    pub throttle: CopterRcChannel,
+}
+
+/// `Copter::default_dead_zones` — `(roll, pitch, throttle, yaw)`.
+///
+/// Heli uses a tighter collective and yaw window. Applying the multicopter
+/// 30 µs throttle deadzone to a heli would swallow the bottom of the
+/// collective travel that `get_control_in` treats as zero.
+#[must_use]
+pub const fn default_dead_zones(heli: bool) -> (u16, u16, u16, u16) {
+    if heli {
+        (
+            DEADZONE_ROLL_PITCH,
+            DEADZONE_ROLL_PITCH,
+            DEADZONE_THROTTLE_HELI,
+            DEADZONE_YAW_HELI,
+        )
+    } else {
+        (
+            DEADZONE_ROLL_PITCH,
+            DEADZONE_ROLL_PITCH,
+            DEADZONE_THROTTLE_MULTICOPTER,
+            DEADZONE_YAW_MULTICOPTER,
+        )
+    }
+}
+
+/// `Copter::init_rc_in` stick mapping leftover (type + high + deadzone).
+///
+/// Channel *identity* (which receiver index is roll) stays in `RCMAP_*`.
+/// This is the Copter leftover that turns those four sticks into ANGLE
+/// 4500 / RANGE 1000 so [`get_control_in`] matches `radio.cpp`.
+#[must_use]
+pub const fn init_rc_in_map(heli: bool) -> CopterStickMap {
+    let (roll_dz, pitch_dz, thr_dz, yaw_dz) = default_dead_zones(heli);
+    CopterStickMap {
+        roll: CopterRcChannel::angle(ROLL_PITCH_YAW_INPUT_MAX, roll_dz),
+        pitch: CopterRcChannel::angle(ROLL_PITCH_YAW_INPUT_MAX, pitch_dz),
+        yaw: CopterRcChannel::angle(ROLL_PITCH_YAW_INPUT_MAX, yaw_dz),
+        throttle: CopterRcChannel::range(THROTTLE_CONTROL_RANGE, thr_dz),
+    }
+}
+
+fn constrain_pwm(pwm: u16, min: u16, max: u16) -> u16 {
+    if pwm < min {
+        min
+    } else if pwm > max {
+        max
+    } else {
+        pwm
+    }
+}
+
+/// `RC_Channel::pwm_to_angle_dz_trim`.
+///
+/// Deadzone is a window around `_trim`, not around min. A RANGE-style
+/// floor at min+dz would push roll/pitch off-centre at trim.
+#[must_use]
+pub fn pwm_to_angle_dz_trim(ch: &CopterRcChannel, pwm: u16, dead_zone: u16, trim: u16) -> f32 {
+    let radio_trim_high = trim.saturating_add(dead_zone);
+    let radio_trim_low = trim.saturating_sub(dead_zone);
+    let reverse_mul = if ch.cal.reversed { -1.0 } else { 1.0 };
+    let r_in = constrain_pwm(pwm, ch.cal.radio_min, ch.cal.radio_max);
+    let high = f32::from(ch.high_in);
+    if r_in > radio_trim_high && ch.cal.radio_max != radio_trim_high {
+        reverse_mul * (high * f32::from(r_in - radio_trim_high))
+            / f32::from(ch.cal.radio_max - radio_trim_high)
+    } else if r_in < radio_trim_low && radio_trim_low != ch.cal.radio_min {
+        reverse_mul * (high * (f32::from(r_in) - f32::from(radio_trim_low)))
+            / f32::from(radio_trim_low - ch.cal.radio_min)
+    } else {
+        0.0
+    }
+}
+
+/// `RC_Channel::pwm_to_range_dz`.
+#[must_use]
+pub fn pwm_to_range_dz(ch: &CopterRcChannel, pwm: u16, dead_zone: u16) -> f32 {
+    let r_in = reverse_range_pwm(pwm, &ch.cal);
+    let radio_trim_low = ch.cal.radio_min.saturating_add(dead_zone);
+    if r_in > radio_trim_low && ch.cal.radio_max != radio_trim_low {
+        (f32::from(ch.high_in) * f32::from(r_in - radio_trim_low))
+            / f32::from(ch.cal.radio_max - radio_trim_low)
+    } else {
+        0.0
+    }
+}
+
+/// `RC_Channel::get_control_in` after `update()` — ANGLE or RANGE.
+///
+/// The library stores a truncated `int16_t`, not the float. Modes that
+/// compare throttle `control_in == 0` (save-trim, throttle-zero) need
+/// that truncation, not a rounded mid-stick.
+#[must_use]
+pub fn get_control_in(ch: &CopterRcChannel, pwm: u16) -> i16 {
+    let value = match ch.type_in {
+        ControlType::Range => pwm_to_range_dz(ch, pwm, ch.cal.deadzone),
+        ControlType::Angle => pwm_to_angle_dz_trim(ch, pwm, ch.cal.deadzone, ch.cal.radio_trim),
+    };
+    if value > f32::from(i16::MAX) {
+        i16::MAX
+    } else if value < f32::from(i16::MIN) {
+        i16::MIN
+    } else {
+        value as i16
+    }
+}
+
+/// `RC_Channel::get_control_in_zero_dz`.
+#[must_use]
+pub fn get_control_in_zero_dz(ch: &CopterRcChannel, pwm: u16) -> f32 {
+    match ch.type_in {
+        ControlType::Range => pwm_to_range_dz(ch, pwm, 0),
+        ControlType::Angle => pwm_to_angle_dz_trim(ch, pwm, 0, ch.cal.radio_trim),
+    }
+}
+
+/// `RC_Channel::get_control_mid` — integer RANGE mid-stick as `control_in`.
+///
+/// ANGLE channels return 0. The mid PWM is `(min+max)/2`, then the same
+/// RANGE map as `pwm_to_range_dz` but in `int32` so a 370/770 mid-stick
+/// is 480, not a rounded 481. Copter's `thr_mid` is this value.
+#[must_use]
+pub fn get_control_mid(ch: &CopterRcChannel) -> i16 {
+    match ch.type_in {
+        ControlType::Angle => 0,
+        ControlType::Range => {
+            let r_in = (i32::from(ch.cal.radio_min) + i32::from(ch.cal.radio_max)) / 2;
+            let radio_trim_low = i32::from(ch.cal.radio_min) + i32::from(ch.cal.deadzone);
+            let denom = i32::from(ch.cal.radio_max) - radio_trim_low;
+            if denom == 0 {
+                return 0;
+            }
+            let value = (i32::from(ch.high_in) * (r_in - radio_trim_low)) / denom;
+            if value > i32::from(i16::MAX) {
+                i16::MAX
+            } else if value < i32::from(i16::MIN) {
+                i16::MIN
+            } else {
+                value as i16
+            }
+        }
+    }
+}
+
+/// `Copter::get_throttle_mid`.
+///
+/// Toy mode can replace the stick mid. Passing `None` is the normal
+/// `channel_throttle->get_control_mid()` path.
+#[must_use]
+pub fn get_throttle_mid(throttle: &CopterRcChannel, toy_mode_mid: Option<i16>) -> i16 {
+    match toy_mode_mid {
+        Some(mid) => mid,
+        None => get_control_mid(throttle),
+    }
+}
+
+/// What `RC_Channels_Copter::save_trim` asked AHRS to store.
+///
+/// When auto-trim is already running the stick lean is **not** sampled —
+/// those increments were applied live by [`auto_trim_run`]. Sampling
+/// again would double the trim. The leftover only clears `running` and
+/// persists the already-applied values (`add_trim(0, 0)` with persist).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveTrimLeftover {
+    /// `auto_trim.running` after the call (always cleared).
+    pub auto_trim_running: bool,
+    /// Call `get_pilot_desired_lean_angles_rad` for the add_trim deltas.
+    pub need_pilot_lean: bool,
+    /// `AP::ahrs().add_trim` + `LogEvent::SAVE_TRIM`.
+    pub persist: bool,
+}
+
+/// `RC_Channels_Copter::save_trim`.
+#[must_use]
+pub const fn save_trim(auto_trim_running: bool) -> SaveTrimLeftover {
+    SaveTrimLeftover {
+        auto_trim_running: false,
+        need_pilot_lean: !auto_trim_running,
+        persist: true,
+    }
+}
+
+/// Why [`auto_trim_run`] cancelled instead of applying a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoTrimCancelReason {
+    /// `!flightmode->allows_auto_trim()`.
+    ModeDisallows,
+    /// `ap.land_complete_maybe` — must be started and stopped mid-air.
+    LandCompleteMaybe,
+}
+
+/// What `RC_Channels_Copter::auto_trim_run` asked the vehicle to do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AutoTrimRunLeftover {
+    /// `auto_trim.running` is false — return without touching AHRS.
+    Idle,
+    /// `auto_trim_cancel` — running and notify `save_trim` both go false.
+    Cancel {
+        /// Which gate fired.
+        reason: AutoTrimCancelReason,
+    },
+    /// `AP::ahrs().add_trim(roll/20, pitch/20, false)` — do not persist.
+    Apply {
+        /// `att_target.x / 20`.
+        roll_trim_adj_rad: f32,
+        /// `att_target.y / 20`.
+        pitch_trim_adj_rad: f32,
+    },
+}
+
+/// `RC_Channels_Copter::auto_trim_cancel`.
+#[must_use]
+pub const fn auto_trim_cancel() -> SaveTrimLeftover {
+    SaveTrimLeftover {
+        auto_trim_running: false,
+        need_pilot_lean: false,
+        persist: false,
+    }
+}
+
+/// `RC_Channels_Copter::auto_trim_run`.
+///
+/// The att-target divisor is subjective (`/ 20`) so the feel matches the
+/// old stick-trim method. Persisting each step would write EEPROM every
+/// loop; persist happens only on `save_trim`.
+#[must_use]
+pub fn auto_trim_run(
+    running: bool,
+    allows_auto_trim: bool,
+    land_complete_maybe: bool,
+    att_target_roll_rad: f32,
+    att_target_pitch_rad: f32,
+) -> AutoTrimRunLeftover {
+    if !running {
+        return AutoTrimRunLeftover::Idle;
+    }
+    if !allows_auto_trim {
+        return AutoTrimRunLeftover::Cancel {
+            reason: AutoTrimCancelReason::ModeDisallows,
+        };
+    }
+    if land_complete_maybe {
+        return AutoTrimRunLeftover::Cancel {
+            reason: AutoTrimCancelReason::LandCompleteMaybe,
+        };
+    }
+    AutoTrimRunLeftover::Apply {
+        roll_trim_adj_rad: att_target_roll_rad / AUTO_TRIM_DIVISOR,
+        pitch_trim_adj_rad: att_target_pitch_rad / AUTO_TRIM_DIVISOR,
     }
 }
