@@ -18,7 +18,11 @@
 //! always-on Copter-owned scheduled leftover after those. [`run_nav_updates`]
 //! is the next always-on scheduled leftover after that. Simple-mode
 //! lives in [`crate::simple`]. [`get_wp_distance_m`] is the Copter.cpp
-//! GCS helper. Later `Copter.cpp` / `system.cpp` leftovers stay later.
+//! GCS helper. [`update_rangefinder_terrain_offset`] is the next FAST_TASK
+//! leftover after the land/crash detectors. [`auto_disarm_check`],
+//! [`standby_update`], and [`lost_vehicle_check`] are the next always-on
+//! scheduled leftovers from `motors.cpp` / `standby.cpp`. Later
+//! `Copter.cpp` / `system.cpp` leftovers stay later.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -136,6 +140,54 @@ pub const RUN_NAV_UPDATES_MAX_TIME_MICROS: u16 = 100;
 
 /// Scheduler priority on the `run_nav_updates` row.
 pub const RUN_NAV_UPDATES_PRIORITY: u8 = 45;
+
+/// `auto_disarm_check` rate, Hz. Upstream `SCHED_TASK(auto_disarm_check, 10, 50, 27)`.
+pub const AUTO_DISARM_CHECK_RATE_HZ: f32 = 10.0;
+
+/// `auto_disarm_check` expected budget, microseconds.
+pub const AUTO_DISARM_CHECK_MAX_TIME_MICROS: u16 = 50;
+
+/// `auto_disarm_check` scheduler priority (lower is higher priority).
+pub const AUTO_DISARM_CHECK_PRIORITY: u8 = 27;
+
+/// `standby_update` rate, Hz. Upstream `SCHED_TASK(standby_update, 100, 75, 96)`.
+pub const STANDBY_UPDATE_RATE_HZ: f32 = 100.0;
+
+/// `standby_update` expected budget, microseconds.
+pub const STANDBY_UPDATE_MAX_TIME_MICROS: u16 = 75;
+
+/// `standby_update` scheduler priority (lower is higher priority).
+pub const STANDBY_UPDATE_PRIORITY: u8 = 96;
+
+/// `lost_vehicle_check` rate, Hz. Upstream `SCHED_TASK(lost_vehicle_check, 10, 50, 99)`.
+pub const LOST_VEHICLE_CHECK_RATE_HZ: f32 = 10.0;
+
+/// `lost_vehicle_check` expected budget, microseconds.
+pub const LOST_VEHICLE_CHECK_MAX_TIME_MICROS: u16 = 50;
+
+/// `lost_vehicle_check` scheduler priority (lower is higher priority).
+pub const LOST_VEHICLE_CHECK_PRIORITY: u8 = 99;
+
+/// `AUTO_DISARMING_DELAY` — `DISARM_DELAY` default, seconds.
+pub const AUTO_DISARMING_DELAY: i16 = 10;
+
+/// `INT8_MAX` — `constrain_int16(g.disarm_delay, 0, INT8_MAX)`.
+pub const DISARM_DELAY_MAX_S: i16 = 127;
+
+/// `THR_BEHAVE_FEEDBACK_FROM_MID_STICK` (`1<<0`).
+pub const THR_BEHAVE_FEEDBACK_FROM_MID_STICK: u8 = 1 << 0;
+
+/// `LOST_VEHICLE_DELAY` — called at 10 Hz so 1 second.
+pub const LOST_VEHICLE_DELAY: u8 = 10;
+
+/// Stick threshold for the lost-vehicle alarm. Upstream `> 4000`.
+pub const LOST_VEHICLE_STICK_MAX: i16 = 4000;
+
+/// `SURFTRAK_TC` default.
+pub const SURFTRAK_TC_DEFAULT: f32 = 1.0;
+
+/// `RC_Channel::AUX_FUNC::LOST_VEHICLE_SOUND`.
+pub const AUX_FUNC_LOST_VEHICLE_SOUND: u16 = 30;
 
 /// `MASK_LOG_ATTITUDE_FAST` — Copter `defines.h`.
 pub const MASK_LOG_ATTITUDE_FAST: u32 = 1 << 0;
@@ -514,15 +566,12 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 /// Remaining `Copter.cpp` / `Copter.h` / `system.cpp` leftovers after the
 /// table, `rc_loop`, `throttle_loop`, `update_batt_compass`, the first
 /// Copter FAST_TASK bodies including `check_ekf_reset`,
-/// `update_flight_mode`, `update_home_from_EKF`, and
-/// `update_land_and_crash_detectors`, the logging / 3 Hz / 1 Hz
-/// leftovers, simple-mode, `update_altitude`, `get_wp_distance_m`, and
-/// `run_nav_updates`.
+/// `update_flight_mode`, `update_home_from_EKF`,
+/// `update_land_and_crash_detectors`, and `update_rangefinder_terrain_offset`,
+/// the logging / 3 Hz / 1 Hz leftovers, simple-mode, `update_altitude`,
+/// `get_wp_distance_m`, `run_nav_updates`, `auto_disarm_check`,
+/// `standby_update`, and `lost_vehicle_check`.
 pub const REMAINING: &[&str] = &[
-    "Copter::update_rangefinder_terrain_offset",
-    "Copter::auto_disarm_check",
-    "Copter::standby_update",
-    "Copter::lost_vehicle_check",
     "Copter::takeoff_check",
     "Copter::init_ardupilot",
     "Copter::startup_INS_ground",
@@ -1935,6 +1984,343 @@ pub const fn run_nav_updates() -> RunNavUpdatesLeftover {
     }
 }
 
+/// One rangefinder (down or up) as `update_rangefinder_terrain_offset` sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangefinderTerrainState {
+    /// `ref_pos_u_m` — inertial height of the sensor reference.
+    pub ref_pos_u_m: f32,
+    /// `alt_glitch_protected_m`.
+    pub alt_glitch_protected_m: f32,
+    /// Filtered `terrain_u_m` before this call.
+    pub terrain_u_m: f32,
+    /// `enabled`.
+    pub enabled: bool,
+    /// `alt_healthy`.
+    pub alt_healthy: bool,
+    /// `data_stale()`.
+    pub data_stale: bool,
+}
+
+/// Inputs to `Copter::update_rangefinder_terrain_offset`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateRangefinderTerrainOffsetInputs {
+    /// Downward `rangefinder_state`.
+    pub down: RangefinderTerrainState,
+    /// Upward `rangefinder_up_state`.
+    pub up: RangefinderTerrainState,
+    /// `copter.G_Dt`.
+    pub g_dt: f32,
+    /// `g2.surftrak_tc`.
+    pub surftrak_tc: f32,
+    /// `wp_nav->rangefinder_used()`.
+    pub wp_nav_rangefinder_used: bool,
+}
+
+/// What `Copter::update_rangefinder_terrain_offset` asked later leftovers to do.
+///
+/// Both filters always run. A port that gated the LPF on `alt_healthy`
+/// would freeze terrain while the sensor recovered. Down subtracts
+/// glitch-protected alt; up adds it — swapping the signs parks
+/// surface-tracking under the vehicle. Publish uses the *down* health
+/// / stale pair; an healthy upward beam does not push wp_nav. Circle
+/// (`MODE_CIRCLE_ENABLED`, stock on) gets `enabled &&
+/// wp_nav->rangefinder_used()`, not bare `enabled`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateRangefinderTerrainOffsetLeftover {
+    /// Filtered downward `terrain_u_m` after this call.
+    pub down_terrain_u_m: f32,
+    /// Filtered upward `terrain_u_m` after this call.
+    pub up_terrain_u_m: f32,
+    /// `wp_nav->set_rangefinder_terrain_U_m(...)` ran.
+    pub publish_wp_nav: bool,
+    /// `enabled` handed to wp_nav.
+    pub wp_nav_enabled: bool,
+    /// `alt_healthy` handed to wp_nav.
+    pub wp_nav_healthy: bool,
+    /// `circle_nav->set_rangefinder_terrain_U_m(...)` ran.
+    pub publish_circle_nav: bool,
+    /// `enabled && wp_nav->rangefinder_used()` handed to circle_nav.
+    pub circle_nav_enabled: bool,
+    /// `alt_healthy` handed to circle_nav.
+    pub circle_nav_healthy: bool,
+}
+
+/// `MAX(surftrak_tc, G_Dt)` first-order update.
+fn rangefinder_terrain_lpf(current: f32, target: f32, g_dt: f32, surftrak_tc: f32) -> f32 {
+    let denom = if surftrak_tc > g_dt {
+        surftrak_tc
+    } else {
+        g_dt
+    };
+    current + (target - current) * (g_dt / denom)
+}
+
+/// `Copter::update_rangefinder_terrain_offset`.
+#[must_use]
+pub fn update_rangefinder_terrain_offset(
+    inputs: UpdateRangefinderTerrainOffsetInputs,
+) -> UpdateRangefinderTerrainOffsetLeftover {
+    let down_target = inputs.down.ref_pos_u_m - inputs.down.alt_glitch_protected_m;
+    let down_terrain_u_m = rangefinder_terrain_lpf(
+        inputs.down.terrain_u_m,
+        down_target,
+        inputs.g_dt,
+        inputs.surftrak_tc,
+    );
+    let up_target = inputs.up.ref_pos_u_m + inputs.up.alt_glitch_protected_m;
+    let up_terrain_u_m = rangefinder_terrain_lpf(
+        inputs.up.terrain_u_m,
+        up_target,
+        inputs.g_dt,
+        inputs.surftrak_tc,
+    );
+    let publish = inputs.down.alt_healthy || inputs.down.data_stale;
+    UpdateRangefinderTerrainOffsetLeftover {
+        down_terrain_u_m,
+        up_terrain_u_m,
+        publish_wp_nav: publish,
+        wp_nav_enabled: inputs.down.enabled,
+        wp_nav_healthy: inputs.down.alt_healthy,
+        publish_circle_nav: publish,
+        circle_nav_enabled: inputs.down.enabled && inputs.wp_nav_rangefinder_used,
+        circle_nav_healthy: inputs.down.alt_healthy,
+    }
+}
+
+/// Inputs to `Copter::auto_disarm_check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoDisarmCheckInputs {
+    /// `millis()`.
+    pub now_ms: u32,
+    /// Static `auto_disarm_begin` before this call.
+    pub auto_disarm_begin_ms: u32,
+    /// `g.disarm_delay` seconds, before `constrain_int16(..., 0, INT8_MAX)`.
+    pub disarm_delay_s: i16,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `flightmode->mode_number() == Mode::Number::THROW`.
+    pub throw_mode: bool,
+    /// `get_desired_spool_state() > GROUND_IDLE`.
+    pub desired_spool_above_ground_idle: bool,
+    /// `get_spool_state() > GROUND_IDLE`.
+    pub spool_above_ground_idle: bool,
+    /// `ap.using_interlock`.
+    pub using_interlock: bool,
+    /// `motors->get_interlock()`.
+    pub motors_interlock: bool,
+    /// `SRV_Channels::get_emergency_stop()`.
+    pub emergency_stop: bool,
+    /// `g.throttle_behavior`.
+    pub throttle_behavior: u8,
+    /// `flightmode->has_manual_throttle()`.
+    pub has_manual_throttle: bool,
+    /// `ap.throttle_zero`.
+    pub throttle_zero: bool,
+    /// `channel_throttle->get_control_in()`.
+    pub throttle_control_in: i16,
+    /// `get_throttle_mid()`.
+    pub throttle_mid: i16,
+    /// `g.throttle_deadzone`.
+    pub throttle_deadzone: i16,
+    /// `ap.land_complete`.
+    pub land_complete: bool,
+}
+
+/// Which `auto_disarm_check` branch armed the timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoDisarmCheckPath {
+    /// Disarmed, `DISARM_DELAY == 0`, or THROW — reset and return.
+    ResetDisarmedOrDisabled,
+    /// Desired or actual spool above ground idle — inhibit.
+    ResetSpooling,
+    /// Interlock disengaged or e-stop — halved delay, timer keeps running.
+    InterlockOrEstop,
+    /// Landed / throttle-low path (or sprung-stick deadband).
+    LandedThrottle,
+}
+
+/// What `Copter::auto_disarm_check` asked later leftovers to do.
+///
+/// THROW resets even when armed with a non-zero delay — a port that
+/// disarmed in THROW would cut motors mid-toss. Desired *or* actual
+/// spool above idle inhibits; desired can lead the actual state during
+/// checks. Interlock-off / e-stop halves the delay (`FRAME_CONFIG !=
+/// HELI_FRAME`) and skips the thr_low / land reset, so the timer is
+/// not restarted every tick while the motors are already silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoDisarmCheckLeftover {
+    /// Which branch ran.
+    pub path: AutoDisarmCheckPath,
+    /// `auto_disarm_begin` after this call.
+    pub auto_disarm_begin_ms: u32,
+    /// Delay used by the expiry test (possibly halved).
+    pub disarm_delay_ms: u32,
+    /// `arming.disarm(AP_Arming::Method::DISARMDELAY)`.
+    pub disarm: bool,
+}
+
+/// `1000 * constrain_int16(g.disarm_delay, 0, INT8_MAX)`.
+#[must_use]
+pub const fn auto_disarm_delay_ms(disarm_delay_s: i16) -> u32 {
+    let amt = disarm_delay_s as i32;
+    let constrained = if amt < 0 {
+        0
+    } else if amt > DISARM_DELAY_MAX_S as i32 {
+        DISARM_DELAY_MAX_S as i32
+    } else {
+        amt
+    };
+    1000 * constrained as u32
+}
+
+/// `Copter::auto_disarm_check`.
+#[must_use]
+pub const fn auto_disarm_check(inputs: AutoDisarmCheckInputs) -> AutoDisarmCheckLeftover {
+    let mut disarm_delay_ms = auto_disarm_delay_ms(inputs.disarm_delay_s);
+    if !inputs.motors_armed || disarm_delay_ms == 0 || inputs.throw_mode {
+        return AutoDisarmCheckLeftover {
+            path: AutoDisarmCheckPath::ResetDisarmedOrDisabled,
+            auto_disarm_begin_ms: inputs.now_ms,
+            disarm_delay_ms,
+            disarm: false,
+        };
+    }
+    if inputs.desired_spool_above_ground_idle || inputs.spool_above_ground_idle {
+        return AutoDisarmCheckLeftover {
+            path: AutoDisarmCheckPath::ResetSpooling,
+            auto_disarm_begin_ms: inputs.now_ms,
+            disarm_delay_ms,
+            disarm: false,
+        };
+    }
+
+    let mut begin = inputs.auto_disarm_begin_ms;
+    let path;
+    if (inputs.using_interlock && !inputs.motors_interlock) || inputs.emergency_stop {
+        disarm_delay_ms /= 2;
+        path = AutoDisarmCheckPath::InterlockOrEstop;
+    } else {
+        let sprung = (inputs.throttle_behavior & THR_BEHAVE_FEEDBACK_FROM_MID_STICK) != 0;
+        let thr_low = if inputs.has_manual_throttle || !sprung {
+            inputs.throttle_zero
+        } else {
+            let deadband_top = inputs.throttle_mid as i32 + inputs.throttle_deadzone as i32;
+            (inputs.throttle_control_in as i32) <= deadband_top
+        };
+        if !thr_low || !inputs.land_complete {
+            begin = inputs.now_ms;
+        }
+        path = AutoDisarmCheckPath::LandedThrottle;
+    }
+
+    let elapsed = inputs.now_ms.wrapping_sub(begin);
+    let disarm = elapsed >= disarm_delay_ms;
+    AutoDisarmCheckLeftover {
+        path,
+        auto_disarm_begin_ms: if disarm { inputs.now_ms } else { begin },
+        disarm_delay_ms,
+        disarm,
+    }
+}
+
+/// What `Copter::standby_update` asked later leftovers to do.
+///
+/// Crash / thrust-loss / parachute / hover-learn / land-detect disables
+/// live on those leftovers reading `standby_active`. Folding them into
+/// this leftover would double-clear I-terms from those paths. Inactive
+/// standby is a no-op — a port that reset every 100 Hz tick would
+/// starve the rate controller of I.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandbyUpdateLeftover {
+    /// `attitude_control->reset_rate_controller_I_terms()`.
+    pub reset_rate_i_terms: bool,
+    /// `attitude_control->reset_yaw_target_and_rate()`.
+    pub reset_yaw_target_and_rate: bool,
+    /// `pos_control->NED_standby_reset()`.
+    pub ned_standby_reset: bool,
+}
+
+/// `Copter::standby_update`.
+#[must_use]
+pub const fn standby_update(standby_active: bool) -> StandbyUpdateLeftover {
+    StandbyUpdateLeftover {
+        reset_rate_i_terms: standby_active,
+        reset_yaw_target_and_rate: standby_active,
+        ned_standby_reset: standby_active,
+    }
+}
+
+/// Inputs to `Copter::lost_vehicle_check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LostVehicleCheckInputs {
+    /// `rc().find_channel_for_option(LOST_VEHICLE_SOUND)` is assigned.
+    pub lost_vehicle_sound_aux_assigned: bool,
+    /// `ap.throttle_zero`.
+    pub throttle_zero: bool,
+    /// `motors->armed()`.
+    pub motors_armed: bool,
+    /// `channel_roll->get_control_in()`.
+    pub roll_control_in: i16,
+    /// `channel_pitch->get_control_in()`.
+    pub pitch_control_in: i16,
+    /// Static `soundalarm_counter` before this call.
+    pub soundalarm_counter: u8,
+    /// `AP_Notify::flags.vehicle_lost` before this call.
+    pub vehicle_lost: bool,
+}
+
+/// What `Copter::lost_vehicle_check` asked later leftovers to do.
+///
+/// An assigned `LOST_VEHICLE_SOUND` aux is a full refuse — it must not
+/// clear a latched alarm or bump the counter, or the two paths fight.
+/// The stick test is `> 4000`, not `>=`. The counter must reach
+/// [`LOST_VEHICLE_DELAY`] before the flag rises; GCS text fires only
+/// on the rising edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LostVehicleCheckLeftover {
+    /// `soundalarm_counter` after this call.
+    pub soundalarm_counter: u8,
+    /// `AP_Notify::flags.vehicle_lost` after this call.
+    pub vehicle_lost: bool,
+    /// `gcs().send_text(..., "Locate Copter alarm")`.
+    pub gcs_locate_copter_alarm: bool,
+}
+
+/// `Copter::lost_vehicle_check`.
+#[must_use]
+pub const fn lost_vehicle_check(inputs: LostVehicleCheckInputs) -> LostVehicleCheckLeftover {
+    if inputs.lost_vehicle_sound_aux_assigned {
+        return LostVehicleCheckLeftover {
+            soundalarm_counter: inputs.soundalarm_counter,
+            vehicle_lost: inputs.vehicle_lost,
+            gcs_locate_copter_alarm: false,
+        };
+    }
+    let sticks_max = inputs.throttle_zero
+        && !inputs.motors_armed
+        && inputs.roll_control_in > LOST_VEHICLE_STICK_MAX
+        && inputs.pitch_control_in > LOST_VEHICLE_STICK_MAX;
+    if sticks_max {
+        if inputs.soundalarm_counter >= LOST_VEHICLE_DELAY {
+            return LostVehicleCheckLeftover {
+                soundalarm_counter: inputs.soundalarm_counter,
+                vehicle_lost: true,
+                gcs_locate_copter_alarm: !inputs.vehicle_lost,
+            };
+        }
+        return LostVehicleCheckLeftover {
+            soundalarm_counter: inputs.soundalarm_counter.saturating_add(1),
+            vehicle_lost: inputs.vehicle_lost,
+            gcs_locate_copter_alarm: false,
+        };
+    }
+    LostVehicleCheckLeftover {
+        soundalarm_counter: 0,
+        vehicle_lost: false,
+        gcs_locate_copter_alarm: false,
+    }
+}
+
 /// Per-callback accounting for the leftovers this slice wires.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VehicleLoopTicks {
@@ -1974,6 +2360,14 @@ pub struct VehicleLoopTicks {
     pub update_altitude: u32,
     /// Upstream `Copter::run_nav_updates`.
     pub run_nav_updates: u32,
+    /// Upstream `Copter::update_rangefinder_terrain_offset`.
+    pub update_rangefinder_terrain_offset: u32,
+    /// Upstream `Copter::auto_disarm_check`.
+    pub auto_disarm_check: u32,
+    /// Upstream `Copter::standby_update`.
+    pub standby_update: u32,
+    /// Upstream `Copter::lost_vehicle_check`.
+    pub lost_vehicle_check: u32,
 }
 
 /// Vehicle state the wired leftovers carry between ticks.
@@ -2051,6 +2445,22 @@ pub struct CopterVehicleLoop {
     pub last_update_altitude: Option<UpdateAltitudeLeftover>,
     /// Leftover from the latest `run_nav_updates` tick.
     pub last_run_nav_updates: Option<RunNavUpdatesLeftover>,
+    /// Inputs for `update_rangefinder_terrain_offset`.
+    pub rangefinder_terrain: UpdateRangefinderTerrainOffsetInputs,
+    /// Leftover from the latest `update_rangefinder_terrain_offset` tick.
+    pub last_rangefinder_terrain: Option<UpdateRangefinderTerrainOffsetLeftover>,
+    /// Inputs for `auto_disarm_check`.
+    pub auto_disarm: AutoDisarmCheckInputs,
+    /// Leftover from the latest `auto_disarm_check` tick.
+    pub last_auto_disarm: Option<AutoDisarmCheckLeftover>,
+    /// `standby_active`.
+    pub standby_active: bool,
+    /// Leftover from the latest `standby_update` tick.
+    pub last_standby: Option<StandbyUpdateLeftover>,
+    /// Inputs for `lost_vehicle_check`.
+    pub lost_vehicle: LostVehicleCheckInputs,
+    /// Leftover from the latest `lost_vehicle_check` tick.
+    pub last_lost_vehicle: Option<LostVehicleCheckLeftover>,
 }
 
 impl CopterVehicleLoop {
@@ -2113,7 +2523,73 @@ impl CopterVehicleLoop {
             last_one_hz: None,
             last_update_altitude: None,
             last_run_nav_updates: None,
+            rangefinder_terrain: typical_rangefinder_terrain(),
+            last_rangefinder_terrain: None,
+            auto_disarm: typical_auto_disarm(),
+            last_auto_disarm: None,
+            standby_active: false,
+            last_standby: None,
+            lost_vehicle: typical_lost_vehicle(),
+            last_lost_vehicle: None,
         }
+    }
+}
+
+/// Down/up terrain at rest, `G_Dt` for 400 Hz, default `SURFTRAK_TC`.
+#[must_use]
+pub const fn typical_rangefinder_terrain() -> UpdateRangefinderTerrainOffsetInputs {
+    let resting = RangefinderTerrainState {
+        ref_pos_u_m: 0.0,
+        alt_glitch_protected_m: 0.0,
+        terrain_u_m: 0.0,
+        enabled: false,
+        alt_healthy: false,
+        data_stale: false,
+    };
+    UpdateRangefinderTerrainOffsetInputs {
+        down: resting,
+        up: resting,
+        g_dt: 1.0 / COPTER_LOOP_RATE_HZ as f32,
+        surftrak_tc: SURFTRAK_TC_DEFAULT,
+        wp_nav_rangefinder_used: false,
+    }
+}
+
+/// Disarmed, default `DISARM_DELAY`, timer already aligned to `now`.
+#[must_use]
+pub const fn typical_auto_disarm() -> AutoDisarmCheckInputs {
+    AutoDisarmCheckInputs {
+        now_ms: 1_000,
+        auto_disarm_begin_ms: 1_000,
+        disarm_delay_s: AUTO_DISARMING_DELAY,
+        motors_armed: false,
+        throw_mode: false,
+        desired_spool_above_ground_idle: false,
+        spool_above_ground_idle: false,
+        using_interlock: false,
+        motors_interlock: false,
+        emergency_stop: false,
+        throttle_behavior: 0,
+        has_manual_throttle: false,
+        throttle_zero: true,
+        throttle_control_in: 0,
+        throttle_mid: 500,
+        throttle_deadzone: 100,
+        land_complete: true,
+    }
+}
+
+/// Disarmed, sticks centered, no aux mapped, alarm clear.
+#[must_use]
+pub const fn typical_lost_vehicle() -> LostVehicleCheckInputs {
+    LostVehicleCheckInputs {
+        lost_vehicle_sound_aux_assigned: false,
+        throttle_zero: true,
+        motors_armed: false,
+        roll_control_in: 0,
+        pitch_control_in: 0,
+        soundalarm_counter: 0,
+        vehicle_lost: false,
     }
 }
 
@@ -2312,6 +2788,37 @@ fn task_run_nav_updates(vehicle: &mut CopterVehicleLoop) {
     vehicle.last_run_nav_updates = Some(run_nav_updates());
 }
 
+fn task_update_rangefinder_terrain_offset(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.update_rangefinder_terrain_offset = vehicle
+        .ticks
+        .update_rangefinder_terrain_offset
+        .saturating_add(1);
+    let leftover = update_rangefinder_terrain_offset(vehicle.rangefinder_terrain);
+    vehicle.rangefinder_terrain.down.terrain_u_m = leftover.down_terrain_u_m;
+    vehicle.rangefinder_terrain.up.terrain_u_m = leftover.up_terrain_u_m;
+    vehicle.last_rangefinder_terrain = Some(leftover);
+}
+
+fn task_auto_disarm_check(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.auto_disarm_check = vehicle.ticks.auto_disarm_check.saturating_add(1);
+    let leftover = auto_disarm_check(vehicle.auto_disarm);
+    vehicle.auto_disarm.auto_disarm_begin_ms = leftover.auto_disarm_begin_ms;
+    vehicle.last_auto_disarm = Some(leftover);
+}
+
+fn task_standby_update(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.standby_update = vehicle.ticks.standby_update.saturating_add(1);
+    vehicle.last_standby = Some(standby_update(vehicle.standby_active));
+}
+
+fn task_lost_vehicle_check(vehicle: &mut CopterVehicleLoop) {
+    vehicle.ticks.lost_vehicle_check = vehicle.ticks.lost_vehicle_check.saturating_add(1);
+    let leftover = lost_vehicle_check(vehicle.lost_vehicle);
+    vehicle.lost_vehicle.soundalarm_counter = leftover.soundalarm_counter;
+    vehicle.lost_vehicle.vehicle_lost = leftover.vehicle_lost;
+    vehicle.last_lost_vehicle = Some(leftover);
+}
+
 /// First Copter-owned FAST_TASK, in upstream table form.
 #[must_use]
 pub fn copter_run_rate_controller_main_task() -> Task<CopterVehicleLoop> {
@@ -2465,7 +2972,8 @@ pub fn copter_first_scheduled_tasks() -> [Task<CopterVehicleLoop>; 2] {
 ///
 /// Table order: `check_ekf_reset`, `update_flight_mode`,
 /// `update_home_from_EKF`, `update_land_and_crash_detectors`.
-/// `update_rangefinder_terrain_offset` stays a later leftover.
+/// [`update_rangefinder_terrain_offset`] is the next FAST_TASK leftover
+/// after those — see [`copter_later_fast_tasks`].
 #[must_use]
 pub fn copter_next_fast_tasks() -> [Task<CopterVehicleLoop>; 4] {
     [
@@ -2581,6 +3089,60 @@ pub fn copter_run_nav_updates_task() -> Task<CopterVehicleLoop> {
         rate_hz: RUN_NAV_UPDATES_RATE_HZ,
         max_time_micros: RUN_NAV_UPDATES_MAX_TIME_MICROS,
         priority: RUN_NAV_UPDATES_PRIORITY,
+    }
+}
+
+/// `update_rangefinder_terrain_offset` FAST_TASK.
+#[must_use]
+pub fn copter_update_rangefinder_terrain_offset_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_update_rangefinder_terrain_offset,
+        name: "update_rangefinder_terrain_offset",
+        rate_hz: LOOP_RATE,
+        max_time_micros: 0,
+        priority: FAST_TASK_PRI0,
+    }
+}
+
+/// Next Copter-owned FAST_TASK leftover after the land/crash detectors.
+#[must_use]
+pub fn copter_later_fast_tasks() -> [Task<CopterVehicleLoop>; 1] {
+    [copter_update_rangefinder_terrain_offset_task()]
+}
+
+/// `auto_disarm_check` scheduled row (`10` Hz).
+#[must_use]
+pub fn copter_auto_disarm_check_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_auto_disarm_check,
+        name: "auto_disarm_check",
+        rate_hz: AUTO_DISARM_CHECK_RATE_HZ,
+        max_time_micros: AUTO_DISARM_CHECK_MAX_TIME_MICROS,
+        priority: AUTO_DISARM_CHECK_PRIORITY,
+    }
+}
+
+/// `standby_update` scheduled row (`100` Hz).
+#[must_use]
+pub fn copter_standby_update_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_standby_update,
+        name: "standby_update",
+        rate_hz: STANDBY_UPDATE_RATE_HZ,
+        max_time_micros: STANDBY_UPDATE_MAX_TIME_MICROS,
+        priority: STANDBY_UPDATE_PRIORITY,
+    }
+}
+
+/// `lost_vehicle_check` scheduled row (`10` Hz).
+#[must_use]
+pub fn copter_lost_vehicle_check_task() -> Task<CopterVehicleLoop> {
+    Task {
+        function: task_lost_vehicle_check,
+        name: "lost_vehicle_check",
+        rate_hz: LOST_VEHICLE_CHECK_RATE_HZ,
+        max_time_micros: LOST_VEHICLE_CHECK_MAX_TIME_MICROS,
+        priority: LOST_VEHICLE_CHECK_PRIORITY,
     }
 }
 

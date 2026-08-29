@@ -2,33 +2,42 @@
 
 use ap_copter::radio::ReadRadioLeftover;
 use ap_copter::vehicle_loop::{
-    always_on_tasks, ap_value, check_ekf_reset, copter_first_fast_tasks,
-    copter_first_scheduled_tasks, copter_logging_tasks, copter_next_fast_tasks,
-    copter_next_scheduled_tasks, copter_periodic_loop_tasks, copter_rc_loop_task,
-    first_scheduled_task, get_scheduler_tasks, get_wp_distance_m, loop_rate_logging, motors_output,
-    motors_output_main, one_hz_loop, rc_loop, read_ahrs, read_inertia, read_mode_switch,
-    run_nav_updates, run_scheduler_tick, set_home, set_home_to_current_location,
-    set_home_to_current_location_inflight, should_log, ten_hz_logging_loop, three_hz_loop,
-    throttle_loop, twentyfive_hz_logging, update_altitude, update_batt_compass, update_flight_mode,
-    update_home_from_ekf, update_land_and_crash_detectors, ApState, CheckEkfResetInputs,
-    CopterVehicleLoop, EkfResetMethod, InterlockEdge, LoopRateLoggingInputs, ModeSwitchReadInputs,
-    ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover, MotorsOutputPush,
-    OneHzLoopInputs, SetHomeInputs, SetHomeToCurrentLocationInflightInputs,
-    SetHomeToCurrentLocationInputs, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs,
-    UpdateAltitudeInputs, UpdateBattCompassInputs, UpdateFlightModeInputs, UpdateHomeFromEkfInputs,
-    UpdateHomeFromEkfPath, ARMING_DELAY_MS, COPTER_LOOP_RATE_HZ, DEFAULT_LOG_BITMASK,
-    FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS, LOOP_RATE_LOGGING_PRIORITY, MASK_LOG_ANY,
-    MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED, MASK_LOG_IMU, MASK_LOG_IMU_FAST,
-    MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS,
-    ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY,
-    RC_LOOP_RATE_HZ, REMAINING, RUN_NAV_UPDATES_MAX_TIME_MICROS, RUN_NAV_UPDATES_PRIORITY,
-    RUN_NAV_UPDATES_RATE_HZ, SCHEDULER_TASKS, TEN_HZ_LOGGING_MAX_TIME_MICROS,
+    always_on_tasks, ap_value, auto_disarm_check, auto_disarm_delay_ms, check_ekf_reset,
+    copter_first_fast_tasks, copter_first_scheduled_tasks, copter_logging_tasks,
+    copter_next_fast_tasks, copter_next_scheduled_tasks, copter_periodic_loop_tasks,
+    copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks, get_wp_distance_m,
+    loop_rate_logging, lost_vehicle_check, motors_output, motors_output_main, one_hz_loop, rc_loop,
+    read_ahrs, read_inertia, read_mode_switch, run_nav_updates, run_scheduler_tick, set_home,
+    set_home_to_current_location, set_home_to_current_location_inflight, should_log,
+    standby_update, ten_hz_logging_loop, three_hz_loop, throttle_loop, twentyfive_hz_logging,
+    update_altitude, update_batt_compass, update_flight_mode, update_home_from_ekf,
+    update_land_and_crash_detectors, update_rangefinder_terrain_offset, ApState,
+    AutoDisarmCheckInputs, AutoDisarmCheckPath, CheckEkfResetInputs, CopterVehicleLoop,
+    EkfResetMethod, InterlockEdge, LoopRateLoggingInputs, LostVehicleCheckInputs,
+    ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive, MotorsOutputMainLeftover,
+    MotorsOutputPush, OneHzLoopInputs, RangefinderTerrainState, SetHomeInputs,
+    SetHomeToCurrentLocationInflightInputs, SetHomeToCurrentLocationInputs, TaskKind,
+    TenHzLoggingInputs, TwentyfiveHzLoggingInputs, UpdateAltitudeInputs, UpdateBattCompassInputs,
+    UpdateFlightModeInputs, UpdateHomeFromEkfInputs, UpdateHomeFromEkfPath,
+    UpdateRangefinderTerrainOffsetInputs, ARMING_DELAY_MS, AUTO_DISARMING_DELAY,
+    AUTO_DISARM_CHECK_MAX_TIME_MICROS, AUTO_DISARM_CHECK_PRIORITY, AUTO_DISARM_CHECK_RATE_HZ,
+    COPTER_LOOP_RATE_HZ, DEFAULT_LOG_BITMASK, DISARM_DELAY_MAX_S, FAST_TASK_PRI0,
+    LOOP_RATE_LOGGING_MAX_TIME_MICROS, LOOP_RATE_LOGGING_PRIORITY,
+    LOST_VEHICLE_CHECK_MAX_TIME_MICROS, LOST_VEHICLE_CHECK_PRIORITY, LOST_VEHICLE_CHECK_RATE_HZ,
+    LOST_VEHICLE_DELAY, LOST_VEHICLE_STICK_MAX, MASK_LOG_ANY, MASK_LOG_ATTITUDE_FAST,
+    MASK_LOG_ATTITUDE_MED, MASK_LOG_IMU, MASK_LOG_IMU_FAST, MASK_LOG_MOTBATT, MASK_LOG_NTUN,
+    MASK_LOG_PM, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS, ONE_HZ_LOOP_PRIORITY,
+    ONE_HZ_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY, RC_LOOP_RATE_HZ, REMAINING,
+    RUN_NAV_UPDATES_MAX_TIME_MICROS, RUN_NAV_UPDATES_PRIORITY, RUN_NAV_UPDATES_RATE_HZ,
+    SCHEDULER_TASKS, STANDBY_UPDATE_MAX_TIME_MICROS, STANDBY_UPDATE_PRIORITY,
+    STANDBY_UPDATE_RATE_HZ, SURFTRAK_TC_DEFAULT, TEN_HZ_LOGGING_MAX_TIME_MICROS,
     TEN_HZ_LOGGING_PRIORITY, TEN_HZ_LOGGING_RATE_HZ, THREE_HZ_LOOP_MAX_TIME_MICROS,
     THREE_HZ_LOOP_PRIORITY, THREE_HZ_LOOP_RATE_HZ, THROTTLE_LOOP_MAX_TIME_MICROS,
-    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ, TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS,
-    TWENTYFIVE_HZ_LOGGING_PRIORITY, TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS,
-    UPDATE_ALTITUDE_PRIORITY, UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
-    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
+    THROTTLE_LOOP_PRIORITY, THROTTLE_LOOP_RATE_HZ, THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
+    TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS, TWENTYFIVE_HZ_LOGGING_PRIORITY,
+    TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS, UPDATE_ALTITUDE_PRIORITY,
+    UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS, UPDATE_BATT_COMPASS_PRIORITY,
+    UPDATE_BATT_COMPASS_RATE_HZ,
 };
 use ap_hal::time::{Clock, Micros, Millis};
 use ap_math::location::AltFrame;
@@ -136,7 +145,19 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::run_nav_updates"));
-    assert!(REMAINING.contains(&"Copter::update_rangefinder_terrain_offset"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::update_rangefinder_terrain_offset"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::auto_disarm_check"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::standby_update"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::lost_vehicle_check"));
+    assert!(REMAINING.contains(&"Copter::takeoff_check"));
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::init_simple_bearing"));
@@ -1282,4 +1303,441 @@ fn scheduler_runs_run_nav_updates_every_eighth_tick() {
     let leftover = vehicle.last_run_nav_updates.expect("run_nav_updates ran");
     assert!(leftover.update_super_simple_bearing);
     assert!(!leftover.force_update);
+}
+
+#[test]
+fn update_rangefinder_terrain_offset_filters_even_when_unhealthy() {
+    let leftover = update_rangefinder_terrain_offset(UpdateRangefinderTerrainOffsetInputs {
+        down: RangefinderTerrainState {
+            ref_pos_u_m: 10.0,
+            alt_glitch_protected_m: 0.0,
+            terrain_u_m: 0.0,
+            enabled: true,
+            alt_healthy: false,
+            data_stale: false,
+        },
+        up: RangefinderTerrainState {
+            ref_pos_u_m: 4.0,
+            alt_glitch_protected_m: 0.0,
+            terrain_u_m: 0.0,
+            enabled: false,
+            alt_healthy: false,
+            data_stale: false,
+        },
+        g_dt: 0.1,
+        surftrak_tc: SURFTRAK_TC_DEFAULT,
+        wp_nav_rangefinder_used: true,
+    });
+    assert!((leftover.down_terrain_u_m - 1.0).abs() < 1.0e-6);
+    assert!((leftover.up_terrain_u_m - 0.4).abs() < 1.0e-6);
+    assert!(!leftover.publish_wp_nav);
+    assert!(!leftover.publish_circle_nav);
+}
+
+#[test]
+fn update_rangefinder_terrain_offset_down_subtracts_and_up_adds() {
+    let leftover = update_rangefinder_terrain_offset(UpdateRangefinderTerrainOffsetInputs {
+        down: RangefinderTerrainState {
+            ref_pos_u_m: 12.0,
+            alt_glitch_protected_m: 2.0,
+            terrain_u_m: 10.0,
+            enabled: true,
+            alt_healthy: true,
+            data_stale: false,
+        },
+        up: RangefinderTerrainState {
+            ref_pos_u_m: 3.0,
+            alt_glitch_protected_m: 1.0,
+            terrain_u_m: 4.0,
+            enabled: true,
+            alt_healthy: true,
+            data_stale: false,
+        },
+        g_dt: 0.1,
+        surftrak_tc: 0.0,
+        wp_nav_rangefinder_used: false,
+    });
+    assert!((leftover.down_terrain_u_m - 10.0).abs() < 1.0e-6);
+    assert!((leftover.up_terrain_u_m - 4.0).abs() < 1.0e-6);
+    assert!(leftover.publish_wp_nav);
+    assert!(leftover.publish_circle_nav);
+    assert!(leftover.wp_nav_enabled);
+    assert!(!leftover.circle_nav_enabled);
+}
+
+#[test]
+fn update_rangefinder_terrain_offset_publishes_when_stale_even_if_unhealthy() {
+    let leftover = update_rangefinder_terrain_offset(UpdateRangefinderTerrainOffsetInputs {
+        down: RangefinderTerrainState {
+            ref_pos_u_m: 5.0,
+            alt_glitch_protected_m: 0.0,
+            terrain_u_m: 5.0,
+            enabled: true,
+            alt_healthy: false,
+            data_stale: true,
+        },
+        up: RangefinderTerrainState {
+            ref_pos_u_m: 0.0,
+            alt_glitch_protected_m: 0.0,
+            terrain_u_m: 0.0,
+            enabled: false,
+            alt_healthy: true,
+            data_stale: false,
+        },
+        g_dt: 0.1,
+        surftrak_tc: SURFTRAK_TC_DEFAULT,
+        wp_nav_rangefinder_used: true,
+    });
+    assert!(leftover.publish_wp_nav);
+    assert!(leftover.publish_circle_nav);
+    assert!(!leftover.wp_nav_healthy);
+    assert!(leftover.circle_nav_enabled);
+    assert!(!leftover.circle_nav_healthy);
+}
+
+#[test]
+fn scheduler_runs_rangefinder_terrain_offset_every_loop() {
+    use ap_copter::vehicle_loop::copter_later_fast_tasks;
+    let tasks = copter_later_fast_tasks();
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.rangefinder_terrain.down.ref_pos_u_m = 10.0;
+    vehicle.rangefinder_terrain.down.enabled = true;
+    vehicle.rangefinder_terrain.down.alt_healthy = true;
+    vehicle.rangefinder_terrain.g_dt = 0.1;
+    vehicle.rangefinder_terrain.surftrak_tc = 1.0;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.update_rangefinder_terrain_offset, 1);
+    let leftover = vehicle
+        .last_rangefinder_terrain
+        .expect("update_rangefinder_terrain_offset ran");
+    assert!((leftover.down_terrain_u_m - 1.0).abs() < 1.0e-6);
+    assert!(leftover.publish_wp_nav);
+}
+
+fn landed_auto_disarm() -> AutoDisarmCheckInputs {
+    AutoDisarmCheckInputs {
+        now_ms: 11_000,
+        auto_disarm_begin_ms: 1_000,
+        disarm_delay_s: AUTO_DISARMING_DELAY,
+        motors_armed: true,
+        throw_mode: false,
+        desired_spool_above_ground_idle: false,
+        spool_above_ground_idle: false,
+        using_interlock: false,
+        motors_interlock: false,
+        emergency_stop: false,
+        throttle_behavior: 0,
+        has_manual_throttle: false,
+        throttle_zero: true,
+        throttle_control_in: 0,
+        throttle_mid: 500,
+        throttle_deadzone: 100,
+        land_complete: true,
+    }
+}
+
+#[test]
+fn auto_disarm_delay_ms_constrains_to_int8_max() {
+    assert_eq!(auto_disarm_delay_ms(AUTO_DISARMING_DELAY), 10_000);
+    assert_eq!(auto_disarm_delay_ms(0), 0);
+    assert_eq!(auto_disarm_delay_ms(-3), 0);
+    assert_eq!(auto_disarm_delay_ms(200), 1_000 * DISARM_DELAY_MAX_S as u32);
+}
+
+#[test]
+fn auto_disarm_check_resets_when_disarmed_disabled_or_throw() {
+    let mut inputs = landed_auto_disarm();
+    inputs.motors_armed = false;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::ResetDisarmedOrDisabled);
+    assert_eq!(leftover.auto_disarm_begin_ms, inputs.now_ms);
+    assert!(!leftover.disarm);
+
+    inputs = landed_auto_disarm();
+    inputs.disarm_delay_s = 0;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::ResetDisarmedOrDisabled);
+    assert!(!leftover.disarm);
+
+    inputs = landed_auto_disarm();
+    inputs.throw_mode = true;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::ResetDisarmedOrDisabled);
+    assert!(!leftover.disarm);
+}
+
+#[test]
+fn auto_disarm_check_desired_or_actual_spool_inhibits() {
+    let mut inputs = landed_auto_disarm();
+    inputs.desired_spool_above_ground_idle = true;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::ResetSpooling);
+    assert_eq!(leftover.auto_disarm_begin_ms, inputs.now_ms);
+    assert!(!leftover.disarm);
+
+    inputs = landed_auto_disarm();
+    inputs.spool_above_ground_idle = true;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::ResetSpooling);
+    assert!(!leftover.disarm);
+}
+
+#[test]
+fn auto_disarm_check_disarms_after_delay_when_landed_and_throttle_low() {
+    let leftover = auto_disarm_check(landed_auto_disarm());
+    assert_eq!(leftover.path, AutoDisarmCheckPath::LandedThrottle);
+    assert!(leftover.disarm);
+    assert_eq!(leftover.auto_disarm_begin_ms, 11_000);
+    assert_eq!(leftover.disarm_delay_ms, 10_000);
+}
+
+#[test]
+fn auto_disarm_check_resets_when_not_landed_or_throttle_not_low() {
+    let mut inputs = landed_auto_disarm();
+    inputs.land_complete = false;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::LandedThrottle);
+    assert_eq!(leftover.auto_disarm_begin_ms, inputs.now_ms);
+    assert!(!leftover.disarm);
+
+    inputs = landed_auto_disarm();
+    inputs.throttle_zero = false;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.auto_disarm_begin_ms, inputs.now_ms);
+    assert!(!leftover.disarm);
+}
+
+#[test]
+fn auto_disarm_check_sprung_stick_uses_deadband_not_throttle_zero() {
+    let mut inputs = landed_auto_disarm();
+    inputs.throttle_behavior = THR_BEHAVE_FEEDBACK_FROM_MID_STICK;
+    inputs.has_manual_throttle = false;
+    inputs.throttle_zero = false;
+    inputs.throttle_control_in = 600;
+    let leftover = auto_disarm_check(inputs);
+    assert!(leftover.disarm);
+
+    inputs.throttle_control_in = 601;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.auto_disarm_begin_ms, inputs.now_ms);
+    assert!(!leftover.disarm);
+}
+
+#[test]
+fn auto_disarm_check_interlock_halves_delay_and_keeps_timer() {
+    let mut inputs = landed_auto_disarm();
+    inputs.using_interlock = true;
+    inputs.motors_interlock = false;
+    inputs.now_ms = 6_000;
+    inputs.auto_disarm_begin_ms = 1_000;
+    inputs.land_complete = false;
+    let leftover = auto_disarm_check(inputs);
+    assert_eq!(leftover.path, AutoDisarmCheckPath::InterlockOrEstop);
+    assert_eq!(leftover.disarm_delay_ms, 5_000);
+    assert!(leftover.disarm);
+    assert_eq!(leftover.auto_disarm_begin_ms, 6_000);
+}
+
+#[test]
+fn auto_disarm_check_is_the_ten_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "auto_disarm_check")
+        .expect("auto_disarm_check");
+    assert!(task.rate_hz == AUTO_DISARM_CHECK_RATE_HZ);
+    assert_eq!(task.max_time_micros, AUTO_DISARM_CHECK_MAX_TIME_MICROS);
+    assert_eq!(task.priority, AUTO_DISARM_CHECK_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn scheduler_runs_auto_disarm_check_every_fortieth_tick() {
+    use ap_copter::vehicle_loop::copter_auto_disarm_check_task;
+    let tasks = [copter_auto_disarm_check_task()];
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.auto_disarm = landed_auto_disarm();
+    vehicle.auto_disarm.now_ms = 12_000;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..39 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.auto_disarm_check, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.auto_disarm_check, 1);
+    let leftover = vehicle.last_auto_disarm.expect("auto_disarm_check ran");
+    assert!(leftover.disarm);
+}
+
+#[test]
+fn standby_update_is_noop_until_active() {
+    let leftover = standby_update(false);
+    assert!(!leftover.reset_rate_i_terms);
+    assert!(!leftover.reset_yaw_target_and_rate);
+    assert!(!leftover.ned_standby_reset);
+
+    let leftover = standby_update(true);
+    assert!(leftover.reset_rate_i_terms);
+    assert!(leftover.reset_yaw_target_and_rate);
+    assert!(leftover.ned_standby_reset);
+}
+
+#[test]
+fn standby_update_is_the_hundred_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "standby_update")
+        .expect("standby_update");
+    assert!(task.rate_hz == STANDBY_UPDATE_RATE_HZ);
+    assert_eq!(task.max_time_micros, STANDBY_UPDATE_MAX_TIME_MICROS);
+    assert_eq!(task.priority, STANDBY_UPDATE_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn scheduler_runs_standby_update_every_fourth_tick() {
+    use ap_copter::vehicle_loop::copter_standby_update_task;
+    let tasks = [copter_standby_update_task()];
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.standby_active = true;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..3 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.standby_update, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.standby_update, 1);
+    let leftover = vehicle.last_standby.expect("standby_update ran");
+    assert!(leftover.reset_rate_i_terms);
+    assert!(leftover.ned_standby_reset);
+}
+
+#[test]
+fn lost_vehicle_check_aux_assigned_is_a_full_refuse() {
+    let leftover = lost_vehicle_check(LostVehicleCheckInputs {
+        lost_vehicle_sound_aux_assigned: true,
+        throttle_zero: true,
+        motors_armed: false,
+        roll_control_in: LOST_VEHICLE_STICK_MAX + 1,
+        pitch_control_in: LOST_VEHICLE_STICK_MAX + 1,
+        soundalarm_counter: 3,
+        vehicle_lost: true,
+    });
+    assert_eq!(leftover.soundalarm_counter, 3);
+    assert!(leftover.vehicle_lost);
+    assert!(!leftover.gcs_locate_copter_alarm);
+}
+
+#[test]
+fn lost_vehicle_check_requires_sticks_above_4000() {
+    let leftover = lost_vehicle_check(LostVehicleCheckInputs {
+        lost_vehicle_sound_aux_assigned: false,
+        throttle_zero: true,
+        motors_armed: false,
+        roll_control_in: LOST_VEHICLE_STICK_MAX,
+        pitch_control_in: LOST_VEHICLE_STICK_MAX + 1,
+        soundalarm_counter: 9,
+        vehicle_lost: false,
+    });
+    assert_eq!(leftover.soundalarm_counter, 0);
+    assert!(!leftover.vehicle_lost);
+}
+
+#[test]
+fn lost_vehicle_check_counts_then_latches_on_rising_edge() {
+    let mut inputs = LostVehicleCheckInputs {
+        lost_vehicle_sound_aux_assigned: false,
+        throttle_zero: true,
+        motors_armed: false,
+        roll_control_in: LOST_VEHICLE_STICK_MAX + 1,
+        pitch_control_in: LOST_VEHICLE_STICK_MAX + 1,
+        soundalarm_counter: 0,
+        vehicle_lost: false,
+    };
+    for expected in 1..=LOST_VEHICLE_DELAY {
+        let leftover = lost_vehicle_check(inputs);
+        assert_eq!(leftover.soundalarm_counter, expected);
+        assert!(!leftover.vehicle_lost);
+        assert!(!leftover.gcs_locate_copter_alarm);
+        inputs.soundalarm_counter = leftover.soundalarm_counter;
+    }
+    let leftover = lost_vehicle_check(inputs);
+    assert_eq!(leftover.soundalarm_counter, LOST_VEHICLE_DELAY);
+    assert!(leftover.vehicle_lost);
+    assert!(leftover.gcs_locate_copter_alarm);
+
+    inputs.soundalarm_counter = leftover.soundalarm_counter;
+    inputs.vehicle_lost = leftover.vehicle_lost;
+    let leftover = lost_vehicle_check(inputs);
+    assert!(leftover.vehicle_lost);
+    assert!(!leftover.gcs_locate_copter_alarm);
+}
+
+#[test]
+fn lost_vehicle_check_clears_immediately_when_sticks_leave() {
+    let leftover = lost_vehicle_check(LostVehicleCheckInputs {
+        lost_vehicle_sound_aux_assigned: false,
+        throttle_zero: true,
+        motors_armed: false,
+        roll_control_in: 0,
+        pitch_control_in: 0,
+        soundalarm_counter: LOST_VEHICLE_DELAY,
+        vehicle_lost: true,
+    });
+    assert_eq!(leftover.soundalarm_counter, 0);
+    assert!(!leftover.vehicle_lost);
+    assert!(!leftover.gcs_locate_copter_alarm);
+}
+
+#[test]
+fn lost_vehicle_check_is_the_ten_hz_row() {
+    let task = SCHEDULER_TASKS
+        .iter()
+        .find(|row| row.name == "lost_vehicle_check")
+        .expect("lost_vehicle_check");
+    assert!(task.rate_hz == LOST_VEHICLE_CHECK_RATE_HZ);
+    assert_eq!(task.max_time_micros, LOST_VEHICLE_CHECK_MAX_TIME_MICROS);
+    assert_eq!(task.priority, LOST_VEHICLE_CHECK_PRIORITY);
+    assert!(task.gate.is_none());
+}
+
+#[test]
+fn scheduler_runs_lost_vehicle_check_every_fortieth_tick() {
+    use ap_copter::vehicle_loop::copter_lost_vehicle_check_task;
+    let tasks = [copter_lost_vehicle_check_task()];
+    let mut last = [0u16; 1];
+    let mut vehicle = CopterVehicleLoop::typical();
+    vehicle.lost_vehicle.roll_control_in = LOST_VEHICLE_STICK_MAX + 1;
+    vehicle.lost_vehicle.pitch_control_in = LOST_VEHICLE_STICK_MAX + 1;
+    let mut scheduler = Scheduler::new(&tasks, &[], &mut last, COPTER_LOOP_RATE_HZ);
+    let clock = StepClock::new();
+
+    for _ in 0..39 {
+        let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+        assert_eq!(stats.tasks_run, 0);
+        assert_eq!(vehicle.ticks.lost_vehicle_check, 0);
+    }
+
+    let stats = run_scheduler_tick(&mut vehicle, &mut scheduler, &clock, 2_500);
+    assert_eq!(stats.tasks_run, 1);
+    assert_eq!(vehicle.ticks.lost_vehicle_check, 1);
+    let leftover = vehicle.last_lost_vehicle.expect("lost_vehicle_check ran");
+    assert_eq!(leftover.soundalarm_counter, 1);
+    assert!(!leftover.vehicle_lost);
 }
