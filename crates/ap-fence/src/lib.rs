@@ -1,11 +1,12 @@
 //! Geofence type bits, enable leftover, circle / alt-max / alt-min checks,
 //! `check()` orchestration, pre-arm, dest-inside, auto-enable-on-arm/
-//! takeoff, `check_fence_polygon`, and the first poly-loader inclusion-
-//! circle leftover. Upstream `libraries/AC_Fence`. Tracked as **COP-025**.
+//! takeoff, `check_fence_polygon`, poly-loader inclusion / exclusion
+//! circles, vertex polygons, and the first EEPROM format leftover.
+//! Upstream `libraries/AC_Fence`. Tracked as **COP-025**.
 //!
 //! This is the first real `AC_Fence` leftover. Plane already has a
 //! `FENCE_ACTION` table in `ap-plane::fence_failsafe_hookup`; that hookup
-//! now decodes through [`Action`] here. Polygon EEPROM / SD storage stays
+//! now decodes through [`Action`] here. EEPROM scan / index / SD stay
 //! later.
 //!
 //! # Enable is a change mask, not a bool
@@ -35,23 +36,27 @@
 //! but returns 0 so the vehicle does not re-take control. The poly-loader
 //! semaphore stays later.
 //!
-//! # Polygon / inclusion-circle leftovers
+//! # Polygon / loader leftovers
 //!
 //! [`Fence::check_fence_polygon`] is the leftover of
-//! `AC_Fence::check_fence_polygon`. [`poly_fence::PolyFence`] is the first
-//! `AC_PolyFence_loader` leftover: in-memory inclusion circles,
-//! `breached(loc)`, and `check_inclusion_circle_margin`. EEPROM / SD
-//! storage, vertex polygons, and exclusion zones stay later.
+//! `AC_Fence::check_fence_polygon`. [`poly_fence::PolyFence`] is the
+//! `AC_PolyFence_loader` leftover: in-memory inclusion / exclusion
+//! circles, vertex inclusion / exclusion polygons, `breached(loc)`, and
+//! `check_inclusion_circle_margin`. [`poly_fence_storage`] is the first
+//! EEPROM format leftover — magic, item types, `format()`, and
+//! `fence_storage_space_required`. Scan / index / `write_fence` /
+//! `load_from_storage` / SD stay later.
 //!
 //! # What this crate does not own
 //!
-//! EEPROM / SD storage, vertex polygons, and exclusion zones stay later
-//! leftovers.
+//! EEPROM scan / index / `write_fence` / `load_from_storage` and SD
+//! storage stay later leftovers.
 
 #![no_std]
 
 pub mod fence;
 pub mod poly_fence;
+pub mod poly_fence_storage;
 
 pub use fence::{
     Action, AutoEnable, AutoEnableLeftover, AutoEnablePrint, CheckAltMaxContext,
@@ -66,5 +71,11 @@ pub use fence::{
     TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
 };
 pub use poly_fence::{
-    BreachedLeftover, InclusionCircle, PolyFence, MAX_INCLUSION_CIRCLES, OPTION_INCLUSION_UNION,
+    BreachedLeftover, ExclusionCircle, InclusionCircle, PolyFence, Vertex, VertexPolygon,
+    MAX_EXCLUSION_CIRCLES, MAX_EXCLUSION_POLYGONS, MAX_INCLUSION_CIRCLES, MAX_INCLUSION_POLYGONS,
+    MAX_POLYGON_VERTICES, OPTION_INCLUSION_UNION,
+};
+pub use poly_fence_storage::{
+    fence_storage_space_required, format_storage, storage_formatted, write_eos_to_storage,
+    write_latlon_to_storage, write_type_to_storage, PolyFenceItem, PolyFenceType, STORAGE_MAGIC,
 };

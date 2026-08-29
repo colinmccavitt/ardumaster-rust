@@ -1,10 +1,11 @@
-//! First `AC_PolyFence_loader` leftover: inclusion-circle `breached()`
-//! and `check_inclusion_circle_margin`, plus `AC_Fence::check_fence_polygon`.
+//! PolyFence leftover: inclusion-circle `breached()`, vertex inclusion /
+//! exclusion polygons, exclusion circles, and `AC_Fence::check_fence_polygon`.
 //!
-//! Tracked as **COP-025**. EEPROM / SD storage is not in this slice.
+//! Tracked as **COP-025**. EEPROM scan / index / SD is not in this slice.
 
 use ap_fence::{
-    CheckContext, CheckPolygonContext, Fence, InclusionCircle, PolyFence, MAX_INCLUSION_CIRCLES,
+    CheckContext, CheckPolygonContext, ExclusionCircle, Fence, InclusionCircle, PolyFence,
+    Vertex, VertexPolygon, MAX_EXCLUSION_CIRCLES, MAX_INCLUSION_CIRCLES, MAX_INCLUSION_POLYGONS,
     OPTION_INCLUSION_UNION, TYPE_ALT_MAX, TYPE_POLYGON,
 };
 use ap_math::location::Location;
@@ -20,10 +21,21 @@ fn seat_home_circle(radius_m: f32) -> PolyFence {
     loader
 }
 
+fn square(half: i32) -> VertexPolygon {
+    let mut poly = VertexPolygon::new();
+    assert!(poly.push_vertex(Vertex::new(-half, -half)));
+    assert!(poly.push_vertex(Vertex::new(half, -half)));
+    assert!(poly.push_vertex(Vertex::new(half, half)));
+    assert!(poly.push_vertex(Vertex::new(-half, half)));
+    poly
+}
+
 #[test]
 fn inclusion_union_bit_matches_upstream() {
     assert_eq!(OPTION_INCLUSION_UNION, 1 << 1);
     assert_eq!(MAX_INCLUSION_CIRCLES, 8);
+    assert_eq!(MAX_EXCLUSION_CIRCLES, 8);
+    assert_eq!(MAX_INCLUSION_POLYGONS, 4);
 }
 
 #[test]
@@ -320,4 +332,193 @@ fn loader_breach_feeds_the_polygon_checker() {
     });
     assert!(leftover.newly_breached);
     almost(leftover.breach_distance_m, hit.distance_outside_m);
+}
+
+#[test]
+fn inside_inclusion_polygon_is_not_breached() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    assert_eq!(loader.inclusion_polygon_count(), 1);
+    assert_eq!(loader.total_fence_count(), 1);
+
+    let inside = loader.breached_at(Location::new(0, 0));
+    assert!(!inside.skipped);
+    assert!(!inside.breached);
+    assert!(!inside.exclusion_hit);
+    assert_eq!(inside.num_inclusion, 1);
+    assert_eq!(inside.num_inclusion_outside, 0);
+    assert!(inside.distance_outside_m < 0.0);
+    assert!(!loader.breached(Location::new(0, 0)));
+}
+
+#[test]
+fn outside_inclusion_polygon_is_breached() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    let loc = Location::new(80_000, 0);
+    let leftover = loader.breached_at(loc);
+    assert!(leftover.breached);
+    assert_eq!(leftover.num_inclusion_outside, 1);
+    assert!(leftover.distance_outside_m > 0.0);
+    assert!(loader.breached(loc));
+}
+
+#[test]
+fn closed_inclusion_polygon_matches_the_open_ring() {
+    let mut open = PolyFence::new();
+    assert!(open.push_inclusion_polygon(square(20_000)));
+
+    let mut closed_poly = square(20_000);
+    assert!(closed_poly.push_vertex(Vertex::new(-20_000, -20_000)));
+    let mut closed = PolyFence::new();
+    assert!(closed.push_inclusion_polygon(closed_poly));
+
+    let inside = Location::new(1_000, -2_000);
+    let outside = Location::new(80_000, 10_000);
+    assert_eq!(open.breached(inside), closed.breached(inside));
+    assert_eq!(open.breached(outside), closed.breached(outside));
+    assert!(!open.breached(inside));
+    assert!(open.breached(outside));
+}
+
+#[test]
+fn intersection_breaches_if_outside_any_inclusion_polygon() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    let mut other = VertexPolygon::new();
+    assert!(other.push_vertex(Vertex::new(80_000, -20_000)));
+    assert!(other.push_vertex(Vertex::new(120_000, -20_000)));
+    assert!(other.push_vertex(Vertex::new(120_000, 20_000)));
+    assert!(other.push_vertex(Vertex::new(80_000, 20_000)));
+    assert!(loader.push_inclusion_polygon(other));
+
+    let at_home = loader.breached_at(Location::new(0, 0));
+    assert!(at_home.breached);
+    assert_eq!(at_home.num_inclusion, 2);
+    assert_eq!(at_home.num_inclusion_outside, 1);
+
+    let far = loader.breached_at(Location::new(200_000, 0));
+    assert!(far.breached);
+    assert_eq!(far.num_inclusion_outside, 2);
+}
+
+#[test]
+fn union_keeps_a_point_inside_either_inclusion_polygon() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    let mut other = VertexPolygon::new();
+    assert!(other.push_vertex(Vertex::new(80_000, -20_000)));
+    assert!(other.push_vertex(Vertex::new(120_000, -20_000)));
+    assert!(other.push_vertex(Vertex::new(120_000, 20_000)));
+    assert!(other.push_vertex(Vertex::new(80_000, 20_000)));
+    assert!(loader.push_inclusion_polygon(other));
+    loader.set_options(OPTION_INCLUSION_UNION);
+
+    assert!(!loader.breached(Location::new(0, 0)));
+    assert!(!loader.breached(Location::new(100_000, 0)));
+    assert!(loader.breached(Location::new(200_000, 0)));
+}
+
+#[test]
+fn inside_exclusion_polygon_is_breached() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_exclusion_polygon(square(20_000)));
+    assert_eq!(loader.exclusion_polygon_count(), 1);
+
+    let hit = loader.breached_at(Location::new(0, 0));
+    assert!(hit.breached);
+    assert!(hit.exclusion_hit);
+    assert!(hit.distance_outside_m >= 0.0);
+
+    let miss = loader.breached_at(Location::new(80_000, 0));
+    assert!(!miss.breached);
+    assert!(!miss.exclusion_hit);
+    assert!(miss.distance_outside_m <= 0.0);
+}
+
+#[test]
+fn inside_exclusion_circle_is_breached() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_exclusion_circle(ExclusionCircle::new(0, 0, 300.0)));
+    assert_eq!(loader.exclusion_circle_count(), 1);
+    assert_eq!(loader.total_fence_count(), 1);
+
+    let hit = loader.breached_at(Location::new(0, 0));
+    assert!(hit.breached);
+    assert!(hit.exclusion_hit);
+    almost(hit.distance_outside_m, 300.0);
+
+    let miss = loader.breached_at(Location::new(100_000, 0));
+    assert!(!miss.breached);
+    assert!(!miss.exclusion_hit);
+    assert!(miss.distance_outside_m < 0.0);
+}
+
+#[test]
+fn exclusion_circle_wins_even_inside_an_inclusion_circle() {
+    let mut loader = seat_home_circle(1_000.0);
+    assert!(loader.push_exclusion_circle(ExclusionCircle::new(0, 0, 100.0)));
+    assert_eq!(loader.total_fence_count(), 2);
+
+    let hit = loader.breached_at(Location::new(0, 0));
+    assert!(hit.breached);
+    assert!(hit.exclusion_hit);
+    // Exclusion returns before the inclusion-circle loop, so the
+    // inclusion count is still just the seated circle.
+    assert_eq!(hit.num_inclusion, 1);
+}
+
+#[test]
+fn inclusion_polygon_and_circle_share_the_union_count() {
+    let mut loader = PolyFence::new();
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    assert!(loader.push_inclusion_circle(InclusionCircle::new(100_000, 0, 300.0)));
+    loader.set_options(OPTION_INCLUSION_UNION);
+
+    let at_home = loader.breached_at(Location::new(0, 0));
+    assert!(!at_home.breached);
+    assert_eq!(at_home.num_inclusion, 2);
+    assert_eq!(at_home.num_inclusion_outside, 1);
+
+    let far = loader.breached_at(Location::new(200_000, 0));
+    assert!(far.breached);
+    assert_eq!(far.num_inclusion_outside, 2);
+}
+
+#[test]
+fn two_vertices_are_not_a_polygon() {
+    let mut poly = VertexPolygon::new();
+    assert!(poly.push_vertex(Vertex::new(0, 0)));
+    assert!(poly.push_vertex(Vertex::new(10, 0)));
+    let mut loader = PolyFence::new();
+    assert!(!loader.push_inclusion_polygon(poly));
+    assert!(!loader.push_exclusion_polygon(poly));
+    assert_eq!(loader.total_fence_count(), 0);
+}
+
+#[test]
+fn exclusion_circle_push_stops_at_the_in_memory_cap() {
+    let mut loader = PolyFence::new();
+    for i in 0..MAX_EXCLUSION_CIRCLES {
+        assert!(loader.push_exclusion_circle(ExclusionCircle::new(i as i32, 0, 10.0)));
+    }
+    assert!(!loader.push_exclusion_circle(ExclusionCircle::new(99, 0, 10.0)));
+    assert_eq!(
+        loader.exclusion_circle_count() as usize,
+        MAX_EXCLUSION_CIRCLES
+    );
+}
+
+#[test]
+fn clear_drops_polygons_and_circles() {
+    let mut loader = seat_home_circle(300.0);
+    assert!(loader.push_exclusion_circle(ExclusionCircle::new(10, 10, 20.0)));
+    assert!(loader.push_inclusion_polygon(square(20_000)));
+    assert!(loader.push_exclusion_polygon(square(5_000)));
+    assert!(loader.loaded());
+    assert_eq!(loader.total_fence_count(), 4);
+    loader.clear();
+    assert!(!loader.loaded());
+    assert_eq!(loader.total_fence_count(), 0);
+    assert!(!loader.breached(Location::new(0, 0)));
 }
