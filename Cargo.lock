@@ -69,6 +69,7 @@ dependencies = [
  "ap-control",
  "ap-math",
  "ap-motors",
+ "ap-wpnav",
  "libm",
 ]
 
