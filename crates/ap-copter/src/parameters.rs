@@ -19,7 +19,8 @@
 //! stock `ATC_` `GOBJECT` (`GOBJECTVARPTR`). After `ATC_` the next leftover
 //! is the stock `PSC` `GOBJECT` (`GOBJECTPTR`). After `PSC` the next leftover
 //! is the stock `AHRS_` `GOBJECT`. After `AHRS_` the next leftover
-//! is the stock `MNT` `GOBJECT` (`HAL_MOUNT_ENABLED`). Later groups, G2,
+//! is the stock `MNT` `GOBJECT` (`HAL_MOUNT_ENABLED`). After `MNT` the
+//! next leftover is the stock `BATT` `GOBJECT`. Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -932,7 +933,9 @@ pub fn ahrs_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
 /// Find a row in the `AHRS_` leftover by group prefix.
 #[must_use]
 pub fn find_ahrs_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
-    AHRS_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+    AHRS_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
 }
 
 /// Walk the `AHRS_` leftover as `ParamInfo` rows.
@@ -942,7 +945,7 @@ pub fn for_each_ahrs_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_battery` — next leftover after `MNT`. Not this leftover.
+/// `Parameters::k_param_battery` — next `GOBJECT`, prefix `BATT`.
 pub const K_PARAM_BATTERY: u16 = 36;
 
 /// Stock `MNT` leftover catalog.
@@ -970,6 +973,37 @@ pub fn find_mount_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `MNT` leftover as `ParamInfo` rows.
 pub fn for_each_mount_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in MOUNT_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_BoardConfig` — next leftover after `BATT`. Not this leftover.
+pub const K_PARAM_BOARDCONFIG: u16 = 15;
+
+/// Stock `BATT` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `MNT`. Nested
+/// `AP_BattMonitor` `var_info` is not this leftover. Later groups, G2, and
+/// `load_parameters` stay later. Heli `IM_` is not a row of this leftover.
+pub const BATT_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("BATT", K_PARAM_BATTERY)];
+
+/// First (only) row of the `BATT` leftover.
+#[must_use]
+pub fn batt_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    BATT_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `BATT` leftover by group prefix.
+#[must_use]
+pub fn find_batt_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    BATT_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `BATT` leftover as `ParamInfo` rows.
+pub fn for_each_batt_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in BATT_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
