@@ -43,6 +43,7 @@ pub mod mode_poshold;
 pub mod mode_rtl;
 pub mod mode_sport;
 pub mod mode_stabilize;
+pub mod mode_systemid;
 pub mod mode_zigzag;
 pub mod pilot_input;
 pub mod radio;
