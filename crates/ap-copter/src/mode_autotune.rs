@@ -7,8 +7,9 @@
 //! [`crate::autotune_next`]. Multi load/save leftover lives in
 //! [`crate::autotune_load_save`]. Multi `test_init` leftover lives in
 //! [`crate::autotune_test_init`]. PosHold lean lives in
-//! [`crate::autotune_poshold`]. GCS and the rest of the Multi library stay
-//! for a later slice. What this file owns is `init`
+//! [`crate::autotune_poshold`]. GCS leftover lives in [`crate::autotune_gcs`].
+//! Logging, `target_angle_*` / `angle_lim_*`, and the twitching helpers stay leftover.
+//! What this file owns is `init`
 //! (from-mode / throttle / flying gates, Loiter-or-PosHold, TuneMode /
 //! first-axis), `run` (Copter land/disarm wrapper, TuneMode dispatch,
 //! pilot override, and the level / execute / abort loop), and the Multi

@@ -10,8 +10,8 @@
 //! choose original vs save-or-reset.
 //!
 //! EEPROM `PID::save_gains` / `save_accel_*` stay a write flag.
-//! GCS text is still leftover — this tick only records the message
-//! id. Heli load/save is out of scope.
+//! GCS leftover lives in [`crate::autotune_gcs`] — this tick still records
+//! the message id. Heli load/save is out of scope.
 //!
 //! This is not Plane `AP_AutoTune` (the `ap-autotune` crate).
 
