@@ -26,19 +26,17 @@
 //!
 //! # This slice
 //!
-//! `add_segments` and `calculate_track` — turn origin, destination and the
-//! kinematic limits into a 23-segment track. `calculate_path` already
-//! produces the five durations; this slice lays them into the array and
-//! seats the 3-D chord (straight or the arc's NE geometry).
+//! `advance_target_along_track` — the per-tick stepper's time pointer and
+//! the finished / fast-waypoint gate. Time on this, previous and next
+//! legs is advanced here. The 3-D `move_*` helpers and
+//! `project_scurve_onto_track` stay leftovers; this slice records which
+//! projections the caller still needs.
 //!
-//! `advance_target_along_track`, speed-change (`set_speed_max`, origin /
-//! dest speed), arc projection and the `move_*` helpers are the rest of
+//! Speed-change (`set_speed_max`, origin / dest speed) is the rest of
 //! the file.
 
 use crate::control::kinematic_limit;
-use crate::scalar::{
-    is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi, Real,
-};
+use crate::scalar::{is_negative, is_positive, is_zero, radians, safe_sqrt, sq, wrap_pi, Real};
 use crate::vector2::Vector2f;
 use crate::vector3::Vector3f;
 
@@ -56,8 +54,10 @@ pub const SEG_ACCEL_MAX: usize = 4;
 pub const SEG_ACCEL_END: usize = 7;
 /// Last of the seven speed-change slots, upstream `SEG_SPEED_CHANGE_END`.
 pub const SEG_SPEED_CHANGE_END: usize = 14;
-/// Constant-velocity cruise, upstream `SEG_CONST` / `SEG_DECEL_START`.
+/// Constant-velocity cruise, upstream `SEG_CONST`.
 pub const SEG_CONST: usize = 15;
+/// End of cruise / start of decel, upstream `SEG_DECEL_START`.
+pub const SEG_DECEL_START: usize = SEG_CONST;
 /// Last decel-half segment, upstream `SEG_DECEL_END`.
 pub const SEG_DECEL_END: usize = 22;
 
@@ -467,8 +467,7 @@ impl SegmentTrack {
                 let Some(prev) = self.segments.get(i - 1) else {
                     return false;
                 };
-                if is_negative(s.end_time - prev.end_time)
-                    || is_negative(s.end_pos - prev.end_pos)
+                if is_negative(s.end_time - prev.end_time) || is_negative(s.end_pos - prev.end_pos)
                 {
                     return false;
                 }
@@ -787,9 +786,30 @@ pub struct Arc {
     pub center_ne: Vector2f,
 }
 
+/// Leftover of one [`SCurve::advance_target_along_track`] tick.
+///
+/// Time on the three legs is advanced here. The 3-D `move_*` /
+/// `project_scurve_onto_track` writes into the caller's pos / vel / accel
+/// stay later leftovers — the flags say which of those still need to run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdvanceTargetLeftover {
+    /// C++ return: this leg has finished, or the turn apex is passed.
+    pub finished: bool,
+    /// Always: `prev_leg.move_to_pos_vel_accel`.
+    pub need_prev_move_to: bool,
+    /// Always: `this.move_from_pos_vel_accel`.
+    pub need_this_move_from: bool,
+    /// Fast-waypoint time gates passed. The turn-midpoint
+    /// `move_from_time_pos_vel_accel` pair and the spatial accept check
+    /// need `project_scurve_onto_track`.
+    pub need_turn_midpoint: bool,
+    /// `next_leg.move_from_pos_vel_accel` — next already running.
+    pub need_next_move_from: bool,
+}
+
 /// A snap-limited 3-D track between two points, upstream `SCurve`.
 ///
-/// This slice builds the track. Advancing along it, changing speed mid-leg,
+/// This slice advances time along the track. Changing speed mid-leg
 /// and projecting the scalar path onto an arc are later leftovers.
 #[derive(Debug, Clone)]
 pub struct SCurve {
@@ -1052,16 +1072,136 @@ impl SCurve {
         self.jerk_max
     }
 
-    /// Elapsed path time. Advanced by a later leftover.
+    /// Elapsed path time, upstream `get_time_elapsed`.
     #[must_use]
     pub const fn time(&self) -> f32 {
         self.time
+    }
+
+    /// Desired maximum speed along the track, upstream `get_speed_along_track`.
+    #[must_use]
+    pub const fn speed_along_track(&self) -> f32 {
+        self.vel_max
     }
 
     /// True when the 23-segment array is a usable path, upstream `valid`.
     #[must_use]
     pub fn valid(&self) -> bool {
         self.track.valid()
+    }
+
+    /// Time at the end of a full 23-segment path, upstream `time_end`.
+    ///
+    /// Empty / half-built tracks report 0 so [`finished`] is immediately true.
+    #[must_use]
+    pub fn time_end(&self) -> f32 {
+        self.segment_end_time(SEG_DECEL_END)
+    }
+
+    /// Time left before the path completes, upstream `get_time_remaining`.
+    #[must_use]
+    pub fn time_remaining(&self) -> f32 {
+        if self.track.len() != SEGMENTS_MAX {
+            return 0.0;
+        }
+        self.time_end() - self.time
+    }
+
+    /// When the accel half finishes, upstream `time_accel_end` /
+    /// `get_accel_finished_time`.
+    #[must_use]
+    pub fn time_accel_end(&self) -> f32 {
+        self.segment_end_time(SEG_ACCEL_END)
+    }
+
+    /// When cruise ends and decel starts, upstream `time_decel_start`.
+    #[must_use]
+    pub fn time_decel_start(&self) -> f32 {
+        self.segment_end_time(SEG_DECEL_START)
+    }
+
+    /// Time has reached the end of the sequence, upstream `finished`.
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.time >= self.time_end()
+    }
+
+    /// True when the sequence is braking to a stop, upstream `braking`.
+    ///
+    /// An incomplete track is treated as already braking — that is what
+    /// the C++ does.
+    #[must_use]
+    pub fn braking(&self) -> bool {
+        if self.track.len() != SEGMENTS_MAX {
+            return true;
+        }
+        self.time >= self.time_decel_start()
+    }
+
+    /// Increment the internal time, capped at [`time_end`], upstream
+    /// `advance_time`.
+    pub fn advance_time(&mut self, dt: f32) {
+        self.time = cpp_min(self.time + dt, self.time_end());
+    }
+
+    /// Per-tick stepper, leftover of upstream `advance_target_along_track`.
+    ///
+    /// Advances time on `prev_leg` and `self` (the time half of
+    /// `move_to` / `move_from`). The 3-D projection into the caller's
+    /// pos / vel / accel is a later leftover. Fast-waypoint time gates
+    /// are evaluated here; the spatial turn-midpoint accept check is
+    /// not — that needs `project_scurve_onto_track` — so a passing gate
+    /// records [`AdvanceTargetLeftover::need_turn_midpoint`] and does
+    /// not start `next_leg`. When `next_leg` is already running, its
+    /// time is advanced and the C++ "passed the apex" finish rule runs.
+    ///
+    /// `wp_radius` and `accel_corner` are the spatial-check limits; they
+    /// are unused until the project leftover lands.
+    #[allow(
+        unused_variables,
+        reason = "wp_radius / accel_corner wait on the project leftover"
+    )]
+    pub fn advance_target_along_track(
+        &mut self,
+        prev_leg: &mut SCurve,
+        next_leg: &mut SCurve,
+        wp_radius: f32,
+        accel_corner: f32,
+        fast_waypoint: bool,
+        dt: f32,
+    ) -> AdvanceTargetLeftover {
+        prev_leg.advance_time(dt);
+        self.advance_time(dt);
+        let mut leftover = AdvanceTargetLeftover {
+            finished: self.finished(),
+            need_prev_move_to: true,
+            need_this_move_from: true,
+            need_turn_midpoint: false,
+            need_next_move_from: false,
+        };
+
+        let time_to_destination = self.time_remaining();
+        if fast_waypoint
+            && is_zero(next_leg.time())
+            && self.time() >= self.time_decel_start()
+            && time_to_destination <= next_leg.time_accel_end()
+        {
+            leftover.need_turn_midpoint = true;
+        } else if !is_zero(next_leg.time()) {
+            next_leg.advance_time(dt);
+            leftover.need_next_move_from = true;
+            if next_leg.time() >= self.time_remaining() {
+                leftover.finished = true;
+            }
+        }
+        leftover
+    }
+
+    fn segment_end_time(&self, i: usize) -> f32 {
+        if self.track.len() != SEGMENTS_MAX {
+            return 0.0;
+        }
+        self.track.segment(i).map(|s| s.end_time).unwrap_or(0.0)
     }
 }
 
@@ -1406,7 +1546,9 @@ epsilon would accept a drift, which is the failure"
         );
 
         let cruise = track.segment(SEG_CONST).expect("cruise");
-        let speed_end = track.segment(SEG_SPEED_CHANGE_END).expect("speed-change end");
+        let speed_end = track
+            .segment(SEG_SPEED_CHANGE_END)
+            .expect("speed-change end");
         assert!(
             cruise.end_time > speed_end.end_time,
             "a 200 m cruise at 15 m/s must spend time at constant speed"
@@ -1579,7 +1721,10 @@ epsilon would accept a drift, which is the failure"
                 snap,
                 jerk,
             );
-            assert!(!s.valid(), "snap={snap} jerk={jerk} accel={accel} speed={speed}");
+            assert!(
+                !s.valid(),
+                "snap={snap} jerk={jerk} accel={accel} speed={speed}"
+            );
             assert_eq!(s.track().len(), 1);
         }
     }
@@ -1608,5 +1753,204 @@ epsilon would accept a drift, which is the failure"
         assert_eq!(s.vel_max(), 3.0);
         assert_eq!(s.accel_max(), 2.0);
         assert_eq!(s.accel_z_max(), 2.0);
+    }
+
+    fn east_leg(length: f32) -> SCurve {
+        let mut s = SCurve::new();
+        s.calculate_track(
+            Vector3f::zero(),
+            Vector3f::new(length, 0.0, 0.0),
+            0.0,
+            15.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            5.0,
+            100.0,
+            8.0,
+        );
+        assert!(s.valid());
+        s
+    }
+
+    fn tick(
+        this: &mut SCurve,
+        prev: &mut SCurve,
+        next: &mut SCurve,
+        fast: bool,
+        dt: f32,
+    ) -> AdvanceTargetLeftover {
+        this.advance_target_along_track(prev, next, 2.0, 2.0, fast, dt)
+    }
+
+    /// An empty path is already finished: `time_end` is 0 and time starts
+    /// there. Upstream `finished` is the same check.
+    #[test]
+    fn empty_path_is_finished() {
+        let s = SCurve::new();
+        assert_eq!(s.time_end(), 0.0);
+        assert_eq!(s.time_remaining(), 0.0);
+        assert_eq!(s.time_accel_end(), 0.0);
+        assert_eq!(s.time_decel_start(), 0.0);
+        assert!(s.finished());
+        assert!(s.braking());
+        assert_eq!(s.speed_along_track(), 0.0);
+    }
+
+    /// One tick on an empty trio finishes and records both move leftovers.
+    #[test]
+    fn empty_advance_finishes_and_records_moves() {
+        let mut this = SCurve::new();
+        let mut prev = SCurve::new();
+        let mut next = SCurve::new();
+        let leftover = tick(&mut this, &mut prev, &mut next, false, 0.01);
+        assert!(leftover.finished);
+        assert!(leftover.need_prev_move_to);
+        assert!(leftover.need_this_move_from);
+        assert!(!leftover.need_turn_midpoint);
+        assert!(!leftover.need_next_move_from);
+        assert_eq!(this.time(), 0.0);
+    }
+
+    /// A 100 m east leg is not finished after one 10 ms tick, and time
+    /// has moved by exactly dt.
+    #[test]
+    fn one_tick_on_a_long_leg_is_not_finished() {
+        let mut this = east_leg(100.0);
+        let mut prev = SCurve::new();
+        let mut next = SCurve::new();
+        let end = this.time_end();
+        assert!(end > 1.0, "a 100 m cruise at 15 m/s must last seconds");
+        assert!((this.time_remaining() - end).abs() < 1e-6);
+        assert!(!this.finished());
+        assert!(!this.braking());
+        assert_eq!(this.speed_along_track(), 15.0);
+
+        let leftover = tick(&mut this, &mut prev, &mut next, false, 0.01);
+        assert!(!leftover.finished);
+        assert!(leftover.need_prev_move_to);
+        assert!(leftover.need_this_move_from);
+        assert!(!leftover.need_turn_midpoint);
+        assert!(!leftover.need_next_move_from);
+        assert!((this.time() - 0.01).abs() < 1e-6);
+        assert!((this.time_remaining() - (end - 0.01)).abs() < 1e-5);
+        assert!(!this.braking());
+    }
+
+    /// `advance_time` never runs past `time_end`. That is the C++
+    /// `MIN(time + dt, time_end())` cap.
+    #[test]
+    fn advance_time_caps_at_time_end() {
+        let mut s = east_leg(40.0);
+        let end = s.time_end();
+        s.advance_time(end + 10.0);
+        assert_eq!(s.time(), end);
+        assert!(s.finished());
+        assert!(s.braking());
+        assert_eq!(s.time_remaining(), 0.0);
+    }
+
+    /// Stepping a regular waypoint until `finished` lands exactly on
+    /// `time_end` and never starts the (empty) next leg.
+    #[test]
+    fn stepping_a_regular_waypoint_reaches_the_end() {
+        let mut this = east_leg(40.0);
+        let mut prev = SCurve::new();
+        let mut next = SCurve::new();
+        let end = this.time_end();
+        let mut leftover = AdvanceTargetLeftover {
+            finished: false,
+            need_prev_move_to: false,
+            need_this_move_from: false,
+            need_turn_midpoint: false,
+            need_next_move_from: false,
+        };
+        let mut n = 0;
+        while !leftover.finished {
+            leftover = tick(&mut this, &mut prev, &mut next, false, 0.1);
+            n += 1;
+            assert!(n < 10_000, "path did not finish");
+        }
+        assert!((this.time() - end).abs() < 1e-5);
+        assert!(this.finished());
+        assert!(!leftover.need_turn_midpoint);
+        assert!(!leftover.need_next_move_from);
+        assert!(is_zero(next.time()));
+    }
+
+    /// Fast waypoint before the decel half does not open the turn leftover.
+    #[test]
+    fn fast_waypoint_before_decel_does_not_open_the_turn() {
+        let mut this = east_leg(100.0);
+        let mut prev = SCurve::new();
+        let mut next = east_leg(80.0);
+        assert!(this.time() < this.time_decel_start());
+        let leftover = tick(&mut this, &mut prev, &mut next, true, 0.01);
+        assert!(!leftover.finished);
+        assert!(!leftover.need_turn_midpoint);
+        assert!(!leftover.need_next_move_from);
+        assert!(is_zero(next.time()));
+    }
+
+    /// Once this leg has started decel and the remaining time fits inside
+    /// the next leg's accel half, the leftover records the turn-midpoint
+    /// project and does *not* start next — that accept check needs 3-D.
+    #[test]
+    fn fast_waypoint_in_decel_records_turn_leftover() {
+        let mut this = east_leg(100.0);
+        let mut prev = SCurve::new();
+        let mut next = east_leg(80.0);
+        this.advance_time(this.time_decel_start());
+        assert!(this.time() >= this.time_decel_start());
+        assert!(this.braking());
+        let remaining = this.time_remaining();
+        assert!(
+            remaining <= next.time_accel_end(),
+            "decel {remaining} should fit in next accel {}",
+            next.time_accel_end()
+        );
+        let leftover = tick(&mut this, &mut prev, &mut next, true, 0.01);
+        assert!(leftover.need_turn_midpoint);
+        assert!(!leftover.need_next_move_from);
+        assert!(is_zero(next.time()), "turn leftover must not start next");
+        assert!(!leftover.finished, "this leg still has decel left");
+    }
+
+    /// A next leg that is already running is advanced, and the current
+    /// leg is finished once next's elapsed time covers what this has
+    /// left — "passed half way through the turn".
+    #[test]
+    fn already_started_next_leg_can_finish_this() {
+        let mut this = east_leg(100.0);
+        let mut prev = SCurve::new();
+        let mut next = east_leg(80.0);
+        this.advance_time(this.time_end() - 0.4);
+        next.advance_time(0.3);
+        assert!(!this.finished());
+        let leftover = tick(&mut this, &mut prev, &mut next, false, 0.2);
+        assert!(leftover.need_next_move_from);
+        assert!(!leftover.need_turn_midpoint);
+        assert!((next.time() - 0.5).abs() < 1e-5);
+        assert!(leftover.finished);
+        assert!(
+            !this.finished(),
+            "this time pointer has not reached the end"
+        );
+    }
+
+    /// time_accel_end / time_decel_start / time_end are the stored
+    /// segment end times, and they are ordered on a long cruise.
+    #[test]
+    fn time_marks_follow_the_segment_array() {
+        let s = east_leg(200.0);
+        let accel = s.track().segment(SEG_ACCEL_END).unwrap().end_time;
+        let cruise = s.track().segment(SEG_CONST).unwrap().end_time;
+        let end = s.track().segment(SEG_DECEL_END).unwrap().end_time;
+        assert_eq!(s.time_accel_end(), accel);
+        assert_eq!(s.time_decel_start(), cruise);
+        assert_eq!(s.time_end(), end);
+        assert!(accel < cruise, "a 200 m cruise must spend time at speed");
+        assert!(cruise < end);
     }
 }
