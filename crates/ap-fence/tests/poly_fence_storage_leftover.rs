@@ -1,7 +1,8 @@
 //! First EEPROM format leftover: magic, item types, `format()`, write
 //! primitives, and `fence_storage_space_required`.
 //!
-//! Tracked as **COP-025**. Scan / index / `write_fence` / SD stay later.
+//! Tracked as **COP-025**. Scan / index / `write_fence` tests live in
+//! `poly_fence_scan_index_leftover.rs`. `load_from_storage` / SD stay later.
 
 use ap_fence::{
     fence_storage_space_required, format_storage, storage_formatted, write_eos_to_storage,
@@ -66,7 +67,12 @@ fn write_primitives_pack_type_then_latlon() {
         PolyFenceType::CircleInclusion
     ));
     assert_eq!(offset, 1);
-    assert!(write_latlon_to_storage(&mut buf, &mut offset, 1_234, -5_678));
+    assert!(write_latlon_to_storage(
+        &mut buf,
+        &mut offset,
+        1_234,
+        -5_678
+    ));
     assert_eq!(offset, 9);
     assert_eq!(buf[0], 92);
     assert_eq!(&buf[1..5], &1_234_i32.to_le_bytes());
@@ -90,7 +96,10 @@ fn space_required_counts_header_circle_and_return_point() {
     assert_eq!(fence_storage_space_required(&[ret]), 13);
 
     let excl = PolyFenceItem::circle(PolyFenceType::CircleExclusion, 1, 2, 50.0);
-    assert_eq!(fence_storage_space_required(&[circle, ret, excl]), 4 + 13 + 9 + 13);
+    assert_eq!(
+        fence_storage_space_required(&[circle, ret, excl]),
+        4 + 13 + 9 + 13
+    );
 }
 
 #[test]

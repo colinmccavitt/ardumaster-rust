@@ -1,13 +1,12 @@
 //! Geofence type bits, enable leftover, circle / alt-max / alt-min checks,
 //! `check()` orchestration, pre-arm, dest-inside, auto-enable-on-arm/
 //! takeoff, `check_fence_polygon`, poly-loader inclusion / exclusion
-//! circles, vertex polygons, and the first EEPROM format leftover.
+//! circles, vertex polygons, EEPROM format, scan, index, and `write_fence`.
 //! Upstream `libraries/AC_Fence`. Tracked as **COP-025**.
 //!
 //! This is the first real `AC_Fence` leftover. Plane already has a
 //! `FENCE_ACTION` table in `ap-plane::fence_failsafe_hookup`; that hookup
-//! now decodes through [`Action`] here. EEPROM scan / index / SD stay
-//! later.
+//! now decodes through [`Action`] here. `load_from_storage` / SD stay later.
 //!
 //! # Enable is a change mask, not a bool
 //!
@@ -42,15 +41,14 @@
 //! `AC_Fence::check_fence_polygon`. [`poly_fence::PolyFence`] is the
 //! `AC_PolyFence_loader` leftover: in-memory inclusion / exclusion
 //! circles, vertex inclusion / exclusion polygons, `breached(loc)`, and
-//! `check_inclusion_circle_margin`. [`poly_fence_storage`] is the first
-//! EEPROM format leftover — magic, item types, `format()`, and
-//! `fence_storage_space_required`. Scan / index / `write_fence` /
+//! `check_inclusion_circle_margin`. [`poly_fence_storage`] is the EEPROM
+//! leftover — magic, item types, `format()`, `fence_storage_space_required`,
+//! `scan_eeprom`, the storage index, `validate_fence`, and `write_fence`.
 //! `load_from_storage` / SD stay later.
 //!
 //! # What this crate does not own
 //!
-//! EEPROM scan / index / `write_fence` / `load_from_storage` and SD
-//! storage stay later leftovers.
+//! `load_from_storage` and SD storage stay later leftovers.
 
 #![no_std]
 
@@ -76,6 +74,11 @@ pub use poly_fence::{
     MAX_POLYGON_VERTICES, OPTION_INCLUSION_UNION,
 };
 pub use poly_fence_storage::{
-    fence_storage_space_required, format_storage, storage_formatted, write_eos_to_storage,
-    write_latlon_to_storage, write_type_to_storage, PolyFenceItem, PolyFenceType, STORAGE_MAGIC,
+    count_eeprom_fences, fence_storage_space_required, format_storage, index_eeprom,
+    index_fence_count, max_items, read_f32_from_storage, read_latlon_from_storage,
+    read_uint8_from_storage, scan_eeprom, storage_formatted,
+    sum_of_polygon_point_counts_and_returnpoint, validate_fence, write_eos_to_storage,
+    write_f32_to_storage, write_fence, write_latlon_to_storage, write_type_to_storage,
+    write_uint8_to_storage, EepromCounts, FenceIndex, IndexResult, PolyFenceItem, PolyFenceType,
+    WriteFenceResult, STORAGE_MAGIC,
 };
