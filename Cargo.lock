@@ -65,6 +65,7 @@ version = "0.1.0"
 dependencies = [
  "ap-control",
  "ap-math",
+ "ap-param",
  "ap-pid",
  "ap-replay",
  "libm",

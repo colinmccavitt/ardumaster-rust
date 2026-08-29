@@ -10,6 +10,7 @@ rust-version.workspace = true
 ap-math = { workspace = true }
 libm = { workspace = true }
 ap-pid = { workspace = true }
+ap-param = { workspace = true }
 
 [dev-dependencies]
 libm = { workspace = true }
@@ -17,6 +18,7 @@ libm = { workspace = true }
 ap-control = { path = ".", features = ["replay"] }
 ap-replay = { workspace = true }
 ap-pid = { workspace = true }
+ap-param = { workspace = true }
 
 [lints]
 workspace = true
