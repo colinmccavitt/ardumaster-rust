@@ -1,6 +1,7 @@
 //! `ModeGuided` init / set_destination / run / set_velocity /
 //! pos_control_run / set_angle / angle_control_run /
-//! velaccel_control_run leftover, upstream
+//! velaccel_control_run / accel_control_run /
+//! posvelaccel_control_run leftover, upstream
 //! `ArduCopter/mode_guided.cpp`.
 //!
 //! Tracked as **COP-017**. Guided is the GCS / scripting command mode: fly
@@ -8,10 +9,9 @@
 //! owns the enter and the Location dest setter. The second owns the `run`
 //! dispatcher and the velocity setter. The third owns `pos_control_run`.
 //! The fourth owns `set_angle` (and `angle_control_start`). The fifth owns
-//! `angle_control_run` and Guided-NoGPS. This slice owns
-//! `velaccel_control_run`. ModeFollow init is the companion in
-//! `mode_follow`. `accel_control_run`, `posvelaccel_control_run`, the
-//! accel setter, and Follow `run` are later slices.
+//! `angle_control_run` and Guided-NoGPS. The sixth owns
+//! `velaccel_control_run` and ModeFollow init. This slice owns
+//! `accel_control_run`, `posvelaccel_control_run`, and Follow `run`.
 //!
 //! Upstream names the enter `init`, not `_enter`. Plane modes use `_enter`;
 //! Copter modes use `init`. This is that enter.
@@ -125,6 +125,24 @@
 //! from `get_vel_desired_NED_ms` and then `NE_stop_vel_stabilisation`.
 //! Else `!stabilizing_pos_NE && !do_avoid` only stops position
 //! stabilisation. D always takes the (possibly zeroed) vel/accel z.
+//!
+//! # `accel_control_run` is one early exit, then a timeout-or-accel leftover
+//!
+//! Same disarmed / tradheli keep as VelAccel. There is no avoidance and
+//! no desired-vel overwrite. Timeout zeroes vel *and* accel, may HOLD
+//! yaw, and holds with `input_vel_accel` — it does not stop
+//! stabilisation. A fresh dest feeds `input_accel` on both axes, then
+//! `!stabilizing_vel_NE` stops vel stab else `!stabilizing_pos_NE`
+//! stops pos stab.
+//!
+//! # `posvelaccel_control_run` is one early exit, then overwrite leftovers
+//!
+//! Same disarmed / tradheli keep. There is no avoidance. Timeout zeroes
+//! vel *and* accel but not pos. `!stabilizing_vel_NE` overwrites NE pos
+//! *and* vel from the position controller's desired and stops vel stab;
+//! else `!stabilizing_pos_NE` overwrites NE pos only and stops pos stab.
+//! `guided_is_terrain_alt` is `INTERNAL_ERROR(flow_of_control)` and the
+//! tick still flies. D writeback of pos z is identity.
 
 //! # `set_angle` starts Angle, then forks thrust vs climb
 //!
@@ -171,7 +189,7 @@ pub const MODE_NUMBER_GUIDED: u8 = 4;
 /// so Guided and Guided-NoGPS stay in one catalog.
 pub const MODE_NUMBER_GUIDED_NOGPS: u8 = 20;
 
-/// `Mode::Number::FOLLOW` — init leftover lives in `mode_follow`.
+/// `Mode::Number::FOLLOW` — init / run leftover lives in `mode_follow`.
 pub const MODE_NUMBER_FOLLOW: u8 = 23;
 
 /// `WP_SPD_DEFAULT` — `pva_control_start` NE speed when the caller has
@@ -1772,6 +1790,335 @@ pub fn guided_velaccel_control_run(view: &GuidedVelAccelView) -> GuidedVelAccel 
             do_avoid,
             vel_from_desired_ne,
             stop,
+            vel_ned_ms,
+            accel_ned_mss,
+        },
+    }
+}
+
+/// How `ModeGuided::accel_control_run` fed the position controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuidedAccelInput {
+    /// Timeout: `input_vel_accel` with the zeroed vel/accel leftovers.
+    VelAccelHold,
+    /// Fresh dest: `input_accel` on NE and D.
+    Accel,
+}
+
+/// How `ModeGuided::accel_control_run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedAccelExit {
+    /// `is_disarmed_or_landed`: `make_safe_ground_handling` and return.
+    Disarmed {
+        /// `copter.is_tradheli() && motors->get_interlock()`.
+        keep_interlock: bool,
+    },
+    /// Flying: unlimited spool, then timeout-or-accel leftovers.
+    Flew {
+        /// `auto_yaw.set_mode(HOLD)` ran (stale dest and RATE / ANGLE_RATE).
+        yaw_hold: bool,
+        /// Timeout zeroed `guided_vel_target_ned_ms`.
+        vel_zeroed: bool,
+        /// Timeout zeroed `guided_accel_target_ned_mss`.
+        accel_zeroed: bool,
+        /// PosControl input leftover.
+        input: GuidedAccelInput,
+        /// Which stop-stabilisation ran. Timeout never stops.
+        stop: GuidedVelAccelStop,
+        /// Vel leftover after timeout. Fresh ticks leave it alone.
+        vel_ned_ms: [f32; 3],
+        /// Accel leftover after timeout, or the commanded accel.
+        accel_ned_mss: [f32; 3],
+    },
+}
+
+/// Vehicle view `ModeGuided::accel_control_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedAccelView {
+    /// `Mode::is_disarmed_or_landed()`.
+    pub disarmed_or_landed: bool,
+    /// `copter.is_tradheli()`.
+    pub is_tradheli: bool,
+    /// `motors->get_interlock()`.
+    pub motor_interlock: bool,
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `update_time_ms` stamped by the last dest / accel setter.
+    pub update_time_ms: u32,
+    /// `g2.guided_timeout`, seconds.
+    pub guided_timeout_s: f32,
+    /// `auto_yaw.mode()` at the top of the tick.
+    pub auto_yaw: crate::auto_yaw::YawMode,
+    /// `guided_vel_target_ned_ms` at the top of the tick.
+    pub vel_target_ned_ms: [f32; 3],
+    /// `guided_accel_target_ned_mss` at the top of the tick.
+    pub accel_target_ned_mss: [f32; 3],
+    /// `stabilizing_vel_NE()`. Consulted only on a fresh dest.
+    pub stabilizing_vel_ne: bool,
+    /// `stabilizing_pos_NE()`. Consulted only on a fresh dest.
+    pub stabilizing_pos_ne: bool,
+}
+
+impl GuidedAccelView {
+    /// After an accel dest: flying, dest fresh, both axes stab.
+    #[must_use]
+    pub const fn after_set_accel() -> Self {
+        Self {
+            disarmed_or_landed: false,
+            is_tradheli: false,
+            motor_interlock: false,
+            now_ms: 2_100,
+            update_time_ms: 2_000,
+            guided_timeout_s: GUIDED_TIMEOUT_DEFAULT_S,
+            auto_yaw: crate::auto_yaw::YawMode::Hold,
+            vel_target_ned_ms: [0.4, -0.2, 0.1],
+            accel_target_ned_mss: [0.8, -0.3, 0.2],
+            stabilizing_vel_ne: true,
+            stabilizing_pos_ne: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::accel_control_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedAccel {
+    /// Which arm returned, or the fly leftover.
+    pub exit: GuidedAccelExit,
+}
+
+/// Upstream `ModeGuided::accel_control_run`.
+///
+/// Disarmed is the only early exit. There is no avoidance and no
+/// desired-vel overwrite. Timeout (wrapping unsigned subtract, `>` not
+/// `>=`) zeroes vel *and* accel, may HOLD yaw, and holds with
+/// `input_vel_accel` — it does not stop stabilisation. A fresh dest
+/// feeds `input_accel` on both axes, then `!stabilizing_vel_NE` stops
+/// vel stab else `!stabilizing_pos_NE` stops pos stab.
+#[must_use]
+pub fn guided_accel_control_run(view: &GuidedAccelView) -> GuidedAccel {
+    if view.disarmed_or_landed {
+        return GuidedAccel {
+            exit: GuidedAccelExit::Disarmed {
+                keep_interlock: view.is_tradheli && view.motor_interlock,
+            },
+        };
+    }
+
+    let timed_out =
+        view.now_ms.wrapping_sub(view.update_time_ms) > guided_timeout_ms(view.guided_timeout_s);
+    let yaw_hold = timed_out
+        && matches!(
+            view.auto_yaw,
+            crate::auto_yaw::YawMode::Rate | crate::auto_yaw::YawMode::AngleRate
+        );
+
+    if timed_out {
+        return GuidedAccel {
+            exit: GuidedAccelExit::Flew {
+                yaw_hold,
+                vel_zeroed: true,
+                accel_zeroed: true,
+                input: GuidedAccelInput::VelAccelHold,
+                stop: GuidedVelAccelStop::None,
+                vel_ned_ms: [0.0, 0.0, 0.0],
+                accel_ned_mss: [0.0, 0.0, 0.0],
+            },
+        };
+    }
+
+    let stop = if !view.stabilizing_vel_ne {
+        GuidedVelAccelStop::StopVel
+    } else if !view.stabilizing_pos_ne {
+        GuidedVelAccelStop::StopPos
+    } else {
+        GuidedVelAccelStop::None
+    };
+
+    GuidedAccel {
+        exit: GuidedAccelExit::Flew {
+            yaw_hold: false,
+            vel_zeroed: false,
+            accel_zeroed: false,
+            input: GuidedAccelInput::Accel,
+            stop,
+            vel_ned_ms: view.vel_target_ned_ms,
+            accel_ned_mss: view.accel_target_ned_mss,
+        },
+    }
+}
+
+/// How `ModeGuided::posvelaccel_control_run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GuidedPosVelAccelExit {
+    /// `is_disarmed_or_landed`: `make_safe_ground_handling` and return.
+    Disarmed {
+        /// `copter.is_tradheli() && motors->get_interlock()`.
+        keep_interlock: bool,
+    },
+    /// Flying: unlimited spool, then timeout / overwrite / terrain leftovers.
+    Flew {
+        /// `auto_yaw.set_mode(HOLD)` ran (stale dest and RATE / ANGLE_RATE).
+        yaw_hold: bool,
+        /// Timeout zeroed `guided_vel_target_ned_ms`.
+        vel_zeroed: bool,
+        /// Timeout zeroed `guided_accel_target_ned_mss`.
+        accel_zeroed: bool,
+        /// NE pos leftover overwritten from `get_pos_desired_NED_m`.
+        pos_from_desired_ne: bool,
+        /// NE vel leftover overwritten from `get_vel_desired_NED_ms`.
+        vel_from_desired_ne: bool,
+        /// Which stop-stabilisation ran.
+        stop: GuidedVelAccelStop,
+        /// `INTERNAL_ERROR(flow_of_control)` — `guided_is_terrain_alt`.
+        /// The tick still flies; this is not an early return.
+        flow_of_control_error: bool,
+        /// Pos leftover after the desired-NE overwrite. Z is never
+        /// overwritten; the D writeback is identity.
+        pos_ned_m: [f32; 3],
+        /// Vel leftover after timeout and the desired-NE overwrite.
+        vel_ned_ms: [f32; 3],
+        /// Accel leftover after timeout.
+        accel_ned_mss: [f32; 3],
+    },
+}
+
+/// Vehicle view `ModeGuided::posvelaccel_control_run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidedPosVelAccelView {
+    /// `Mode::is_disarmed_or_landed()`.
+    pub disarmed_or_landed: bool,
+    /// `copter.is_tradheli()`.
+    pub is_tradheli: bool,
+    /// `motors->get_interlock()`.
+    pub motor_interlock: bool,
+    /// `millis()`.
+    pub now_ms: u32,
+    /// `update_time_ms` stamped by the last dest setter.
+    pub update_time_ms: u32,
+    /// `g2.guided_timeout`, seconds.
+    pub guided_timeout_s: f32,
+    /// `auto_yaw.mode()` at the top of the tick.
+    pub auto_yaw: crate::auto_yaw::YawMode,
+    /// `guided_pos_target_ned_m` at the top of the tick.
+    pub pos_target_ned_m: [f32; 3],
+    /// `guided_vel_target_ned_ms` at the top of the tick.
+    pub vel_target_ned_ms: [f32; 3],
+    /// `guided_accel_target_ned_mss` at the top of the tick.
+    pub accel_target_ned_mss: [f32; 3],
+    /// `pos_control->get_pos_desired_NED_m()` — NE overwrite source.
+    pub pos_desired_ned_m: [f32; 3],
+    /// `pos_control->get_vel_desired_NED_ms()` — NE overwrite source.
+    pub vel_desired_ned_ms: [f32; 3],
+    /// `stabilizing_vel_NE()`.
+    pub stabilizing_vel_ne: bool,
+    /// `stabilizing_pos_NE()`.
+    pub stabilizing_pos_ne: bool,
+    /// `guided_is_terrain_alt`. A true value is `INTERNAL_ERROR` and
+    /// still flies — z is never a terrain altitude here.
+    pub terrain_alt: bool,
+}
+
+impl GuidedPosVelAccelView {
+    /// After a pos+vel+accel dest: flying, dest fresh, both axes stab.
+    #[must_use]
+    pub const fn after_set_pva() -> Self {
+        Self {
+            disarmed_or_landed: false,
+            is_tradheli: false,
+            motor_interlock: false,
+            now_ms: 2_100,
+            update_time_ms: 2_000,
+            guided_timeout_s: GUIDED_TIMEOUT_DEFAULT_S,
+            auto_yaw: crate::auto_yaw::YawMode::Hold,
+            pos_target_ned_m: [20.0, 10.0, -15.0],
+            vel_target_ned_ms: [1.5, -0.5, 0.2],
+            accel_target_ned_mss: [0.4, -0.1, 0.0],
+            pos_desired_ned_m: [3.0, 1.0, -4.0],
+            vel_desired_ned_ms: [0.3, 0.1, -0.2],
+            stabilizing_vel_ne: true,
+            stabilizing_pos_ne: true,
+            terrain_alt: false,
+        }
+    }
+}
+
+/// Leftover of one `ModeGuided::posvelaccel_control_run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuidedPosVelAccel {
+    /// Which arm returned, or the fly leftover.
+    pub exit: GuidedPosVelAccelExit,
+}
+
+/// Upstream `ModeGuided::posvelaccel_control_run`.
+///
+/// Disarmed is the only early exit. There is no avoidance. Timeout
+/// (wrapping unsigned subtract, `>` not `>=`) zeroes vel *and* accel
+/// but not pos, and may HOLD yaw. `!stabilizing_vel_NE` overwrites NE
+/// pos *and* vel from the position controller's desired and stops vel
+/// stab; else `!stabilizing_pos_NE` overwrites NE pos only and stops
+/// pos stab. `guided_is_terrain_alt` is `INTERNAL_ERROR(flow_of_control)`
+/// and the tick still flies. D takes the (possibly overwritten) pos z
+/// as a writeback that this leftover treats as identity.
+#[must_use]
+pub fn guided_posvelaccel_control_run(view: &GuidedPosVelAccelView) -> GuidedPosVelAccel {
+    if view.disarmed_or_landed {
+        return GuidedPosVelAccel {
+            exit: GuidedPosVelAccelExit::Disarmed {
+                keep_interlock: view.is_tradheli && view.motor_interlock,
+            },
+        };
+    }
+
+    let timed_out =
+        view.now_ms.wrapping_sub(view.update_time_ms) > guided_timeout_ms(view.guided_timeout_s);
+    let yaw_hold = timed_out
+        && matches!(
+            view.auto_yaw,
+            crate::auto_yaw::YawMode::Rate | crate::auto_yaw::YawMode::AngleRate
+        );
+
+    let mut pos_ned_m = view.pos_target_ned_m;
+    let mut vel_ned_ms = if timed_out {
+        [0.0, 0.0, 0.0]
+    } else {
+        view.vel_target_ned_ms
+    };
+    let accel_ned_mss = if timed_out {
+        [0.0, 0.0, 0.0]
+    } else {
+        view.accel_target_ned_mss
+    };
+
+    let vel_from_desired_ne = !view.stabilizing_vel_ne;
+    let pos_from_desired_ne = !view.stabilizing_vel_ne || !view.stabilizing_pos_ne;
+    if !view.stabilizing_vel_ne {
+        pos_ned_m[0] = view.pos_desired_ned_m[0];
+        pos_ned_m[1] = view.pos_desired_ned_m[1];
+        vel_ned_ms[0] = view.vel_desired_ned_ms[0];
+        vel_ned_ms[1] = view.vel_desired_ned_ms[1];
+    } else if !view.stabilizing_pos_ne {
+        pos_ned_m[0] = view.pos_desired_ned_m[0];
+        pos_ned_m[1] = view.pos_desired_ned_m[1];
+    }
+
+    let stop = if !view.stabilizing_vel_ne {
+        GuidedVelAccelStop::StopVel
+    } else if !view.stabilizing_pos_ne {
+        GuidedVelAccelStop::StopPos
+    } else {
+        GuidedVelAccelStop::None
+    };
+
+    GuidedPosVelAccel {
+        exit: GuidedPosVelAccelExit::Flew {
+            yaw_hold,
+            vel_zeroed: timed_out,
+            accel_zeroed: timed_out,
+            pos_from_desired_ne,
+            vel_from_desired_ne,
+            stop,
+            flow_of_control_error: view.terrain_alt,
+            pos_ned_m,
             vel_ned_ms,
             accel_ned_mss,
         },

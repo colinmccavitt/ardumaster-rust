@@ -1,4 +1,4 @@
-//! `ModeFollow` init leftover, upstream `ArduCopter/mode_follow.cpp`.
+//! `ModeFollow` init / run leftover, upstream `ArduCopter/mode_follow.cpp`.
 //!
 //! Tracked as **COP-017**. Follow is Guided's companion that tracks another
 //! MAVLink vehicle by sysid. It inherits `ModeGuided` but its `init` does
@@ -26,7 +26,32 @@
 //! defaults. Both controllers always re-init — Follow does not ask
 //! `D_is_active`. Yaw is `set_mode_to_default(false)`. The Guided
 //! submode, vel/accel leftovers, `send_notification`, `_paused`, and
-//! `guided_is_terrain_alt` are left alone. `run` is a later slice.
+//! `guided_is_terrain_alt` are left alone.
+//!
+//! # `run` is one early exit, then offsets, then a target leftover
+//!
+//! `is_disarmed_or_landed` is the only early return. Unlike Guided's
+//! `*_control_run` bodies, Follow calls `make_safe_ground_handling()`
+//! with no argument — tradheli interlock is not a keep. Offsets,
+//! spool, and yaw never run on that arm.
+//!
+//! The fly path always `init_offsets_if_required` (so the vehicle does
+//! not start on top of the lead) and writes `THROTTLE_UNLIMITED`. Yaw
+//! seeds from the attitude target; the rate starts at zero.
+//!
+//! A valid `get_ofs_pos_vel_accel_NED_m` feeds `input_pos_vel_accel`
+//! on both axes. Yaw then forks on `FOLL_YAW_BEHAVE`: face-lead uses
+//! the lead *without* offset minus `get_pos_target` and only writes
+//! when `length_squared > 1`; same-as-lead takes `radians` of the
+//! lead heading and rate; dir-of-flight uses the offset velocity NE
+//! and the same `> 1` gate; none / default leaves the seeded yaw.
+//!
+//! Invalid target data holds with zero `input_vel_accel` on both axes
+//! and a zero yaw rate. Controllers and
+//! `input_thrust_vector_heading_rad` always run on the fly path.
+
+use ap_math::scalar::radians;
+use ap_math::vector2::Vector2f;
 
 use crate::mode_guided::{
     GuidedModeFlags, GuidedYawAction, MODE_NUMBER_FOLLOW, WPNAV_ACCELERATION_MSS,
@@ -35,6 +60,9 @@ use crate::mode_guided::{
 
 /// `AP_Follow::Option::MOUNT_FOLLOW_ON_ENTER` — `FOLL_OPTIONS` bit 0.
 pub const FOLLOW_OPTION_MOUNT_FOLLOW_ON_ENTER: u16 = 1;
+
+/// `length_squared > 1` gate on face-lead and dir-of-flight yaw.
+pub const FOLLOW_YAW_LENGTH_SQ_MIN: f32 = 1.0;
 
 /// Upstream `AP_Follow::option_is_enabled`.
 #[must_use]
@@ -197,5 +225,203 @@ pub fn follow_init(view: &FollowInitView, _ignore_checks: bool) -> FollowInit {
         init_ne: true,
         init_d: true,
         yaw: GuidedYawAction::SetModeToDefault,
+    }
+}
+
+/// `AP_Follow::YawBehave` / `FOLL_YAW_BEHAVE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FollowYawBehave {
+    /// `YAW_BEHAVE_NONE` — leave the seeded attitude-target yaw.
+    None = 0,
+    /// `YAW_BEHAVE_FACE_LEAD_VEHICLE`.
+    FaceLeadVehicle = 1,
+    /// `YAW_BEHAVE_SAME_AS_LEAD_VEHICLE`.
+    SameAsLeadVehicle = 2,
+    /// `YAW_BEHAVE_DIR_OF_FLIGHT`.
+    DirOfFlight = 3,
+}
+
+/// What `ModeFollow::run` fed the position controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowPosInput {
+    /// Valid ofs: `input_pos_vel_accel` on NE and D.
+    PosVelAccel,
+    /// Invalid ofs: zero `input_vel_accel` on NE and D.
+    VelAccelHold,
+}
+
+/// Where the fly-path yaw leftover came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowYawSource {
+    /// Seeded `get_att_target_euler_rad().z`, never overwritten.
+    AttTarget,
+    /// Face-lead: `vec_to_lead.angle()` after `length_squared > 1`.
+    FaceLead,
+    /// Same-as-lead: `radians` of the lead heading and rate.
+    SameAsLead,
+    /// Dir-of-flight: offset-velocity NE `angle()` after `length_squared > 1`.
+    DirOfFlight,
+}
+
+/// How `ModeFollow::run` left the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FollowRunExit {
+    /// `is_disarmed_or_landed`: `make_safe_ground_handling()` and return.
+    /// No tradheli-interlock keep — unlike Guided's `*_control_run`.
+    Disarmed,
+    /// Flying: offsets, unlimited spool, then target / yaw leftovers.
+    Flew {
+        /// `g2.follow.init_offsets_if_required` ran.
+        init_offsets: bool,
+        /// PosControl input leftover.
+        input: FollowPosInput,
+        /// Which yaw arm wrote `yaw_rad` / `yaw_rate_rads`.
+        yaw_source: FollowYawSource,
+        /// Heading passed to `input_thrust_vector_heading_rad`.
+        yaw_rad: f32,
+        /// Yaw rate passed to `input_thrust_vector_heading_rad`.
+        yaw_rate_rads: f32,
+        /// Offset pos fed on a valid target; zeros on hold.
+        pos_ned_m: [f32; 3],
+        /// Offset vel fed on a valid target; zeros on hold.
+        vel_ned_ms: [f32; 3],
+        /// Offset accel fed on a valid target; zeros on hold.
+        accel_ned_mss: [f32; 3],
+    },
+}
+
+/// Vehicle view `ModeFollow::run` reads.
+#[derive(Debug, Clone, Copy)]
+pub struct FollowRunView {
+    /// `Mode::is_disarmed_or_landed()`.
+    pub disarmed_or_landed: bool,
+    /// `attitude_control->get_att_target_euler_rad().z`.
+    pub att_yaw_rad: f32,
+    /// `g2.follow.get_ofs_pos_vel_accel_NED_m` succeeded.
+    pub ofs_valid: bool,
+    /// Offset pos (lead + offset), metres NED.
+    pub pos_ofs_ned_m: [f32; 3],
+    /// Offset vel, m/s NED.
+    pub vel_ofs_ned_ms: [f32; 3],
+    /// Offset accel, m/s² NED.
+    pub accel_ofs_ned_mss: [f32; 3],
+    /// `g2.follow.get_target_heading_deg()`.
+    pub target_heading_deg: f32,
+    /// `g2.follow.get_target_heading_rate_degs()`.
+    pub target_heading_rate_degs: f32,
+    /// `g2.follow.get_yaw_behave()`.
+    pub yaw_behave: FollowYawBehave,
+    /// `g2.follow.get_target_pos_vel_accel_NED_m` succeeded.
+    /// Consulted only on face-lead.
+    pub target_pva_ok: bool,
+    /// Lead vehicle pos *without* offset. Face-lead only.
+    pub lead_pos_ned_m: [f32; 3],
+    /// `pos_control->get_pos_target_NED_m()` after the ofs input.
+    /// Face-lead subtracts this from [`Self::lead_pos_ned_m`].
+    pub pos_target_ned_m: [f32; 3],
+}
+
+impl FollowRunView {
+    /// Flying, valid ofs, `YAW_BEHAVE_NONE`, identity pos-target.
+    #[must_use]
+    pub const fn flying() -> Self {
+        Self {
+            disarmed_or_landed: false,
+            att_yaw_rad: 0.3,
+            ofs_valid: true,
+            pos_ofs_ned_m: [8.0, 4.0, -12.0],
+            vel_ofs_ned_ms: [1.5, -0.5, 0.0],
+            accel_ofs_ned_mss: [0.2, 0.1, 0.0],
+            target_heading_deg: 90.0,
+            target_heading_rate_degs: 10.0,
+            yaw_behave: FollowYawBehave::None,
+            target_pva_ok: true,
+            lead_pos_ned_m: [10.0, 0.0, -12.0],
+            pos_target_ned_m: [8.0, 4.0, -12.0],
+        }
+    }
+}
+
+/// Leftover of one `ModeFollow::run` tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FollowRun {
+    /// Which arm returned, or the fly leftover.
+    pub exit: FollowRunExit,
+}
+
+/// Upstream `ModeFollow::run`.
+///
+/// Disarmed is the only early exit and has no tradheli keep. The fly
+/// path always inits offsets and spools unlimited. A valid ofs feeds
+/// pos+vel+accel; a miss holds on zero vel/accel. Face-lead and
+/// dir-of-flight use `length_squared > 1`, not `>=`. Same-as-lead is
+/// `radians` of the lead heading and rate. Controllers always update
+/// on the fly path.
+#[must_use]
+pub fn follow_run(view: &FollowRunView) -> FollowRun {
+    if view.disarmed_or_landed {
+        return FollowRun {
+            exit: FollowRunExit::Disarmed,
+        };
+    }
+
+    let mut yaw_rad = view.att_yaw_rad;
+    let mut yaw_rate_rads = 0.0;
+    let mut yaw_source = FollowYawSource::AttTarget;
+
+    let (input, pos_ned_m, vel_ned_ms, accel_ned_mss) = if view.ofs_valid {
+        match view.yaw_behave {
+            FollowYawBehave::FaceLeadVehicle => {
+                if view.target_pva_ok {
+                    let vec_n = view.lead_pos_ned_m[0] - view.pos_target_ned_m[0];
+                    let vec_e = view.lead_pos_ned_m[1] - view.pos_target_ned_m[1];
+                    if vec_n * vec_n + vec_e * vec_e > FOLLOW_YAW_LENGTH_SQ_MIN {
+                        yaw_rad = Vector2f::new(vec_n, vec_e).angle();
+                        yaw_source = FollowYawSource::FaceLead;
+                    }
+                }
+            }
+            FollowYawBehave::SameAsLeadVehicle => {
+                yaw_rad = radians(view.target_heading_deg);
+                yaw_rate_rads = radians(view.target_heading_rate_degs);
+                yaw_source = FollowYawSource::SameAsLead;
+            }
+            FollowYawBehave::DirOfFlight => {
+                let vel_n = view.vel_ofs_ned_ms[0];
+                let vel_e = view.vel_ofs_ned_ms[1];
+                if vel_n * vel_n + vel_e * vel_e > FOLLOW_YAW_LENGTH_SQ_MIN {
+                    yaw_rad = Vector2f::new(vel_n, vel_e).angle();
+                    yaw_source = FollowYawSource::DirOfFlight;
+                }
+            }
+            FollowYawBehave::None => {}
+        }
+        (
+            FollowPosInput::PosVelAccel,
+            view.pos_ofs_ned_m,
+            view.vel_ofs_ned_ms,
+            view.accel_ofs_ned_mss,
+        )
+    } else {
+        (
+            FollowPosInput::VelAccelHold,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        )
+    };
+
+    FollowRun {
+        exit: FollowRunExit::Flew {
+            init_offsets: true,
+            input,
+            yaw_source,
+            yaw_rad,
+            yaw_rate_rads,
+            pos_ned_m,
+            vel_ned_ms,
+            accel_ned_mss,
+        },
     }
 }
