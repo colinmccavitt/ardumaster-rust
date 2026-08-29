@@ -23,8 +23,9 @@
 //! [`standby_update`], and [`lost_vehicle_check`] are the next always-on
 //! scheduled leftovers from `motors.cpp` / `standby.cpp`. [`takeoff_check`]
 //! is the next always-on scheduled leftover after those. [`update_auto_armed`]
-//! is the `throttle_loop` callee leftover from `system.cpp`. Later
-//! `Copter.cpp` / `system.cpp` leftovers stay later.
+//! is the `throttle_loop` callee leftover from `system.cpp`. [`init_ardupilot`]
+//! and [`startup_ins_ground`] are the next `system.cpp` leftovers after that.
+//! `allocate_motors` stays later.
 
 use ap_hal::time::Clock;
 use ap_math::location::{AltContext, AltFrame, Location};
@@ -294,6 +295,21 @@ pub const ARMING_DELAY_MS: u32 = 2_000;
 
 /// `Mode::Number::THROW` — clears the arming delay so a toss can spool.
 pub const MODE_THROW: u8 = 18;
+
+/// `Mode::Number::STABILIZE` — `init_ardupilot` fallback when `g.initial_mode` fails.
+pub const MODE_STABILIZE: u8 = 0;
+
+/// `ModeReason::INITIALISED` — first `set_mode` after `init_ardupilot`.
+pub const MODE_REASON_INITIALISED: u8 = 26;
+
+/// `ModeReason::UNAVAILABLE` — Stabilize fallback when `g.initial_mode` fails.
+pub const MODE_REASON_UNAVAILABLE: u8 = 33;
+
+/// `AP_AHRS::VehicleClass::COPTER` — UNKNOWN=0, GROUND=1, COPTER=2.
+pub const VEHICLE_CLASS_COPTER: u8 = 2;
+
+/// `hal.scheduler->register_timer_failsafe(..., 1000)` period, microseconds.
+pub const INIT_ARDUPILOT_FAILSAFE_US: u32 = 1_000;
 
 /// Fast versus rate-limited scheduler row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -590,13 +606,9 @@ pub const SCHEDULER_TASKS: &[SchedulerTaskSpec] = &[
 /// `update_land_and_crash_detectors`, and `update_rangefinder_terrain_offset`,
 /// the logging / 3 Hz / 1 Hz leftovers, simple-mode, `update_altitude`,
 /// `get_wp_distance_m`, `run_nav_updates`, `auto_disarm_check`,
-/// `standby_update`, `lost_vehicle_check`, `takeoff_check`, and
-/// `update_auto_armed`.
-pub const REMAINING: &[&str] = &[
-    "Copter::init_ardupilot",
-    "Copter::startup_INS_ground",
-    "Copter::allocate_motors",
-];
+/// `standby_update`, `lost_vehicle_check`, `takeoff_check`,
+/// `update_auto_armed`, `init_ardupilot`, and `startup_INS_ground`.
+pub const REMAINING: &[&str] = &["Copter::allocate_motors"];
 
 /// What `Copter::get_scheduler_tasks` hands the vehicle scheduler.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2518,6 +2530,223 @@ pub const fn update_auto_armed(inputs: UpdateAutoArmedInputs) -> UpdateAutoArmed
         }
     }
     UpdateAutoArmedLeftover { auto_armed: false }
+}
+
+/// Inputs to `Copter::startup_INS_ground`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupInsGroundInputs {
+    /// `scheduler.get_loop_rate_hz()`.
+    pub loop_rate_hz: u16,
+}
+
+/// What `Copter::startup_INS_ground` asked later leftovers to do.
+///
+/// AHRS init, then Copter vehicle class, then INS at the scheduler
+/// loop rate, then AHRS reset. A port that reset AHRS before INS
+/// init would drop the gyro-bias warmup `ins.init` just wrote.
+/// Vehicle class is COPTER, not UNKNOWN — skipping
+/// `set_vehicle_class` would leave AHRS on the default UNKNOWN class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupInsGroundLeftover {
+    /// Always: `ahrs.init()`.
+    pub ahrs_init: bool,
+    /// `ahrs.set_vehicle_class(COPTER)`.
+    pub vehicle_class: u8,
+    /// Always: `ins.init(loop_rate)`.
+    pub ins_init: bool,
+    /// Loop rate handed to `ins.init`.
+    pub ins_loop_rate_hz: u16,
+    /// Always: `ahrs.reset()` after INS init.
+    pub ahrs_reset: bool,
+}
+
+/// `Copter::startup_INS_ground`.
+#[must_use]
+pub const fn startup_ins_ground(inputs: StartupInsGroundInputs) -> StartupInsGroundLeftover {
+    StartupInsGroundLeftover {
+        ahrs_init: true,
+        vehicle_class: VEHICLE_CLASS_COPTER,
+        ins_init: true,
+        ins_loop_rate_hz: inputs.loop_rate_hz,
+        ahrs_reset: true,
+    }
+}
+
+/// Inputs to `Copter::init_ardupilot`.
+///
+/// Stock multicopter (`FRAME_CONFIG != HELI_FRAME`): the heli pair is
+/// compiled out, not a runtime `if`. Feature-gated inits (winch, OSD,
+/// airspeed, OA, optflow, mount, camera, PrecLand, landing gear,
+/// userhook, proximity, beacon, custom-control) stay compiled out of
+/// this leftover — later leftovers own those bodies. `allocate_motors`
+/// stays a later leftover; this leftover records that the call happens
+/// before RC out. [`startup_ins_ground`] is published above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitArdupilotInputs {
+    /// `g.initial_mode`.
+    pub initial_mode: u8,
+    /// `set_mode((Mode::Number)g.initial_mode, ModeReason::INITIALISED)`.
+    pub initial_mode_ok: bool,
+}
+
+/// Which `init_ardupilot` mode branch ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitArdupilotPath {
+    /// `set_mode(initial_mode, INITIALISED)` succeeded.
+    InitialMode,
+    /// Fallback `set_mode(STABILIZE, UNAVAILABLE)`.
+    StabilizeFallback,
+}
+
+/// What `Copter::init_ardupilot` asked later leftovers to do.
+///
+/// `allocate_motors` runs before `rc().init` / `init_rc_out` — a port
+/// that PWM'd ESCs first would output on an unallocated mixer.
+/// `ap.initialised_params` flips after motors / RC / ESC-cal so GCS
+/// can send params once the mixer exists, not before. The 1 ms
+/// timer-failsafe registers only after RC init. [`startup_ins_ground`]
+/// runs after baro calibrate / mission / logger writer, then the land
+/// flags go true *before* `failsafe_enable` — enabling failsafe first
+/// would see a not-yet-landed vehicle. `set_mode` fallback uses
+/// `UNAVAILABLE` + STABILIZE, not a second `INITIALISED`. `ap.initialised`
+/// is last; GCS extended status waits on that bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitArdupilotLeftover {
+    /// Which mode branch ran.
+    pub path: InitArdupilotPath,
+    /// Always: `notify.init()` then `notify_flight_mode()`.
+    pub notify_init: bool,
+    /// Always: `battery.init()`.
+    pub battery_init: bool,
+    /// Always: `barometer.init()`.
+    pub barometer_init: bool,
+    /// Always: `gcs().setup_uarts()`.
+    pub gcs_setup_uarts: bool,
+    /// Always: `update_using_interlock()`.
+    pub update_using_interlock: bool,
+    /// `heli_init` / `input_manager.set_loop_rate` — heli only.
+    pub heli_init: bool,
+    /// Always: `init_rc_in()`.
+    pub init_rc_in: bool,
+    /// `surface_tracking.init` — stock `AP_RANGEFINDER_ENABLED`, before RC init.
+    pub surface_tracking_init: bool,
+    /// Always: later leftover `allocate_motors()`.
+    pub allocate_motors: bool,
+    /// Always: `rc().convert_options` then `rc().init()`.
+    pub rc_init: bool,
+    /// Always: `init_rc_out()`.
+    pub init_rc_out: bool,
+    /// Always: `esc_calibration_startup_check()`.
+    pub esc_calibration_startup_check: bool,
+    /// `ap.initialised_params` after motors / RC / ESC-cal.
+    pub initialised_params: bool,
+    /// Always: `hal.scheduler->register_timer_failsafe(..., 1000)`.
+    pub register_timer_failsafe: bool,
+    /// Failsafe period handed to the scheduler, microseconds.
+    pub failsafe_period_us: u32,
+    /// Always: `gps.init()` after `set_log_gps_bit`.
+    pub gps_init: bool,
+    /// Always: `compass.init()` after `set_log_bit`.
+    pub compass_init: bool,
+    /// Always: `attitude_control->parameter_sanity_check()`.
+    pub attitude_parameter_sanity_check: bool,
+    /// Always: `barometer.calibrate()` after `set_log_baro_bit`.
+    pub barometer_calibrate: bool,
+    /// Always: `mode_auto.mission.init()` — stock `MODE_AUTO_ENABLED`.
+    pub mission_init: bool,
+    /// Always: `g2.smart_rtl.init()` — stock `MODE_SMARTRTL_ENABLED`.
+    pub smart_rtl_init: bool,
+    /// Always: logger vehicle-startup writer — `HAL_LOGGING_ENABLED`.
+    pub logger_startup_writer: bool,
+    /// Always: later leftover `startup_INS_ground()`.
+    pub startup_ins_ground: bool,
+    /// Always: `set_land_complete(true)`.
+    pub land_complete: bool,
+    /// Always: `set_land_complete_maybe(true)`.
+    pub land_complete_maybe: bool,
+    /// Always: `failsafe_enable()` after the land flags.
+    pub failsafe_enable: bool,
+    /// Always: `ins.set_log_raw_bit(MASK_LOG_IMU_RAW)`.
+    pub ins_log_raw: bool,
+    /// Always: `motors->output_min()`.
+    pub motors_output_min: bool,
+    /// Mode `set_mode` was asked to enter.
+    pub mode: u8,
+    /// `ModeReason` handed to that `set_mode`.
+    pub mode_reason: u8,
+    /// Always: pos/vel variance filters at `g2.fs_ekf_filt_hz`.
+    pub variance_filt_cutoff: bool,
+    /// `ap.initialised` — last flag, after mode + filters.
+    pub initialised: bool,
+    /// `g2.winch.init()` — compiled out.
+    pub winch_init: bool,
+    /// `custom_control.init()` — compiled out.
+    pub custom_control_init: bool,
+}
+
+/// `Copter::init_ardupilot`.
+///
+/// Stock multicopter walks notify / battery / baro / GCS / interlock /
+/// RC-in / surface-tracking / allocate-motors / RC-out / ESC-cal, then
+/// flips `initialised_params`, registers the 1 ms failsafe, inits GPS
+/// and compass, calibrates the baro, inits mission / SmartRTL / logger,
+/// then [`startup_ins_ground`]. Landed flags come next, then failsafe
+/// enable, raw-IMU log bit, and `motors->output_min` before `set_mode`.
+/// The heli pair and the optional payload inits are compiled out of
+/// this leftover, not skipped at runtime — a runtime `if heli` would
+/// be a different function.
+#[must_use]
+pub const fn init_ardupilot(inputs: InitArdupilotInputs) -> InitArdupilotLeftover {
+    let (path, mode, mode_reason) = if inputs.initial_mode_ok {
+        (
+            InitArdupilotPath::InitialMode,
+            inputs.initial_mode,
+            MODE_REASON_INITIALISED,
+        )
+    } else {
+        (
+            InitArdupilotPath::StabilizeFallback,
+            MODE_STABILIZE,
+            MODE_REASON_UNAVAILABLE,
+        )
+    };
+    InitArdupilotLeftover {
+        path,
+        notify_init: true,
+        battery_init: true,
+        barometer_init: true,
+        gcs_setup_uarts: true,
+        update_using_interlock: true,
+        heli_init: false,
+        init_rc_in: true,
+        surface_tracking_init: true,
+        allocate_motors: true,
+        rc_init: true,
+        init_rc_out: true,
+        esc_calibration_startup_check: true,
+        initialised_params: true,
+        register_timer_failsafe: true,
+        failsafe_period_us: INIT_ARDUPILOT_FAILSAFE_US,
+        gps_init: true,
+        compass_init: true,
+        attitude_parameter_sanity_check: true,
+        barometer_calibrate: true,
+        mission_init: true,
+        smart_rtl_init: true,
+        logger_startup_writer: true,
+        startup_ins_ground: true,
+        land_complete: true,
+        land_complete_maybe: true,
+        failsafe_enable: true,
+        ins_log_raw: true,
+        motors_output_min: true,
+        mode,
+        mode_reason,
+        variance_filt_cutoff: true,
+        initialised: true,
+        winch_init: false,
+        custom_control_init: false,
+    }
 }
 
 /// Per-callback accounting for the leftovers this slice wires.

@@ -6,6 +6,7 @@ use ap_copter::vehicle_loop::{
     copter_first_fast_tasks, copter_first_scheduled_tasks, copter_logging_tasks,
     copter_next_fast_tasks, copter_next_scheduled_tasks, copter_periodic_loop_tasks,
     copter_rc_loop_task, first_scheduled_task, get_scheduler_tasks, get_wp_distance_m,
+    init_ardupilot, startup_ins_ground,
     loop_rate_logging, lost_vehicle_check, motors_output, motors_output_main, one_hz_loop, rc_loop,
     read_ahrs, read_inertia, read_mode_switch, run_nav_updates, run_scheduler_tick, set_home,
     set_home_to_current_location, set_home_to_current_location_inflight, should_log,
@@ -13,20 +14,24 @@ use ap_copter::vehicle_loop::{
     throttle_loop, twentyfive_hz_logging, update_altitude, update_auto_armed, update_batt_compass,
     update_flight_mode, update_home_from_ekf, update_land_and_crash_detectors,
     update_rangefinder_terrain_offset, ApState, AutoDisarmCheckInputs, AutoDisarmCheckPath,
-    CheckEkfResetInputs, CopterVehicleLoop, EkfResetMethod, InterlockEdge, LoopRateLoggingInputs,
+    CheckEkfResetInputs, CopterVehicleLoop, EkfResetMethod, InitArdupilotInputs, InitArdupilotPath,
+    InterlockEdge, LoopRateLoggingInputs,
     LostVehicleCheckInputs, ModeSwitchReadInputs, ModeSwitchReadLeftover, MotorsOutputDrive,
     MotorsOutputMainLeftover, MotorsOutputPush, OneHzLoopInputs, RangefinderTerrainState,
     SetHomeInputs, SetHomeToCurrentLocationInflightInputs, SetHomeToCurrentLocationInputs,
+    StartupInsGroundInputs,
     TakeoffCheckInputs, TakeoffCheckPath, TaskKind, TenHzLoggingInputs, TwentyfiveHzLoggingInputs,
     UpdateAltitudeInputs, UpdateAutoArmedInputs, UpdateBattCompassInputs, UpdateFlightModeInputs,
     UpdateHomeFromEkfInputs, UpdateHomeFromEkfPath, UpdateRangefinderTerrainOffsetInputs,
     ARMING_DELAY_MS, AUTO_DISARMING_DELAY, AUTO_DISARM_CHECK_MAX_TIME_MICROS,
     AUTO_DISARM_CHECK_PRIORITY, AUTO_DISARM_CHECK_RATE_HZ, COPTER_LOOP_RATE_HZ,
-    DEFAULT_LOG_BITMASK, DISARM_DELAY_MAX_S, FAST_TASK_PRI0, LOOP_RATE_LOGGING_MAX_TIME_MICROS,
+    DEFAULT_LOG_BITMASK, DISARM_DELAY_MAX_S, FAST_TASK_PRI0, INIT_ARDUPILOT_FAILSAFE_US,
+    LOOP_RATE_LOGGING_MAX_TIME_MICROS,
     LOOP_RATE_LOGGING_PRIORITY, LOST_VEHICLE_CHECK_MAX_TIME_MICROS, LOST_VEHICLE_CHECK_PRIORITY,
     LOST_VEHICLE_CHECK_RATE_HZ, LOST_VEHICLE_DELAY, LOST_VEHICLE_STICK_MAX, MASK_LOG_ANY,
     MASK_LOG_ATTITUDE_FAST, MASK_LOG_ATTITUDE_MED, MASK_LOG_IMU, MASK_LOG_IMU_FAST,
-    MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS,
+    MASK_LOG_MOTBATT, MASK_LOG_NTUN, MASK_LOG_PM, MODE_REASON_INITIALISED, MODE_REASON_UNAVAILABLE,
+    MODE_STABILIZE, MODE_THROW, ONE_HZ_LOOP_MAX_TIME_MICROS,
     ONE_HZ_LOOP_PRIORITY, ONE_HZ_LOOP_RATE_HZ, RC_LOOP_MAX_TIME_MICROS, RC_LOOP_PRIORITY,
     RC_LOOP_RATE_HZ, REMAINING, RUN_NAV_UPDATES_MAX_TIME_MICROS, RUN_NAV_UPDATES_PRIORITY,
     RUN_NAV_UPDATES_RATE_HZ, SCHEDULER_TASKS, STANDBY_UPDATE_MAX_TIME_MICROS,
@@ -39,7 +44,7 @@ use ap_copter::vehicle_loop::{
     THR_BEHAVE_FEEDBACK_FROM_MID_STICK, TWENTYFIVE_HZ_LOGGING_MAX_TIME_MICROS,
     TWENTYFIVE_HZ_LOGGING_PRIORITY, TWENTYFIVE_HZ_LOGGING_RATE_HZ, UPDATE_ALTITUDE_MAX_TIME_MICROS,
     UPDATE_ALTITUDE_PRIORITY, UPDATE_ALTITUDE_RATE_HZ, UPDATE_BATT_COMPASS_MAX_TIME_MICROS,
-    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ,
+    UPDATE_BATT_COMPASS_PRIORITY, UPDATE_BATT_COMPASS_RATE_HZ, VEHICLE_CLASS_COPTER,
 };
 use ap_hal::time::{Clock, Micros, Millis};
 use ap_math::location::AltFrame;
@@ -118,7 +123,9 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::update_auto_armed"));
-    assert!(REMAINING.contains(&"Copter::init_ardupilot"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::init_ardupilot"));
     assert!(!REMAINING.iter().any(|name| *name == "Copter::rc_loop"));
     assert!(!REMAINING.iter().any(|name| *name == "Copter::read_AHRS"));
     assert!(!REMAINING
@@ -164,7 +171,9 @@ fn remaining_leftovers_keep_later_callbacks() {
     assert!(!REMAINING
         .iter()
         .any(|name| *name == "Copter::takeoff_check"));
-    assert!(REMAINING.contains(&"Copter::startup_INS_ground"));
+    assert!(!REMAINING
+        .iter()
+        .any(|name| *name == "Copter::startup_INS_ground"));
     assert!(REMAINING.contains(&"Copter::allocate_motors"));
     assert!(!REMAINING
         .iter()
@@ -2045,4 +2054,80 @@ fn update_auto_armed_non_interlock_needs_throttle() {
         throw_mode: false,
     });
     assert!(leftover.auto_armed);
+}
+
+fn typical_init_ardupilot() -> InitArdupilotInputs {
+    InitArdupilotInputs {
+        initial_mode: MODE_STABILIZE,
+        initial_mode_ok: true,
+    }
+}
+
+#[test]
+fn init_ardupilot_uses_initial_mode_when_available() {
+    let leftover = init_ardupilot(InitArdupilotInputs {
+        initial_mode: MODE_THROW,
+        initial_mode_ok: true,
+    });
+    assert_eq!(leftover.path, InitArdupilotPath::InitialMode);
+    assert_eq!(leftover.mode, MODE_THROW);
+    assert_eq!(leftover.mode_reason, MODE_REASON_INITIALISED);
+    assert!(leftover.allocate_motors);
+    assert!(leftover.startup_ins_ground);
+    assert!(leftover.initialised);
+    assert!(leftover.initialised_params);
+}
+
+#[test]
+fn init_ardupilot_falls_back_to_stabilize_when_initial_unavailable() {
+    let leftover = init_ardupilot(InitArdupilotInputs {
+        initial_mode: MODE_THROW,
+        initial_mode_ok: false,
+    });
+    assert_eq!(leftover.path, InitArdupilotPath::StabilizeFallback);
+    assert_eq!(leftover.mode, MODE_STABILIZE);
+    assert_eq!(leftover.mode_reason, MODE_REASON_UNAVAILABLE);
+    assert_ne!(leftover.mode_reason, MODE_REASON_INITIALISED);
+}
+
+#[test]
+fn init_ardupilot_sets_landed_before_failsafe_and_initialised_last() {
+    let leftover = init_ardupilot(typical_init_ardupilot());
+    assert!(leftover.land_complete);
+    assert!(leftover.land_complete_maybe);
+    assert!(leftover.failsafe_enable);
+    assert!(leftover.motors_output_min);
+    assert!(leftover.register_timer_failsafe);
+    assert_eq!(leftover.failsafe_period_us, INIT_ARDUPILOT_FAILSAFE_US);
+    assert!(leftover.initialised);
+}
+
+#[test]
+fn init_ardupilot_heli_and_optional_inits_compiled_out() {
+    let leftover = init_ardupilot(typical_init_ardupilot());
+    assert!(!leftover.heli_init);
+    assert!(!leftover.winch_init);
+    assert!(!leftover.custom_control_init);
+    assert!(leftover.surface_tracking_init);
+    assert!(leftover.mission_init);
+    assert!(leftover.smart_rtl_init);
+}
+
+#[test]
+fn startup_ins_ground_sets_copter_class_then_resets_ahrs() {
+    let leftover = startup_ins_ground(StartupInsGroundInputs {
+        loop_rate_hz: COPTER_LOOP_RATE_HZ,
+    });
+    assert!(leftover.ahrs_init);
+    assert_eq!(leftover.vehicle_class, VEHICLE_CLASS_COPTER);
+    assert!(leftover.ins_init);
+    assert_eq!(leftover.ins_loop_rate_hz, COPTER_LOOP_RATE_HZ);
+    assert!(leftover.ahrs_reset);
+}
+
+#[test]
+fn startup_ins_ground_hands_scheduler_loop_rate_to_ins() {
+    let leftover = startup_ins_ground(StartupInsGroundInputs { loop_rate_hz: 200 });
+    assert_eq!(leftover.ins_loop_rate_hz, 200);
+    assert_eq!(leftover.vehicle_class, VEHICLE_CLASS_COPTER);
 }
