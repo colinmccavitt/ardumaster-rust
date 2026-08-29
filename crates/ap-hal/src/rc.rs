@@ -102,6 +102,13 @@ pub trait RcOutput {
     /// Disable output on channel `ch`.
     fn disable_ch(&mut self, ch: u8) -> Result<()>;
 
+    /// Hold writes until [`push`] is called, upstream `cork`.
+    ///
+    /// Defaulted to a no-op: a backend that writes immediately has nothing
+    /// to buffer, and the pair is still visible at the call site so a
+    /// frame cannot be half-committed by forgetting one of them.
+    fn cork(&mut self) {}
+
     /// Push buffered writes to the hardware.
     ///
     /// Upstream pairs `cork()`/`push()` so a whole servo frame is written
@@ -177,6 +184,7 @@ pub struct MockRcOutput {
     outputs: [u16; MAX_RC_CHANNELS],
     enabled: u32,
     pushes: u32,
+    corks: u32,
 }
 
 impl Default for MockRcOutput {
@@ -186,6 +194,7 @@ impl Default for MockRcOutput {
             outputs: [0; MAX_RC_CHANNELS],
             enabled: 0,
             pushes: 0,
+            corks: 0,
         }
     }
 }
@@ -209,6 +218,11 @@ impl MockRcOutput {
     /// that a servo frame was actually committed.
     pub fn push_count(&self) -> u32 {
         self.pushes
+    }
+
+    /// How many times [`RcOutput::cork`] has been called.
+    pub fn cork_count(&self) -> u32 {
+        self.corks
     }
 }
 
@@ -244,6 +258,10 @@ impl RcOutput for MockRcOutput {
         }
         self.enabled &= !(1u32 << ch);
         Ok(())
+    }
+
+    fn cork(&mut self) {
+        self.corks += 1;
     }
 
     fn push(&mut self) {
@@ -313,7 +331,9 @@ mod tests {
         assert_eq!(rc.push_count(), 0);
         rc.write(0, 1500).unwrap();
         rc.write(1, 1600).unwrap();
+        rc.cork();
         rc.push();
+        assert_eq!(rc.cork_count(), 1);
         assert_eq!(rc.push_count(), 1);
     }
 

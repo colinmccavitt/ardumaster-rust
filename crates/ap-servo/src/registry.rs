@@ -16,6 +16,10 @@
 //!
 //! Per ADR-0004 this is an owned object rather than the static upstream keeps,
 //! so a test can have one without disturbing another.
+//!
+//! The hardware send step is not here: [`crate::push`] is the fan-out to
+//! `hal.rcout` and the output protocols. SERVOn parameter loading is
+//! [`crate::upgrade`].
 
 use crate::function::{Function, NR_AUX_SERVO_FUNCTIONS};
 use crate::output_channel::{OutputChannel, OutputContext};
@@ -108,6 +112,8 @@ impl Registry {
     /// Upstream builds this from the `SERVOn_FUNCTION` parameters in
     /// `update_aux_servo_function`; here it is set directly, because the
     /// parameter sweep is a separate concern from the mapping it produces.
+    /// The sweep itself — widening stored FUNCTION values, the SERVOn
+    /// table — lives in [`crate::upgrade`].
     pub fn assign(&mut self, function: Function, channel_mask: ChannelMask) {
         if let Some(entry) = self.functions.get_mut(usize::from(function.0)) {
             entry.channel_mask = channel_mask;

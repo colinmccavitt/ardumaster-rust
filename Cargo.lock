@@ -265,7 +265,9 @@ dependencies = [
 name = "ap-servo"
 version = "0.1.0"
 dependencies = [
+ "ap-hal",
  "ap-math",
+ "ap-param",
 ]
 
 [[package]]

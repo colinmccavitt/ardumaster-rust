@@ -4,7 +4,8 @@
 //! [`crate::ServoChannel`] is the configuration — the `SERVOn_*` parameters and
 //! the conversion they define. This is what changes every iteration: the pulse
 //! currently on the wire, and the two things that can stop the normal
-//! conversion from deciding it.
+//! conversion from deciding it. Loading those parameters from storage is
+//! [`crate::upgrade`]; sending the pulse is [`crate::push`].
 //!
 //! # Three ways a pulse gets decided
 //!

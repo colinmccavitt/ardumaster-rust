@@ -19,6 +19,9 @@
 //! Reproducing that matters: rounding instead would shift every surface by up
 //! to half a microsecond, which is small but systematic and would show up in
 //! any comparison against a real aircraft.
+//!
+//! The hardware send step ([`push`]) and SERVOn parameter loading
+//! ([`upgrade`]) are the COP-030 leftovers that sit beside this conversion.
 
 #![no_std]
 
@@ -35,7 +38,9 @@ pub const NUM_SERVO_CHANNELS: usize = 32;
 
 pub mod function;
 pub mod output_channel;
+pub mod push;
 pub mod registry;
+pub mod upgrade;
 
 /// How a channel maps a scaled value onto pulse widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +81,8 @@ fn truncate_to_u16(v: f32) -> u16 {
 /// The function assignment, the override and E-stop paths, and the parameter
 /// plumbing are not here: this is the arithmetic that turns a demand into a
 /// pulse width, which is what the control path needs and what can be compared
-/// against upstream without standing up a vehicle.
+/// against upstream without standing up a vehicle. SERVOn loading lives in
+/// [`upgrade`]; the hardware send step lives in [`push`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServoChannel {
     /// Minimum pulse width, microseconds. Upstream `SERVOn_MIN`.
