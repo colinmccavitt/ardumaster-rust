@@ -1,13 +1,17 @@
-//! `ModeSystemId` init leftover, upstream `ArduCopter/mode_systemid.cpp`.
+//! `ModeSystemId` init / run leftover, upstream `ArduCopter/mode_systemid.cpp`.
 
 use ap_copter::mode_loiter::MODE_NUMBER_LOITER;
+use ap_copter::mode_stabilize::RateIReset;
 use ap_copter::mode_systemid::{
     is_poscontrol_axis_type, systemid_enabled, systemid_has_user_takeoff, systemid_init,
-    systemid_mode_flags, SystemIdAxis, SystemIdInitFail, SystemIdInitView, SystemIdState,
-    MODE_NUMBER_SYSTEMID, SYSTEMID_AXIS_DEFAULT, SYSTEMID_F_START_HZ_DEFAULT,
-    SYSTEMID_F_STOP_HZ_DEFAULT, SYSTEMID_MAGNITUDE_DEFAULT, SYSTEMID_T_FADE_IN_DEFAULT,
-    SYSTEMID_T_FADE_OUT_DEFAULT, SYSTEMID_T_REC_DEFAULT, SYSTEM_ID_DELAY_S,
+    systemid_mode_flags, systemid_run, SystemIdAxis, SystemIdInitFail, SystemIdInitView,
+    SystemIdInject, SystemIdRunView, SystemIdState, SystemIdStopReason, MODE_NUMBER_SYSTEMID,
+    SYSTEMID_AXIS_DEFAULT, SYSTEMID_F_START_HZ_DEFAULT, SYSTEMID_F_STOP_HZ_DEFAULT,
+    SYSTEMID_MAGNITUDE_DEFAULT, SYSTEMID_T_FADE_IN_DEFAULT, SYSTEMID_T_FADE_OUT_DEFAULT,
+    SYSTEMID_T_REC_DEFAULT, SYSTEM_ID_DELAY_S,
 };
+use ap_math::scalar::radians;
+use ap_motors::spool::{DesiredSpoolState, SpoolState};
 
 #[test]
 fn systemid_number_is_twenty_five() {
@@ -236,4 +240,157 @@ fn ignore_checks_cannot_bypass_any_gate() {
         systemid_init(false, &loiter_needed),
         systemid_init(true, &loiter_needed)
     );
+}
+
+#[test]
+fn attitude_run_injects_roll_and_logs_first_tick() {
+    let mut view = SystemIdRunView::typical();
+    view.waveform_sample = 10.0;
+    view.roll_in_norm = 0.0;
+    let out = systemid_run(&view);
+    assert_eq!(out.state, SystemIdState::Testing);
+    assert!(out.stop_reason.is_none());
+    assert_eq!(out.inject, SystemIdInject::InputRoll);
+    assert!(out.chirp_update);
+    assert_eq!(
+        out.chirp_time.to_bits(),
+        (0.0025f32 - SYSTEM_ID_DELAY_S).to_bits()
+    );
+    assert_eq!(out.target_roll_rad.to_bits(), radians(10.0f32).to_bits());
+    assert_eq!(out.target_pitch_rad.to_bits(), 0.0f32.to_bits());
+    assert_eq!(
+        out.desired_spool,
+        Some(DesiredSpoolState::ThrottleUnlimited)
+    );
+    assert!(out.input_euler_angle);
+    assert!(out.set_throttle_out);
+    assert!(!out.set_pos_vel_accel);
+    assert!(out.logged);
+    assert_eq!(out.log_subsample, 7);
+    assert!(out.clear_land_complete);
+}
+
+#[test]
+fn recover_axis_clears_body_frame_feedforward() {
+    let mut view = SystemIdRunView::typical();
+    view.axis = SystemIdAxis::RecoverPitch as i8;
+    view.waveform_sample = 5.0;
+    let out = systemid_run(&view);
+    assert_eq!(out.inject, SystemIdInject::RecoverPitch);
+    assert_eq!(out.bf_feedforward, Some(false));
+    assert_eq!(out.target_pitch_rad.to_bits(), radians(5.0f32).to_bits());
+}
+
+#[test]
+fn parameter_error_stops_before_inject() {
+    let mut view = SystemIdRunView::typical();
+    view.frequency_start = 0.0;
+    view.waveform_sample = 12.0;
+    let out = systemid_run(&view);
+    assert_eq!(out.state, SystemIdState::Stopped);
+    assert_eq!(out.stop_reason, Some(SystemIdStopReason::ParameterError));
+    assert_eq!(out.inject, SystemIdInject::None);
+    assert_eq!(out.bf_feedforward, Some(true));
+    assert_eq!(out.target_roll_rad.to_bits(), 0.0f32.to_bits());
+    assert!(out.chirp_update);
+}
+
+#[test]
+fn landed_and_lean_and_finished_stop_testing() {
+    let mut landed = SystemIdRunView::typical();
+    landed.land_complete = true;
+    let landed_out = systemid_run(&landed);
+    assert_eq!(landed_out.stop_reason, Some(SystemIdStopReason::Landed));
+    assert_eq!(landed_out.state, SystemIdState::Stopped);
+
+    let mut lean = SystemIdRunView::typical();
+    lean.lean_angle_rad = 0.6;
+    lean.lean_angle_max_rad = 0.5;
+    assert_eq!(
+        systemid_run(&lean).stop_reason,
+        Some(SystemIdStopReason::LeanLimit)
+    );
+
+    let mut done = SystemIdRunView::typical();
+    done.waveform_time = 1.0 + 15.0 + 4.0 + 70.0 + 2.0;
+    assert_eq!(
+        systemid_run(&done).stop_reason,
+        Some(SystemIdStopReason::Finished)
+    );
+}
+
+#[test]
+fn mix_throttle_adds_the_sample() {
+    let mut view = SystemIdRunView::typical();
+    view.axis = SystemIdAxis::MixThrottle as i8;
+    view.waveform_sample = 0.1;
+    view.pilot_throttle = 0.4;
+    let out = systemid_run(&view);
+    assert_eq!(out.inject, SystemIdInject::MixThrottle);
+    assert_eq!(out.pilot_throttle.to_bits(), 0.5f32.to_bits());
+}
+
+#[test]
+fn poscontrol_integrates_rotated_velocity() {
+    let mut view = SystemIdRunView::typical_poscontrol();
+    view.waveform_sample = 2.0;
+    view.att_target_yaw_rad = 0.0;
+    view.dt = 0.01;
+    let out = systemid_run(&view);
+    assert_eq!(out.inject, SystemIdInject::InputVelLong);
+    assert!(!out.input_euler_angle);
+    assert!(out.set_pos_vel_accel);
+    assert!(out.update_ne_controller);
+    assert!(out.input_thrust_vector);
+    assert!(out.set_climb_rate);
+    assert!(out.update_d_controller);
+    assert_eq!(out.input_vel_ne_ms.0.to_bits(), 2.0f32.to_bits());
+    assert_eq!(out.input_vel_ne_ms.1.to_bits(), 0.0f32.to_bits());
+    assert_eq!(out.target_pos_ne_m.0.to_bits(), (12.5f32 + 0.02).to_bits());
+    assert_eq!(out.target_pos_ne_m.1.to_bits(), (-3.0f32).to_bits());
+    assert_eq!(out.accel_ne_mss.0.to_bits(), 200.0f32.to_bits());
+    assert_eq!(out.desired_spool, None);
+}
+
+#[test]
+fn disturb_pos_rotates_into_earth_frame() {
+    let mut view = SystemIdRunView::typical_poscontrol();
+    view.axis = SystemIdAxis::DisturbPosLat as i8;
+    view.waveform_sample = 1.0;
+    view.att_target_yaw_rad = core::f32::consts::FRAC_PI_2;
+    let out = systemid_run(&view);
+    assert_eq!(out.inject, SystemIdInject::DisturbPosLat);
+    let pos = out.disturb_pos_ne_m.expect("disturb");
+    assert!((pos.0 + 1.0).abs() < 1.0e-5);
+    assert!(pos.1.abs() < 1.0e-5);
+}
+
+#[test]
+fn log_subsample_counts_down_without_rewriting() {
+    let mut view = SystemIdRunView::typical();
+    view.log_subsample = 3;
+    let out = systemid_run(&view);
+    assert!(!out.logged);
+    assert_eq!(out.log_subsample, 2);
+}
+
+#[test]
+fn disarmed_attitude_path_asks_for_shutdown() {
+    let mut view = SystemIdRunView::typical();
+    view.armed = false;
+    view.spool_state = SpoolState::ShutDown;
+    let out = systemid_run(&view);
+    assert_eq!(out.desired_spool, Some(DesiredSpoolState::ShutDown));
+    assert_eq!(out.reset_rate_i, RateIReset::Hard);
+    assert!(out.reset_yaw_target_and_rate);
+}
+
+#[test]
+fn stopped_restores_captured_feedforward() {
+    let mut view = SystemIdRunView::typical();
+    view.state = SystemIdState::Stopped;
+    view.att_bf_feedforward = false;
+    let out = systemid_run(&view);
+    assert_eq!(out.bf_feedforward, Some(false));
+    assert_eq!(out.inject, SystemIdInject::None);
 }
