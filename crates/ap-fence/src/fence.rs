@@ -1,4 +1,4 @@
-//! `AC_Fence` type bits, enable leftover, and circle / alt-max / alt-min checks.
+//! `AC_Fence` type bits, enable leftover, circle / alt-max / alt-min checks, and `check()` orchestration.
 
 use ap_math::location::AltFrame;
 use ap_math::scalar::{is_positive, is_zero};
@@ -46,6 +46,8 @@ pub const CIRCLE_RADIUS_BACKUP_DISTANCE_PLANE_M: f32 = 100.0;
 /// Upstream `AC_FENCE_GIVE_UP_DISTANCE`. The library does not consume this;
 /// the vehicle does.
 pub const GIVE_UP_DISTANCE_M: f32 = 100.0;
+/// Pilot recovery window. Upstream `AC_FENCE_MANUAL_RECOVERY_TIME_MIN`.
+pub const MANUAL_RECOVERY_TIME_MIN_MS: u32 = 10_000;
 
 /// Upstream `AC_Fence::Action`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +298,85 @@ pub struct CheckAltMinLeftover {
     pub cleared_breach: bool,
 }
 
+
+/// Inputs [`Fence::check`] reads from the vehicle / AHRS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckContext {
+    /// `disable_auto_fences` — landing / auto-disable request.
+    pub disable_auto_fences: bool,
+    /// `AP_HAL::millis()` leftover of `record_breach` and recovery.
+    pub now_ms: u32,
+    /// Leftover of `ahrs.get_location(_last_fence_check_loc)`.
+    pub location_valid: bool,
+    /// `ahrs.get_relative_position_NE_home` leftover for the circle checker.
+    pub ne_home_m: Option<(f32, f32)>,
+    /// `get_alt_in_alt_max_frame_m` leftover.
+    pub alt_max_u_m: Option<f32>,
+    /// `get_alt_in_alt_min_frame_m` leftover, also the floor auto-enable alt.
+    pub alt_min_u_m: Option<f32>,
+    /// Home AMSL when an alt frame is [`AltFrame::Absolute`].
+    pub home_alt_amsl_m: f32,
+}
+
+impl Default for CheckContext {
+    fn default() -> Self {
+        Self {
+            disable_auto_fences: false,
+            now_ms: 1_001,
+            location_valid: true,
+            ne_home_m: Some((0.0, 0.0)),
+            alt_max_u_m: Some(0.0),
+            alt_min_u_m: Some(0.0),
+            home_alt_amsl_m: 0.0,
+        }
+    }
+}
+
+/// `AC_Fence::check` leftover. Polygon EEPROM stays later, so the poly
+/// checker is not invoked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckLeftover {
+    /// Newly breached types. The C++ return. Zero during recovery.
+    pub new_breaches: u8,
+    /// `get_auto_disable_fences` when `disable_auto_fences` is set.
+    pub disabled_fences: u8,
+    /// `disabled_fences & _enabled_fences`, then alt-min stripped if
+    /// the floor was manually enabled. Used for the GCS print leftover.
+    pub fences_to_disable: u8,
+    /// Bits `clear_breach(~_configured_fences)` dropped.
+    pub cleared_unconfigured_breach: u8,
+    /// Bits `clear_breach(fences_to_disable)` dropped.
+    pub cleared_disabled_breach: u8,
+    /// Leftover of `print_fence_message("auto-disabled", ...)`.
+    pub auto_disabled_message: Option<u8>,
+    /// Early return: nothing enabled / auto / alt-min, or no `FENCE_TYPE`.
+    pub skipped: bool,
+    /// Leftover of `ahrs.get_location`.
+    pub need_location: bool,
+    /// `_last_fence_check_loc_valid` after the call.
+    pub last_check_loc_valid: bool,
+    /// `enable(false, disabled_fences, false)` leftover.
+    pub disable_changed_mask: u8,
+    /// Alt-max checker leftover. Idle when [`Self::skipped`].
+    pub alt_max: CheckAltMaxLeftover,
+    /// Alt-min checker leftover. Idle when [`Self::skipped`].
+    pub alt_min: CheckAltMinLeftover,
+    /// Circle checker leftover. Idle when [`Self::skipped`].
+    pub circle: CheckCircleLeftover,
+    /// Polygon checker is the loader leftover. Always false this slice.
+    pub polygon_checked: bool,
+    /// `auto_enable_fence_floor` actually flipped the floor on.
+    pub floor_auto_enabled: bool,
+    /// Floor leftover could not get an altitude. C++ returns true then.
+    pub floor_alt_unavailable: bool,
+    /// Leftover of `GCS_SEND_TEXT` "Min Alt fence enabled (auto enable)".
+    pub need_gcs_floor_notice: bool,
+    /// Recovery window is still open; return is forced to 0.
+    pub manual_recovery_active: bool,
+    /// Recovery window expired this call; `_manual_recovery_start_ms` reset.
+    pub manual_recovery_expired: bool,
+}
+
 /// Geofence state. Upstream `AC_Fence` without the poly loader.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fence {
@@ -330,6 +411,10 @@ pub struct Fence {
     last_breach_notify_sent_ms: u32,
     min_alt_state: MinAltState,
     manual_recovery_start_ms: u32,
+    auto_enabled: AutoEnable,
+    /// `FENCE_ENABLE` param leftover. Distinct from [`Self::enabled`].
+    enable_param: bool,
+    last_fence_check_loc_valid: bool,
 }
 
 impl Default for Fence {
@@ -390,6 +475,9 @@ impl Fence {
             last_breach_notify_sent_ms: 0,
             min_alt_state: MinAltState::Default,
             manual_recovery_start_ms: 0,
+            auto_enabled: AutoEnable::AlwaysDisabled,
+            enable_param,
+            last_fence_check_loc_valid: false,
         }
     }
 
@@ -576,6 +664,50 @@ impl Fence {
     /// Seed a recovery window so disable leftover can clear it.
     pub fn set_manual_recovery_start_ms(&mut self, now_ms: u32) {
         self.manual_recovery_start_ms = now_ms;
+    }
+
+    /// `FENCE_ENABLE` param leftover.
+    #[must_use]
+    pub const fn enable_param(&self) -> bool {
+        self.enable_param
+    }
+
+    /// `auto_enabled()`.
+    #[must_use]
+    pub const fn auto_enabled(&self) -> AutoEnable {
+        self.auto_enabled
+    }
+
+    /// Set `FENCE_AUTOENABLE`.
+    pub fn set_auto_enabled(&mut self, value: AutoEnable) {
+        self.auto_enabled = value;
+    }
+
+    /// `_last_fence_check_loc_valid`.
+    #[must_use]
+    pub const fn last_fence_check_loc_valid(&self) -> bool {
+        self.last_fence_check_loc_valid
+    }
+
+    /// `floor_enabled` — `_enabled_fences & TYPE_ALT_MIN`.
+    #[must_use]
+    pub const fn floor_enabled(&self) -> bool {
+        self.enabled_fences & TYPE_ALT_MIN != 0
+    }
+
+    /// `AC_Fence::get_auto_disable_fences`.
+    #[must_use]
+    pub const fn get_auto_disable_fences(&self) -> u8 {
+        let mut auto_disable = match self.auto_enabled {
+            AutoEnable::EnableOnAutoTakeoff => TYPE_ALL,
+            AutoEnable::EnableDisableFloorOnly
+            | AutoEnable::OnlyWhenArmed
+            | AutoEnable::AlwaysDisabled => TYPE_ALT_MIN,
+        };
+        if matches!(self.min_alt_state, MinAltState::ManuallyEnabled) {
+            auto_disable &= !TYPE_ALT_MIN;
+        }
+        auto_disable
     }
 
     /// `enable_configured` leftover.
@@ -969,6 +1101,248 @@ impl Fence {
             need_gcs_fence_status: false,
             margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
             cleared_breach,
+        }
+    }
+
+
+    /// `AC_Fence::check` leftover.
+    ///
+    /// Clears stale breaches, optionally auto-disables the landing
+    /// floor, then runs the alt / circle checkers already on this
+    /// crate. The polygon checker stays with the loader leftover.
+    /// A live manual-recovery window records breaches but returns 0.
+    pub fn check(&mut self, ctx: CheckContext) -> CheckLeftover {
+        let disabled_fences = if ctx.disable_auto_fences {
+            self.get_auto_disable_fences()
+        } else {
+            0
+        };
+        let mut fences_to_disable = disabled_fences & self.enabled_fences;
+
+        let before_breach = self.breached_fences;
+        self.clear_breach(!self.configured_fences);
+        self.clear_breach(fences_to_disable);
+        self.clear_margin_breach(!self.configured_fences);
+        self.clear_margin_breach(fences_to_disable);
+        let cleared_unconfigured_breach = before_breach & !self.configured_fences;
+        let cleared_disabled_breach = before_breach & fences_to_disable;
+
+        if matches!(self.min_alt_state, MinAltState::ManuallyEnabled) {
+            fences_to_disable &= !TYPE_ALT_MIN;
+        }
+
+        let auto_disabled_message = if fences_to_disable != 0 {
+            Some(fences_to_disable)
+        } else {
+            None
+        };
+
+        let idle_circle = self.idle_circle_leftover();
+        let idle_alt_max = self.idle_alt_max_leftover();
+        let idle_alt_min = self.idle_alt_min_leftover();
+
+        if (!self.enabled()
+            && matches!(self.auto_enabled, AutoEnable::AlwaysDisabled)
+            && self.configured_fences & TYPE_ALT_MIN == 0)
+            || self.configured_fences == 0
+        {
+            return CheckLeftover {
+                new_breaches: 0,
+                disabled_fences,
+                fences_to_disable,
+                cleared_unconfigured_breach,
+                cleared_disabled_breach,
+                auto_disabled_message,
+                skipped: true,
+                need_location: false,
+                last_check_loc_valid: self.last_fence_check_loc_valid,
+                disable_changed_mask: 0,
+                alt_max: idle_alt_max,
+                alt_min: idle_alt_min,
+                circle: idle_circle,
+                polygon_checked: false,
+                floor_auto_enabled: false,
+                floor_alt_unavailable: false,
+                need_gcs_floor_notice: false,
+                manual_recovery_active: false,
+                manual_recovery_expired: false,
+            };
+        }
+
+        let disable_leftover = self.enable(false, disabled_fences, false);
+        self.last_fence_check_loc_valid = ctx.location_valid;
+
+        let mut new_breaches = 0;
+        let alt_max = if disabled_fences & TYPE_ALT_MAX == 0 {
+            let leftover = self.check_fence_alt_max(CheckAltMaxContext {
+                alt_u_m: ctx.alt_max_u_m,
+                home_alt_amsl_m: ctx.home_alt_amsl_m,
+                now_ms: ctx.now_ms,
+            });
+            if leftover.newly_breached {
+                new_breaches |= TYPE_ALT_MAX;
+            }
+            leftover
+        } else {
+            idle_alt_max
+        };
+
+        let alt_min = if disabled_fences & TYPE_ALT_MIN == 0 {
+            let leftover = self.check_fence_alt_min(CheckAltMinContext {
+                alt_u_m: ctx.alt_min_u_m,
+                home_alt_amsl_m: ctx.home_alt_amsl_m,
+                now_ms: ctx.now_ms,
+            });
+            if leftover.newly_breached {
+                new_breaches |= TYPE_ALT_MIN;
+            }
+            leftover
+        } else {
+            idle_alt_min
+        };
+
+        let mut floor_auto_enabled = false;
+        let mut floor_alt_unavailable = false;
+        let mut need_gcs_floor_notice = false;
+        if disabled_fences & TYPE_ALT_MIN == 0 {
+            let floor = self.auto_enable_fence_floor(ctx);
+            floor_auto_enabled = floor.0;
+            floor_alt_unavailable = floor.1;
+            need_gcs_floor_notice = floor.2;
+        }
+
+        let circle = if disabled_fences & TYPE_CIRCLE == 0 {
+            let leftover = self.check_fence_circle(CheckCircleContext {
+                ne_home_m: ctx.ne_home_m,
+                now_ms: ctx.now_ms,
+            });
+            if leftover.newly_breached {
+                new_breaches |= TYPE_CIRCLE;
+            }
+            leftover
+        } else {
+            idle_circle
+        };
+
+        let mut manual_recovery_active = false;
+        let mut manual_recovery_expired = false;
+        if self.manual_recovery_start_ms != 0 {
+            if ctx
+                .now_ms
+                .wrapping_sub(self.manual_recovery_start_ms)
+                < MANUAL_RECOVERY_TIME_MIN_MS
+            {
+                manual_recovery_active = true;
+                new_breaches = 0;
+            } else {
+                self.manual_recovery_start_ms = 0;
+                manual_recovery_expired = true;
+            }
+        }
+
+        CheckLeftover {
+            new_breaches,
+            disabled_fences,
+            fences_to_disable,
+            cleared_unconfigured_breach,
+            cleared_disabled_breach,
+            auto_disabled_message,
+            skipped: false,
+            need_location: true,
+            last_check_loc_valid: self.last_fence_check_loc_valid,
+            disable_changed_mask: disable_leftover.changed_mask,
+            alt_max,
+            alt_min,
+            circle,
+            polygon_checked: false,
+            floor_auto_enabled,
+            floor_alt_unavailable,
+            need_gcs_floor_notice,
+            manual_recovery_active,
+            manual_recovery_expired,
+        }
+    }
+
+    /// `AC_Fence::auto_enable_fence_floor` leftover. Arm / takeoff
+    /// auto-enable stays a later slice; `check()` still calls this.
+    fn auto_enable_fence_floor(&mut self, ctx: CheckContext) -> (bool, bool, bool) {
+        if self.configured_fences & TYPE_ALT_MIN == 0
+            || self.get_enabled_fences() & TYPE_ALT_MIN != 0
+            || matches!(self.min_alt_state, MinAltState::ManuallyDisabled)
+            || (!self.enable_param
+                && matches!(
+                    self.auto_enabled,
+                    AutoEnable::AlwaysDisabled | AutoEnable::EnableOnAutoTakeoff
+                ))
+        {
+            return (false, false, false);
+        }
+
+        let Some(curr_alt_u_m) = ctx.alt_min_u_m else {
+            return (false, true, false);
+        };
+
+        if self.alt_min_type == AltFrame::Absolute {
+            self.safe_relhome_alt_min_m = self.alt_min_m - ctx.home_alt_amsl_m - self.margin_m;
+        } else {
+            self.safe_relhome_alt_min_m = self.alt_min_m - self.margin_m;
+        }
+
+        if !self.floor_enabled() && curr_alt_u_m >= self.get_safe_alt_min_m() {
+            self.enable(true, TYPE_ALT_MIN, false);
+            return (true, false, true);
+        }
+
+        (false, false, false)
+    }
+
+    fn idle_circle_leftover(&self) -> CheckCircleLeftover {
+        CheckCircleLeftover {
+            newly_breached: false,
+            enabled: false,
+            need_ne_home: false,
+            home_distance_m: self.home_distance_m,
+            breach_distance_m: self.circle_breach_distance_m,
+            backup_radius_m: self.circle_radius_backup_m,
+            breach_direction_ne_m: self.circle_breach_direction,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_CIRCLE) != 0,
+            cleared_breach: false,
+        }
+    }
+
+    fn idle_alt_max_leftover(&self) -> CheckAltMaxLeftover {
+        CheckAltMaxLeftover {
+            newly_breached: false,
+            enabled: false,
+            alt_unavailable: false,
+            need_alt_in_frame: false,
+            need_home_alt: false,
+            breach_distance_m: self.alt_max_breach_distance_m,
+            safe_relhome_alt_max_m: self.safe_relhome_alt_max_m,
+            backup_alt_m: self.alt_max_backup_m,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_ALT_MAX) != 0,
+            cleared_breach: false,
+        }
+    }
+
+    fn idle_alt_min_leftover(&self) -> CheckAltMinLeftover {
+        CheckAltMinLeftover {
+            newly_breached: false,
+            enabled: false,
+            alt_unavailable: false,
+            need_alt_in_frame: false,
+            need_home_alt: false,
+            breach_distance_m: self.alt_min_breach_distance_m,
+            safe_relhome_alt_min_m: self.safe_relhome_alt_min_m,
+            backup_alt_m: self.alt_min_backup_m,
+            recorded_breach: false,
+            need_gcs_fence_status: false,
+            margin_breached: (self.breached_fence_margins & TYPE_ALT_MIN) != 0,
+            cleared_breach: false,
         }
     }
 

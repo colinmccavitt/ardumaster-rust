@@ -1,14 +1,16 @@
-//! AC_Fence type bits, enable leftover, and circle / alt-max / alt-min checks.
+//! AC_Fence type bits, enable leftover, circle / alt-max / alt-min checks,
+//! and `check()` orchestration.
 //!
 //! Tracked as **COP-025**. Polygon EEPROM / `AC_PolyFence_loader` is not
 //! in this slice.
 
 use ap_fence::{
-    Action, CheckAltMaxContext, CheckAltMinContext, CheckCircleContext, Fence, MinAltState,
-    ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M, ALT_MIN_DEFAULT_M,
-    ARMING_FENCES, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M, CIRCLE_RADIUS_DEFAULT_M,
-    FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE, FENCE_TYPE_DEFAULT_ROVER,
-    MARGIN_DEFAULT_M, TYPE_ALL, TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
+    Action, AutoEnable, CheckAltMaxContext, CheckAltMinContext, CheckCircleContext, CheckContext,
+    Fence, MinAltState, ALT_MAX_BACKUP_DISTANCE_M, ALT_MAX_DEFAULT_M, ALT_MIN_BACKUP_DISTANCE_M,
+    ALT_MIN_DEFAULT_M, ARMING_FENCES, CIRCLE_RADIUS_BACKUP_DISTANCE_COPTER_M,
+    CIRCLE_RADIUS_DEFAULT_M, FENCE_TYPE_DEFAULT_COPTER, FENCE_TYPE_DEFAULT_PLANE,
+    FENCE_TYPE_DEFAULT_ROVER, MANUAL_RECOVERY_TIME_MIN_MS, MARGIN_DEFAULT_M, TYPE_ALL,
+    TYPE_ALT_MAX, TYPE_ALT_MIN, TYPE_CIRCLE, TYPE_POLYGON,
 };
 use ap_math::location::AltFrame;
 use ap_math::scalar::is_equal;
@@ -559,4 +561,187 @@ fn alt_min_disabled_does_not_clear_or_record() {
     assert_eq!(fence.get_breaches(), 0);
     almost(fence.alt_min_m(), 20.0);
     almost(ALT_MIN_DEFAULT_M, -10.0);
+}
+
+
+fn check_ctx(alt_max_u_m: f32, alt_min_u_m: f32, north_m: f32, east_m: f32) -> CheckContext {
+    CheckContext {
+        disable_auto_fences: false,
+        now_ms: 1_001,
+        location_valid: true,
+        ne_home_m: Some((north_m, east_m)),
+        alt_max_u_m: Some(alt_max_u_m),
+        alt_min_u_m: Some(alt_min_u_m),
+        home_alt_amsl_m: 0.0,
+    }
+}
+
+#[test]
+fn check_skips_when_disabled_and_floor_not_configured() {
+    let mut fence = Fence::new();
+    let leftover = fence.check(CheckContext::default());
+    assert!(leftover.skipped);
+    assert_eq!(leftover.new_breaches, 0);
+    assert!(!leftover.need_location);
+    assert!(!leftover.polygon_checked);
+    assert!(!leftover.alt_max.enabled);
+    assert!(!leftover.circle.enabled);
+}
+
+#[test]
+fn check_skips_when_no_fence_types_are_configured() {
+    let mut fence = Fence::from_params(true, TYPE_ALT_MAX | TYPE_CIRCLE);
+    fence.set_configured_fences(0);
+    let leftover = fence.check(check_ctx(200.0, 50.0, 1_000.0, 0.0));
+    assert!(leftover.skipped);
+    assert_eq!(leftover.new_breaches, 0);
+    assert_eq!(fence.get_breaches(), 0);
+}
+
+#[test]
+fn get_auto_disable_fences_matches_upstream_switch() {
+    let mut fence = Fence::new();
+    assert_eq!(fence.get_auto_disable_fences(), TYPE_ALT_MIN);
+    fence.set_auto_enabled(AutoEnable::EnableOnAutoTakeoff);
+    assert_eq!(fence.get_auto_disable_fences(), TYPE_ALL);
+    fence.set_auto_enabled(AutoEnable::EnableDisableFloorOnly);
+    assert_eq!(fence.get_auto_disable_fences(), TYPE_ALT_MIN);
+    fence.set_auto_enabled(AutoEnable::OnlyWhenArmed);
+    assert_eq!(fence.get_auto_disable_fences(), TYPE_ALT_MIN);
+
+    fence.set_configured_fences(TYPE_ALT_MIN);
+    let leftover = fence.enable(true, TYPE_ALT_MIN, true);
+    assert_eq!(leftover.min_alt_state, MinAltState::ManuallyEnabled);
+    assert_eq!(fence.get_auto_disable_fences(), 0);
+}
+
+#[test]
+fn check_or_s_fresh_alt_max_and_circle_breaches() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    let leftover = fence.check(check_ctx(120.0, 50.0, CIRCLE_RADIUS_DEFAULT_M + 10.0, 0.0));
+    assert!(!leftover.skipped);
+    assert!(leftover.need_location);
+    assert!(leftover.last_check_loc_valid);
+    assert_eq!(leftover.new_breaches, TYPE_ALT_MAX | TYPE_CIRCLE);
+    assert!(leftover.alt_max.newly_breached);
+    assert!(leftover.alt_max.recorded_breach);
+    assert!(leftover.circle.newly_breached);
+    assert!(leftover.circle.recorded_breach);
+    assert!(!leftover.polygon_checked);
+    assert_eq!(fence.get_breaches(), TYPE_ALT_MAX | TYPE_CIRCLE);
+    assert_eq!(fence.get_breach_count(), 2);
+}
+
+#[test]
+fn check_clears_breach_from_a_type_that_is_no_longer_configured() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    assert!(
+        fence
+            .check_fence_circle(CheckCircleContext {
+                ne_home_m: Some((CIRCLE_RADIUS_DEFAULT_M + 10.0, 0.0)),
+                now_ms: 1_001,
+            })
+            .newly_breached
+    );
+    assert_eq!(fence.get_breaches() & TYPE_CIRCLE, TYPE_CIRCLE);
+
+    fence.set_configured_fences(TYPE_ALT_MAX);
+    let leftover = fence.check(check_ctx(50.0, 50.0, CIRCLE_RADIUS_DEFAULT_M + 10.0, 0.0));
+    assert_eq!(leftover.cleared_unconfigured_breach, TYPE_CIRCLE);
+    assert_eq!(fence.get_breaches() & TYPE_CIRCLE, 0);
+    assert!(!leftover.skipped);
+}
+
+#[test]
+fn check_auto_disables_the_floor_on_landing_unless_manually_enabled() {
+    let mut fence = Fence::new();
+    fence.set_configured_fences(TYPE_ALT_MIN | TYPE_ALT_MAX);
+    fence.set_alt_min_m(20.0);
+    let enabled = fence.enable(true, TYPE_ALT_MIN | TYPE_ALT_MAX, false);
+    assert_eq!(enabled.changed_mask, TYPE_ALT_MIN | TYPE_ALT_MAX);
+    assert_eq!(fence.min_alt_state(), MinAltState::Default);
+    assert!(fence.floor_enabled());
+
+    let mut ctx = check_ctx(50.0, 10.0, 0.0, 0.0);
+    ctx.disable_auto_fences = true;
+    let leftover = fence.check(ctx);
+    assert_eq!(leftover.disabled_fences, TYPE_ALT_MIN);
+    assert_eq!(leftover.fences_to_disable, TYPE_ALT_MIN);
+    assert_eq!(leftover.auto_disabled_message, Some(TYPE_ALT_MIN));
+    assert_eq!(leftover.disable_changed_mask, TYPE_ALT_MIN);
+    assert!(!fence.floor_enabled());
+    assert_eq!(leftover.new_breaches & TYPE_ALT_MIN, 0);
+    assert!(!leftover.alt_min.enabled);
+}
+
+#[test]
+fn check_records_a_breach_during_recovery_but_returns_zero() {
+    let mut fence = Fence::new();
+    enable_circle_and_alt(&mut fence);
+    fence.set_manual_recovery_start_ms(1_000);
+
+    let leftover = fence.check(check_ctx(120.0, 50.0, 0.0, 0.0));
+    assert!(leftover.manual_recovery_active);
+    assert!(!leftover.manual_recovery_expired);
+    assert_eq!(leftover.new_breaches, 0);
+    assert_eq!(fence.get_breaches() & TYPE_ALT_MAX, TYPE_ALT_MAX);
+    assert_eq!(fence.manual_recovery_start_ms(), 1_000);
+
+    let mut later = check_ctx(120.0, 50.0, 0.0, 0.0);
+    later.now_ms = 1_000 + MANUAL_RECOVERY_TIME_MIN_MS;
+    let expired = fence.check(later);
+    assert!(!expired.manual_recovery_active);
+    assert!(expired.manual_recovery_expired);
+    assert_eq!(fence.manual_recovery_start_ms(), 0);
+    assert_eq!(expired.new_breaches, 0);
+    assert!(!expired.alt_max.newly_breached);
+}
+
+#[test]
+fn check_auto_enables_the_floor_once_above_the_safe_min() {
+    let mut fence = Fence::from_params(true, TYPE_ALT_MAX | TYPE_CIRCLE | TYPE_ALT_MIN);
+    fence.set_alt_min_m(20.0);
+    assert!(fence.enable_param());
+    assert!(!fence.floor_enabled());
+    assert_eq!(fence.get_enabled_fences() & TYPE_ALT_MIN, 0);
+
+    let leftover = fence.check(check_ctx(50.0, 30.0, 0.0, 0.0));
+    assert!(!leftover.skipped);
+    assert!(leftover.floor_auto_enabled);
+    assert!(leftover.need_gcs_floor_notice);
+    assert!(!leftover.floor_alt_unavailable);
+    assert!(fence.floor_enabled());
+    assert_eq!(fence.get_enabled_fences() & TYPE_ALT_MIN, TYPE_ALT_MIN);
+    assert_eq!(fence.min_alt_state(), MinAltState::Default);
+}
+
+#[test]
+fn check_does_not_auto_enable_floor_when_enable_param_is_off() {
+    let mut fence = Fence::from_params(false, TYPE_ALT_MAX | TYPE_CIRCLE | TYPE_ALT_MIN);
+    fence.set_configured_fences(TYPE_ALT_MAX | TYPE_CIRCLE | TYPE_ALT_MIN);
+    fence.enable(true, TYPE_ALT_MAX | TYPE_CIRCLE, false);
+    fence.set_alt_min_m(20.0);
+    assert!(!fence.enable_param());
+    assert_eq!(fence.auto_enabled(), AutoEnable::AlwaysDisabled);
+
+    let leftover = fence.check(check_ctx(50.0, 30.0, 0.0, 0.0));
+    assert!(!leftover.floor_auto_enabled);
+    assert!(!fence.floor_enabled());
+}
+
+#[test]
+fn check_polygon_bit_stays_a_loader_leftover() {
+    let mut fence = Fence::new();
+    fence.set_configured_fences(TYPE_POLYGON | TYPE_ALT_MAX);
+    fence.enable(true, TYPE_POLYGON | TYPE_ALT_MAX, false);
+    let leftover = fence.check(check_ctx(50.0, 50.0, 0.0, 0.0));
+    assert!(!leftover.polygon_checked);
+    assert_eq!(leftover.new_breaches & TYPE_POLYGON, 0);
+}
+
+#[test]
+fn manual_recovery_time_is_ten_seconds() {
+    assert_eq!(MANUAL_RECOVERY_TIME_MIN_MS, 10_000);
 }
