@@ -13,8 +13,10 @@
 //! `GOBJECT` group. After `LGR_` the next leftover is the stock
 //! `COMPASS_` `GOBJECT` (heli `IM_` is a `FRAME_CONFIG` row, not a
 //! Multi leftover). After `COMPASS_` the next leftover is the stock
-//! `INS` `GOBJECT`. Later groups, G2, `load_parameters` conversions,
-//! and the rest of the enum stay later.
+//! `INS` `GOBJECT`. After `INS` the next leftover is the
+//! `WP_` / `LOIT_` / `CIRCLE_` `GOBJECTPTR` group (`CIRCLE_` is
+//! `MODE_CIRCLE_ENABLED`). Later groups, G2, `load_parameters`
+//! conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
 //!
@@ -775,8 +777,17 @@ pub fn for_each_compass_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'stat
     }
 }
 
-/// `Parameters::k_param_wp_nav` — next leftover after `INS`. Not this leftover.
+/// `Parameters::k_param_inertial_nav`. Deprecated. Not `WP_`.
+pub const K_PARAM_INERTIAL_NAV: u16 = 100;
+
+/// `Parameters::k_param_wp_nav` — next `GOBJECTPTR`, prefix `WP_`.
 pub const K_PARAM_WP_NAV: u16 = 101;
+
+/// `Parameters::k_param_loiter_nav` — `LOIT_`.
+pub const K_PARAM_LOITER_NAV: u16 = 105;
+
+/// `Parameters::k_param_circle_nav` — `CIRCLE_`.
+pub const K_PARAM_CIRCLE_NAV: u16 = 104;
 
 /// Stock `INS` leftover catalog.
 ///
@@ -800,6 +811,42 @@ pub fn find_ins_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `INS` leftover as `ParamInfo` rows.
 pub fn for_each_ins_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in INS_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_attitude_control` — next leftover after `CIRCLE_`. Not this leftover.
+pub const K_PARAM_ATTITUDE_CONTROL: u16 = 102;
+
+/// Stock `WP_` / `LOIT_` / `CIRCLE_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECTPTR` group after `INS`. Order is
+/// table order, not key order. `CIRCLE_` is `MODE_CIRCLE_ENABLED` and
+/// a stock multicopter compiles it in. Nested `AC_WPNav` / `AC_Loiter`
+/// / `AC_Circle` `var_info` is not this leftover. `ATC_` stays later.
+pub const WP_LOIT_CIRCLE_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[
+    group("WP_", K_PARAM_WP_NAV),
+    group("LOIT_", K_PARAM_LOITER_NAV),
+    group("CIRCLE_", K_PARAM_CIRCLE_NAV),
+];
+
+/// First row of the `WP_` leftover, `WP_`.
+#[must_use]
+pub fn wp_loit_circle_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    WP_LOIT_CIRCLE_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `WP_` leftover by group prefix.
+#[must_use]
+pub fn find_wp_loit_circle_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    WP_LOIT_CIRCLE_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `WP_` leftover as `ParamInfo` rows.
+pub fn for_each_wp_loit_circle_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in WP_LOIT_CIRCLE_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
