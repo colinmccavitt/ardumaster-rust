@@ -2,13 +2,15 @@
 
 use ap_copter::aux::{
     arming_check_throttle, do_aux_function, do_aux_function_acro_trainer,
-    do_aux_function_change_air_mode, do_aux_function_change_force_flying,
-    do_aux_function_change_mode, do_aux_function_option, eeprom_simple_mode, get_arming_channel,
-    has_valid_input, in_rc_failsafe, init_aux_function, init_aux_kind, mode_switch_changed,
-    AcroTrainer, AirMode, ArmingChannel, AuxDispatch, AuxLeftover, CopterAuxFunc, InitAuxKind,
-    ModeSwitchLeftover, Parachute3Pos, SimpleMode, SurfaceTracking, WinchEnableAction, MODE_ACRO,
-    MODE_ALT_HOLD, MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE, MODE_CIRCLE, MODE_DRIFT, MODE_FLIP,
-    MODE_FLOWHOLD, MODE_FOLLOW, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_POSHOLD,
+    do_aux_function_ahrs_auto_trim, do_aux_function_change_air_mode,
+    do_aux_function_change_force_flying, do_aux_function_change_mode, do_aux_function_option,
+    do_aux_function_parachute_release, do_aux_function_zigzag_save_wp, eeprom_simple_mode,
+    get_arming_channel, has_valid_input, in_rc_failsafe, init_aux_function, init_aux_kind,
+    mode_switch_changed, AcroTrainer, AhrsAutoTrimAction, AirMode, ArmingChannel, AuxDispatch,
+    AuxLeftover, CopterAuxFunc, FlightmodePauseAction, InitAuxKind, ModeSwitchLeftover,
+    Parachute3Pos, SimpleMode, SurfaceTracking, WinchEnableAction, ZigzagAutoAction, ZigzagSaveWp,
+    MODE_ACRO, MODE_ALT_HOLD, MODE_AUTO, MODE_AUTO_RTL, MODE_BRAKE, MODE_CIRCLE, MODE_DRIFT,
+    MODE_FLIP, MODE_FLOWHOLD, MODE_FOLLOW, MODE_GUIDED, MODE_LAND, MODE_LOITER, MODE_POSHOLD,
     MODE_REASON_AUX_FUNCTION, MODE_REASON_RC_COMMAND, MODE_RTL, MODE_SMART_RTL, MODE_STABILIZE,
     MODE_THROW, MODE_TURTLE, MODE_ZIGZAG, THR_BEHAVE_FEEDBACK_FROM_MID_STICK,
 };
@@ -284,19 +286,7 @@ fn air_mode_and_force_flying_ignore_middle() {
 }
 
 #[test]
-fn later_copter_bodies_are_pending_not_base() {
-    assert_eq!(
-        dispatch(CopterAuxFunc::SaveWp, AuxSwitchPos::High, 0),
-        AuxLeftover::Pending
-    );
-    assert_eq!(
-        dispatch(CopterAuxFunc::AutotuneTestGains, AuxSwitchPos::High, 0),
-        AuxLeftover::Pending
-    );
-    assert_eq!(
-        dispatch(CopterAuxFunc::ParachuteRelease, AuxSwitchPos::High, 0),
-        AuxLeftover::Pending
-    );
+fn unknown_options_still_fall_to_base() {
     assert_eq!(
         do_aux_function_option(11, AuxSwitchPos::High, 0, true),
         AuxLeftover::DelegateToBase,
@@ -305,6 +295,153 @@ fn later_copter_bodies_are_pending_not_base() {
     assert_eq!(
         do_aux_function_option(4, AuxSwitchPos::High, 0, true),
         AuxLeftover::SetMode { mode: MODE_RTL }
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ResetToArmedYaw, AuxSwitchPos::High, 0),
+        AuxLeftover::DelegateToBase,
+        "RESETTOARMEDYAW has no Copter do_aux case"
+    );
+}
+
+#[test]
+fn parachute_release_and_save_high_only() {
+    assert_eq!(
+        do_aux_function_parachute_release(AuxSwitchPos::High),
+        AuxLeftover::ReleaseParachute
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ParachuteRelease, AuxSwitchPos::High, 0),
+        AuxLeftover::ReleaseParachute
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ParachuteRelease, AuxSwitchPos::Low, 0),
+        AuxLeftover::None,
+        "LOW must not dump the canopy"
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SaveTrim, AuxSwitchPos::High, 0),
+        AuxLeftover::SaveTrim
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SaveTrim, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SaveWp, AuxSwitchPos::High, 0),
+        AuxLeftover::SaveWp
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SaveWp, AuxSwitchPos::Low, 0),
+        AuxLeftover::None
+    );
+}
+
+#[test]
+fn winch_control_is_consumed_elsewhere() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::WinchControl, AuxSwitchPos::High, 0),
+        AuxLeftover::None,
+        "WINCH_CONTROL is processed in AP_Winch, not here"
+    );
+}
+
+#[test]
+fn zigzag_options_require_zigzag_mode() {
+    assert_eq!(
+        do_aux_function_zigzag_save_wp(AuxSwitchPos::Low, MODE_STABILIZE),
+        AuxLeftover::None,
+        "ZigZag save from Stabilize must not write a destination"
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ZigzagSaveWp, AuxSwitchPos::Low, MODE_ZIGZAG),
+        AuxLeftover::ZigzagSaveWp(ZigzagSaveWp::DestinationA)
+    );
+    assert_eq!(
+        dispatch(
+            CopterAuxFunc::ZigzagSaveWp,
+            AuxSwitchPos::Middle,
+            MODE_ZIGZAG
+        ),
+        AuxLeftover::ZigzagSaveWp(ZigzagSaveWp::ReturnToManual)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ZigzagSaveWp, AuxSwitchPos::High, MODE_ZIGZAG),
+        AuxLeftover::ZigzagSaveWp(ZigzagSaveWp::DestinationB)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ZigzagAuto, AuxSwitchPos::High, MODE_ZIGZAG),
+        AuxLeftover::ZigzagAuto(ZigzagAutoAction::Run)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ZigzagAuto, AuxSwitchPos::Low, MODE_ZIGZAG),
+        AuxLeftover::ZigzagAuto(ZigzagAutoAction::Suspend)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ZigzagAuto, AuxSwitchPos::High, MODE_LOITER),
+        AuxLeftover::None
+    );
+}
+
+#[test]
+fn remaining_copter_owned_bodies() {
+    assert_eq!(
+        dispatch(CopterAuxFunc::SimpleHeadingReset, AuxSwitchPos::High, 0),
+        AuxLeftover::ResetSimpleHeading
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::SimpleHeadingReset, AuxSwitchPos::Low, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::ArmDisarmAirMode, AuxSwitchPos::High, 0),
+        AuxLeftover::ArmDisarmAirMode
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::TurbineStart, AuxSwitchPos::High, 0),
+        AuxLeftover::SetTurbineStart(true)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::TurbineStart, AuxSwitchPos::Low, 0),
+        AuxLeftover::SetTurbineStart(false)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::TurbineStart, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::FlightmodePause, AuxSwitchPos::High, 0),
+        AuxLeftover::FlightmodePause(FlightmodePauseAction::Pause)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::FlightmodePause, AuxSwitchPos::Low, 0),
+        AuxLeftover::FlightmodePause(FlightmodePauseAction::Resume)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::FlightmodePause, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AutotuneTestGains, AuxSwitchPos::High, 0),
+        AuxLeftover::AutotuneTestGains(AuxSwitchPos::High)
+    );
+    assert_eq!(
+        do_aux_function_ahrs_auto_trim(AuxSwitchPos::High),
+        AuxLeftover::AhrsAutoTrim(AhrsAutoTrimAction::Start)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AhrsAutoTrim, AuxSwitchPos::Low, 0),
+        AuxLeftover::AhrsAutoTrim(AhrsAutoTrimAction::SaveIfRunning)
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::AhrsAutoTrim, AuxSwitchPos::Middle, 0),
+        AuxLeftover::None
+    );
+    assert_eq!(
+        dispatch(CopterAuxFunc::UserFunc2, AuxSwitchPos::Middle, 0),
+        AuxLeftover::CallUserFunc {
+            which: 2,
+            pos: AuxSwitchPos::Middle,
+        }
     );
 }
 

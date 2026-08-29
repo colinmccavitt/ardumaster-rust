@@ -470,6 +470,38 @@ pub enum AuxLeftover {
     SetWeatherVane(bool),
     /// `attitude_control->set_inverted_flight`. Vehicle checks `allows_inverted` on true.
     SetInverted(bool),
+    /// `parachute_manual_release` from `AUX_FUNC::PARACHUTE_RELEASE`.
+    ReleaseParachute,
+    /// `g2.rc_channels.save_trim` from `AUX_FUNC::SAVE_TRIM`.
+    ///
+    /// Vehicle still requires `allows_save_trim` and zero throttle.
+    SaveTrim,
+    /// `AUX_FUNC::SAVE_WP`. Vehicle still rejects Auto, disarmed, and a
+    /// first waypoint at zero throttle.
+    SaveWp,
+    /// `userhook_auxSwitchN` from `USER_FUNC1/2/3`.
+    CallUserFunc {
+        /// 1, 2 or 3.
+        which: u8,
+        /// Debounced switch position passed to the hook.
+        pos: AuxSwitchPos,
+    },
+    /// `mode_zigzag.save_or_move_to_destination` / `return_to_manual_control`.
+    ZigzagSaveWp(ZigzagSaveWp),
+    /// `mode_zigzag.run_auto` / `suspend_auto`.
+    ZigzagAuto(ZigzagAutoAction),
+    /// `init_simple_bearing` from `SIMPLE_HEADING_RESET`.
+    ResetSimpleHeading,
+    /// `RC_Channel::do_aux_function_armdisarm` plus `armed_with_airmode_switch`.
+    ArmDisarmAirMode,
+    /// `motors->set_turb_start` from `TURBINE_START` (heli).
+    SetTurbineStart(bool),
+    /// `flightmode->pause` / `resume` from `FLIGHTMODE_PAUSE`.
+    FlightmodePause(FlightmodePauseAction),
+    /// `mode_autotune.autotune.do_aux_function`.
+    AutotuneTestGains(AuxSwitchPos),
+    /// `RC_Channels_Copter::do_aux_function_ahrs_auto_trim`.
+    AhrsAutoTrim(AhrsAutoTrimAction),
     /// Copter owns this option; a later COP-022 slice fills the body.
     Pending,
     /// `return RC_Channel::do_aux_function(trigger)`.
@@ -520,6 +552,44 @@ pub enum WinchEnableAction {
     Relax,
 }
 
+/// `AUX_FUNC::ZIGZAG_SaveWP` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZigzagSaveWp {
+    /// LOW — `save_or_move_to_destination(Destination::A)`.
+    DestinationA,
+    /// HIGH — `save_or_move_to_destination(Destination::B)`.
+    DestinationB,
+    /// MIDDLE — `return_to_manual_control(false)`.
+    ReturnToManual,
+}
+
+/// `AUX_FUNC::ZIGZAG_Auto` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZigzagAutoAction {
+    /// HIGH — `run_auto`.
+    Run,
+    /// LOW or MIDDLE — `suspend_auto`.
+    Suspend,
+}
+
+/// `AUX_FUNC::FLIGHTMODE_PAUSE` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlightmodePauseAction {
+    /// HIGH — `flightmode->pause()`.
+    Pause,
+    /// LOW — `flightmode->resume()`.
+    Resume,
+}
+
+/// `AUX_FUNC::AHRS_AUTO_TRIM` leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AhrsAutoTrimAction {
+    /// HIGH — start; vehicle still requires `allows_auto_trim`.
+    Start,
+    /// LOW — `save_trim` only if auto-trim is already running.
+    SaveIfRunning,
+}
+
 /// Inputs [`do_aux_function`] reads besides the trigger itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuxDispatch {
@@ -527,7 +597,7 @@ pub struct AuxDispatch {
     pub func: CopterAuxFunc,
     /// Debounced switch position.
     pub pos: AuxSwitchPos,
-    /// `flightmode->mode_number()`. Used only by mode-change LOW/MIDDLE.
+    /// `flightmode->mode_number()`. Mode-change LOW/MIDDLE and ZigZag-only options.
     pub current_mode: u8,
     /// `MODE_ACRO_ENABLED && FRAME_CONFIG != HELI_FRAME`.
     pub acro_air_mode_hook: bool,
@@ -656,12 +726,119 @@ pub const fn do_aux_function_winch_enable(pos: AuxSwitchPos) -> AuxLeftover {
     })
 }
 
+/// `AUX_FUNC::PARACHUTE_RELEASE`. LOW/MIDDLE do nothing.
+#[must_use]
+pub const fn do_aux_function_parachute_release(pos: AuxSwitchPos) -> AuxLeftover {
+    if do_aux_function_high_enables(pos) {
+        AuxLeftover::ReleaseParachute
+    } else {
+        AuxLeftover::None
+    }
+}
+
+/// `AUX_FUNC::SAVE_TRIM`.
+///
+/// Vehicle still requires `allows_save_trim` and zero throttle.
+#[must_use]
+pub const fn do_aux_function_save_trim(pos: AuxSwitchPos) -> AuxLeftover {
+    if do_aux_function_high_enables(pos) {
+        AuxLeftover::SaveTrim
+    } else {
+        AuxLeftover::None
+    }
+}
+
+/// `AUX_FUNC::SAVE_WP`.
+///
+/// Vehicle still rejects Auto, disarmed, and a first waypoint at zero throttle.
+#[must_use]
+pub const fn do_aux_function_save_wp(pos: AuxSwitchPos) -> AuxLeftover {
+    if do_aux_function_high_enables(pos) {
+        AuxLeftover::SaveWp
+    } else {
+        AuxLeftover::None
+    }
+}
+
+/// `AUX_FUNC::ZIGZAG_SaveWP`.
+///
+/// The switch only talks to ZigZag while that mode is already engaged.
+/// Firing it from Stabilize must not save a destination or change mode.
+#[must_use]
+pub const fn do_aux_function_zigzag_save_wp(pos: AuxSwitchPos, current_mode: u8) -> AuxLeftover {
+    if current_mode != MODE_ZIGZAG {
+        return AuxLeftover::None;
+    }
+    AuxLeftover::ZigzagSaveWp(match pos {
+        AuxSwitchPos::Low => ZigzagSaveWp::DestinationA,
+        AuxSwitchPos::Middle => ZigzagSaveWp::ReturnToManual,
+        AuxSwitchPos::High => ZigzagSaveWp::DestinationB,
+    })
+}
+
+/// `AUX_FUNC::ZIGZAG_Auto`.
+#[must_use]
+pub const fn do_aux_function_zigzag_auto(pos: AuxSwitchPos, current_mode: u8) -> AuxLeftover {
+    if current_mode != MODE_ZIGZAG {
+        return AuxLeftover::None;
+    }
+    AuxLeftover::ZigzagAuto(match pos {
+        AuxSwitchPos::High => ZigzagAutoAction::Run,
+        AuxSwitchPos::Low | AuxSwitchPos::Middle => ZigzagAutoAction::Suspend,
+    })
+}
+
+/// `AUX_FUNC::SIMPLE_HEADING_RESET`.
+#[must_use]
+pub const fn do_aux_function_simple_heading_reset(pos: AuxSwitchPos) -> AuxLeftover {
+    if do_aux_function_high_enables(pos) {
+        AuxLeftover::ResetSimpleHeading
+    } else {
+        AuxLeftover::None
+    }
+}
+
+/// `AUX_FUNC::TURBINE_START` — HIGH start, LOW stop, MIDDLE hold.
+#[must_use]
+pub const fn do_aux_function_turbine_start(pos: AuxSwitchPos) -> AuxLeftover {
+    match pos {
+        AuxSwitchPos::High => AuxLeftover::SetTurbineStart(true),
+        AuxSwitchPos::Low => AuxLeftover::SetTurbineStart(false),
+        AuxSwitchPos::Middle => AuxLeftover::None,
+    }
+}
+
+/// `AUX_FUNC::FLIGHTMODE_PAUSE`.
+#[must_use]
+pub const fn do_aux_function_flightmode_pause(pos: AuxSwitchPos) -> AuxLeftover {
+    match pos {
+        AuxSwitchPos::High => AuxLeftover::FlightmodePause(FlightmodePauseAction::Pause),
+        AuxSwitchPos::Low => AuxLeftover::FlightmodePause(FlightmodePauseAction::Resume),
+        AuxSwitchPos::Middle => AuxLeftover::None,
+    }
+}
+
+/// `AUX_FUNC::AHRS_AUTO_TRIM`.
+///
+/// HIGH starts (vehicle still requires `allows_auto_trim`). LOW saves
+/// only if the trim is already running. MIDDLE is a no-op.
+#[must_use]
+pub const fn do_aux_function_ahrs_auto_trim(pos: AuxSwitchPos) -> AuxLeftover {
+    match pos {
+        AuxSwitchPos::High => AuxLeftover::AhrsAutoTrim(AhrsAutoTrimAction::Start),
+        AuxSwitchPos::Low => AuxLeftover::AhrsAutoTrim(AhrsAutoTrimAction::SaveIfRunning),
+        AuxSwitchPos::Middle => AuxLeftover::None,
+    }
+}
+
 /// `RC_Channel_Copter::do_aux_function` leftover.
 ///
 /// Mode-change, Flip, Simple / SuperSimple, AirMode and ForceFlying stay
-/// the first dispatch. This slice fills the `init_aux_function` RunNow
-/// bodies (AcroTrainer, interlock, rangefinder, parachute, attcon, …).
-/// Later Copter-owned cases still return [`AuxLeftover::Pending`].
+/// the first dispatch. RunNow bodies (AcroTrainer, interlock, rangefinder,
+/// parachute-enable / 3pos, attcon, …) stay next. This slice fills the
+/// remaining Copter-owned arms: parachute release, winch control, save-trim
+/// / save-wp, zigzag, pause, auto-trim, user hooks, and the other still-stub
+/// cases.
 #[must_use]
 pub const fn do_aux_function(dispatch: AuxDispatch) -> AuxLeftover {
     if let Some(mode) = dispatch.func.change_mode_number() {
@@ -728,6 +905,35 @@ pub const fn do_aux_function(dispatch: AuxDispatch) -> AuxLeftover {
             Some(on) => AuxLeftover::SetInverted(on),
             None => AuxLeftover::None,
         },
+        CopterAuxFunc::ParachuteRelease => do_aux_function_parachute_release(dispatch.pos),
+        CopterAuxFunc::WinchControl => AuxLeftover::None,
+        CopterAuxFunc::SaveTrim => do_aux_function_save_trim(dispatch.pos),
+        CopterAuxFunc::SaveWp => do_aux_function_save_wp(dispatch.pos),
+        CopterAuxFunc::UserFunc1 => AuxLeftover::CallUserFunc {
+            which: 1,
+            pos: dispatch.pos,
+        },
+        CopterAuxFunc::UserFunc2 => AuxLeftover::CallUserFunc {
+            which: 2,
+            pos: dispatch.pos,
+        },
+        CopterAuxFunc::UserFunc3 => AuxLeftover::CallUserFunc {
+            which: 3,
+            pos: dispatch.pos,
+        },
+        CopterAuxFunc::ZigzagSaveWp => {
+            do_aux_function_zigzag_save_wp(dispatch.pos, dispatch.current_mode)
+        }
+        CopterAuxFunc::ZigzagAuto => {
+            do_aux_function_zigzag_auto(dispatch.pos, dispatch.current_mode)
+        }
+        CopterAuxFunc::SimpleHeadingReset => do_aux_function_simple_heading_reset(dispatch.pos),
+        CopterAuxFunc::ArmDisarmAirMode => AuxLeftover::ArmDisarmAirMode,
+        CopterAuxFunc::TurbineStart => do_aux_function_turbine_start(dispatch.pos),
+        CopterAuxFunc::FlightmodePause => do_aux_function_flightmode_pause(dispatch.pos),
+        CopterAuxFunc::AutotuneTestGains => AuxLeftover::AutotuneTestGains(dispatch.pos),
+        CopterAuxFunc::AhrsAutoTrim => do_aux_function_ahrs_auto_trim(dispatch.pos),
+        CopterAuxFunc::ResetToArmedYaw => AuxLeftover::DelegateToBase,
         CopterAuxFunc::TransmitterTuning | CopterAuxFunc::TransmitterTuning2 => AuxLeftover::None,
         _ => AuxLeftover::Pending,
     }
