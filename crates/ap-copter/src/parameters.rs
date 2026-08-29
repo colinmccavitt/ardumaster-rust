@@ -53,7 +53,9 @@
 //! next leftover is the stock `FLOW` `GOBJECT`
 //! (`AP_OPTICALFLOW_ENABLED`). After `FLOW` the
 //! next leftover is the stock `PLND_` `GOBJECT`
-//! (`AC_PRECLAND_ENABLED`). Later groups, G2,
+//! (`AC_PRECLAND_ENABLED`). After `PLND_` the
+//! next leftover is the stock `ADSB_` `GOBJECT`
+//! (`HAL_ADSB_ENABLED`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -1595,7 +1597,7 @@ pub fn for_each_flow_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>
     }
 }
 
-/// `Parameters::k_param_adsb` — next leftover after `PLND_`. Not this leftover.
+/// `Parameters::k_param_adsb` — next `GOBJECT`, prefix `ADSB_`.
 pub const K_PARAM_ADSB: u16 = 72;
 
 /// Stock `PLND_` leftover catalog.
@@ -1623,6 +1625,38 @@ pub fn find_plnd_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `PLND_` leftover as `ParamInfo` rows.
 pub fn for_each_plnd_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in PLND_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_avoidance_adsb` — next leftover after `ADSB_`. Not this leftover.
+pub const K_PARAM_AVOIDANCE_ADSB: u16 = 96;
+
+/// Stock `ADSB_` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `PLND_`. Upstream is
+/// `GOBJECT`. `ADSB_` is `HAL_ADSB_ENABLED`. Nested `AP_ADSB`
+/// `var_info` is not this leftover. `AVD_` stays later (`AP_ADSB_AVOIDANCE_ENABLED`).
+/// Heli `H_` / `IM_` are not rows of this leftover.
+pub const ADSB_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("ADSB_", K_PARAM_ADSB)];
+
+/// First (only) row of the `ADSB_` leftover.
+#[must_use]
+pub fn adsb_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    ADSB_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `ADSB_` leftover by group prefix.
+#[must_use]
+pub fn find_adsb_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    ADSB_GOBJECT_VAR_INFO
+        .iter()
+        .find(|entry| entry.name == name)
+}
+
+/// Walk the `ADSB_` leftover as `ParamInfo` rows.
+pub fn for_each_adsb_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in ADSB_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
