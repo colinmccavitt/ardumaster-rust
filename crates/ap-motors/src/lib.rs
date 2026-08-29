@@ -29,9 +29,14 @@
 //! The frame *tables* — which angles belong to a quad X against a hexa plus
 //! against a Y6 — are 1,400 lines of data in upstream and are their own slice,
 //! as is the output stage that turns factors into PWM.
+//!
+//! The armed-stabilizing mixer leftover lives in [`armed`]. Failed-motor
+//! detection (`check_for_failed_motor`) and the matrix `output_to_motors`
+//! pass stay leftover.
 
 use ap_math::scalar::{is_zero, radians, Real};
 
+pub mod armed;
 pub mod arming;
 pub mod current_limit;
 mod frames;
