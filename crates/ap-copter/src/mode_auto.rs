@@ -15,7 +15,11 @@
 //! which `do_land` and `verify_land` call. [`auto_rtl_start`] is
 //! `ModeAuto::rtl_start`, which `do_RTL` calls: it reuses
 //! [`crate::mode_rtl::rtl_init`] with checks ignored and parks in RTL.
-//! The other `do_*` bodies and the `*_run` controllers are later slices.
+//! [`auto_spline_start`] is `ModeAuto::do_spline_wp` — C++ has no
+//! separate `spline_start`; this leftover is the spline destination,
+//! next-segment lookup, yaw, and WP park that `NAV_SPLINE_WAYPOINT`
+//! runs. The other `do_*` bodies and the `*_run` controllers are later
+//! slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -102,6 +106,17 @@
 //! missing home is not a refuse. Success sets `_mode = RTL`. Failure
 //! is a flow-of-control error — RTL never refuses when that argument
 //! is true.
+//!
+//! # spline_start is do_spline_wp — dest, next, yaw, WP
+//!
+//! There is no `ModeAuto::spline_start`. `do_spline_wp` is the body:
+//! default loc from current (or the last wp dest if wpnav is active
+//! and already there), `get_spline_from_cmd` for dest and next,
+//! `set_spline_destination_loc`, then the loiter delay, `set_next_wp`,
+//! the same yaw skip as `wp_start`, and `_mode = WP`. A missing
+//! dest loc while parked on the last WP is a flow-of-control error
+//! and the leftover continues with current. Every other refuse is
+//! `failsafe_terrain_on_event` and returns before yaw or `_mode`.
 
 use crate::mode_rtl::{rtl_init, RtlInit, RtlInitView};
 
@@ -1287,4 +1302,341 @@ pub fn auto_rtl_start(view: &AutoRtlStartView) -> AutoRtlStart {
         },
         true,
     ))
+}
+
+/// Vehicle view [`auto_spline_from_cmd`] reads.
+///
+/// `get_spline_from_cmd` fills dest from the current command (using
+/// the caller's default loc when lat/lon/alt are zero) and then
+/// decides whether the outgoing control point is the next nav command
+/// or dest itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSplineFromCmdView {
+    /// `get_loc_from_cmd(cmd, default_loc, dest_loc)`.
+    pub dest_loc_ok: bool,
+    /// `cmd.p1` — delay at the end of this segment, seconds.
+    pub delay_s: u16,
+    /// `mission.get_next_nav_cmd(cmd.index+1, temp_cmd)`.
+    pub next_nav_cmd: bool,
+    /// `get_loc_from_cmd(temp_cmd, dest_loc, next_dest_loc)`.
+    pub next_loc_ok: bool,
+    /// `temp_cmd.id == MAV_CMD_NAV_SPLINE_WAYPOINT`.
+    pub next_is_spline_waypoint: bool,
+}
+
+impl AutoSplineFromCmdView {
+    /// Dest ok, no delay, next nav is a spline waypoint.
+    #[must_use]
+    pub const fn through_to_spline() -> Self {
+        Self {
+            dest_loc_ok: true,
+            delay_s: 0,
+            next_nav_cmd: true,
+            next_loc_ok: true,
+            next_is_spline_waypoint: true,
+        }
+    }
+
+    /// Dest ok, no delay, next nav is a straight waypoint.
+    #[must_use]
+    pub const fn through_to_wp() -> Self {
+        let mut view = Self::through_to_spline();
+        view.next_is_spline_waypoint = false;
+        view
+    }
+
+    /// Dest ok, no delay, this is the last nav command.
+    #[must_use]
+    pub const fn last_segment() -> Self {
+        Self {
+            dest_loc_ok: true,
+            delay_s: 0,
+            next_nav_cmd: false,
+            next_loc_ok: false,
+            next_is_spline_waypoint: false,
+        }
+    }
+
+    /// Dest ok, a loiter delay — next dest is dest itself.
+    #[must_use]
+    pub const fn with_delay(delay_s: u16) -> Self {
+        Self {
+            dest_loc_ok: true,
+            delay_s,
+            next_nav_cmd: true,
+            next_loc_ok: true,
+            next_is_spline_waypoint: true,
+        }
+    }
+
+    /// `get_loc_from_cmd` refused the current dest (terrain).
+    #[must_use]
+    pub const fn dest_refused() -> Self {
+        Self {
+            dest_loc_ok: false,
+            delay_s: 0,
+            next_nav_cmd: true,
+            next_loc_ok: true,
+            next_is_spline_waypoint: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::get_spline_from_cmd` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSplineFromCmd {
+    /// What `get_spline_from_cmd` returned.
+    pub ok: bool,
+    /// `next_dest_loc` was set to `dest_loc` (delay or no next cmd).
+    pub next_dest_is_dest: bool,
+    /// `next_dest_loc_is_spline` handed to `set_spline_destination_loc`.
+    pub next_dest_is_spline: bool,
+}
+
+/// Upstream `ModeAuto::get_spline_from_cmd`.
+///
+/// Dest comes from the command. With no delay and a following nav
+/// command, the outgoing control point is that next loc and
+/// `next_dest_is_spline` is true only when the next id is
+/// `NAV_SPLINE_WAYPOINT`. A delay, or the last nav command, copies
+/// dest onto next and clears the spline flag so the curve stops.
+#[must_use]
+pub const fn auto_spline_from_cmd(view: &AutoSplineFromCmdView) -> AutoSplineFromCmd {
+    if !view.dest_loc_ok {
+        return AutoSplineFromCmd {
+            ok: false,
+            next_dest_is_dest: false,
+            next_dest_is_spline: false,
+        };
+    }
+    if view.delay_s == 0 && view.next_nav_cmd {
+        if !view.next_loc_ok {
+            return AutoSplineFromCmd {
+                ok: false,
+                next_dest_is_dest: false,
+                next_dest_is_spline: false,
+            };
+        }
+        return AutoSplineFromCmd {
+            ok: true,
+            next_dest_is_dest: false,
+            next_dest_is_spline: view.next_is_spline_waypoint,
+        };
+    }
+    AutoSplineFromCmd {
+        ok: true,
+        next_dest_is_dest: true,
+        next_dest_is_spline: false,
+    }
+}
+
+/// Vehicle view [`auto_spline_start`] reads.
+///
+/// C++ has no `spline_start`. This is `ModeAuto::do_spline_wp`, the
+/// leftover `NAV_SPLINE_WAYPOINT` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSplineStartView {
+    /// `wp_nav->is_active()`.
+    pub wp_nav_active: bool,
+    /// `wp_nav->reached_wp_destination()`.
+    pub reached_wp_destination: bool,
+    /// `wp_nav->get_wp_destination_loc(default_loc)`.
+    pub wp_dest_loc_ok: bool,
+    /// Inputs to [`auto_spline_from_cmd`].
+    pub spline: AutoSplineFromCmdView,
+    /// `wp_nav->set_spline_destination_loc`.
+    pub spline_dest_accepted: bool,
+    /// `set_next_wp(cmd, dest_loc)`.
+    pub next_wp_ok: bool,
+    /// `auto_yaw.mode() == AutoYaw::Mode::ROI`.
+    pub auto_yaw_is_roi: bool,
+    /// `auto_yaw.mode() == AutoYaw::Mode::FIXED`.
+    pub auto_yaw_is_fixed: bool,
+    /// `copter.g.wp_yaw_behavior == WP_YAW_BEHAVIOR_NONE`.
+    pub wp_yaw_behavior_none: bool,
+}
+
+impl AutoSplineStartView {
+    /// Idle wpnav, dest accepted, next is a spline, yaw HOLD.
+    #[must_use]
+    pub const fn ready() -> Self {
+        Self {
+            wp_nav_active: false,
+            reached_wp_destination: false,
+            wp_dest_loc_ok: false,
+            spline: AutoSplineFromCmdView::through_to_spline(),
+            spline_dest_accepted: true,
+            next_wp_ok: true,
+            auto_yaw_is_roi: false,
+            auto_yaw_is_fixed: false,
+            wp_yaw_behavior_none: false,
+        }
+    }
+
+    /// Parked on the last WP — default loc comes from wpnav.
+    #[must_use]
+    pub const fn from_reached_wp() -> Self {
+        let mut view = Self::ready();
+        view.wp_nav_active = true;
+        view.reached_wp_destination = true;
+        view.wp_dest_loc_ok = true;
+        view
+    }
+
+    /// `get_loc_from_cmd` refused the dest.
+    #[must_use]
+    pub const fn dest_refused() -> Self {
+        let mut view = Self::ready();
+        view.spline = AutoSplineFromCmdView::dest_refused();
+        view
+    }
+
+    /// `set_spline_destination_loc` refused (terrain).
+    #[must_use]
+    pub const fn dest_set_refused() -> Self {
+        let mut view = Self::ready();
+        view.spline_dest_accepted = false;
+        view
+    }
+
+    /// `set_next_wp` refused after the spline dest was accepted.
+    #[must_use]
+    pub const fn next_wp_refused() -> Self {
+        let mut view = Self::ready();
+        view.next_wp_ok = false;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::do_spline_wp` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSplineStart {
+    /// The leftover reached `set_submode(WP)`. `do_spline_wp` is void;
+    /// this is the no-early-return path.
+    pub ok: bool,
+    /// Default loc came from `get_wp_destination_loc`.
+    pub default_from_wp_dest: bool,
+    /// `INTERNAL_ERROR(flow_of_control)` — dest loc fetch failed while
+    /// parked. The leftover continues with `current_loc`.
+    pub dest_loc_flow_of_control: bool,
+    /// `copter.failsafe_terrain_on_event` ran.
+    pub terrain_failsafe: bool,
+    /// What [`auto_spline_from_cmd`] produced.
+    pub spline: AutoSplineFromCmd,
+    /// `set_spline_destination_loc` succeeded.
+    pub set_spline_destination: bool,
+    /// `loiter_time` was zeroed.
+    pub loiter_time_cleared: bool,
+    /// `loiter_time_max = cmd.p1`.
+    pub loiter_time_max_s: u16,
+    /// `set_next_wp` succeeded.
+    pub set_next_wp: bool,
+    /// `auto_yaw.set_mode_to_default(false)` ran.
+    pub yaw_set_default: bool,
+    /// `_mode` after a successful start. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+}
+
+impl AutoSplineStart {
+    /// Shared refuse leftover: terrain failsafe, no yaw, `_mode` unchanged.
+    #[must_use]
+    const fn refused(
+        default_from_wp_dest: bool,
+        dest_loc_flow_of_control: bool,
+        spline: AutoSplineFromCmd,
+        set_spline_destination: bool,
+        loiter_time_cleared: bool,
+        loiter_time_max_s: u16,
+        set_next_wp: bool,
+    ) -> Self {
+        Self {
+            ok: false,
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            terrain_failsafe: true,
+            spline,
+            set_spline_destination,
+            loiter_time_cleared,
+            loiter_time_max_s,
+            set_next_wp,
+            yaw_set_default: false,
+            submode: None,
+        }
+    }
+}
+
+/// Upstream `ModeAuto::do_spline_wp` — the spline_start leftover.
+///
+/// Default loc is `current_loc` (minus offsets). If wpnav is already
+/// on its dest, that dest becomes the default; a failed fetch is a
+/// flow-of-control error and the leftover keeps `current_loc`.
+/// [`auto_spline_from_cmd`] then [`set_spline_destination_loc`]. The
+/// loiter delay is latched, `set_next_wp` may add a lookahead, and
+/// yaw / `_mode` match [`auto_wp_start`]: skip default yaw for ROI
+/// or FIXED+NONE, park in WP. Any refuse after default-loc is
+/// terrain failsafe and returns before yaw or `_mode`.
+#[must_use]
+pub const fn auto_spline_start(view: &AutoSplineStartView) -> AutoSplineStart {
+    let mut default_from_wp_dest = false;
+    let mut dest_loc_flow_of_control = false;
+    if view.wp_nav_active && view.reached_wp_destination {
+        if view.wp_dest_loc_ok {
+            default_from_wp_dest = true;
+        } else {
+            dest_loc_flow_of_control = true;
+        }
+    }
+
+    let spline = auto_spline_from_cmd(&view.spline);
+    if !spline.ok {
+        return AutoSplineStart::refused(
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            spline,
+            false,
+            false,
+            0,
+            false,
+        );
+    }
+
+    if !view.spline_dest_accepted {
+        return AutoSplineStart::refused(
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            spline,
+            false,
+            false,
+            0,
+            false,
+        );
+    }
+
+    if !view.next_wp_ok {
+        return AutoSplineStart::refused(
+            default_from_wp_dest,
+            dest_loc_flow_of_control,
+            spline,
+            true,
+            true,
+            view.spline.delay_s,
+            false,
+        );
+    }
+
+    let skip_yaw = view.auto_yaw_is_roi || (view.auto_yaw_is_fixed && view.wp_yaw_behavior_none);
+
+    AutoSplineStart {
+        ok: true,
+        default_from_wp_dest,
+        dest_loc_flow_of_control,
+        terrain_failsafe: false,
+        spline,
+        set_spline_destination: true,
+        loiter_time_cleared: true,
+        loiter_time_max_s: view.spline.delay_s,
+        set_next_wp: true,
+        yaw_set_default: !skip_yaw,
+        submode: Some(AutoSubMode::Wp),
+    }
 }
