@@ -16,7 +16,8 @@
 //! `INS` `GOBJECT`. After `INS` the next leftover is the
 //! `WP_` / `LOIT_` / `CIRCLE_` `GOBJECTPTR` group (`CIRCLE_` is
 //! `MODE_CIRCLE_ENABLED`). After `CIRCLE_` the next leftover is the
-//! stock `ATC_` `GOBJECT` (`GOBJECTVARPTR`). Later groups, G2,
+//! stock `ATC_` `GOBJECT` (`GOBJECTVARPTR`). After `ATC_` the next leftover
+//! is the stock `PSC` `GOBJECT` (`GOBJECTPTR`). Later groups, G2,
 //! `load_parameters` conversions, and the rest of the enum stay later.
 //!
 //! # The GSCALAR default is not `k_format_version`
@@ -852,7 +853,7 @@ pub fn for_each_wp_loit_circle_gobject_param_info(visit: &mut dyn FnMut(ParamInf
     }
 }
 
-/// `Parameters::k_param_pos_control` — next leftover after `ATC_`. Not this leftover.
+/// `Parameters::k_param_pos_control` — next `GOBJECT`, prefix `PSC`.
 pub const K_PARAM_POS_CONTROL: u16 = 103;
 
 /// Stock `ATC_` leftover catalog.
@@ -877,6 +878,35 @@ pub fn find_atc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
 /// Walk the `ATC_` leftover as `ParamInfo` rows.
 pub fn for_each_atc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
     for entry in ATC_GOBJECT_VAR_INFO {
+        visit(entry.param_info());
+    }
+}
+
+/// `Parameters::k_param_ahrs` — next leftover after `PSC`. Not this leftover.
+pub const K_PARAM_AHRS: u16 = 159;
+
+/// Stock `PSC` leftover catalog.
+///
+/// The next contiguous Multi `GOBJECT` after `ATC_`. Upstream is
+/// `GOBJECTPTR`. Nested `AC_PosControl` `var_info` is not this leftover.
+/// `AHRS_` stays later. Heli `IM_` is not a row of this leftover.
+pub const PSC_GOBJECT_VAR_INFO: &[VarInfoSpec] = &[group("PSC", K_PARAM_POS_CONTROL)];
+
+/// First (only) row of the `PSC` leftover.
+#[must_use]
+pub fn psc_gobject_var_info_entry() -> Option<&'static VarInfoSpec> {
+    PSC_GOBJECT_VAR_INFO.first()
+}
+
+/// Find a row in the `PSC` leftover by group prefix.
+#[must_use]
+pub fn find_psc_gobject_var(name: &str) -> Option<&'static VarInfoSpec> {
+    PSC_GOBJECT_VAR_INFO.iter().find(|entry| entry.name == name)
+}
+
+/// Walk the `PSC` leftover as `ParamInfo` rows.
+pub fn for_each_psc_gobject_param_info(visit: &mut dyn FnMut(ParamInfo<'static>)) {
+    for entry in PSC_GOBJECT_VAR_INFO {
         visit(entry.param_info());
     }
 }
