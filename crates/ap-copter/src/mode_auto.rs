@@ -23,8 +23,16 @@
 //! [`auto_loiter_time`] reuses that leftover and latches the loiter
 //! timer. [`auto_loiter_to_alt`] reuses it, then reads the target
 //! alt-above-home and parks in LOITER_TO_ALT (or marks both reached
-//! on a bad alt). The other `do_*` bodies and the `*_run` controllers
-//! are later slices.
+//! on a bad alt). [`auto_circle`] is `ModeAuto::do_circle`: dest,
+//! HIGHBYTE radius (x10 when the large-radius bit is set), then
+//! `circle_movetoedge_start` or `circle_start`. [`auto_do_yaw`] is
+//! `do_yaw` -- degrees to radians and `relative_angle > 0`.
+//! [`auto_do_roi`] forwards to [`crate::auto_yaw::roi_action`].
+//! [`auto_nav_delay`], [`auto_wait_delay`], [`auto_within_distance`],
+//! [`auto_change_speed`], [`auto_set_home`], and [`auto_payload_place`]
+//! are the remaining `do_*` leftovers. [`auto_verify_command`] is the
+//! `verify_command` switch; the `verify_*` leftovers are the bodies.
+//! The `*_run` controllers are later slices.
 //!
 //! # No mission is a refuse unless the caller said to ignore checks
 //!
@@ -146,8 +154,34 @@
 //! `"bad do_loiter_to_alt"`, and leaves `_mode` at WP. Success
 //! clears the loiter-to-alt flags, copies wpnav D limits onto the
 //! position controller, and sets `_mode = LOITER_TO_ALT`.
+//!
+//! # do_circle is dest, radius, then edge or start
+//!
+//! Radius is `HIGHBYTE(p1)`. `NAV_LOITER_TURNS` with type-specific
+//! bit 0 multiplies that by ten. A dest refuse is terrain failsafe
+//! and returns before the last-complete reset. More than 3 m from
+//! the edge flies there (`CIRCLE_MOVE_TO_EDGE`); a dest refuse on
+//! that fly-to still sets yaw and the submode. Already on the edge
+//! calls `circle_start` (`CIRCLE` yaw unless ROI). Then
+//! `circle_last_num_complete = -1`.
+//!
+//! # do_yaw converts, do_roi forwards
+//!
+//! `CONDITION_YAW` is degrees to radians and `relative_angle > 0`.
+//! The three ROI ids call `auto_yaw.set_roi`; the leftover is
+//! [`roi_action`].
+//!
+//! # verify_command is a switch, then the bodies
+//!
+//! Not in AUTO is an immediate false. Recognised ids pick a
+//! `verify_*`. DO commands and an unknown id complete immediately
+//! (unknown also sends "Skipping invalid cmd"). `NAV_LOITER_TO_ALT`
+//! returns the body leftover directly and skips the reached message.
 
-use crate::mode_rtl::{rtl_init, RtlInit, RtlInitView};
+use crate::auto_yaw::{
+    reached_fixed_yaw_target, roi_action, FixedYawDirection, RoiAction, YawMode,
+};
+use crate::mode_rtl::{rtl_init, RtlInit, RtlInitView, RtlSubMode};
 
 /// `Mode::Number::AUTO`.
 pub const MODE_NUMBER_AUTO: u8 = 3;
@@ -220,6 +254,11 @@ pub enum AutoSubMode {
     NavScriptTime = 9,
     /// `SubMode::NAV_ATTITUDE_TIME` without payload-place.
     NavAttitudeTime = 10,
+    /// `SubMode::NAV_PAYLOAD_PLACE` when that feature is compiled in.
+    /// C++ inserts it before script/attitude and shifts those numbers;
+    /// this leftover keeps the compiled-out numbering and names the
+    /// variant at 11.
+    NavPayloadPlace = 11,
 }
 
 /// Vehicle view `ModeAuto::init` reads.
@@ -667,6 +706,8 @@ pub enum AutoRunBody {
     LoiterToAlt,
     /// `nav_attitude_time_run`.
     NavAttitudeTime,
+    /// `payload_place.run` -- `NAV_PAYLOAD_PLACE` when compiled in.
+    PayloadPlace,
     /// Gated body whose `#if` is off: the case matches and does nothing.
     None,
 }
@@ -817,6 +858,7 @@ pub const fn auto_run(view: &AutoRunView) -> AutoRun {
         AutoSubMode::Loiter => AutoRunBody::Loiter,
         AutoSubMode::LoiterToAlt => AutoRunBody::LoiterToAlt,
         AutoSubMode::NavAttitudeTime => AutoRunBody::NavAttitudeTime,
+        AutoSubMode::NavPayloadPlace => AutoRunBody::PayloadPlace,
     };
 
     let auto_rtl_active = view.in_landing_sequence || view.in_return_path || view.mission_complete;
@@ -2031,4 +2073,1616 @@ pub const fn auto_loiter_to_alt(view: &AutoLoiterToAltView) -> AutoLoiterToAlt {
         d_limits_set: true,
         submode: Some(AutoSubMode::LoiterToAlt),
     }
+}
+
+/// `SPEED_TYPE_AIRSPEED`.
+pub const SPEED_TYPE_AIRSPEED: u8 = 0;
+/// `SPEED_TYPE_GROUNDSPEED`.
+pub const SPEED_TYPE_GROUNDSPEED: u8 = 1;
+/// `SPEED_TYPE_CLIMB_SPEED`.
+pub const SPEED_TYPE_CLIMB_SPEED: u8 = 2;
+/// `SPEED_TYPE_DESCENT_SPEED`.
+pub const SPEED_TYPE_DESCENT_SPEED: u8 = 3;
+
+/// `HIGHBYTE(p1)` — circle radius lives in the high byte.
+#[must_use]
+pub const fn highbyte(p1: u16) -> u16 {
+    p1 >> 8
+}
+
+/// `LOWBYTE(p1)` — loiter-turns lives in the low byte.
+#[must_use]
+pub const fn lowbyte(p1: u16) -> u16 {
+    p1 & 0x00ff
+}
+
+/// `cmd.get_loiter_turns()`.
+///
+/// The low byte is the turn count. Type-specific bit 1 stores a
+/// fractional count in 1/256ths.
+#[must_use]
+pub const fn loiter_turns(p1: u16, fractional: bool) -> f32 {
+    let mut turns = lowbyte(p1) as f32;
+    if fractional {
+        turns *= 1.0 / 256.0;
+    }
+    turns
+}
+
+/// Radius `do_circle` hands to `circle_movetoedge_start`.
+///
+/// `HIGHBYTE(p1)`, times ten when the command is `NAV_LOITER_TURNS` and
+/// type-specific bit 0 is set.
+#[must_use]
+pub const fn circle_radius_m(p1: u16, nav_loiter_turns: bool, large_radius: bool) -> u16 {
+    let mut radius = highbyte(p1);
+    if nav_loiter_turns && large_radius {
+        radius = radius.wrapping_mul(10);
+    }
+    radius
+}
+
+/// Yaw `do_circle` / `circle_start` selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoCircleYaw {
+    /// ROI was already holding the axis; neither path touched it.
+    Unchanged,
+    /// Outside the circle and more than 5 m from the centre: default yaw.
+    Default,
+    /// Inside the circle (or within 5 m of the centre): HOLD.
+    Hold,
+    /// `circle_start` set `CIRCLE`.
+    Circle,
+}
+
+/// Vehicle view [`auto_circle`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoCircleView {
+    /// `get_loc_from_cmd` succeeded.
+    pub dest_ok: bool,
+    /// `cmd.id == MAV_CMD_NAV_LOITER_TURNS`.
+    pub nav_loiter_turns: bool,
+    /// `cmd.p1`.
+    pub p1: u16,
+    /// `cmd.type_specific_bits & (1U << 0)`.
+    pub large_radius: bool,
+    /// `cmd.content.location.loiter_ccw`.
+    pub loiter_ccw: bool,
+    /// `circle_nav->get_rate_degs()` before the sign is applied.
+    pub current_rate_degs: f32,
+    /// `dist_to_edge_m` from `get_closest_point_on_circle_NED_m`.
+    pub dist_to_edge_m: f32,
+    /// `set_wp_destination_loc(circle_edge)` when flying to the edge.
+    pub dest_accepted: bool,
+    /// Horizontal distance from the vehicle to the circle centre, m.
+    pub dist_to_center_m: f32,
+    /// `auto_yaw.mode() == AutoYaw::Mode::ROI`.
+    pub auto_yaw_is_roi: bool,
+}
+
+impl AutoCircleView {
+    /// Dest ok, 20 m radius, 10 m from the edge, yaw HOLD.
+    #[must_use]
+    pub const fn ready_to_edge() -> Self {
+        Self {
+            dest_ok: true,
+            nav_loiter_turns: true,
+            p1: 0x1400,
+            large_radius: false,
+            loiter_ccw: false,
+            current_rate_degs: 20.0,
+            dist_to_edge_m: 10.0,
+            dest_accepted: true,
+            dist_to_center_m: 30.0,
+            auto_yaw_is_roi: false,
+        }
+    }
+
+    /// Already on the edge: `circle_start` runs immediately.
+    #[must_use]
+    pub const fn already_on_edge() -> Self {
+        let mut view = Self::ready_to_edge();
+        view.dist_to_edge_m = 2.0;
+        view.dist_to_center_m = 18.0;
+        view
+    }
+
+    /// `get_loc_from_cmd` refused.
+    #[must_use]
+    pub const fn dest_refused() -> Self {
+        let mut view = Self::ready_to_edge();
+        view.dest_ok = false;
+        view
+    }
+}
+
+/// Leftover of one `ModeAuto::do_circle` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoCircle {
+    /// The leftover ran past the dest gate.
+    pub ok: bool,
+    /// `failsafe_terrain_on_event` ran.
+    pub terrain_failsafe: bool,
+    /// Radius handed to `circle_nav->set_radius_m`.
+    pub radius_m: u16,
+    /// Signed rate handed to `circle_nav->set_rate_degs`.
+    pub rate_degs: f32,
+    /// Flew to the edge (`dist_to_edge_m > 3`).
+    pub move_to_edge: bool,
+    /// `set_wp_destination_loc` ran (only on the fly-to-edge arm).
+    pub set_wp_destination: bool,
+    /// Yaw leftover.
+    pub yaw: AutoCircleYaw,
+    /// `_mode` after the leftover. `None` when dest refused.
+    pub submode: Option<AutoSubMode>,
+    /// `circle_last_num_complete` after the leftover. `None` when dest refused.
+    pub last_num_complete: Option<f32>,
+}
+
+impl AutoCircle {
+    /// Shared refuse leftover: dest failed; nothing else ran.
+    #[must_use]
+    const fn refused() -> Self {
+        Self {
+            ok: false,
+            terrain_failsafe: true,
+            radius_m: 0,
+            rate_degs: 0.0,
+            move_to_edge: false,
+            set_wp_destination: false,
+            yaw: AutoCircleYaw::Unchanged,
+            submode: None,
+            last_num_complete: None,
+        }
+    }
+}
+
+/// Signed circle rate: ccw is `-fabsf(current)`, cw is `fabsf(current)`.
+#[must_use]
+const fn circle_rate_degs(current_rate_degs: f32, ccw: bool) -> f32 {
+    let mag = if current_rate_degs < 0.0 {
+        -current_rate_degs
+    } else {
+        current_rate_degs
+    };
+    if ccw {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// Yaw while flying to the circle edge. ROI is left alone.
+#[must_use]
+const fn circle_edge_yaw(
+    auto_yaw_is_roi: bool,
+    dist_to_center_m: f32,
+    radius_m: f32,
+) -> AutoCircleYaw {
+    if auto_yaw_is_roi {
+        return AutoCircleYaw::Unchanged;
+    }
+    if dist_to_center_m > radius_m && dist_to_center_m > 5.0 {
+        AutoCircleYaw::Default
+    } else {
+        AutoCircleYaw::Hold
+    }
+}
+
+/// Upstream `ModeAuto::circle_start` yaw leftover.
+#[must_use]
+const fn circle_start_yaw(auto_yaw_is_roi: bool) -> AutoCircleYaw {
+    if auto_yaw_is_roi {
+        AutoCircleYaw::Unchanged
+    } else {
+        AutoCircleYaw::Circle
+    }
+}
+
+/// Upstream `ModeAuto::do_circle`.
+///
+/// Dest first. Radius is the high byte of `p1`, times ten when the
+/// large-radius bit is set on `NAV_LOITER_TURNS`. More than 3 m from the
+/// edge flies there; a dest refuse on that fly-to still sets yaw and
+/// `CIRCLE_MOVE_TO_EDGE`. Already on the edge calls `circle_start`.
+/// Success always resets `circle_last_num_complete` to -1.
+#[must_use]
+pub const fn auto_circle(view: &AutoCircleView) -> AutoCircle {
+    if !view.dest_ok {
+        return AutoCircle::refused();
+    }
+
+    let radius_m = circle_radius_m(view.p1, view.nav_loiter_turns, view.large_radius);
+    let rate_degs = circle_rate_degs(view.current_rate_degs, view.loiter_ccw);
+
+    if view.dist_to_edge_m > 3.0 {
+        let terrain_failsafe = !view.dest_accepted;
+        let yaw = circle_edge_yaw(
+            view.auto_yaw_is_roi,
+            view.dist_to_center_m,
+            radius_m as f32,
+        );
+        return AutoCircle {
+            ok: true,
+            terrain_failsafe,
+            radius_m,
+            rate_degs,
+            move_to_edge: true,
+            set_wp_destination: true,
+            yaw,
+            submode: Some(AutoSubMode::CircleMoveToEdge),
+            last_num_complete: Some(-1.0),
+        };
+    }
+
+    AutoCircle {
+        ok: true,
+        terrain_failsafe: false,
+        radius_m,
+        rate_degs,
+        move_to_edge: false,
+        set_wp_destination: false,
+        yaw: circle_start_yaw(view.auto_yaw_is_roi),
+        submode: Some(AutoSubMode::Circle),
+        last_num_complete: Some(-1.0),
+    }
+}
+
+/// Vehicle view [`auto_do_yaw`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoDoYawView {
+    /// `cmd.content.yaw.angle_deg`.
+    pub angle_deg: f32,
+    /// `cmd.content.yaw.turn_rate_dps`.
+    pub turn_rate_dps: f32,
+    /// `cmd.content.yaw.direction`.
+    pub direction: i8,
+    /// `cmd.content.yaw.relative_angle`.
+    pub relative_angle: i8,
+}
+
+impl AutoDoYawView {
+    /// Absolute 90 deg at 10 deg/s, shortest.
+    #[must_use]
+    pub const fn absolute_90() -> Self {
+        Self {
+            angle_deg: 90.0,
+            turn_rate_dps: 10.0,
+            direction: 0,
+            relative_angle: 0,
+        }
+    }
+
+    /// Relative 45 deg clockwise.
+    #[must_use]
+    pub const fn relative_45() -> Self {
+        Self {
+            angle_deg: 45.0,
+            turn_rate_dps: 0.0,
+            direction: 1,
+            relative_angle: 1,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_yaw` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoDoYaw {
+    /// `radians(angle_deg)` handed to `set_fixed_yaw_rad`.
+    pub angle_rad: f32,
+    /// `radians(turn_rate_dps)`.
+    pub turn_rate_rads: f32,
+    /// Direction after `FixedYawDirection::from_sign`.
+    pub direction: FixedYawDirection,
+    /// `relative_angle > 0`.
+    pub relative: bool,
+}
+
+/// Upstream `ModeAuto::do_yaw`.
+///
+/// The leftover is the conversion: degrees to radians, and relative only
+/// when `relative_angle > 0` — zero and negative are absolute.
+#[must_use]
+pub fn auto_do_yaw(view: &AutoDoYawView) -> AutoDoYaw {
+    AutoDoYaw {
+        angle_rad: view.angle_deg.to_radians(),
+        turn_rate_rads: view.turn_rate_dps.to_radians(),
+        direction: FixedYawDirection::from_sign(view.direction),
+        relative: view.relative_angle > 0,
+    }
+}
+
+/// Vehicle view [`auto_do_roi`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoDoRoiView {
+    /// `cmd.content.location.initialised()`.
+    pub location_initialised: bool,
+    /// `camera_mount.has_pan_control()`.
+    pub mount_has_pan_control: bool,
+}
+
+impl AutoDoRoiView {
+    /// A real location, no pan — the airframe must point.
+    #[must_use]
+    pub const fn point_airframe() -> Self {
+        Self {
+            location_initialised: true,
+            mount_has_pan_control: false,
+        }
+    }
+
+    /// Zeros: cancel the ROI.
+    #[must_use]
+    pub const fn cancel() -> Self {
+        Self {
+            location_initialised: false,
+            mount_has_pan_control: false,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_roi` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoDoRoi {
+    /// What `auto_yaw.set_roi` decided.
+    pub action: RoiAction,
+}
+
+/// Upstream `ModeAuto::do_roi`.
+///
+/// The body is one call to `auto_yaw.set_roi`. The leftover is
+/// [`roi_action`].
+#[must_use]
+pub fn auto_do_roi(view: &AutoDoRoiView) -> AutoDoRoi {
+    AutoDoRoi {
+        action: roi_action(view.location_initialised, view.mount_has_pan_control),
+    }
+}
+
+/// Vehicle view [`auto_nav_delay`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoNavDelayView {
+    /// `cmd.content.nav_delay.seconds`.
+    pub seconds: i32,
+    /// `AP_RTC_ENABLED`.
+    pub rtc_enabled: bool,
+    /// `AP::rtc().get_time_utc(...)` when seconds is not positive.
+    pub utc_delay_ms: u32,
+}
+
+impl AutoNavDelayView {
+    /// Relative 5 s delay.
+    #[must_use]
+    pub const fn relative_5s() -> Self {
+        Self {
+            seconds: 5,
+            rtc_enabled: true,
+            utc_delay_ms: 0,
+        }
+    }
+
+    /// Absolute UTC delay with RTC compiled in.
+    #[must_use]
+    pub const fn utc() -> Self {
+        Self {
+            seconds: 0,
+            rtc_enabled: true,
+            utc_delay_ms: 12_000,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_nav_delay` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoNavDelay {
+    /// Relative (`seconds > 0`) rather than UTC.
+    pub relative: bool,
+    /// `nav_delay_time_max_ms` after the leftover.
+    pub max_ms: u32,
+}
+
+/// Upstream `ModeAuto::do_nav_delay`.
+///
+/// A positive seconds field is a relative delay. Zero or negative is a
+/// UTC time: RTC converts it, or the leftover stores 0 when RTC is off.
+#[must_use]
+pub const fn auto_nav_delay(view: &AutoNavDelayView) -> AutoNavDelay {
+    if view.seconds > 0 {
+        return AutoNavDelay {
+            relative: true,
+            max_ms: (view.seconds as u32).saturating_mul(1000),
+        };
+    }
+    AutoNavDelay {
+        relative: false,
+        max_ms: if view.rtc_enabled {
+            view.utc_delay_ms
+        } else {
+            0
+        },
+    }
+}
+
+/// Vehicle view [`auto_wait_delay`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWaitDelayView {
+    /// `cmd.content.delay.seconds`.
+    pub seconds: f32,
+}
+
+impl AutoWaitDelayView {
+    /// 3 s condition delay.
+    #[must_use]
+    pub const fn three_seconds() -> Self {
+        Self { seconds: 3.0 }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_wait_delay` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWaitDelay {
+    /// `condition_value` after the leftover — seconds × 1000.
+    pub condition_value: f32,
+}
+
+/// Upstream `ModeAuto::do_wait_delay`.
+///
+/// `condition_start` is `millis()`. The leftover stores seconds as
+/// milliseconds on `condition_value`.
+#[must_use]
+pub const fn auto_wait_delay(view: &AutoWaitDelayView) -> AutoWaitDelay {
+    AutoWaitDelay {
+        condition_value: view.seconds * 1000.0,
+    }
+}
+
+/// Vehicle view [`auto_within_distance`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWithinDistanceView {
+    /// `cmd.content.distance.meters`.
+    pub meters: f32,
+}
+
+impl AutoWithinDistanceView {
+    /// 10 m gate.
+    #[must_use]
+    pub const fn ten_metres() -> Self {
+        Self { meters: 10.0 }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_within_distance` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoWithinDistance {
+    /// `condition_value` after the leftover.
+    pub condition_value: f32,
+}
+
+/// Upstream `ModeAuto::do_within_distance`.
+///
+/// The leftover is one assignment: `condition_value = meters`.
+#[must_use]
+pub const fn auto_within_distance(view: &AutoWithinDistanceView) -> AutoWithinDistance {
+    AutoWithinDistance {
+        condition_value: view.meters,
+    }
+}
+
+/// Which speed axis `do_change_speed` wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSpeedAxis {
+    /// `target_ms` was not positive; nothing ran.
+    None,
+    /// `SPEED_TYPE_CLIMB_SPEED`.
+    Climb,
+    /// `SPEED_TYPE_DESCENT_SPEED`.
+    Descent,
+    /// `SPEED_TYPE_AIRSPEED` or `SPEED_TYPE_GROUNDSPEED`.
+    Horizontal,
+}
+
+/// Vehicle view [`auto_change_speed`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoChangeSpeedView {
+    /// `cmd.content.speed.target_ms`.
+    pub target_ms: f32,
+    /// `cmd.content.speed.speed_type`.
+    pub speed_type: u8,
+}
+
+impl AutoChangeSpeedView {
+    /// 8 m/s groundspeed.
+    #[must_use]
+    pub const fn groundspeed() -> Self {
+        Self {
+            target_ms: 8.0,
+            speed_type: SPEED_TYPE_GROUNDSPEED,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_change_speed` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoChangeSpeed {
+    /// Which wpnav setter ran.
+    pub axis: AutoSpeedAxis,
+    /// Value written to the override and the setter. Zero when unused.
+    pub target_ms: f32,
+}
+
+/// Upstream `ModeAuto::do_change_speed`.
+///
+/// A non-positive target is a no-op. Climb and descent write the D
+/// setters; airspeed and groundspeed share the NE setter.
+#[must_use]
+pub const fn auto_change_speed(view: &AutoChangeSpeedView) -> AutoChangeSpeed {
+    if view.target_ms <= 0.0 {
+        return AutoChangeSpeed {
+            axis: AutoSpeedAxis::None,
+            target_ms: 0.0,
+        };
+    }
+    let axis = match view.speed_type {
+        SPEED_TYPE_CLIMB_SPEED => AutoSpeedAxis::Climb,
+        SPEED_TYPE_DESCENT_SPEED => AutoSpeedAxis::Descent,
+        SPEED_TYPE_AIRSPEED | SPEED_TYPE_GROUNDSPEED => AutoSpeedAxis::Horizontal,
+        _ => AutoSpeedAxis::None,
+    };
+    AutoChangeSpeed {
+        axis,
+        target_ms: if matches!(axis, AutoSpeedAxis::None) {
+            0.0
+        } else {
+            view.target_ms
+        },
+    }
+}
+
+/// Which home `do_set_home` asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSetHomeKind {
+    /// `p1 == 1` or the location was uninitialised: current location.
+    Current,
+    /// The command's location.
+    Command,
+}
+
+/// Vehicle view [`auto_set_home`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSetHomeView {
+    /// `cmd.p1`.
+    pub p1: u16,
+    /// `cmd.content.location.initialised()`.
+    pub location_initialised: bool,
+}
+
+impl AutoSetHomeView {
+    /// `p1 == 1`: current location regardless of the lat/lng.
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            p1: 1,
+            location_initialised: true,
+        }
+    }
+
+    /// A real location, `p1 == 0`.
+    #[must_use]
+    pub const fn command() -> Self {
+        Self {
+            p1: 0,
+            location_initialised: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_set_home` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSetHome {
+    /// Which setter ran. Failures are ignored either way.
+    pub kind: AutoSetHomeKind,
+}
+
+/// Upstream `ModeAuto::do_set_home`.
+///
+/// `p1 == 1` or an uninitialised location uses current. Anything else
+/// uses the command location. Both setters ignore failure.
+#[must_use]
+pub const fn auto_set_home(view: &AutoSetHomeView) -> AutoSetHome {
+    let kind = if view.p1 == 1 || !view.location_initialised {
+        AutoSetHomeKind::Current
+    } else {
+        AutoSetHomeKind::Command
+    };
+    AutoSetHome { kind }
+}
+
+/// `PayloadPlace::State` after `do_payload_place`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadPlaceState {
+    /// Fly to the command location first.
+    FlyToLocation,
+    /// `start_descent()` — no location was provided.
+    DescentStart,
+    /// Descending.
+    Descent,
+    /// Release.
+    Release,
+    /// Releasing.
+    Releasing,
+    /// Delay after release.
+    Delay,
+    /// Ascent start.
+    AscentStart,
+    /// Ascent.
+    Ascent,
+    /// Done — [`auto_verify_payload_place`] returns true.
+    Done,
+}
+
+/// Vehicle view [`auto_payload_place`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoPayloadPlaceView {
+    /// `lat != 0 || lng != 0 || alt != 0`.
+    pub location_provided: bool,
+    /// `get_loc_from_cmd` succeeded.
+    pub dest_ok: bool,
+    /// Arguments to [`auto_wp_start`] on the fly-to arm.
+    pub wp: AutoWpStartView,
+    /// `cmd.p1` — centimetres, converted to metres.
+    pub p1_cm: u16,
+}
+
+impl AutoPayloadPlaceView {
+    /// No location: start descent at the current point.
+    #[must_use]
+    pub const fn descent_here() -> Self {
+        Self {
+            location_provided: false,
+            dest_ok: true,
+            wp: AutoWpStartView::idle_loiter(),
+            p1_cm: 500,
+        }
+    }
+
+    /// Fly to a location, dest and wp_start both accept.
+    #[must_use]
+    pub const fn fly_to() -> Self {
+        Self {
+            location_provided: true,
+            dest_ok: true,
+            wp: AutoWpStartView::idle_loiter(),
+            p1_cm: 500,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::do_payload_place` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoPayloadPlace {
+    /// The leftover ran past the dest/wp gate (or never needed it).
+    pub ok: bool,
+    /// `failsafe_terrain_on_event` ran.
+    pub terrain_failsafe: bool,
+    /// `payload_place.state` after the leftover. `None` on refuse.
+    pub state: Option<PayloadPlaceState>,
+    /// `wp_start` leftover on the fly-to arm.
+    pub wp: AutoWpStart,
+    /// `payload_place.descent_max_m`. Zero on refuse.
+    pub descent_max_m: f32,
+    /// `_mode` after the leftover. `None` on refuse.
+    pub submode: Option<AutoSubMode>,
+}
+
+impl AutoPayloadPlace {
+    #[must_use]
+    const fn refused(wp: AutoWpStart) -> Self {
+        Self {
+            ok: false,
+            terrain_failsafe: true,
+            state: None,
+            wp,
+            descent_max_m: 0.0,
+            submode: None,
+        }
+    }
+}
+
+/// Upstream `ModeAuto::do_payload_place`.
+///
+/// A non-zero lat/lng/alt flies there via [`auto_wp_start`]. Either
+/// refuse is terrain failsafe and returns before `descent_max` or
+/// `_mode`. No location calls `start_descent`. Success always writes
+/// `descent_max_m = p1 * 0.01` and parks in `NAV_PAYLOAD_PLACE`.
+#[must_use]
+pub const fn auto_payload_place(view: &AutoPayloadPlaceView) -> AutoPayloadPlace {
+    if view.location_provided {
+        if !view.dest_ok {
+            return AutoPayloadPlace::refused(wp_start_not_called());
+        }
+        let wp = auto_wp_start(&view.wp);
+        if !wp.ok {
+            return AutoPayloadPlace::refused(wp);
+        }
+        return AutoPayloadPlace {
+            ok: true,
+            terrain_failsafe: false,
+            state: Some(PayloadPlaceState::FlyToLocation),
+            wp,
+            descent_max_m: view.p1_cm as f32 * 0.01,
+            submode: Some(AutoSubMode::NavPayloadPlace),
+        };
+    }
+
+    AutoPayloadPlace {
+        ok: true,
+        terrain_failsafe: false,
+        state: Some(PayloadPlaceState::DescentStart),
+        wp: wp_start_not_called(),
+        descent_max_m: view.p1_cm as f32 * 0.01,
+        submode: Some(AutoSubMode::NavPayloadPlace),
+    }
+}
+
+/// Which `verify_*` `ModeAuto::verify_command` selected.
+///
+/// The leftover is the *dispatch*, not the body — same shape as
+/// [`AutoStartHandler`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoVerifyHandler {
+    /// Not in AUTO: the switch does not run.
+    NotInAuto,
+    /// `verify_takeoff`.
+    VerifyTakeoff,
+    /// `verify_nav_wp`.
+    VerifyNavWp,
+    /// `verify_land`.
+    VerifyLand,
+    /// `payload_place.verify`.
+    VerifyPayloadPlace,
+    /// `verify_loiter_unlimited`.
+    VerifyLoiterUnlimited,
+    /// `verify_circle`.
+    VerifyCircle,
+    /// `verify_loiter_time`.
+    VerifyLoiterTime,
+    /// `verify_loiter_to_alt` — early-return arm.
+    VerifyLoiterToAlt,
+    /// `verify_RTL`.
+    VerifyRtl,
+    /// `verify_spline_wp`.
+    VerifySplineWp,
+    /// `verify_nav_guided_enable`.
+    VerifyNavGuidedEnable,
+    /// `verify_nav_delay`.
+    VerifyNavDelay,
+    /// `verify_nav_script_time`.
+    VerifyNavScriptTime,
+    /// `verify_nav_attitude_time`.
+    VerifyNavAttitudeTime,
+    /// `verify_wait_delay`.
+    VerifyWaitDelay,
+    /// `verify_within_distance`.
+    VerifyWithinDistance,
+    /// `verify_yaw`.
+    VerifyYaw,
+    /// DO commands — complete immediately.
+    DoAlwaysComplete,
+    /// `default` — `"Skipping invalid cmd"` and complete.
+    SkipInvalid,
+}
+
+/// Leftover of one `ModeAuto::verify_command` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyCommand {
+    /// The flight mode was AUTO, so the switch ran.
+    pub ran: bool,
+    /// Which `verify_*` the switch selected.
+    pub handler: AutoVerifyHandler,
+    /// Complete without calling a body (DO_* / unknown).
+    pub immediate_complete: bool,
+    /// `NAV_LOITER_TO_ALT` returns the body leftover and skips the
+    /// reached message.
+    pub early_return: bool,
+    /// `"Skipping invalid cmd #%i"`.
+    pub skip_invalid_text: bool,
+}
+
+impl AutoVerifyCommand {
+    #[must_use]
+    const fn not_in_auto() -> Self {
+        Self {
+            ran: false,
+            handler: AutoVerifyHandler::NotInAuto,
+            immediate_complete: false,
+            early_return: false,
+            skip_invalid_text: false,
+        }
+    }
+
+    #[must_use]
+    const fn body(handler: AutoVerifyHandler) -> Self {
+        Self {
+            ran: true,
+            handler,
+            immediate_complete: false,
+            early_return: false,
+            skip_invalid_text: false,
+        }
+    }
+
+    #[must_use]
+    const fn immediate(handler: AutoVerifyHandler, skip_invalid_text: bool) -> Self {
+        Self {
+            ran: true,
+            handler,
+            immediate_complete: true,
+            early_return: false,
+            skip_invalid_text,
+        }
+    }
+
+    #[must_use]
+    const fn gated(on: bool, handler: AutoVerifyHandler) -> Self {
+        if on {
+            Self::body(handler)
+        } else {
+            Self::immediate(AutoVerifyHandler::SkipInvalid, true)
+        }
+    }
+}
+
+/// Upstream `ModeAuto::verify_command`.
+///
+/// The leftover is the *switch*. Not in AUTO returns false without
+/// touching a body. Recognised ids pick a `verify_*`. DO commands and
+/// an unknown id complete immediately. `NAV_LOITER_TO_ALT` is the
+/// early-return arm.
+#[must_use]
+pub const fn auto_verify_command(
+    in_auto: bool,
+    cmd_id: u16,
+    features: AutoStartFeatures,
+) -> AutoVerifyCommand {
+    if !in_auto {
+        return AutoVerifyCommand::not_in_auto();
+    }
+    match cmd_id {
+        MAV_CMD_NAV_TAKEOFF | MAV_CMD_NAV_VTOL_TAKEOFF => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyTakeoff)
+        }
+        MAV_CMD_NAV_WAYPOINT | MAV_CMD_NAV_ARC_WAYPOINT => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyNavWp)
+        }
+        MAV_CMD_NAV_LAND | MAV_CMD_NAV_VTOL_LAND => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyLand)
+        }
+        MAV_CMD_NAV_PAYLOAD_PLACE => {
+            AutoVerifyCommand::gated(features.payload_place, AutoVerifyHandler::VerifyPayloadPlace)
+        }
+        MAV_CMD_NAV_LOITER_UNLIM => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyLoiterUnlimited)
+        }
+        MAV_CMD_NAV_LOITER_TURNS => AutoVerifyCommand::body(AutoVerifyHandler::VerifyCircle),
+        MAV_CMD_NAV_LOITER_TIME => AutoVerifyCommand::body(AutoVerifyHandler::VerifyLoiterTime),
+        MAV_CMD_NAV_LOITER_TO_ALT => AutoVerifyCommand {
+            ran: true,
+            handler: AutoVerifyHandler::VerifyLoiterToAlt,
+            immediate_complete: false,
+            early_return: true,
+            skip_invalid_text: false,
+        },
+        MAV_CMD_NAV_RETURN_TO_LAUNCH => AutoVerifyCommand::body(AutoVerifyHandler::VerifyRtl),
+        MAV_CMD_NAV_SPLINE_WAYPOINT => AutoVerifyCommand::body(AutoVerifyHandler::VerifySplineWp),
+        MAV_CMD_NAV_GUIDED_ENABLE => {
+            AutoVerifyCommand::gated(features.nav_guided, AutoVerifyHandler::VerifyNavGuidedEnable)
+        }
+        MAV_CMD_NAV_DELAY => AutoVerifyCommand::body(AutoVerifyHandler::VerifyNavDelay),
+        MAV_CMD_NAV_SCRIPT_TIME => {
+            AutoVerifyCommand::gated(features.scripting, AutoVerifyHandler::VerifyNavScriptTime)
+        }
+        MAV_CMD_NAV_ATTITUDE_TIME => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyNavAttitudeTime)
+        }
+        MAV_CMD_CONDITION_DELAY => AutoVerifyCommand::body(AutoVerifyHandler::VerifyWaitDelay),
+        MAV_CMD_CONDITION_DISTANCE => {
+            AutoVerifyCommand::body(AutoVerifyHandler::VerifyWithinDistance)
+        }
+        MAV_CMD_CONDITION_YAW => AutoVerifyCommand::body(AutoVerifyHandler::VerifyYaw),
+        MAV_CMD_DO_CHANGE_SPEED
+        | MAV_CMD_DO_SET_HOME
+        | MAV_CMD_DO_SET_ROI_LOCATION
+        | MAV_CMD_DO_SET_ROI_NONE
+        | MAV_CMD_DO_SET_ROI
+        | MAV_CMD_DO_RETURN_PATH_START
+        | MAV_CMD_DO_LAND_START => {
+            AutoVerifyCommand::immediate(AutoVerifyHandler::DoAlwaysComplete, false)
+        }
+        MAV_CMD_DO_MOUNT_CONTROL => AutoVerifyCommand::gated(
+            features.mount,
+            AutoVerifyHandler::DoAlwaysComplete,
+        )
+        .immediate_if_on(),
+        MAV_CMD_DO_GUIDED_LIMITS => AutoVerifyCommand::gated(
+            features.nav_guided,
+            AutoVerifyHandler::DoAlwaysComplete,
+        )
+        .immediate_if_on(),
+        MAV_CMD_DO_WINCH => {
+            AutoVerifyCommand::gated(features.winch, AutoVerifyHandler::DoAlwaysComplete)
+                .immediate_if_on()
+        }
+        _ => AutoVerifyCommand::immediate(AutoVerifyHandler::SkipInvalid, true),
+    }
+}
+
+impl AutoVerifyCommand {
+    /// Gated DO commands complete immediately when the `#if` is on.
+    #[must_use]
+    const fn immediate_if_on(self) -> Self {
+        if matches!(self.handler, AutoVerifyHandler::DoAlwaysComplete) {
+            Self {
+                immediate_complete: true,
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+}
+
+/// `ModeAuto::state` for [`auto_verify_land`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoLandState {
+    /// Flying to the land location.
+    FlyToLocation,
+    /// Descending.
+    Descending,
+}
+
+/// Vehicle view [`auto_verify_land`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyLandView {
+    /// `state`.
+    pub state: AutoLandState,
+    /// `wp_nav->reached_wp_destination()`.
+    pub reached_wp: bool,
+    /// `copter.ap.land_complete`.
+    pub land_complete: bool,
+    /// `motors->get_spool_state() == GROUND_IDLE`.
+    pub ground_idle: bool,
+    /// `mission.continue_after_land_check_for_takeoff()`.
+    pub continue_after_land: bool,
+    /// `copter.motors->armed()`.
+    pub armed: bool,
+}
+
+impl AutoVerifyLandView {
+    /// Still flying to the land location.
+    #[must_use]
+    pub const fn flying_to() -> Self {
+        Self {
+            state: AutoLandState::FlyToLocation,
+            reached_wp: false,
+            land_complete: false,
+            ground_idle: false,
+            continue_after_land: false,
+            armed: true,
+        }
+    }
+
+    /// Arrived; `land_start` should run.
+    #[must_use]
+    pub const fn arrived() -> Self {
+        let mut view = Self::flying_to();
+        view.reached_wp = true;
+        view
+    }
+
+    /// On the ground, mission should stop and disarm.
+    #[must_use]
+    pub const fn landed() -> Self {
+        Self {
+            state: AutoLandState::Descending,
+            reached_wp: true,
+            land_complete: true,
+            ground_idle: true,
+            continue_after_land: false,
+            armed: true,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_land` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyLand {
+    /// What `verify_land` returned.
+    pub complete: bool,
+    /// `land_start()` ran (FlyToLocation arrived).
+    pub land_start: bool,
+    /// `state` after the leftover.
+    pub state: AutoLandState,
+    /// `arming.disarm(LANDED)` ran.
+    pub disarm: bool,
+    /// `INTERNAL_ERROR(flow_of_control)`.
+    pub flow_of_control: bool,
+}
+
+/// Upstream `ModeAuto::verify_land`.
+///
+/// FlyToLocation waits for the dest, then `land_start` and Descending.
+/// Descending is complete only when landed and ground-idle; a completed
+/// land that should not continue disarms and reports *not* complete so
+/// the mission stays on NAV_LAND.
+#[must_use]
+pub const fn auto_verify_land(view: &AutoVerifyLandView) -> AutoVerifyLand {
+    match view.state {
+        AutoLandState::FlyToLocation => AutoVerifyLand {
+            complete: false,
+            land_start: view.reached_wp,
+            state: if view.reached_wp {
+                AutoLandState::Descending
+            } else {
+                AutoLandState::FlyToLocation
+            },
+            disarm: false,
+            flow_of_control: false,
+        },
+        AutoLandState::Descending => {
+            let landed = view.land_complete && view.ground_idle;
+            let disarm = landed && !view.continue_after_land && view.armed;
+            AutoVerifyLand {
+                complete: landed && !disarm,
+                land_start: false,
+                state: AutoLandState::Descending,
+                disarm,
+                flow_of_control: false,
+            }
+        }
+    }
+}
+
+/// Vehicle view [`auto_verify_loiter_time`] / [`auto_verify_nav_wp`] /
+/// [`auto_verify_spline_wp`] share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyWpTimerView {
+    /// `wp_nav->reached_wp_destination()`.
+    pub reached_wp: bool,
+    /// `loiter_time == 0` at the top of the call.
+    pub timer_unset: bool,
+    /// Elapsed seconds since `loiter_time` was latched. Zero when unset.
+    pub elapsed_s: u32,
+    /// `loiter_time_max` (seconds).
+    pub loiter_time_max: u16,
+}
+
+impl AutoVerifyWpTimerView {
+    /// Not yet at the dest.
+    #[must_use]
+    pub const fn en_route() -> Self {
+        Self {
+            reached_wp: false,
+            timer_unset: true,
+            elapsed_s: 0,
+            loiter_time_max: 0,
+        }
+    }
+
+    /// Just arrived, no delay.
+    #[must_use]
+    pub const fn arrived_no_delay() -> Self {
+        Self {
+            reached_wp: true,
+            timer_unset: true,
+            elapsed_s: 0,
+            loiter_time_max: 0,
+        }
+    }
+
+    /// Arrived and the delay has run out.
+    #[must_use]
+    pub const fn delay_done(max_s: u16) -> Self {
+        Self {
+            reached_wp: true,
+            timer_unset: false,
+            elapsed_s: max_s as u32,
+            loiter_time_max: max_s,
+        }
+    }
+}
+
+/// Leftover of one `verify_loiter_time` / `verify_nav_wp` /
+/// `verify_spline_wp` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyWpTimer {
+    /// What the leftover returned.
+    pub complete: bool,
+    /// The timer was latched this call.
+    pub timer_started: bool,
+    /// `AP_Notify::events.waypoint_complete = 1` (nav_wp only).
+    pub waypoint_complete_notify: bool,
+    /// `"Reached command #%i"`.
+    pub reached_text: bool,
+}
+
+/// Shared dest-then-timer leftover used by loiter-time, nav-wp, and spline.
+#[must_use]
+const fn verify_wp_timer(
+    view: &AutoVerifyWpTimerView,
+    notify_on_start: bool,
+    notify_on_zero_max: bool,
+) -> AutoVerifyWpTimer {
+    if !view.reached_wp {
+        return AutoVerifyWpTimer {
+            complete: false,
+            timer_started: false,
+            waypoint_complete_notify: false,
+            reached_text: false,
+        };
+    }
+    let timer_started = view.timer_unset;
+    let complete = view.elapsed_s >= view.loiter_time_max as u32;
+    let notify_start = timer_started && notify_on_start && view.loiter_time_max > 0;
+    let notify_done = complete && notify_on_zero_max && view.loiter_time_max == 0;
+    AutoVerifyWpTimer {
+        complete,
+        timer_started,
+        waypoint_complete_notify: notify_start || notify_done,
+        reached_text: complete,
+    }
+}
+
+/// Upstream `ModeAuto::verify_loiter_time`.
+#[must_use]
+pub const fn auto_verify_loiter_time(view: &AutoVerifyWpTimerView) -> AutoVerifyWpTimer {
+    verify_wp_timer(view, false, false)
+}
+
+/// Upstream `ModeAuto::verify_nav_wp`.
+///
+/// Notify on timer start when there is a delay; notify on complete when
+/// there is not.
+#[must_use]
+pub const fn auto_verify_nav_wp(view: &AutoVerifyWpTimerView) -> AutoVerifyWpTimer {
+    verify_wp_timer(view, true, true)
+}
+
+/// Upstream `ModeAuto::verify_spline_wp`.
+#[must_use]
+pub const fn auto_verify_spline_wp(view: &AutoVerifyWpTimerView) -> AutoVerifyWpTimer {
+    verify_wp_timer(view, false, false)
+}
+
+/// Upstream `ModeAuto::verify_loiter_unlimited`. Always false.
+#[must_use]
+pub const fn auto_verify_loiter_unlimited() -> bool {
+    false
+}
+
+/// Upstream `ModeAuto::verify_loiter_to_alt`.
+#[must_use]
+pub const fn auto_verify_loiter_to_alt(reached_xy: bool, reached_alt: bool) -> bool {
+    reached_xy && reached_alt
+}
+
+/// Upstream `ModeAuto::verify_takeoff`.
+#[must_use]
+pub const fn auto_verify_takeoff(complete: bool) -> bool {
+    complete
+}
+
+/// Vehicle view [`auto_verify_rtl`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyRtlView {
+    /// `mode_rtl.state_complete()`.
+    pub state_complete: bool,
+    /// `mode_rtl.state()`.
+    pub state: RtlSubMode,
+    /// `motors->get_spool_state() == GROUND_IDLE`.
+    pub ground_idle: bool,
+}
+
+impl AutoVerifyRtlView {
+    /// Landed in FINAL_DESCENT, ground idle.
+    #[must_use]
+    pub const fn landed() -> Self {
+        Self {
+            state_complete: true,
+            state: RtlSubMode::FinalDescent,
+            ground_idle: true,
+        }
+    }
+}
+
+/// Upstream `ModeAuto::verify_RTL`.
+///
+/// Complete only when RTL is done, the submode is FINAL_DESCENT or LAND,
+/// and the motors are ground-idle.
+#[must_use]
+pub const fn auto_verify_rtl(view: &AutoVerifyRtlView) -> bool {
+    view.state_complete
+        && matches!(view.state, RtlSubMode::FinalDescent | RtlSubMode::Land)
+        && view.ground_idle
+}
+
+/// Vehicle view [`auto_verify_wait_delay`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoVerifyWaitDelayView {
+    /// `millis() - condition_start`.
+    pub elapsed_ms: u32,
+    /// `condition_value` (milliseconds, may be negative).
+    pub condition_value: i32,
+}
+
+impl AutoVerifyWaitDelayView {
+    /// Still waiting.
+    #[must_use]
+    pub const fn waiting() -> Self {
+        Self {
+            elapsed_ms: 500,
+            condition_value: 3000,
+        }
+    }
+
+    /// Delay has run out.
+    #[must_use]
+    pub const fn done() -> Self {
+        Self {
+            elapsed_ms: 3001,
+            condition_value: 3000,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_wait_delay` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyWaitDelay {
+    /// What `verify_wait_delay` returned.
+    pub complete: bool,
+    /// `condition_value` was cleared.
+    pub cleared: bool,
+}
+
+/// Upstream `ModeAuto::verify_wait_delay`.
+///
+/// Complete when elapsed is *greater than* `MAX(condition_value, 0)`.
+/// Success clears `condition_value`.
+#[must_use]
+pub const fn auto_verify_wait_delay(view: &AutoVerifyWaitDelayView) -> AutoVerifyWaitDelay {
+    let gate = if view.condition_value > 0 {
+        view.condition_value as u32
+    } else {
+        0
+    };
+    let complete = view.elapsed_ms > gate;
+    AutoVerifyWaitDelay {
+        complete,
+        cleared: complete,
+    }
+}
+
+/// Vehicle view [`auto_verify_within_distance`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoVerifyWithinDistanceView {
+    /// `wp_distance_m()`.
+    pub wp_distance_m: f32,
+    /// `condition_value` (metres, may be negative).
+    pub condition_value: f32,
+}
+
+impl AutoVerifyWithinDistanceView {
+    /// Still outside the gate.
+    #[must_use]
+    pub const fn outside() -> Self {
+        Self {
+            wp_distance_m: 12.0,
+            condition_value: 10.0,
+        }
+    }
+
+    /// Inside the gate.
+    #[must_use]
+    pub const fn inside() -> Self {
+        Self {
+            wp_distance_m: 9.0,
+            condition_value: 10.0,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_within_distance` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyWithinDistance {
+    /// What `verify_within_distance` returned.
+    pub complete: bool,
+    /// `condition_value` was cleared.
+    pub cleared: bool,
+}
+
+/// Upstream `ModeAuto::verify_within_distance`.
+///
+/// Complete when `wp_distance_m < MAX(condition_value, 0)`. Success
+/// clears `condition_value`.
+#[must_use]
+pub const fn auto_verify_within_distance(
+    view: &AutoVerifyWithinDistanceView,
+) -> AutoVerifyWithinDistance {
+    let gate = if view.condition_value > 0.0 {
+        view.condition_value
+    } else {
+        0.0
+    };
+    let complete = view.wp_distance_m < gate;
+    AutoVerifyWithinDistance {
+        complete,
+        cleared: complete,
+    }
+}
+
+/// Vehicle view [`auto_verify_yaw`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoVerifyYawView {
+    /// `auto_yaw.mode()` at the top of the call — leftover forces FIXED.
+    pub mode: YawMode,
+    /// `_fixed_yaw_offset_rad`.
+    pub fixed_yaw_offset_rad: f32,
+    /// Target yaw, rad.
+    pub yaw_angle_rad: f32,
+    /// Measured yaw, rad.
+    pub measured_yaw_rad: f32,
+}
+
+impl AutoVerifyYawView {
+    /// Already in FIXED and on the heading.
+    #[must_use]
+    pub const fn arrived() -> Self {
+        Self {
+            mode: YawMode::Hold,
+            fixed_yaw_offset_rad: 0.0,
+            yaw_angle_rad: 0.5,
+            measured_yaw_rad: 0.5,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_yaw` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyYaw {
+    /// `auto_yaw.set_mode(FIXED)` always ran.
+    pub set_fixed: bool,
+    /// `reached_fixed_yaw_target` after that set.
+    pub complete: bool,
+}
+
+/// Upstream `ModeAuto::verify_yaw`.
+///
+/// Forces FIXED first — wpnav often steals the axis — then asks
+/// whether the slew has arrived.
+#[must_use]
+pub fn auto_verify_yaw(view: &AutoVerifyYawView) -> AutoVerifyYaw {
+    AutoVerifyYaw {
+        set_fixed: true,
+        complete: reached_fixed_yaw_target(
+            YawMode::Fixed,
+            view.fixed_yaw_offset_rad,
+            view.yaw_angle_rad,
+            view.measured_yaw_rad,
+        ),
+    }
+}
+
+/// Vehicle view [`auto_verify_circle`] reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoVerifyCircleView {
+    /// `_mode` at the top of the call.
+    pub submode: AutoSubMode,
+    /// `wp_nav->reached_wp_destination()`.
+    pub reached_wp: bool,
+    /// `auto_yaw.mode() == ROI` — used if `circle_start` runs.
+    pub auto_yaw_is_roi: bool,
+    /// `cmd.p1` for [`loiter_turns`].
+    pub p1: u16,
+    /// Type-specific bit 1 — fractional turns.
+    pub fractional_turns: bool,
+    /// `fabsf(circle_nav->get_angle_total_rad() / M_2PI)`.
+    pub num_circles: f32,
+    /// `circle_last_num_complete` at the top of the call.
+    pub last_num_complete: f32,
+}
+
+impl AutoVerifyCircleView {
+    /// Still flying to the edge.
+    #[must_use]
+    pub const fn moving_to_edge() -> Self {
+        Self {
+            submode: AutoSubMode::CircleMoveToEdge,
+            reached_wp: false,
+            auto_yaw_is_roi: false,
+            p1: 0x0200,
+            fractional_turns: false,
+            num_circles: 0.0,
+            last_num_complete: -1.0,
+        }
+    }
+
+    /// Circling, one of two turns done.
+    #[must_use]
+    pub const fn circling() -> Self {
+        Self {
+            submode: AutoSubMode::Circle,
+            reached_wp: true,
+            auto_yaw_is_roi: false,
+            p1: 0x0002,
+            fractional_turns: false,
+            num_circles: 1.0,
+            last_num_complete: 0.0,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_circle` call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutoVerifyCircle {
+    /// What `verify_circle` returned.
+    pub complete: bool,
+    /// `circle_start()` ran (edge arrived).
+    pub circle_start: bool,
+    /// Yaw leftover when `circle_start` ran.
+    pub yaw: AutoCircleYaw,
+    /// `_mode` after the leftover.
+    pub submode: AutoSubMode,
+    /// `"Mission: starting circle %u/%u"` ran.
+    pub starting_circle_text: bool,
+    /// `circle_last_num_complete` after the leftover.
+    pub last_num_complete: f32,
+}
+
+/// Truncate toward zero the way C++ `int(float)` does.
+#[must_use]
+const fn int_trunc(v: f32) -> i32 {
+    v as i32
+}
+
+/// Upstream `ModeAuto::verify_circle`.
+///
+/// `CIRCLE_MOVE_TO_EDGE` waits for the dest, then `circle_start`, and
+/// never completes on that tick. Once circling, complete is
+/// `num_circles >= turns`.
+#[must_use]
+pub const fn auto_verify_circle(view: &AutoVerifyCircleView) -> AutoVerifyCircle {
+    if matches!(view.submode, AutoSubMode::CircleMoveToEdge) {
+        let start = view.reached_wp;
+        return AutoVerifyCircle {
+            complete: false,
+            circle_start: start,
+            yaw: if start {
+                circle_start_yaw(view.auto_yaw_is_roi)
+            } else {
+                AutoCircleYaw::Unchanged
+            },
+            submode: if start {
+                AutoSubMode::Circle
+            } else {
+                AutoSubMode::CircleMoveToEdge
+            },
+            starting_circle_text: false,
+            last_num_complete: view.last_num_complete,
+        };
+    }
+
+    let turns = loiter_turns(view.p1, view.fractional_turns);
+    let starting_circle_text =
+        int_trunc(view.num_circles) != int_trunc(view.last_num_complete);
+    AutoVerifyCircle {
+        complete: view.num_circles >= turns,
+        circle_start: false,
+        yaw: AutoCircleYaw::Unchanged,
+        submode: view.submode,
+        starting_circle_text,
+        last_num_complete: if starting_circle_text {
+            view.num_circles
+        } else {
+            view.last_num_complete
+        },
+    }
+}
+
+/// Vehicle view [`auto_verify_nav_delay`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyNavDelayView {
+    /// `millis() - nav_delay_time_start_ms`.
+    pub elapsed_ms: u32,
+    /// `nav_delay_time_max_ms`.
+    pub max_ms: u32,
+}
+
+impl AutoVerifyNavDelayView {
+    /// Still delaying.
+    #[must_use]
+    pub const fn waiting() -> Self {
+        Self {
+            elapsed_ms: 1000,
+            max_ms: 5000,
+        }
+    }
+
+    /// Delay has run out.
+    #[must_use]
+    pub const fn done() -> Self {
+        Self {
+            elapsed_ms: 5001,
+            max_ms: 5000,
+        }
+    }
+}
+
+/// Leftover of one `ModeAuto::verify_nav_delay` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyNavDelay {
+    /// What `verify_nav_delay` returned.
+    pub complete: bool,
+    /// `nav_delay_time_max_ms` was cleared.
+    pub cleared: bool,
+}
+
+/// Upstream `ModeAuto::verify_nav_delay`.
+///
+/// Complete when elapsed is *greater than* max. Success clears max.
+#[must_use]
+pub const fn auto_verify_nav_delay(view: &AutoVerifyNavDelayView) -> AutoVerifyNavDelay {
+    let complete = view.elapsed_ms > view.max_ms;
+    AutoVerifyNavDelay {
+        complete,
+        cleared: complete,
+    }
+}
+
+/// Vehicle view [`auto_verify_nav_guided_enable`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyNavGuidedView {
+    /// `cmd.p1`.
+    pub p1: u16,
+    /// `mode_guided.limit_check()`.
+    pub limit_check: bool,
+}
+
+/// Upstream `ModeAuto::verify_nav_guided_enable`.
+///
+/// `p1 == 0` is an immediate complete (disable). Otherwise the guided
+/// limit check is the leftover.
+#[must_use]
+pub const fn auto_verify_nav_guided_enable(view: &AutoVerifyNavGuidedView) -> bool {
+    view.p1 == 0 || view.limit_check
+}
+
+/// Vehicle view [`auto_verify_nav_script_time`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoVerifyNavScriptTimeView {
+    /// `nav_scripting.done`.
+    pub done: bool,
+    /// `nav_scripting.timeout_s`.
+    pub timeout_s: u16,
+    /// `millis() - nav_scripting.start_ms`.
+    pub elapsed_ms: u32,
+}
+
+/// Upstream `ModeAuto::verify_nav_script_time`.
+#[must_use]
+pub const fn auto_verify_nav_script_time(view: &AutoVerifyNavScriptTimeView) -> bool {
+    if view.done {
+        return true;
+    }
+    view.timeout_s > 0 && view.elapsed_ms > (view.timeout_s as u32).saturating_mul(1000)
+}
+
+/// Upstream `ModeAuto::verify_nav_attitude_time`.
+#[must_use]
+pub const fn auto_verify_nav_attitude_time(elapsed_ms: u32, time_sec: u16) -> bool {
+    elapsed_ms > (time_sec as u32).saturating_mul(1000)
+}
+
+/// Upstream `PayloadPlace::verify`.
+#[must_use]
+pub const fn auto_verify_payload_place(state: PayloadPlaceState) -> bool {
+    matches!(state, PayloadPlaceState::Done)
 }
