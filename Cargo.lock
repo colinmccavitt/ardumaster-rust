@@ -148,6 +148,7 @@ dependencies = [
  "ap-quadplane",
  "ap-scheduler",
  "ap-sim",
+ "ap-wpnav",
 ]
 
 [[package]]
