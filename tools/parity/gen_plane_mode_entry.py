@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 import plane_link  # noqa: E402
 
-ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
+ROOT = Path("/srv/ardumaster/ports/ardumaster-rust")
 OUT = ROOT / "fixtures/plane_mode_entry.csv"
 BUILD = Path("/tmp/plane_entry_parity/harness")
 

@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import parity_build  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/param_header.csv")
-CONSTS = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/param_format.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/param_header.csv")
+CONSTS = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/param_format.csv")
 
 KEYS = [0, 1, 2, 127, 128, 255, 256, 257, 383, 511]
 TYPES = [0, 1, 2, 3, 4, 5, 6, 0x1F]

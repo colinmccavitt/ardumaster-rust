@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 DUMP = Path("/tmp/paramdump.txt")
-OUT_DIR = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures")
+OUT_DIR = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures")
 
 if not DUMP.exists():
     sys.exit("%s missing -- run tools/sitl_diff/run_param_dump.py first" % DUMP)

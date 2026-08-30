@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import parity_build  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/servo_pwm.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/servo_pwm.csv")
 
 # (servo_min, servo_trim, servo_max)
 CONFIGS = [

@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 SRC = Path("/srv/ardumaster/upstream/plane-4.7.0/libraries/SRV_Channel/SRV_Channel.h")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-servo/src/function.rs")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-servo/src/function.rs")
 
 text = SRC.read_text()
 start = text.index("typedef enum")

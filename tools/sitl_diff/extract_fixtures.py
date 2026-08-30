@@ -93,7 +93,7 @@ def extract(log_path: Path, out_dir: Path, name: str) -> int:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log", required=True)
-    ap.add_argument("--out", default="/srv/ardumaster/ports/plane-fw-rust/fixtures")
+    ap.add_argument("--out", default="/srv/ardumaster/ports/ardumaster-rust/fixtures")
     ap.add_argument("--only", help="extract just one fixture by name")
     args = ap.parse_args()
 

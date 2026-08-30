@@ -19,14 +19,14 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/srv/ardumaster/ports/plane-fw-rust/tools/sitl_diff")
+sys.path.insert(0, "/srv/ardumaster/ports/ardumaster-rust/tools/sitl_diff")
 from extract_fixtures import read_series  # noqa: E402
 
 from pymavlink import mavutil  # noqa: E402
 
 LOG = Path("/srv/ardumaster/upstream/plane-4.7.0/logs/00000002.BIN")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/roll_replay.csv")
-PARAMS = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/roll_replay_params.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/roll_replay.csv")
+PARAMS = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/roll_replay_params.csv")
 
 RCTI = ["ae", "sc", "di", "gm", "gy", "as", "e2t", "dt", "ig"]
 RCTO = ["out", "tgt", "act", "P", "I", "D", "F", "DF"]

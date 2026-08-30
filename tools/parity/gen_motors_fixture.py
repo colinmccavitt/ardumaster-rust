@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 import vehicle_link  # noqa: E402
 
-ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
+ROOT = Path("/srv/ardumaster/ports/ardumaster-rust")
 OUT = ROOT / "fixtures/motors_parity.csv"
 FRAMES_OUT = ROOT / "fixtures/motors_frames.csv"
 SPOOL_OUT = ROOT / "fixtures/spool_parity.csv"

@@ -16,13 +16,13 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/srv/ardumaster/ports/plane-fw-rust/tools/sitl_diff")
+sys.path.insert(0, "/srv/ardumaster/ports/ardumaster-rust/tools/sitl_diff")
 from extract_fixtures import read_series  # noqa: E402
 
 from pymavlink import mavutil  # noqa: E402
 
 LOG = Path("/srv/ardumaster/upstream/plane-4.7.0/logs/00000002.BIN")
-OUT_DIR = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures")
+OUT_DIR = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures")
 
 STREAMS = {
     "vslice_l1": {

@@ -16,7 +16,7 @@ import struct
 from pathlib import Path
 
 SRC = Path("/srv/ardumaster/upstream/plane-4.7.0/libraries/AP_Declination/tables.cpp")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-declination/src/tables.rs")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-declination/src/tables.rs")
 
 text = SRC.read_text()
 

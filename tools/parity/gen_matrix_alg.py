@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 SRC = Path("/srv/ardumaster/upstream/plane-4.7.0/libraries/AP_Math/matrix_alg.cpp")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-math/src/matrix_alg_gen.rs")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-math/src/matrix_alg_gen.rs")
 
 
 def body_between(text, start_marker, end_marker):

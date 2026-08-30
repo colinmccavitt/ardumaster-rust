@@ -1,15 +1,14 @@
-# plane-fw-rust
+# ardumaster-rust
 
-Rust port of the ArduPlane **fixed-wing** flight stack, from ArduPilot `Plane-4.7.0`.
-
-Quadplane, tailsitter, and tiltrotor are out of scope here — they are deferred to a separate
-effort (`vtol-rust`), not cancelled.
+Rust port of ArduPilot vehicle firmware (Plane, Copter, and QuadPlane/VTOL), from
+ArduPilot `Plane-4.7.0` / matching Copter tag. Tracked as the `fw-rust`, `copter-rust`,
+and `vtol-rust` efforts.
 
 ## Where things are
 
 | | |
 |---|---|
-| This port | `/srv/ardumaster/ports/plane-fw-rust` |
+| This port | `/srv/ardumaster/ports/ardumaster-rust` |
 | Upstream source (pinned) | `/srv/ardumaster/upstream/plane-4.7.0` |
 | Upstream full clone | `/srv/ardumaster/upstream/ardupilot` |
 | Tickets, ADRs, status | `/srv/ardumaster/tracker` |

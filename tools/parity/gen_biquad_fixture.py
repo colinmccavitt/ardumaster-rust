@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 
-ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
+ROOT = Path("/srv/ardumaster/ports/ardumaster-rust")
 OUT = ROOT / "fixtures/biquad_parity.csv"
 PARAMS_OUT = ROOT / "fixtures/biquad_params.csv"
 BUILD = Path("/tmp/biquad_parity/harness")

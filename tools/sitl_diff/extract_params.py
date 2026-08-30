@@ -21,7 +21,7 @@ from pathlib import Path
 from pymavlink import mavutil
 
 LOG = Path("/srv/ardumaster/upstream/plane-4.7.0/logs/00000002.BIN")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/tecs_replay_params.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/tecs_replay_params.csv")
 
 m = mavutil.mavlink_connection(str(LOG))
 params = {}

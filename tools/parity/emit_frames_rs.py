@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-motors/src/frames.rs")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-motors/src/frames.rs")
 blocks = json.loads(Path("/tmp/frames.json").read_text())
 
 TYPE_NUM = {

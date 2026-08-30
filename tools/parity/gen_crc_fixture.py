@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 UP = Path("/srv/ardumaster/upstream/plane-4.7.0/libraries/AP_Math")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures")
 BUILD = Path("/tmp/crc_parity")
 
 HARNESS = r'''

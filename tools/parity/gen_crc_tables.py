@@ -13,8 +13,8 @@ and matches no standard polynomial.
 import json
 from pathlib import Path
 
-FIXT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/crc_tables.json")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-math/src/crc_tables.rs")
+FIXT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/crc_tables.json")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-math/src/crc_tables.rs")
 
 # crc_table (function-local in crc_crc16_ibm) is extracted twice by the two
 # patterns in gen_crc_fixture.py; they are the same table

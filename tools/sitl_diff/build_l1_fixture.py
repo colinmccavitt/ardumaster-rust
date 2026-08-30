@@ -14,14 +14,14 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/srv/ardumaster/ports/plane-fw-rust/tools/sitl_diff")
+sys.path.insert(0, "/srv/ardumaster/ports/ardumaster-rust/tools/sitl_diff")
 from extract_fixtures import read_series  # noqa: E402
 
 from pymavlink import mavutil  # noqa: E402
 
 LOG = Path("/srv/ardumaster/upstream/plane-4.7.0/logs/00000002.BIN")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/l1_replay.csv")
-PARAMS = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/l1_replay_params.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/l1_replay.csv")
+PARAMS = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/l1_replay_params.csv")
 
 L1I = ["us", "ms", "la", "ln", "gx", "gy", "yw", "ys", "pt", "e2",
        "pa", "po", "na", "no", "dm"]

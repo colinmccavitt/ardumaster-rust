@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import parity_build  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/location_geo.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/location_geo.csv")
 
 # lat, lng in 1e-7 degrees
 POINTS = [

@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import parity_build  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/matrix3_rotate.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/matrix3_rotate.csv")
 
 MATRICES = [
     [1, 0, 0, 0, 1, 0, 0, 0, 1],

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 import vehicle_link  # noqa: E402
 
-ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
+ROOT = Path("/srv/ardumaster/ports/ardumaster-rust")
 OUT = ROOT / "fixtures/pos_control_ne.csv"
 BUILD = Path("/tmp/posne_parity/harness")
 

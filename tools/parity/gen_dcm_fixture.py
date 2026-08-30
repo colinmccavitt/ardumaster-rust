@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import parity_build  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/dcm_normalize.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/dcm_normalize.csv")
 
 # Row-major 3x3 matrices, chosen to exercise the correction rather than to look
 # like attitudes: already orthonormal, drifted, uniformly scaled, and skewed by

@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/polygon_parity.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/polygon_parity.csv")
 BUILD = Path("/tmp/poly_parity/harness")
 
 # Only what the polygon path needs. AP_Math.cpp is here for is_equal<>, which

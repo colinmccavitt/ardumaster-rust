@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/matrix_alg_parity.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/matrix_alg_parity.csv")
 BUILD = Path("/tmp/matalg_parity/harness")
 
 OBJECTS = [

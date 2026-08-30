@@ -13,11 +13,11 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/srv/ardumaster/ports/plane-fw-rust/tools/sitl_diff")
+sys.path.insert(0, "/srv/ardumaster/ports/ardumaster-rust/tools/sitl_diff")
 from extract_fixtures import read_series  # noqa: E402
 
 LOG = Path("/srv/ardumaster/upstream/plane-4.7.0/logs/00000002.BIN")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/tecs_replay.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/tecs_replay.csv")
 
 TECI = ["hdem", "easd", "stg", "dbey", "pmin", "thnu", "hafe", "ldf", "ptrm"]
 TECJ = ["vdlpf", "tasd", "tasmn", "tasmx", "tascr", "cosr", "ptchm"]

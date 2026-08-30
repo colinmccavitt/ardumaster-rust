@@ -34,7 +34,7 @@ import re
 from pathlib import Path
 
 UP = Path("/srv/ardumaster/upstream/plane-4.7.0/libraries/AP_Math")
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/crates/ap-math/src/rotations_gen.rs")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/crates/ap-math/src/rotations_gen.rs")
 
 HALF_SQRT_2 = "0.70710678118654752440084436210485"
 

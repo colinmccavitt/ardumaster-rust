@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 
-OUT = Path("/srv/ardumaster/ports/plane-fw-rust/fixtures/vector3_geom_parity.csv")
+OUT = Path("/srv/ardumaster/ports/ardumaster-rust/fixtures/vector3_geom_parity.csv")
 BUILD = Path("/tmp/v3geom_parity/harness")
 
 OBJECTS = [

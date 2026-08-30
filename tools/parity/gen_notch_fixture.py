@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from parity_build import build, run  # noqa: E402
 
-ROOT = Path("/srv/ardumaster/ports/plane-fw-rust")
+ROOT = Path("/srv/ardumaster/ports/ardumaster-rust")
 OUT = ROOT / "fixtures/notch_parity.csv"
 COEFFS_OUT = ROOT / "fixtures/notch_coeffs.csv"
 BUILD = Path("/tmp/notch_parity/harness")
