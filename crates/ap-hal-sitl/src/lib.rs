@@ -25,6 +25,7 @@ pub use copter_harness::{
     MissionPhase, SitlCopterHarness,
 };
 
+pub use quadplane_harness::sitl_quadplane;
 pub use quadplane_harness::{
-    QuadLeftoverMission, QuadMissionPhase, SitlQuadPlaneHarness,
+    leftover_apply_vtol_motors, setup_hover_transition, SitlQuadPlaneHarness,
 };

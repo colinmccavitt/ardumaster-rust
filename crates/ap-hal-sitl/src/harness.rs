@@ -4,12 +4,11 @@ use core::cell::Cell;
 
 use ap_control::{PitchController, RateGains, RollController, YawController, YawGains};
 use ap_hal::time::{Clock, Micros, Millis};
-use ap_pid::PidGains;
-use ap_plane::stabilize_hookup::StabilizeControllers;
 use ap_ins::sitl::{SitlBodyState, SitlImuBackend, SitlInsCluster};
 use ap_ins::SitlInsMotorRuntime;
 use ap_math::matrix3::Matrix3f;
 use ap_math::vector3::Vector3f;
+use ap_pid::PidGains;
 use ap_plane::main_loop::{plane_fast_tasks, run_scheduler_tick, PlaneMainLoop};
 use ap_plane::mode_table::ModeNumber;
 use ap_plane::sitl_airspeed_hookup::{SitlAirspeedHookup, SitlAirspeedTruth};
@@ -17,6 +16,7 @@ use ap_plane::sitl_baro_hookup::{SitlBaroHookup, SitlBaroTruth};
 use ap_plane::sitl_compass_hookup::{SitlCompassHookup, SitlCompassTruth};
 use ap_plane::sitl_gps_hookup::{SitlGpsHookup, SitlGpsTruth};
 use ap_plane::sitl_ins_noise_hookup::SitlInsNoiseHookup;
+use ap_plane::stabilize_hookup::StabilizeControllers;
 use ap_scheduler::scheduler::{Scheduler, Task};
 use ap_sim::sim_plane::{GroundBehavior, SimPlane, Vec3};
 
@@ -113,7 +113,6 @@ impl SitlHarness {
         }
     }
 
-
     /// ArduPlane-4.7.0 AP_Roll/PitchController AC_PID::Defaults plus
     /// RLL/PTCH2SRV_TCONST = 0.5. PlaneMainLoop default-constructs with
     /// zero PID gains (no AP_Param table), so sitl_run must load these
@@ -167,7 +166,10 @@ impl SitlHarness {
         // backend that would be starved at this loop rate.
         let mut cluster = SitlInsCluster::new();
         cluster
-            .register(SitlImuBackend::new(u16::from(SITL_LOOP_HZ), u16::from(SITL_LOOP_HZ)))
+            .register(SitlImuBackend::new(
+                u16::from(SITL_LOOP_HZ),
+                u16::from(SITL_LOOP_HZ),
+            ))
             .expect("SITL IMU register");
         let mut noise = SitlInsNoiseHookup {
             cluster,
@@ -305,7 +307,6 @@ impl SitlHarness {
         // C++ Plane::ground_mode is true when disarmed and not flying; sitl_run is armed.
         plane.stabilize_ctx.ground_mode = !plane.soft_armed;
         plane.stabilize_ctx.airspeed_eas = Some(sim.airspeed);
-
     }
 
     fn read_actuators(plane: &PlaneMainLoop) -> (f32, f32, f32, f32) {
@@ -321,19 +322,32 @@ impl SitlHarness {
         )
     }
 
-    /// One closed-loop tick. Caller must have called [`set_sticks`] first.
+    /// Sensors from sim truth + Plane tick + actuator read, no plant update.
     ///
-    /// Order matches C++ `SitlHarness::step`: synthesize from the CURRENT
-    /// sim state (previous update, or the initial rest state), run the
-    /// vehicle scheduler, then `sim.update` with the new servos.
-    pub fn step(&mut self, plane: &mut PlaneMainLoop, sim: &mut SimPlane, now_ms: u32, dt: f32) {
+    /// SitlQuadPlaneHarness uses this so FW servos can feed SimQuadPlane
+    /// together with leftover VTOL PWM (C++ SitlQuadPlaneHarness recipe).
+    pub fn tick_vehicle(
+        &mut self,
+        plane: &mut PlaneMainLoop,
+        sim: &SimPlane,
+        now_ms: u32,
+    ) -> (f32, f32, f32, f32) {
         Self::publish_sensors(plane, sim, now_ms, self.gyro_bias_rad_s);
 
         let clock = StepClock::from_ms(now_ms);
         let mut scheduler = Scheduler::new(&self.tasks, &[], &mut self.last_run, self.loop_rate_hz);
         let _stats = run_scheduler_tick(plane, &mut scheduler, &clock, 20_000);
 
-        let (aileron, elevator, rudder, throttle) = Self::read_actuators(plane);
+        Self::read_actuators(plane)
+    }
+
+    /// One closed-loop tick. Caller must have called [`set_sticks`] first.
+    ///
+    /// Order matches C++ `SitlHarness::step`: synthesize from the CURRENT
+    /// sim state (previous update, or the initial rest state), run the
+    /// vehicle scheduler, then `sim.update` with the new servos.
+    pub fn step(&mut self, plane: &mut PlaneMainLoop, sim: &mut SimPlane, now_ms: u32, dt: f32) {
+        let (aileron, elevator, rudder, throttle) = self.tick_vehicle(plane, sim, now_ms);
         sim.update(aileron, elevator, rudder, throttle, dt);
     }
 }

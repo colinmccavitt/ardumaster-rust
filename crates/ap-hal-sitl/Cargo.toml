@@ -18,6 +18,7 @@ ap-scheduler = { workspace = true }
 ap-sim = { workspace = true }
 ap-motors = { workspace = true }
 ap-copter = { workspace = true }
+ap-quadplane = { workspace = true }
 
 [lints]
 workspace = true
