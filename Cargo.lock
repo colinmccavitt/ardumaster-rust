@@ -133,6 +133,21 @@ name = "ap-hal"
 version = "0.1.0"
 
 [[package]]
+name = "ap-hal-sitl"
+version = "0.1.0"
+dependencies = [
+ "ap-ahrs",
+ "ap-control",
+ "ap-hal",
+ "ap-ins",
+ "ap-math",
+ "ap-pid",
+ "ap-plane",
+ "ap-scheduler",
+ "ap-sim",
+]
+
+[[package]]
 name = "ap-ins"
 version = "0.1.0"
 dependencies = [

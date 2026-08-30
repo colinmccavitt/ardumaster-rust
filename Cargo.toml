@@ -43,6 +43,7 @@ ap-landing = { path = "crates/ap-landing" }
 ap-logger = { path = "crates/ap-logger" }
 ap-ins = { path = "crates/ap-ins" }
 ap-sim = { path = "crates/ap-sim" }
+ap-hal-sitl = { path = "crates/ap-hal-sitl" }
 ap-scheduler = { path = "crates/ap-scheduler" }
 ap-replay = { path = "crates/ap-replay" }
 ap-tecs = { path = "crates/ap-tecs" }

@@ -1326,6 +1326,16 @@ impl SitlInsCluster {
             accel_total += a;
             self.frontend
                 .receive_backend_imu(backend.gyro_instance, &backend.imu);
+            // Publish-and-reset on the backend copy so the next tick only
+            // carries THIS interval. receive() clones the IMU; without this,
+            // delta_angle_acc grows for the whole run and AHRS re-applies the
+            // lifetime rotation every loop (FW-046 closed-loop tumble).
+            if g > 0 {
+                backend.imu.update_gyro();
+            }
+            if a > 0 {
+                backend.imu.update_accel();
+            }
         }
         self.frontend.begin_update();
         self.frontend.update();

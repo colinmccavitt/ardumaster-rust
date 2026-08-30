@@ -63,6 +63,13 @@ impl SitlGpsHookup {
         self.backend.lag_sec()
     }
 
+    /// C++ SitlHarness GPS is 200 ms rate-limited with no lag buffer.
+    /// Upstream `AP_GPS_SITL` default lag is 0.1 s; sitl_run zeros it so
+    /// DCM `new_gps_fix` lines up with each 5 Hz read the way C++ does.
+    pub fn set_lag_sec(&mut self, lag_sec: f32) {
+        self.backend.set_lag_sec(lag_sec);
+    }
+
     #[must_use]
     pub fn current_fix(&self) -> ap_gps::GpsFixState {
         *self.backend.state()

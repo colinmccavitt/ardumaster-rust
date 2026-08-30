@@ -230,7 +230,16 @@ impl DcmDriftLoop {
         ins: &InertialSensorFrontend,
         motion: DriftMotionInputs,
     ) -> DriftOutcome {
-        if self.ra_deltat < DRIFT_CORRECTION_INTERVAL_S {
+        // Upstream AP_AHRS_DCM::drift_correction / C++ ahrs_dcm.hpp:
+        // with GPS, wait for a *new* fix (`last_fix_time_ms == _ra_sum_start`
+        // → return) and do not apply accel-only tilt correction in the gaps.
+        // Without GPS, wait 0.2 s and fall back to airspeed. Firing at 0.2 s
+        // with velocity_delta=None treats body-X thrust as ~45° of pitch error.
+        if motion.have_gps {
+            if !motion.new_gps_fix {
+                return DriftOutcome::NotEnoughData;
+            }
+        } else if self.ra_deltat < DRIFT_CORRECTION_INTERVAL_S {
             return DriftOutcome::NotEnoughData;
         }
 
@@ -352,6 +361,35 @@ pub fn dcm_step_with_drift_from_ins(
         },
     });
     dcm_step_with_drift_from_ins_yaw(dcm, drift, ins, timing, yaw, DriftMotionInputs::default())
+}
+
+#[cfg(test)]
+mod gps_wait_tests {
+    use super::*;
+    use ap_ins::InertialSensorFrontend;
+
+    #[test]
+    fn have_gps_without_new_fix_does_not_correct_or_reset() {
+        let mut drift = DcmDriftLoop::default();
+        drift.ra_deltat = 0.5;
+        let dcm = Dcm::default();
+        let ins = InertialSensorFrontend::new();
+        let motion = DriftMotionInputs {
+            have_gps: true,
+            new_gps_fix: false,
+            gps_velocity: Some(Vector3f::new(10.0, 0.0, 0.0)),
+            fly_forward: true,
+            ..DriftMotionInputs::default()
+        };
+        assert_eq!(
+            drift.try_correct(&dcm, &ins, motion),
+            DriftOutcome::NotEnoughData
+        );
+        assert!(
+            drift.ra_deltat > 0.4,
+            "must not reset the accel accumulator while waiting for GPS"
+        );
+    }
 }
 
 /// Same as [`dcm_step_with_drift_from_ins`] but accepts full yaw inputs

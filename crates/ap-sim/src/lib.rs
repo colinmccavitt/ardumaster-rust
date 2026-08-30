@@ -440,6 +440,9 @@ impl AttitudeSim {
 /// can state exactly what motion it is checking against.
 pub type RateProfile = fn(f64) -> V3;
 
+pub mod sim_plane;
+
+
 /// Level flight: no rotation at all.
 #[must_use]
 pub fn level(_t: f64) -> V3 {

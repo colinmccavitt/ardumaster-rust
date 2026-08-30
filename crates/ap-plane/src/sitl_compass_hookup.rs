@@ -43,6 +43,9 @@ pub struct SitlCompassHookup {
     pub compass_use_for_yaw: bool,
     /// Battery current in amps (or throttle 0..1), upstream motor compensation.
     pub battery_current_amps: f32,
+    /// When set, rotate the earth mag field by this DCM (sim truth) instead of
+    /// the AHRS estimate. C++ SitlHarness uses `sim_plane.dcm`.
+    pub body_attitude_override: Option<Matrix3f>,
     calibrators: [CompassCalibrator; SITL_COMPASS_MAX_INSTANCES],
 }
 
@@ -55,6 +58,7 @@ impl Default for SitlCompassHookup {
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
             battery_current_amps: 0.0,
+            body_attitude_override: None,
             calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
         }
     }
@@ -82,6 +86,7 @@ impl SitlCompassHookup {
             truth: SitlCompassTruth::default(),
             compass_use_for_yaw: true,
             battery_current_amps: 0.0,
+            body_attitude_override: None,
             calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
         }
     }
@@ -180,6 +185,7 @@ impl SitlCompassHookup {
     /// Run timer tick and publish mag sample + yaw drift input.
     #[must_use]
     pub fn publish(&mut self, attitude: Matrix3f, loop_dt: f32, gps: Option<GpsDeclinationFix>) -> SitlCompassPublish {
+        let attitude = self.body_attitude_override.unwrap_or(attitude);
         self.declination.try_set_initial_location(&self.params, gps, true);
         self.cluster.set_thr_or_curr(self.battery_current_amps);
         self.cluster.timer_tick_all(
@@ -220,6 +226,7 @@ pub fn hookup_with_disabled_primary() -> SitlCompassHookup {
         truth: SitlCompassTruth::default(),
         compass_use_for_yaw: true,
         battery_current_amps: 0.0,
+        body_attitude_override: None,
         calibrators: [CompassCalibrator::default(); SITL_COMPASS_MAX_INSTANCES],
     }
 }

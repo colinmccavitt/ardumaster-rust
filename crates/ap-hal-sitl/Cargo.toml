@@ -1,0 +1,25 @@
+[package]
+name = "ap-hal-sitl"
+description = "SITL harness glue: RC → sim sensors → PlaneMainLoop → actuators. FW-046."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ap-ahrs = { workspace = true }
+ap-control = { workspace = true }
+ap-pid = { workspace = true }
+ap-hal = { workspace = true }
+ap-ins = { workspace = true }
+ap-math = { workspace = true }
+ap-plane = { workspace = true }
+ap-scheduler = { workspace = true }
+ap-sim = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sitl_run"
+path = "src/bin/sitl_run.rs"
