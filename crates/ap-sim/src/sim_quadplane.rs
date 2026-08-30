@@ -125,6 +125,15 @@ impl SimQuadPlane {
         }
     }
 
+    /// Upstream `SITL::QuadPlane::copter_tailsitter` (real
+    /// `SIM_QuadPlane.cpp` line 80-82: set true only for the
+    /// `-copter_tailsitter` frame-string suffix). Drives the
+    /// `ROTATION_PITCH_270`-equivalent rotation applied to `quad_rot`/
+    /// `quad_accel` in [`Self::update`] (real lines 132-135).
+    pub fn copter_tailsitter(&self) -> bool {
+        self.copter_tailsitter
+    }
+
     pub fn update(&mut self, input: &SitlInput, dt: f32) {
         self.plane.mass = self.frame.get_mass();
         self.plane.update_wind();

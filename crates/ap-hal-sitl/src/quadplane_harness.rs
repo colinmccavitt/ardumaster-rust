@@ -360,6 +360,7 @@ mod tests {
     use crate::set_sticks;
     use ap_plane::main_loop::PlaneMainLoop;
     use ap_quadplane::QuadPlane;
+    use ap_sim::sim_plane::GroundBehavior;
     use ap_sim::sim_quadplane::SimQuadPlane;
 
     #[test]
@@ -394,6 +395,116 @@ mod tests {
         }
         assert!(-sim.plane.position.z > 2.0, "alt={}", -sim.plane.position.z);
         assert!(sim.plane.airspeed.is_finite());
+    }
+
+    // VT-012: the `-copter_tailsitter` and `-tilttrivec` frame-string
+    // variants are already correctly parsed and applied by `SimQuadPlane`
+    // (`ap-sim/src/sim_quadplane.rs`, matching real upstream
+    // `SIM_QuadPlane.cpp` lines 34-86 for frame-string selection and
+    // lines 132-135 for the tailsitter rotation), but every prior test in
+    // this file only ever constructed the bare `"quadplane"` frame, so
+    // these variant code paths had never been run. These tests add that
+    // coverage; they do not port any new physics.
+
+    #[test]
+    fn tailsitter_frame_sets_copter_tailsitter_and_ground_behavior() {
+        let tailsitter = SimQuadPlane::new("quadplane-copter_tailsitter");
+        assert!(tailsitter.copter_tailsitter());
+        assert_eq!(tailsitter.plane.ground_behavior, GroundBehavior::Tailsitter);
+
+        // Sanity check against the plain frame so this is a genuine
+        // differential assertion, not a tautology.
+        let plain = SimQuadPlane::new("quadplane");
+        assert!(!plain.copter_tailsitter());
+        assert_eq!(plain.plane.ground_behavior, GroundBehavior::NoMovement);
+    }
+
+    #[test]
+    fn tailsitter_frame_flies_many_ticks_without_going_nan() {
+        let mut plane = PlaneMainLoop::default();
+        let mut qp = QuadPlane::with_enable(1);
+        setup_hover_transition(&mut plane, &mut qp);
+        let mut sim = SimQuadPlane::new("quadplane-copter_tailsitter");
+        assert!(sim.copter_tailsitter());
+        let mut harness = SitlQuadPlaneHarness::new();
+        let climb = sim.frame.hover_command() + 0.20;
+        let dt = 0.0025_f32;
+        let mut now_ms = 0_u32;
+        // Matches `climb_command_leaves_the_ground`'s own scripted-loop
+        // shape and tick scale. This frame's `ROTATION_PITCH_270`-
+        // equivalent rotation (applied in `SimQuadPlane::update` because
+        // `copter_tailsitter` is true) has never run over many ticks
+        // before this test. It is not expected to leave the ground or
+        // hover stably - that is separate Q-mode control logic
+        // (VCP-007's own scope) - only to stay numerically sane.
+        for _ in 0..600 {
+            now_ms = now_ms.saturating_add(3);
+            set_sticks(&mut plane, 1500, 1500, 1000, 1500);
+            harness.step(&mut plane, &mut qp, &mut sim, now_ms, dt, climb, true);
+
+            assert!(sim.plane.airspeed.is_finite(), "airspeed non-finite");
+            assert!(sim.plane.position.x.is_finite(), "position.x non-finite");
+            assert!(sim.plane.position.y.is_finite(), "position.y non-finite");
+            assert!(sim.plane.position.z.is_finite(), "position.z non-finite");
+            assert!(sim.plane.gyro.x.is_finite(), "gyro.x non-finite");
+            assert!(sim.plane.gyro.y.is_finite(), "gyro.y non-finite");
+            assert!(sim.plane.gyro.z.is_finite(), "gyro.z non-finite");
+            let (roll, pitch, yaw) = sim.plane.dcm.to_euler();
+            assert!(
+                roll.is_finite() && pitch.is_finite() && yaw.is_finite(),
+                "attitude non-finite: roll={roll} pitch={pitch} yaw={yaw}"
+            );
+        }
+    }
+
+    #[test]
+    fn tilttrivec_frame_selects_a_distinct_three_motor_layout() {
+        let tilt = SimQuadPlane::new("quadplane-tilttrivec");
+        let plain = SimQuadPlane::new("quadplane");
+        // Real upstream selects the `tilttrivec` frame template
+        // (`SIM_QuadPlane.cpp` lines 54-56), a 3-motor layout, distinct
+        // from the default quad-X frame's 4 motors - a genuine, checkable
+        // confirmation that frame-string variant selection actually
+        // picked the right frame rather than silently falling through to
+        // the default.
+        assert_eq!(
+            tilt.frame.num_motors, 3,
+            "tilttrivec should be a 3-motor frame"
+        );
+        assert_ne!(
+            tilt.frame.num_motors, plain.frame.num_motors,
+            "tilttrivec must not silently fall through to the default quad-X frame"
+        );
+        // Tilt-rotor variants never set the tailsitter flag (real
+        // upstream's rotation block at lines 132-135 checks only
+        // `copter_tailsitter`).
+        assert!(!tilt.copter_tailsitter());
+    }
+
+    #[test]
+    fn tilttrivec_frame_flies_many_ticks_without_going_nan() {
+        let mut plane = PlaneMainLoop::default();
+        let mut qp = QuadPlane::with_enable(1);
+        setup_hover_transition(&mut plane, &mut qp);
+        let mut sim = SimQuadPlane::new("quadplane-tilttrivec");
+        assert_eq!(sim.frame.num_motors, 3);
+        let mut harness = SitlQuadPlaneHarness::new();
+        let climb = sim.frame.hover_command() + 0.20;
+        let dt = 0.0025_f32;
+        let mut now_ms = 0_u32;
+        for _ in 0..600 {
+            now_ms = now_ms.saturating_add(3);
+            set_sticks(&mut plane, 1500, 1500, 1000, 1500);
+            harness.step(&mut plane, &mut qp, &mut sim, now_ms, dt, climb, true);
+
+            assert!(sim.plane.airspeed.is_finite(), "airspeed non-finite");
+            assert!(sim.plane.position.x.is_finite(), "position.x non-finite");
+            assert!(sim.plane.position.y.is_finite(), "position.y non-finite");
+            assert!(sim.plane.position.z.is_finite(), "position.z non-finite");
+            assert!(sim.plane.gyro.x.is_finite(), "gyro.x non-finite");
+            assert!(sim.plane.gyro.y.is_finite(), "gyro.y non-finite");
+            assert!(sim.plane.gyro.z.is_finite(), "gyro.z non-finite");
+        }
     }
 
     #[test]
