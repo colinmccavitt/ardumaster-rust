@@ -141,6 +141,7 @@ dependencies = [
  "ap-hal",
  "ap-ins",
  "ap-math",
+ "ap-motors",
  "ap-pid",
  "ap-plane",
  "ap-scheduler",

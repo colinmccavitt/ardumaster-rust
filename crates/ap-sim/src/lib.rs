@@ -441,6 +441,9 @@ impl AttitudeSim {
 pub type RateProfile = fn(f64) -> V3;
 
 pub mod sim_plane;
+pub mod sim_motor;
+pub mod sim_frame;
+pub mod sim_multicopter;
 
 
 /// Level flight: no rotation at all.
