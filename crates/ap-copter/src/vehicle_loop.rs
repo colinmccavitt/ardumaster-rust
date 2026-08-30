@@ -32,7 +32,7 @@ use ap_math::location::{AltContext, AltFrame, Location};
 use ap_scheduler::scheduler::{RunStats, Scheduler, Task, LOOP_RATE};
 
 use crate::attitude::RateControllerMainLeftover;
-use crate::aux::AirMode;
+use crate::aux_fn::AirMode;
 use crate::ground::ekf_reset_method;
 use crate::radio::{
     read_radio, ReadRadioInputs, ReadRadioLeftover, ThrottleFailsafeInputs, ThrottleZeroInputs,
@@ -666,7 +666,7 @@ pub enum ModeSwitchReadLeftover {
 
 /// `RC_Channels::read_mode_switch` leftover.
 ///
-/// The debounce and [`crate::aux::mode_switch_changed`] stay on the
+/// The debounce and [`crate::aux_fn::mode_switch_changed`] stay on the
 /// channel. This leftover is the two refuses `rc_loop` still *calls*
 /// into: invalid input, then a missing mode channel.
 #[must_use]

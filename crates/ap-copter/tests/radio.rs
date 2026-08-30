@@ -1,6 +1,6 @@
 //! Copter radio leftover, upstream `ArduCopter/radio.cpp`.
 
-use ap_copter::aux::{
+use ap_copter::aux_fn::{
     init_rc_in_map, AirMode, CopterAuxFunc, ControlType, DEADZONE_THROTTLE_HELI,
     DEADZONE_THROTTLE_MULTICOPTER, ROLL_PITCH_YAW_INPUT_MAX, THROTTLE_CONTROL_RANGE,
 };

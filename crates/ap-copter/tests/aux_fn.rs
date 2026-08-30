@@ -1,6 +1,6 @@
 //! Copter aux-function leftover, upstream `RC_Channel_Copter.cpp`.
 
-use ap_copter::aux::{
+use ap_copter::aux_fn::{
     arming_check_throttle, auto_trim_cancel, auto_trim_run, do_aux_function,
     do_aux_function_acro_trainer, do_aux_function_ahrs_auto_trim, do_aux_function_change_air_mode,
     do_aux_function_change_force_flying, do_aux_function_change_mode, do_aux_function_option,

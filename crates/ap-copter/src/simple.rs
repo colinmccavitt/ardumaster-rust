@@ -13,7 +13,7 @@ use ap_math::scalar::{radians, wrap_2pi, wrap_pi};
 
 use crate::vehicle_loop::{should_log, MASK_LOG_ANY};
 
-pub use crate::aux::SimpleMode;
+pub use crate::aux_fn::SimpleMode;
 
 /// `SUPER_SIMPLE_RADIUS_M` from Copter `config.h`.
 ///

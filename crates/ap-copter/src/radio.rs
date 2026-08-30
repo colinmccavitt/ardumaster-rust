@@ -1,7 +1,7 @@
 //! Radio-init and throttle-failsafe leftover, upstream `ArduCopter/radio.cpp`.
 //!
 //! Tracked as **COP-022**. Stick ANGLE/RANGE mapping, `get_control_in`, and
-//! `FLTMODE_CH` already live in [`crate::aux`]. What lives here is the rest
+//! `FLTMODE_CH` already live in [`crate::aux_fn`]. What lives here is the rest
 //! of that file: which receiver channels `init_rc_in` binds, the three-count
 //! throttle PWM latch, the lost-frame timeout, and the throttle-zero
 //! debounce that tells the vehicle it is not flying.
@@ -13,7 +13,7 @@
 //! failsafe a resting 975 us stick. The latch also waits
 //! [`FS_COUNTER`] consecutive low pulses — a single glitch must not
 //! `set_failsafe_radio`. A pending `radio_counter` is already "invalid
-//! input" (`has_valid_input` in `aux.rs`) even before the latch.
+//! input" (`has_valid_input` in `aux_fn.rs`) even before the latch.
 //!
 //! # Lost frames are a second door
 //!
@@ -23,7 +23,7 @@
 //! not armed" all refuse to trip. Folding those into the PWM counter
 //! would log `RADIO_LATE_FRAME` on a bench with no radio.
 
-use crate::aux::{
+use crate::aux_fn::{
     get_control_in_zero_dz, init_rc_in_map, AirMode, CopterAuxFunc, CopterStickMap,
 };
 use ap_rc::{norm_input, rcmap_index, RcMap, FS_THR_VALUE_DEFAULT, NUM_RC_CHANNELS};
