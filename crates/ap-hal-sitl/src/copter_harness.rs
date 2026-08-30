@@ -10,11 +10,20 @@
 
 #![allow(missing_docs)]
 
+use ap_copter::mode_stabilize::{stabilize_run, StabilizeRunView};
+use ap_copter::vehicle_loop::{
+    copter_first_fast_tasks, copter_later_fast_tasks, copter_next_fast_tasks,
+    run_scheduler_tick, update_flight_mode, CopterVehicleLoop, COPTER_LOOP_RATE_HZ,
+};
+use ap_hal::time::{Clock, Micros, Millis};
 use ap_motors::armed::{output_armed_stabilizing, ArmedDemand};
+use ap_motors::spool::SpoolState;
 use ap_motors::MotorMatrix;
+use ap_scheduler::scheduler::Scheduler;
 use ap_sim::sim_motor::SitlInput;
 use ap_sim::sim_multicopter::SimMulticopter;
 use ap_sim::sim_plane::Vec3;
+use core::cell::Cell;
 
 /// C++ leftover Copter vehicle shell for SitlCopterHarness.
 #[derive(Debug, Clone)]
@@ -41,6 +50,8 @@ pub struct LeftoverCopter {
     pub home_lng: i32,
     pub tick_count: u32,
     pub land_complete: bool,
+    pub collective_command: f32,
+    pub last_flightmode_run: bool,
     mixer: MotorMatrix,
     mixer_inited: bool,
 }
@@ -70,6 +81,8 @@ impl Default for LeftoverCopter {
             home_lng: 1_491_652_374,
             tick_count: 0,
             land_complete: false,
+            collective_command: 0.0,
+            last_flightmode_run: false,
             mixer: MotorMatrix::new(),
             mixer_inited: false,
         }
@@ -78,6 +91,45 @@ impl Default for LeftoverCopter {
 
 pub fn leftover_copter_tick(copter: &mut LeftoverCopter) {
     copter.tick_count = copter.tick_count.saturating_add(1);
+    let leftover = update_flight_mode(ap_copter::vehicle_loop::UpdateFlightModeInputs {
+        land_complete: copter.land_complete,
+        move_vehicle_on_ekf_reset: false,
+    });
+    copter.last_flightmode_run = leftover.flightmode_run;
+}
+
+struct CopterStepClock {
+    us: Cell<u32>,
+}
+
+impl CopterStepClock {
+    fn from_dt_ticks(ticks: u32, dt: f32) -> Self {
+        Self {
+            us: Cell::new(((ticks as f32) * dt * 1.0e6) as u32),
+        }
+    }
+}
+
+impl Clock for CopterStepClock {
+    fn millis(&self) -> Millis {
+        Millis(self.us.get() / 1000)
+    }
+    fn micros(&self) -> Micros {
+        Micros(self.us.get())
+    }
+    fn millis64(&self) -> u64 {
+        u64::from(self.us.get()) / 1000
+    }
+    fn micros64(&self) -> u64 {
+        u64::from(self.us.get())
+    }
+}
+
+fn copter_sitl_tasks() -> [ap_scheduler::scheduler::Task<CopterVehicleLoop>; 9] {
+    let [a0, a1, a2, a3] = copter_first_fast_tasks();
+    let [b0, b1, b2, b3] = copter_next_fast_tasks();
+    let [c0] = copter_later_fast_tasks();
+    [a0, a1, a2, a3, b0, b1, b2, b3, c0]
 }
 
 /// Leftover mission phases, C++ `MissionPhase`.
@@ -148,6 +200,7 @@ fn ensure_mixer(copter: &mut LeftoverCopter) {
 /// matching C++ `leftover_apply_collective` (curve_expo=0, spin 0..1,
 /// PWM 1000..2000).
 pub fn leftover_apply_collective(copter: &mut LeftoverCopter, sim: &SimMulticopter, command: f32) {
+    copter.collective_command = command;
     ensure_mixer(copter);
     for slot in &mut copter.motor_pwm {
         *slot = 0;
@@ -239,12 +292,15 @@ pub fn leftover_mission_advance(
             mission.command = 0.0;
         }
     }
-    leftover_apply_collective(copter, sim, mission.command);
+    copter.collective_command = mission.command;
 }
 
 /// SitlCopterHarness: sensors from sim, leftover tick, PWM into plant.
 pub struct SitlCopterHarness {
     tick_count: u32,
+    pub vehicle: CopterVehicleLoop,
+    tasks: [ap_scheduler::scheduler::Task<CopterVehicleLoop>; 9],
+    last_run: [u16; 9],
 }
 
 impl Default for SitlCopterHarness {
@@ -255,7 +311,12 @@ impl Default for SitlCopterHarness {
 
 impl SitlCopterHarness {
     pub fn new() -> Self {
-        Self { tick_count: 0 }
+        Self {
+            tick_count: 0,
+            vehicle: CopterVehicleLoop::typical(),
+            tasks: copter_sitl_tasks(),
+            last_run: [0; 9],
+        }
     }
 
     pub fn tick_count(&self) -> u32 {
@@ -293,6 +354,40 @@ impl SitlCopterHarness {
 
         leftover_copter_tick(copter);
         self.tick_count = copter.tick_count;
+
+        self.vehicle.flight_mode.land_complete = copter.land_complete;
+        self.vehicle.motors.armed = copter.motors_armed;
+        self.vehicle.auto_armed.motors_armed = copter.motors_armed;
+        self.vehicle.auto_armed.has_valid_input = true;
+        self.vehicle.auto_disarm.motors_armed = copter.motors_armed;
+        self.vehicle.auto_disarm.land_complete = copter.land_complete;
+        let clock = CopterStepClock::from_dt_ticks(self.tick_count, dt);
+        let mut scheduler = Scheduler::new(
+            &self.tasks,
+            &[],
+            &mut self.last_run,
+            COPTER_LOOP_RATE_HZ,
+        );
+        let _stats = run_scheduler_tick(&mut self.vehicle, &mut scheduler, &clock, 2_500);
+
+        if copter.last_flightmode_run {
+            let throttle_control = (copter.collective_command * 1000.0).clamp(0.0, 1000.0) as i16;
+            let view = StabilizeRunView {
+                throttle_control,
+                throttle_zero: !copter.motors_armed || copter.collective_command < 0.05,
+                spool_state: if copter.motors_armed {
+                    SpoolState::ThrottleUnlimited
+                } else {
+                    SpoolState::ShutDown
+                },
+                ..StabilizeRunView::flying()
+            };
+            let run = stabilize_run(&view);
+            if run.clear_land_complete {
+                copter.land_complete = false;
+            }
+        }
+        leftover_apply_collective(copter, sim, copter.collective_command);
 
         let mut input = SitlInput::default();
         input.servos = copter.motor_pwm;
@@ -395,6 +490,11 @@ mod tests {
         assert!(harness.tick_count() > 0);
         assert!(copter.gyro_injected);
         assert!(copter.baro_injected);
+        assert!(
+            harness.vehicle.ticks.update_flight_mode > 0,
+            "CopterVehicleLoop update_flight_mode never ran"
+        );
+        assert!(copter.last_flightmode_run);
     }
 
     #[test]

@@ -21,7 +21,12 @@ pub fn dispatch_stabilize_from_mode(
         return StabilizeDispatch::default();
     };
 
-    let fbw_stick_mixing = applies_fbw_stick_mixing(stick_mixing);
+    // STICK_MIXING is an AUTO-mode overlay (upstream `stick_mixing_enabled`).
+    // Assisted/manual modes (FBWA/FBWB/STABILIZE/CRUISE/...) already map the
+    // stick into nav_roll in their `update()`; applying FBW mixing again
+    // doubles the demand (Rust sitl_run bank ~34 deg vs C++ ~17 deg).
+    let fbw_stick_mixing =
+        applies_fbw_stick_mixing(stick_mixing) && !is_assisted_or_manual_mode(mode);
 
     match mode {
         ModeNumber::Manual | ModeNumber::Training => StabilizeDispatch {

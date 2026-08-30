@@ -302,7 +302,8 @@ impl SitlHarness {
         plane.speed_scaler_inputs.airspeed_eas = Some(sim.airspeed);
         plane.speed_scaler_inputs.armed = plane.soft_armed;
         plane.speed_scaler_inputs.throttle_scaled = plane.servos.throttle_scaled;
-        plane.stabilize_ctx.ground_mode = sim.on_ground();
+        // C++ Plane::ground_mode is true when disarmed and not flying; sitl_run is armed.
+        plane.stabilize_ctx.ground_mode = !plane.soft_armed;
         plane.stabilize_ctx.airspeed_eas = Some(sim.airspeed);
 
     }
@@ -399,8 +400,8 @@ mod tests {
             sim.altitude_m()
         );
         assert!(
-            true_roll.abs() < 40.0,
-            "true roll {} deg (inverted?)",
+            true_roll.abs() < 28.0,
+            "true roll {} deg (FBWA stick 1650 should be ~13-20 deg, not double-mixed)",
             true_roll
         );
         assert!(
@@ -415,5 +416,33 @@ mod tests {
             ahrs_pitch,
             true_pitch
         );
+    }
+
+    #[test]
+    fn fbwa_closed_loop_bank_tracks_nav_roll_and_climbs() {
+        let mut plane = PlaneMainLoop::default();
+        let mut sim = SimPlane::new();
+        SitlHarness::setup_fbwa(&mut plane, &mut sim);
+        let mut harness = SitlHarness::new();
+        let dt = 1.0 / f32::from(SITL_LOOP_HZ);
+        let mut now_ms = 0_u32;
+        for _ in 0..(30 * i32::from(SITL_LOOP_HZ)) {
+            now_ms = now_ms.saturating_add(20);
+            set_sticks(&mut plane, 1650, 1500, 1700, 1500);
+            harness.step(&mut plane, &mut sim, now_ms, dt);
+        }
+        let (true_roll, _true_pitch, _) = sim.true_euler_deg();
+        assert!(
+            sim.altitude_m() > 20.0,
+            "alt {} m after 30s FBWA (C++ ~50m+; must climb, not return to ground)",
+            sim.altitude_m()
+        );
+        assert!(
+            true_roll > 8.0 && true_roll < 25.0,
+            "true roll {} deg after 30s (C++ ~17 deg)",
+            true_roll
+        );
+        assert!(sim.airspeed > 15.0, "airspeed {}", sim.airspeed);
+        assert!(sim.altitude_m().is_finite() && true_roll.is_finite());
     }
 }

@@ -52,9 +52,28 @@ fn fast_tasks_run_in_scheduler_order() {
 }
 
 #[test]
-fn stabilize_mode_enables_attitude_paths_and_stick_mixing() {
+fn stabilize_mode_enables_attitude_paths_without_auto_stick_mixing() {
     let dispatch = dispatch_stabilize_from_mode(
         ModeNumber::Stabilize.as_number(),
+        Some(StickMixing::Fbw),
+        &BuildFeatures::default(),
+    );
+    assert_eq!(
+        dispatch,
+        StabilizeDispatch {
+            roll: true,
+            pitch: true,
+            yaw: true,
+            // STICK_MIXING is an AUTO overlay; Stabilize maps the stick itself.
+            fbw_stick_mixing: false,
+        }
+    );
+}
+
+#[test]
+fn auto_mode_keeps_fbw_stick_mixing() {
+    let dispatch = dispatch_stabilize_from_mode(
+        ModeNumber::Auto.as_number(),
         Some(StickMixing::Fbw),
         &BuildFeatures::default(),
     );

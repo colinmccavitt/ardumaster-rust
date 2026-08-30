@@ -3,9 +3,8 @@
 //! and `Frame::init` / `calculate_forces` transcribed from original source.
 //!
 //! Disclosed leftovers vs original, matching C++ `sim_frame.hpp`:
-//!   - JSON model `load_frame_params` is not ported; `default_model` values
-//!     are used (same as original with no `:file.json` suffix).
-//!   - Battery is a constant `maxVoltage` (no SIM_Battery drain).
+//! JSON `load_frame_params` is ported (COP-032). Battery voltage is owned by
+//! the vehicle (`Battery::consume_energy`); Frame still sums motor current.
 //!   - `AP::sitl()->vibe_motor` RPM coupling is omitted (no SITL singleton).
 //!   - `get_air_density` uses troposphere ISA (0-11 km).
 
@@ -754,9 +753,53 @@ impl Frame {
         &self.model
     }
 
-    pub fn init(&mut self, _frame_str: &str) {
-        // JSON `:file.json` leftover is not ported (C++ default_model path).
+    pub fn load_frame_params(&mut self, model_json: &str) -> bool {
+        use crate::sim_json::{json_get_float, json_get_vector3, load_json_file};
+        let obj = match load_json_file(std::path::Path::new(model_json)) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        json_get_float(&obj, "mass", &mut self.model.mass);
+        json_get_float(&obj, "diagonal_size", &mut self.model.diagonal_size);
+        json_get_float(&obj, "refSpd", &mut self.model.ref_spd);
+        json_get_float(&obj, "refAngle", &mut self.model.ref_angle);
+        json_get_float(&obj, "refVoltage", &mut self.model.ref_voltage);
+        json_get_float(&obj, "refCurrent", &mut self.model.ref_current);
+        json_get_float(&obj, "refAlt", &mut self.model.ref_alt);
+        json_get_float(&obj, "maxVoltage", &mut self.model.max_voltage);
+        json_get_float(&obj, "battCapacityAh", &mut self.model.batt_capacity_ah);
+        json_get_float(&obj, "refBatRes", &mut self.model.ref_bat_res);
+        json_get_float(&obj, "propExpo", &mut self.model.prop_expo);
+        json_get_float(&obj, "refRotRate", &mut self.model.ref_rot_rate);
+        json_get_float(&obj, "hoverThrOut", &mut self.model.hover_thr_out);
+        json_get_float(&obj, "pwmMin", &mut self.model.pwm_min);
+        json_get_float(&obj, "pwmMax", &mut self.model.pwm_max);
+        json_get_float(&obj, "spin_min", &mut self.model.spin_min);
+        json_get_float(&obj, "spin_max", &mut self.model.spin_max);
+        json_get_float(&obj, "slew_max", &mut self.model.slew_max);
+        json_get_float(&obj, "disc_area", &mut self.model.disc_area);
+        json_get_float(&obj, "mdrag_coef", &mut self.model.mdrag_coef);
+        json_get_float(&obj, "bbdrag_coef", &mut self.model.bbdrag_coef);
+        json_get_float(&obj, "refTempC", &mut self.model.ref_temp_c);
+        json_get_float(&obj, "num_motors", &mut self.model.num_motors);
+        json_get_vector3(&obj, "moment_inertia", &mut self.model.moment_of_inertia);
+        for j in 0..SIM_FRAME_MAX_ACTUATORS {
+            let n = j + 1;
+            json_get_vector3(&obj, &format!("motor{n}_position"), &mut self.model.motor_pos[j]);
+            json_get_vector3(&obj, &format!("motor{n}_vector"), &mut self.model.motor_thrust_vec[j]);
+            json_get_float(&obj, &format!("motor{n}_yaw"), &mut self.model.yaw_factor[j]);
+        }
+        true
+    }
+
+    pub fn init(&mut self, frame_str: &str) {
         self.model = FrameModel::default();
+        if let Some(colon) = frame_str.find(':') {
+            let path = &frame_str[colon + 1..];
+            if path.ends_with(".json") {
+                let _ = self.load_frame_params(path);
+            }
+        }
         self.mass = self.model.mass * self.mass_scale;
 
         let drag_force = self.model.mass * GRAVITY_MSS * radians(self.model.ref_angle).tan();
@@ -940,6 +983,20 @@ impl Frame {
     pub fn get_current_amp(&self) -> f32 {
         self.motors().iter().map(Motor::get_current).sum()
     }
+    pub fn get_model_batt_capacity_ah(&self) -> f32 {
+        self.model.batt_capacity_ah
+    }
+    pub fn get_model_batt_resistance_ohm(&self) -> f32 {
+        self.model.ref_bat_res
+    }
+    pub fn set_mass_scale(&mut self, scale: f32) {
+        self.mass_scale = scale;
+    }
+    pub fn battery_changed(&mut self) -> bool {
+        let ret = self.battery_dirty;
+        self.battery_dirty = false;
+        ret
+    }
 }
 
 // Silence unused template-helper imports used only by generated motor tables.
@@ -954,4 +1011,27 @@ fn _channels() -> usize {
 #[allow(dead_code)]
 fn _vec3_zero_check(v: Vec3) -> bool {
     vec3_is_zero(v)
+}
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+
+    #[test]
+    fn json_frame_overrides_mass() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ardumaster_frame_model.json");
+        std::fs::write(
+            &path,
+            r#"{"mass": 7.5, "maxVoltage": 16.8, "battCapacityAh": 5.0, "hoverThrOut": 0.4}"#,
+        )
+        .unwrap();
+        let mut f = Frame::create_frame("x");
+        let arg = format!("x:{}", path.display());
+        f.init(&arg);
+        assert!((f.get_mass() - 7.5).abs() < 1e-4, "mass={}", f.get_mass());
+        assert!((f.get_model_batt_max_voltage() - 16.8).abs() < 1e-4);
+        assert!((f.get_model_batt_capacity_ah() - 5.0).abs() < 1e-4);
+        let _ = std::fs::remove_file(&path);
+    }
 }

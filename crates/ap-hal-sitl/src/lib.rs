@@ -15,6 +15,7 @@
 
 pub mod copter_harness;
 pub mod harness;
+pub mod quadplane_harness;
 
 pub use harness::{set_sticks, SitlHarness, SERVO_MAX, SITL_LOOP_HZ};
 
@@ -22,4 +23,8 @@ pub use copter_harness::{
     leftover_apply_collective, leftover_copter_sitl_step, leftover_hold_command,
     leftover_mission_advance, leftover_mission_begin_takeoff, LeftoverCopter, LeftoverMission,
     MissionPhase, SitlCopterHarness,
+};
+
+pub use quadplane_harness::{
+    QuadLeftoverMission, QuadMissionPhase, SitlQuadPlaneHarness,
 };

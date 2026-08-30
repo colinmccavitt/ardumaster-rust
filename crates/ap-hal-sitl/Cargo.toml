@@ -17,6 +17,7 @@ ap-plane = { workspace = true }
 ap-scheduler = { workspace = true }
 ap-sim = { workspace = true }
 ap-motors = { workspace = true }
+ap-copter = { workspace = true }
 
 [lints]
 workspace = true
@@ -28,3 +29,7 @@ path = "src/bin/sitl_run.rs"
 [[bin]]
 name = "copter_sitl_run"
 path = "src/bin/copter_sitl_run.rs"
+
+[[bin]]
+name = "quadplane_sitl_run"
+path = "src/bin/quadplane_sitl_run.rs"

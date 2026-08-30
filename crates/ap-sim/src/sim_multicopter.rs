@@ -8,6 +8,7 @@
 
 #![allow(missing_docs)]
 
+use crate::sim_battery::{Battery, SitlParams};
 use crate::sim_frame::Frame;
 use crate::sim_motor::SitlInput;
 use crate::sim_plane::{GroundBehavior, Mat3, Vec3, GRAVITY_MSS};
@@ -40,6 +41,10 @@ pub struct SimMulticopter {
     pub home_alt_amsl_m: f32,
     pub ground_behavior: GroundBehavior,
     pub battery_voltage: f32,
+    pub battery_current: f32,
+    pub battery_temperature_degc: f32,
+    pub battery: Battery,
+    pub sitl_params: SitlParams,
     pub time_now_us: u64,
     pub mag_field_bf: Vec3,
     pub home_lat_e7: i32,
@@ -64,7 +69,15 @@ impl SimMulticopter {
         let name = frame.name;
         frame.init(frame_str);
         let mass = frame.get_mass();
-        let batt = frame.battery_voltage();
+        let mut battery = Battery::new(10.0);
+        battery.setup(
+            frame.get_model_batt_capacity_ah(),
+            frame.get_model_batt_resistance_ohm(),
+            frame.get_model_batt_max_voltage(),
+            25.0,
+        );
+        let batt = battery.get_voltage();
+        frame.set_battery_voltage(batt);
         Self {
             frame,
             dcm: Mat3::identity(),
@@ -82,6 +95,10 @@ impl SimMulticopter {
             home_alt_amsl_m: 0.0,
             ground_behavior: GroundBehavior::NoMovement,
             battery_voltage: batt,
+            battery_current: 0.0,
+            battery_temperature_degc: 0.0,
+            battery,
+            sitl_params: SitlParams::default(),
             time_now_us: 0,
             mag_field_bf: Vec3::zero(),
             home_lat_e7: -353_632_621,
@@ -260,6 +277,28 @@ impl SimMulticopter {
         self.mag_field_bf
     }
 
+    /// C++ `SimMulticopter::update_battery_from_frame`.
+    pub fn update_battery_from_frame(&mut self) {
+        if self.frame.battery_changed() {
+            self.battery.setup(
+                self.frame.get_model_batt_capacity_ah(),
+                self.frame.get_model_batt_resistance_ohm(),
+                self.frame.get_model_batt_max_voltage(),
+                25.0,
+            );
+        }
+        self.battery.maybe_reset(
+            self.sitl_params.batt_voltage,
+            self.sitl_params.batt_capacity_ah,
+            self.sitl_params.batt_resistance,
+        );
+        self.battery_voltage = self.battery.get_voltage();
+        self.battery_current = self.frame.get_current_amp();
+        self.battery_temperature_degc = self.battery.get_temperature_degc();
+        self.battery.consume_energy(self.battery_current, self.time_now_us);
+        self.frame.set_battery_voltage(self.battery_voltage);
+    }
+
     /// Upstream `MultiCopter::update`.
     pub fn update(&mut self, input: &SitlInput, dt: f32) {
         self.mass = self.frame.get_mass();
@@ -267,6 +306,7 @@ impl SimMulticopter {
         // copter_sitl_run never sets SIM wind).
         let (rot_accel, body_acc) = self.calculate_forces(input);
         self.accel_body = body_acc;
+        self.update_battery_from_frame();
         self.update_dynamics(rot_accel, dt);
         self.time_now_us = self.time_now_us.saturating_add((dt * 1.0e6) as u64);
         self.update_position();
@@ -433,5 +473,27 @@ mod tests {
         let x = Frame::create_frame("x");
         assert!((plus.motors()[0].angle - 90.0).abs() < 1e-4);
         assert!((x.motors()[0].angle - 45.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hover_current_sags_battery_voltage() {
+        let mut copter = SimMulticopter::new("x");
+        copter.position.z = -10.0;
+        copter.sitl_params.batt_voltage = 12.6;
+        copter.sitl_params.batt_capacity_ah = 0.0;
+        let mut input = SitlInput::default();
+        copter.set_equal_command(&mut input, copter.hover_command());
+        let v0 = copter.battery_voltage;
+        let dt = 0.0025_f32;
+        for _ in 0..400 {
+            copter.update(&input, dt);
+        }
+        assert!(
+            copter.battery_voltage < v0,
+            "v0={v0} v1={}",
+            copter.battery_voltage
+        );
+        assert!(copter.battery_current > 1.0, "I={}", copter.battery_current);
+        assert!(copter.battery_voltage.is_finite());
     }
 }

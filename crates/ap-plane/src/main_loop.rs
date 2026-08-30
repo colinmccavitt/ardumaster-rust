@@ -1895,6 +1895,11 @@ impl PlaneMainLoop {
         if fbwa_nav.applied {
             self.nav_tecs.nav_roll_cd = fbwa_nav.nav_roll_cd;
             self.navigation_scheduler_inputs.commanded_pitch_cd = fbwa_nav.nav_pitch_cd;
+            // C++ ModeFBWA::update writes nav_pitch_cd from the stick;
+            // calc_nav_pitch/TECS is navigation-mode-only. feed_nav_commands
+            // reads tecs_pitch_demand_rad, so publish the stick pitch there.
+            self.nav_tecs.tecs_pitch_demand_rad =
+                ap_math::scalar::cd_to_rad(fbwa_nav.nav_pitch_cd as f32);
         }
 
         let stabilize_nav = stabilize_mode_nav_tick(&StabilizeModeNavInputs {

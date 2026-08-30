@@ -138,6 +138,7 @@ version = "0.1.0"
 dependencies = [
  "ap-ahrs",
  "ap-control",
+ "ap-copter",
  "ap-hal",
  "ap-ins",
  "ap-math",

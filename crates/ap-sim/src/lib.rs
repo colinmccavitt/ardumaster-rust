@@ -444,6 +444,9 @@ pub mod sim_plane;
 pub mod sim_motor;
 pub mod sim_frame;
 pub mod sim_multicopter;
+pub mod sim_json;
+pub mod sim_battery;
+pub mod sim_quadplane;
 
 
 /// Level flight: no rotation at all.

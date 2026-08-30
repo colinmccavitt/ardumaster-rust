@@ -440,6 +440,55 @@ impl SimPlane {
         Self::with_config(Coefficients::default(), 2.0, 0.7, DEFAULT_WIND_RNG_SEED)
     }
 
+    /// C++ `SimPlane::load_coeffs` / upstream `Plane::load_coeffs` (AP_JSON).
+    pub fn load_coeffs(&mut self, model_json: &str) -> bool {
+        use crate::sim_json::{json_get_float, json_get_vector3, load_json_file};
+        let obj = match load_json_file(std::path::Path::new(model_json)) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        json_get_float(&obj, "s", &mut self.coefficient.s);
+        json_get_float(&obj, "b", &mut self.coefficient.b);
+        json_get_float(&obj, "c", &mut self.coefficient.c);
+        json_get_float(&obj, "c_lift_0", &mut self.coefficient.c_lift_0);
+        json_get_float(&obj, "c_lift_deltae", &mut self.coefficient.c_lift_deltae);
+        json_get_float(&obj, "c_lift_a", &mut self.coefficient.c_lift_a);
+        json_get_float(&obj, "c_lift_q", &mut self.coefficient.c_lift_q);
+        json_get_float(&obj, "mcoeff", &mut self.coefficient.mcoeff);
+        json_get_float(&obj, "oswald", &mut self.coefficient.oswald);
+        json_get_float(&obj, "alpha_stall", &mut self.coefficient.alpha_stall);
+        json_get_float(&obj, "c_drag_q", &mut self.coefficient.c_drag_q);
+        json_get_float(&obj, "c_drag_deltae", &mut self.coefficient.c_drag_deltae);
+        json_get_float(&obj, "c_drag_p", &mut self.coefficient.c_drag_p);
+        json_get_float(&obj, "c_y_0", &mut self.coefficient.c_y_0);
+        json_get_float(&obj, "c_y_b", &mut self.coefficient.c_y_b);
+        json_get_float(&obj, "c_y_p", &mut self.coefficient.c_y_p);
+        json_get_float(&obj, "c_y_r", &mut self.coefficient.c_y_r);
+        json_get_float(&obj, "c_y_deltaa", &mut self.coefficient.c_y_deltaa);
+        json_get_float(&obj, "c_y_deltar", &mut self.coefficient.c_y_deltar);
+        json_get_float(&obj, "c_l_0", &mut self.coefficient.c_l_0);
+        json_get_float(&obj, "c_l_p", &mut self.coefficient.c_l_p);
+        json_get_float(&obj, "c_l_b", &mut self.coefficient.c_l_b);
+        json_get_float(&obj, "c_l_r", &mut self.coefficient.c_l_r);
+        json_get_float(&obj, "c_l_deltaa", &mut self.coefficient.c_l_deltaa);
+        json_get_float(&obj, "c_l_deltar", &mut self.coefficient.c_l_deltar);
+        json_get_float(&obj, "c_m_0", &mut self.coefficient.c_m_0);
+        json_get_float(&obj, "c_m_a", &mut self.coefficient.c_m_a);
+        json_get_float(&obj, "c_m_q", &mut self.coefficient.c_m_q);
+        json_get_float(&obj, "c_m_deltae", &mut self.coefficient.c_m_deltae);
+        json_get_float(&obj, "c_n_0", &mut self.coefficient.c_n_0);
+        json_get_float(&obj, "c_n_b", &mut self.coefficient.c_n_b);
+        json_get_float(&obj, "c_n_p", &mut self.coefficient.c_n_p);
+        json_get_float(&obj, "c_n_r", &mut self.coefficient.c_n_r);
+        json_get_float(&obj, "c_n_deltaa", &mut self.coefficient.c_n_deltaa);
+        json_get_float(&obj, "c_n_deltar", &mut self.coefficient.c_n_deltar);
+        json_get_float(&obj, "deltaa_max", &mut self.coefficient.deltaa_max);
+        json_get_float(&obj, "deltae_max", &mut self.coefficient.deltae_max);
+        json_get_float(&obj, "deltar_max", &mut self.coefficient.deltar_max);
+        json_get_vector3(&obj, "cg", &mut self.coefficient.cg_offset);
+        true
+    }
+
     pub fn with_config(
         coeffs: Coefficients,
         mass_kg: f32,
@@ -1224,5 +1273,18 @@ mod tests {
         assert!(approx(plane.velocity_air_ef.x, expected.x, 1e-4));
         assert!(approx(plane.velocity_air_ef.y, expected.y, 1e-4));
         assert!(approx(plane.velocity_air_ef.z, expected.z, 1e-4));
+    }
+
+    #[test]
+    fn load_coeffs_overrides_wing_area() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ardumaster_plane_coeffs.json");
+        std::fs::write(&path, r#"{"s": 0.99, "c_lift_0": 0.77, "cg": [-0.2, 0.0, -0.04]}"#).unwrap();
+        let mut plane = SimPlane::new();
+        assert!(plane.load_coeffs(path.to_str().unwrap()));
+        assert!((plane.coefficient.s - 0.99).abs() < 1e-4);
+        assert!((plane.coefficient.c_lift_0 - 0.77).abs() < 1e-4);
+        assert!((plane.coefficient.cg_offset.x + 0.2).abs() < 1e-4);
+        let _ = std::fs::remove_file(&path);
     }
 }
