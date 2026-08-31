@@ -6,7 +6,14 @@ use ap_plane::mode_table::{BuildFeatures, ModeNumber};
 use ap_plane::mode_table_hookup::dispatch_stabilize_from_mode;
 
 #[test]
-fn stabilize_mode_enables_attitude_paths_and_stick_mixing() {
+fn stabilize_mode_enables_attitude_paths_but_not_double_stick_mixing() {
+    // STABILIZE is an assisted mode (`is_assisted_or_manual_mode`): it
+    // already maps the stick into nav_roll in its own `update()`, so
+    // `dispatch_stabilize_from_mode` deliberately withholds the FBW
+    // stick-mixing overlay to avoid doubling the demand (cb6861b1 -
+    // Rust sitl_run bank was ~34 deg vs C++'s correct ~17 deg before
+    // this fix). This assertion previously expected `true` and was
+    // stale against that fix; FBWA/FBWB/CRUISE/etc. behave the same way.
     let dispatch = dispatch_stabilize_from_mode(
         ModeNumber::Stabilize.as_number(),
         Some(StickMixing::Fbw),
@@ -18,7 +25,7 @@ fn stabilize_mode_enables_attitude_paths_and_stick_mixing() {
             roll: true,
             pitch: true,
             yaw: true,
-            fbw_stick_mixing: true,
+            fbw_stick_mixing: false,
         }
     );
 }
