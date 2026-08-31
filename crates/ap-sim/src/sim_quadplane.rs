@@ -273,4 +273,82 @@ mod tests {
         assert!(qp.battery_voltage.is_finite());
         assert!(qp.plane.gyro.x.is_finite());
     }
+
+    // VT-013: prove `SimQuadPlane::new`'s own `frame.init(frame_str);`
+    // call (this file, line 100) genuinely reaches `Frame::init`'s
+    // already-fixed (COP-035) `:model.json` suffix mechanism with the
+    // JSON suffix intact, end to end -- i.e. that composing a
+    // `SimQuadPlane` with a real JSON-suffixed frame_str like
+    // `"quadplane:<path-to-Callisto.json>"` loads the real, byte-for-byte
+    // upstream `Tools/autotest/models/Callisto.json` fixture (reusing the
+    // exact `fixtures/Callisto.json` path COP-035 already established --
+    // not a copy) into the resulting quadplane's own `frame` field,
+    // exactly as COP-035 already proved for a plain, standalone `Frame`.
+    //
+    // Traced directly rather than assumed: none of this file's own
+    // frame-type substring checks (lines 45-86: `-octa*`, `-hexa*`,
+    // `-plus`, `-y6`, `-tri*`, `-tilt*`, `firefly`, `cl84`,
+    // `-copter_tailsitter`) match any text in `"quadplane:"` plus the
+    // fixture's absolute path, so `frame_type` stays the default `"x"`
+    // and `Frame::create_frame("x")` builds a valid quad-X frame that
+    // `Frame::init` then loads the real Callisto model into -- this
+    // composition already worked correctly before this ticket; no
+    // production code changed.
+    //
+    // Does NOT forward `-heavy`/`-jet`: real upstream `SIM_QuadPlane.cpp`
+    // (`QuadPlane::QuadPlane`, real lines 25-27) inherits `Plane`'s own
+    // `-heavy`/`-jet` handling via the `Plane(frame_str)` base-class call,
+    // but real line 107 then does `mass = frame->get_mass() * 1.5;`
+    // unconditionally, right after `frame->init(frame_str, &battery)` at
+    // real line 104 -- discarding whatever `-heavy`/`-jet` set on `mass`.
+    // Forwarding those flags to this port's own embedded `plane` field
+    // would have no observable effect on `mass`, matching real upstream's
+    // own behavior, so this test (and this ticket) does not add that
+    // forwarding.
+    #[test]
+    fn new_with_json_suffixed_frame_str_loads_real_callisto_fixture() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("fixtures/Callisto.json"))
+            .expect("workspace root");
+        let frame_str = format!("quadplane:{}", path.display());
+
+        let qp = SimQuadPlane::new(&frame_str);
+
+        let m = qp.frame.get_model();
+        assert!((m.mass - 32.5).abs() < 1e-4, "mass={}", m.mass);
+        assert!(
+            (m.num_motors - 8.0).abs() < 1e-4,
+            "num_motors={}",
+            m.num_motors
+        );
+        assert!(
+            (m.disc_area - 1.82).abs() < 1e-4,
+            "disc_area={}",
+            m.disc_area
+        );
+        assert!(
+            (m.hover_thr_out - 0.36).abs() < 1e-4,
+            "hoverThrOut={}",
+            m.hover_thr_out
+        );
+
+        // The composed `mass_scale` (`SimQuadPlane::new`'s own
+        // `frame.set_mass_scale(1.5);`, this file's line 99) is this
+        // port's equivalent of real upstream's post-init
+        // `mass = frame->get_mass() * 1.5;` -- so `get_mass()` (which
+        // folds in `mass_scale`) is the real fixture's mass times 1.5,
+        // not the raw fixture value asserted above via `get_model()`.
+        assert!(
+            (qp.frame.get_mass() - 32.5 * 1.5).abs() < 1e-3,
+            "get_mass()={}",
+            qp.frame.get_mass()
+        );
+        assert!(
+            (qp.plane.mass - 32.5 * 1.5).abs() < 1e-3,
+            "plane.mass={}",
+            qp.plane.mass
+        );
+    }
 }
