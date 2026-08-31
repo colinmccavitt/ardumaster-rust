@@ -307,14 +307,31 @@ mod tests {
     // forwarding.
     #[test]
     fn new_with_json_suffixed_frame_str_loads_real_callisto_fixture() {
+        // Real upstream's own usage convention for this exact fixture
+        // (Tools/autotest/arducopter.py: `model="octa-quad:@ROMFS/models/
+        // Callisto.json"`) pairs the JSON overlay with the matching
+        // 8-motor structural frame type, not a bare/default frame - Frame::
+        // Model::num_motors (the JSON-loaded float checked below) is a
+        // separate, purely descriptive field from Frame::num_motors (the
+        // real structural u8 fixed by frame_type at construction); loading
+        // Callisto's "num_motors": 8 onto a plain 4-motor "x" frame would
+        // leave the real simulated motor count at 4 regardless of what the
+        // descriptive field says. Using "-octa-quad" here (matching the C++
+        // port's own VCP-013 sibling test) proves the REAL structural motor
+        // count too, not just the JSON field.
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
             .map(|p| p.join("fixtures/Callisto.json"))
             .expect("workspace root");
-        let frame_str = format!("quadplane:{}", path.display());
+        let frame_str = format!("quadplane-octa-quad:{}", path.display());
 
         let qp = SimQuadPlane::new(&frame_str);
+
+        assert_eq!(
+            qp.frame.num_motors, 8,
+            "real structural motor count, not just the JSON model field"
+        );
 
         let m = qp.frame.get_model();
         assert!((m.mass - 32.5).abs() < 1e-4, "mass={}", m.mass);
