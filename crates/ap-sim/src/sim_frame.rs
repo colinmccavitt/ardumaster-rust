@@ -1034,4 +1034,202 @@ mod json_tests {
         assert!((f.get_model_batt_capacity_ah() - 5.0).abs() < 1e-4);
         let _ = std::fs::remove_file(&path);
     }
+
+    // COP-035: real, byte-for-byte upstream `Tools/autotest/models/
+    // Callisto.json` / `Tools/autotest/models/freestyle.json`
+    // (Copter-4.7.0). Rotor-side sibling of FW-050's own
+    // `load_coeffs_reproduces_real_skywalker_2013_fixture`. Real upstream
+    // `libraries/SITL/SIM_Frame.cpp`: `load_frame_params` at real line
+    // 458, its `json_search vars[]` field table at real line 489,
+    // `json_search per_motor_vars[]` at real line 531, `Frame::init`'s
+    // `:model.json` suffix check + call site at real lines 580/588 --
+    // all re-verified directly against the pinned upstream tree before
+    // writing these tests. `Callisto.json` and `freestyle.json` are both
+    // confirmed (by the upstream field names inside them) to be inputs to
+    // THIS function -- not `SimPlane::load_coeffs`'s `skywalker_2013.json`
+    // (aerodynamic coefficients) nor the X-Plane DREF configs
+    // (`xplane_plane.json`/`xplane_heli.json`), neither of which this
+    // function, or `load_coeffs`, accepts.
+
+    #[test]
+    fn load_frame_params_reproduces_real_callisto_fixture() {
+        // Callisto: an 8-motor coaxial-octocopter research drone
+        // (https://www.freespaceoperations.com.au/). Values below are
+        // read directly from the real fixture file, not copied from the
+        // ticket text.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("fixtures/Callisto.json"))
+            .expect("workspace root");
+        let mut f = Frame::default();
+        assert!(
+            f.load_frame_params(path.to_str().expect("utf8 path")),
+            "failed to load real fixture {}",
+            path.display()
+        );
+        let m = f.get_model();
+        assert!((m.mass - 32.5).abs() < 1e-4, "mass={}", m.mass);
+        assert!((m.diagonal_size - 1.325).abs() < 1e-4);
+        assert!((m.ref_spd - 25.0).abs() < 1e-4);
+        assert!((m.ref_angle - 30.0).abs() < 1e-4);
+        assert!((m.ref_voltage - 46.9).abs() < 1e-4);
+        assert!((m.ref_current - 65.36).abs() < 1e-4);
+        assert!((m.ref_alt - 26.0).abs() < 1e-4);
+        assert!((m.ref_temp_c - 25.0).abs() < 1e-4);
+        assert!((m.ref_bat_res - 0.024).abs() < 1e-5);
+        assert!((m.max_voltage - 50.4).abs() < 1e-4);
+        assert!((m.batt_capacity_ah - 44.0).abs() < 1e-4);
+        assert!((m.prop_expo - 0.5).abs() < 1e-4);
+        assert!((m.ref_rot_rate - 120.0).abs() < 1e-4);
+        assert!(
+            (m.hover_thr_out - 0.36).abs() < 1e-4,
+            "hoverThrOut={}",
+            m.hover_thr_out
+        );
+        assert!((m.pwm_min - 1000.0).abs() < 1e-4);
+        assert!((m.pwm_max - 1940.0).abs() < 1e-4);
+        assert!((m.spin_min - 0.2).abs() < 1e-4);
+        assert!((m.spin_max - 0.975).abs() < 1e-4);
+        assert!((m.slew_max - 75.0).abs() < 1e-4);
+        assert!(
+            (m.disc_area - 1.82).abs() < 1e-4,
+            "disc_area={}",
+            m.disc_area
+        );
+        assert!((m.mdrag_coef - 0.10).abs() < 1e-4);
+        assert!(
+            (m.num_motors - 8.0).abs() < 1e-4,
+            "num_motors={}",
+            m.num_motors
+        );
+    }
+
+    #[test]
+    fn load_frame_params_reproduces_real_freestyle_fixture() {
+        // freestyle: a small 5-inch FPV racing quad. Values below are
+        // read directly from the real fixture file, not copied from the
+        // ticket text.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("fixtures/freestyle.json"))
+            .expect("workspace root");
+        let mut f = Frame::default();
+        assert!(
+            f.load_frame_params(path.to_str().expect("utf8 path")),
+            "failed to load real fixture {}",
+            path.display()
+        );
+        let m = f.get_model();
+        assert!((m.mass - 0.8).abs() < 1e-4, "mass={}", m.mass);
+        assert!((m.diagonal_size - 0.25).abs() < 1e-4);
+        assert!((m.ref_spd - 20.0).abs() < 1e-4);
+        assert!((m.ref_angle - 45.0).abs() < 1e-4);
+        assert!((m.ref_voltage - 23.2).abs() < 1e-4);
+        assert!((m.ref_current - 5.0).abs() < 1e-4);
+        assert!((m.ref_alt - 607.0).abs() < 1e-4);
+        assert!((m.ref_temp_c - 25.0).abs() < 1e-4);
+        assert!((m.ref_bat_res - 0.0226).abs() < 1e-5);
+        assert!((m.max_voltage - 25.2).abs() < 1e-4);
+        assert!((m.batt_capacity_ah - 0.0).abs() < 1e-4);
+        assert!((m.prop_expo - 0.7).abs() < 1e-4);
+        assert!((m.ref_rot_rate - 700.0).abs() < 1e-4);
+        assert!(
+            (m.hover_thr_out - 0.125).abs() < 1e-4,
+            "hoverThrOut={}",
+            m.hover_thr_out
+        );
+        assert!((m.pwm_min - 1000.0).abs() < 1e-4);
+        assert!((m.pwm_max - 2000.0).abs() < 1e-4);
+        assert!((m.spin_min - 0.01).abs() < 1e-4);
+        assert!((m.spin_max - 0.95).abs() < 1e-4);
+        assert!((m.slew_max - 0.0).abs() < 1e-4);
+        assert!(
+            (m.disc_area - 0.204).abs() < 1e-4,
+            "disc_area={}",
+            m.disc_area
+        );
+        assert!((m.mdrag_coef - 0.10).abs() < 1e-4);
+        assert!(
+            (m.num_motors - 4.0).abs() < 1e-4,
+            "num_motors={}",
+            m.num_motors
+        );
+    }
+
+    #[test]
+    fn callisto_and_freestyle_differ_from_each_other_and_from_default() {
+        // Proves `load_frame_params` isn't silently falling through to the
+        // plain hardcoded default (same discipline as VT-012/VCP-012's own
+        // tailsitter/tiltrotor work): Callisto (32.5 kg, 8 motors,
+        // 1.82 sq m disc, 0.36 hover throttle) and freestyle (0.8 kg,
+        // 4 motors, 0.204 sq m disc, 0.125 hover throttle) are both
+        // genuinely different from each other and from
+        // `FrameModel::default()` (3.0 kg, 4 motors, 0.385 sq m disc,
+        // 0.39 hover throttle -- the plain frame config this port's own
+        // harnesses fall back to for an unrecognised/non-json frame name).
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .expect("workspace root");
+
+        let mut callisto = Frame::default();
+        assert!(callisto.load_frame_params(
+            root.join("fixtures/Callisto.json")
+                .to_str()
+                .expect("utf8 path")
+        ));
+        let mut freestyle = Frame::default();
+        assert!(freestyle.load_frame_params(
+            root.join("fixtures/freestyle.json")
+                .to_str()
+                .expect("utf8 path")
+        ));
+        let default_model = FrameModel::default();
+        let c = callisto.get_model();
+        let fs = freestyle.get_model();
+
+        // Genuinely different from each other.
+        assert!(
+            (c.mass - fs.mass).abs() > 1.0,
+            "mass: {} vs {}",
+            c.mass,
+            fs.mass
+        );
+        assert!(
+            (c.num_motors - fs.num_motors).abs() > 0.5,
+            "num_motors: {} vs {}",
+            c.num_motors,
+            fs.num_motors
+        );
+        assert!(
+            (c.disc_area - fs.disc_area).abs() > 0.5,
+            "disc_area: {} vs {}",
+            c.disc_area,
+            fs.disc_area
+        );
+        assert!(
+            (c.hover_thr_out - fs.hover_thr_out).abs() > 0.1,
+            "hoverThrOut: {} vs {}",
+            c.hover_thr_out,
+            fs.hover_thr_out
+        );
+
+        // Callisto genuinely differs from the plain default on all four.
+        assert!((c.mass - default_model.mass).abs() > 1.0);
+        assert!((c.num_motors - default_model.num_motors).abs() > 0.5);
+        assert!((c.disc_area - default_model.disc_area).abs() > 0.5);
+        assert!((c.hover_thr_out - default_model.hover_thr_out).abs() > 0.01);
+
+        // freestyle genuinely differs from the plain default on mass,
+        // disc_area and hoverThrOut. Its num_motors (4) legitimately
+        // coincides with the default's num_motors (4) -- both are
+        // 4-motor quads -- so that field alone doesn't distinguish them;
+        // the other three do.
+        assert!((fs.mass - default_model.mass).abs() > 1.0);
+        assert!((fs.disc_area - default_model.disc_area).abs() > 0.1);
+        assert!((fs.hover_thr_out - default_model.hover_thr_out).abs() > 0.2);
+    }
 }
