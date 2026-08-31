@@ -1,7 +1,16 @@
 //! Minimal JSON object parser for `Frame::load_frame_params` and
 //! `SimPlane::load_coeffs`. C++ counterpart `sim_json.hpp` (CCP-046/047).
-//! Original uses AP_JSON (nlohmann wrapper). Supports objects, arrays,
-//! numbers, strings, bools, null, and `//` line comments. Enough for
+//! Original is `AP_JSON` (`libraries/AP_JSON`), based on picojson, not
+//! nlohmann as an earlier version of this comment claimed -- re-verified
+//! directly against the pinned upstream source (`AP_JSON.cpp` header
+//! comment: "based on picojson.h cloned from ... kazuho/picojson").
+//! Supports objects, arrays, numbers, strings, bools, null, and `//` or `#`
+//! line comments. Real upstream `AP_JSON::load_json` strips `#`-to-end-of-
+//! line as a preprocessing pass before handing the buffer to its own
+//! (comment-free) parser -- real fixture files such as
+//! `Tools/autotest/models/skywalker_2013.json` use exactly this style, not
+//! `//`. `//` support is this port's own pre-existing addition, kept here
+//! for the synthetic fixture already using it. Enough for
 //! `Tools/autotest/models/*.json`.
 
 #![allow(missing_docs)]
@@ -78,12 +87,29 @@ impl<'a> JsonParser<'a> {
             }
             if c == b'/' && self.i + 1 < b.len() && b[self.i + 1] == b'/' {
                 self.i += 2;
-                while self.i < b.len() && b[self.i] != b'\n' {
-                    self.i += 1;
-                }
+                self.skip_to_eol();
+                continue;
+            }
+            // Real upstream `AP_JSON::load_json` strips `#`-to-end-of-line
+            // before parsing (see module banner). Real fixture files such
+            // as `skywalker_2013.json` rely on this, both for header
+            // comments before the opening `{` (handled here since `skip()`
+            // runs first thing in `parse()`) and for inline comments in the
+            // object body.
+            if c == b'#' {
+                self.i += 1;
+                self.skip_to_eol();
                 continue;
             }
             break;
+        }
+    }
+    /// Advance `self.i` to the next `\n` (or end of input). Shared by the
+    /// `//` and `#` line-comment branches above.
+    fn skip_to_eol(&mut self) {
+        let b = self.s.as_bytes();
+        while self.i < b.len() && b[self.i] != b'\n' {
+            self.i += 1;
         }
     }
     fn parse_value(&mut self) -> Option<JsonValue> {
@@ -283,5 +309,22 @@ mod tests {
         assert!(json_get_vector3(&v, "cg", &mut cg));
         assert!((cg.x + 0.1).abs() < 1e-6);
         assert_eq!(v.get("ok"), Some(&JsonValue::Bool(true)));
+    }
+
+    #[test]
+    fn parses_hash_style_comment() {
+        // Real upstream comment style (see
+        // `Tools/autotest/models/skywalker_2013.json`): `#` to end of line,
+        // including header comments before the opening `{` and inline
+        // comments inside the object body.
+        let text = "# header line one\n# header line two\n\n{\n    \"mass\": 4.5, # inline comment\n    \"CGOffset\": [ -0.1, 0.0, -0.05 ]\n}\n";
+        let mut p = JsonParser::new(text);
+        let v = p.parse().expect("parse");
+        let mut mass = 0.0f32;
+        assert!(json_get_float(&v, "mass", &mut mass));
+        assert!((mass - 4.5).abs() < 1e-6);
+        let mut cg = Vec3::zero();
+        assert!(json_get_vector3(&v, "CGOffset", &mut cg));
+        assert!((cg.x + 0.1).abs() < 1e-6);
     }
 }

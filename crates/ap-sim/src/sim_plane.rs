@@ -22,8 +22,29 @@
 //! Exclusions matching C++ `sim_plane.hpp` (STANDARD config): elevons/vtail/
 //! dspoilers/redundant mixes are available as leftover helpers but the default
 //! `update()` path is four-surface; tailsitter/aerobatic alpha adjustment,
-//! launcher, JSON model loading, ship/tether/slung-payload, and the analog
-//! pitot-offset term are not ported. Atmosphere is held at SSL (C++ sitl_run
+//! launcher, ship/tether/slung-payload, and the analog pitot-offset term are
+//! not ported.
+//!
+//! `load_coeffs()` (real upstream `Plane::load_coeffs` / `AP_JSON`
+//! `:model.json` frame-string suffix) IS ported and tested below -- an
+//! earlier version of this comment claimed JSON model loading was not
+//! ported, which was stale even when written. Coverage now includes a real,
+//! byte-for-byte copy of upstream's own `Tools/autotest/models/
+//! skywalker_2013.json`, the only real native-format Plane coefficient file
+//! anywhere in the pinned upstream tree (confirmed by `grep -rl c_lift_a`
+//! across the whole pinned tree). `Callisto.json`/`freestyle.json` under the
+//! same upstream directory are multicopter frame configs (mass/battery/
+//! motor-count fields, not aerodynamic coefficients) and `xplane_plane.json`/
+//! `xplane_heli.json` are X-Plane DREF maps for an unrelated external-FDM
+//! backend -- none of the three loads via `load_coeffs`, and none should be.
+//!
+//! The real `-heavy`/`-jet` frame-string mass/`thrust_scale` overrides (real
+//! `SIM_Plane.cpp` lines 53-59) are also ported, as
+//! [`SimPlane::with_heavy_frame`] / [`SimPlane::with_jet_frame`] rather than
+//! a `frame_str` re-parse, matching this file's existing explicit-parameter
+//! constructor shape (see [`SimPlane::with_config`]).
+//!
+//! Atmosphere is held at SSL (C++ sitl_run
 //! never calls `update_position()`, so `Aircraft::update_dynamics`'s ISA
 //! recompute also stays at home alt = 0). Wind estimate for the vehicle is a
 //! harness concern: this plant exposes `wind_ef` truth; SitlHarness must not
@@ -403,6 +424,15 @@ pub struct SimPlane {
     pub coefficient: Coefficients,
     pub hover_throttle: f32,
     pub mass: f32,
+    /// Upstream `SIM_Plane.cpp` real line 47: `(mass * GRAVITY_MSS) /
+    /// hover_throttle`. Stored (computed once by [`Self::with_config`] or
+    /// explicitly by [`Self::with_jet_frame`]) rather than derived fresh
+    /// from `mass` on every [`Self::update`] call -- load-bearing for the
+    /// real `-heavy`/`-jet` asymmetry: `-heavy` changes `mass` but real
+    /// upstream's own `-heavy` branch does NOT recompute `thrust_scale`,
+    /// so this field must be able to go stale relative to `mass`, exactly
+    /// as it does in real upstream.
+    pub thrust_scale: f32,
     pub wind_config: WindConfig,
     pub frame_config: FrameConfig,
     pub ground_behavior: GroundBehavior,
@@ -485,8 +515,41 @@ impl SimPlane {
         json_get_float(&obj, "deltaa_max", &mut self.coefficient.deltaa_max);
         json_get_float(&obj, "deltae_max", &mut self.coefficient.deltae_max);
         json_get_float(&obj, "deltar_max", &mut self.coefficient.deltar_max);
-        json_get_vector3(&obj, "cg", &mut self.coefficient.cg_offset);
+        // Real upstream key is "CGOffset" (`SIM_Plane.cpp` real line 191:
+        // `{ "CGOffset", &coefficient.CGOffset, VarType::VECTOR3F }`,
+        // re-verified directly against the pinned source). This function
+        // previously looked up "cg" here -- a porting bug that never
+        // matched any real upstream coefficient file's key name and was
+        // masked by the old synthetic test fixture also (wrongly) using
+        // "cg". Fixed so `load_coeffs` genuinely reproduces real upstream
+        // content instead of merely parsing arbitrary JSON.
+        json_get_vector3(&obj, "CGOffset", &mut self.coefficient.cg_offset);
         true
+    }
+
+    /// Real upstream `-heavy` frame-string suffix (`SIM_Plane.cpp` real
+    /// lines 53-55): `if (strstr(frame_str, "-heavy")) { mass = 8; }`.
+    /// `thrust_scale` is deliberately left UNCHANGED from the default (real
+    /// upstream never recomputes it for `-heavy`, unlike `-jet` -- see
+    /// [`Self::with_jet_frame`] and the module banner for the asymmetry,
+    /// re-verified directly against the pinned upstream source before this
+    /// was written).
+    pub fn with_heavy_frame() -> Self {
+        let mut plane = Self::new();
+        plane.mass = 8.0;
+        plane
+    }
+
+    /// Real upstream `-jet` frame-string suffix (`SIM_Plane.cpp` real lines
+    /// 56-59): a 22kg "jet" (upstream's own comment: "level top speed is
+    /// 102m/s"), with `thrust_scale` recomputed from the new mass:
+    /// `(mass * GRAVITY_MSS) / hover_throttle`. Unlike `-heavy`, upstream
+    /// DOES recompute `thrust_scale` here.
+    pub fn with_jet_frame() -> Self {
+        let mut plane = Self::new();
+        plane.mass = 22.0;
+        plane.thrust_scale = (plane.mass * GRAVITY_MSS) / plane.hover_throttle;
+        plane
     }
 
     pub fn with_config(
@@ -499,6 +562,7 @@ impl SimPlane {
             coefficient: coeffs,
             hover_throttle,
             mass: mass_kg,
+            thrust_scale: (mass_kg * GRAVITY_MSS) / hover_throttle,
             wind_config: WindConfig::default(),
             frame_config: FrameConfig::default(),
             ground_behavior: GroundBehavior::None,
@@ -917,8 +981,10 @@ impl SimPlane {
             self.air_density,
         );
 
-        let thrust_scale = (self.mass * GRAVITY_MSS) / self.hover_throttle;
-        let thrust_newtons = mixed.throttle * thrust_scale;
+        // `thrust_scale` is a stored field (see its doc comment), not
+        // recomputed from `mass` here -- required for the real `-heavy`
+        // asymmetry (mass changes, thrust_scale deliberately does not).
+        let thrust_newtons = mixed.throttle * self.thrust_scale;
         self.accel_body = Vec3::new(thrust_newtons, 0.0, 0.0)
             .plus(force)
             .scaled(1.0 / self.mass);
@@ -1279,12 +1345,83 @@ mod tests {
     fn load_coeffs_overrides_wing_area() {
         let dir = std::env::temp_dir();
         let path = dir.join("ardumaster_plane_coeffs.json");
-        std::fs::write(&path, r#"{"s": 0.99, "c_lift_0": 0.77, "cg": [-0.2, 0.0, -0.04]}"#).unwrap();
+        // Key is "CGOffset", matching real upstream (`SIM_Plane.cpp` real
+        // line 191) -- not "cg". An earlier version of this fixture used
+        // "cg", which happened to still compile and "pass" only because it
+        // silently failed to update `cg_offset` at all; see
+        // `load_coeffs_reproduces_real_skywalker_2013_fixture` for the
+        // round-trip check against real upstream content that caught this.
+        std::fs::write(
+            &path,
+            r#"{"s": 0.99, "c_lift_0": 0.77, "CGOffset": [-0.2, 0.0, -0.04]}"#,
+        )
+        .unwrap();
         let mut plane = SimPlane::new();
         assert!(plane.load_coeffs(path.to_str().unwrap()));
         assert!((plane.coefficient.s - 0.99).abs() < 1e-4);
         assert!((plane.coefficient.c_lift_0 - 0.77).abs() < 1e-4);
         assert!((plane.coefficient.cg_offset.x + 0.2).abs() < 1e-4);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_coeffs_reproduces_real_skywalker_2013_fixture() {
+        // Real, byte-for-byte upstream `Tools/autotest/models/
+        // skywalker_2013.json` (Plane-4.7.0) -- the only real,
+        // native-format Plane coefficient file anywhere in the pinned
+        // upstream tree (confirmed directly: `grep -rl c_lift_a` across the
+        // whole pinned tree finds no second one). `Callisto.json`/
+        // `freestyle.json` in the same upstream directory are multicopter
+        // frame configs (mass/battery/motor-count fields, not aerodynamic
+        // coefficients) and `xplane_plane.json`/`xplane_heli.json` are
+        // X-Plane DREF maps for an unrelated external-FDM backend -- none
+        // of the three loads via `load_coeffs`, and none should be used
+        // here. This port's own `Coefficients::default()` is itself
+        // disclosed as sourced from this exact file, so a correct
+        // `load_coeffs` round-trip must reproduce it exactly.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("fixtures/skywalker_2013.json"))
+            .expect("workspace root");
+        let mut plane = SimPlane::new();
+        assert!(
+            plane.load_coeffs(path.to_str().expect("utf8 path")),
+            "failed to load real fixture {}",
+            path.display()
+        );
+        assert_eq!(plane.coefficient, Coefficients::default());
+    }
+
+    #[test]
+    fn with_heavy_frame_changes_mass_but_not_thrust_scale() {
+        // Real upstream `SIM_Plane.cpp` real lines 53-55: `-heavy` sets
+        // `mass = 8` and does NOT touch `thrust_scale` -- re-verified
+        // directly against the pinned source before writing this test.
+        let default_plane = SimPlane::new();
+        let heavy = SimPlane::with_heavy_frame();
+        assert!(approx(heavy.mass, 8.0, 1e-6));
+        assert!(approx(heavy.thrust_scale, default_plane.thrust_scale, 1e-6));
+        // The stale thrust_scale is NOT what a fresh recompute from the new
+        // mass would give -- that gap is the whole point of the asymmetry.
+        let recomputed_from_new_mass = (heavy.mass * GRAVITY_MSS) / heavy.hover_throttle;
+        assert!(!approx(heavy.thrust_scale, recomputed_from_new_mass, 1e-3));
+    }
+
+    #[test]
+    fn with_jet_frame_recomputes_mass_and_thrust_scale() {
+        // Real upstream `SIM_Plane.cpp` real lines 56-59: `-jet` sets
+        // `mass = 22` AND recomputes
+        // `thrust_scale = (mass * GRAVITY_MSS) / hover_throttle`. Expected
+        // value derived here from the real formula and this port's own
+        // `GRAVITY_MSS`/`hover_throttle` constants, not copied from
+        // anywhere else.
+        let jet = SimPlane::with_jet_frame();
+        assert!(approx(jet.mass, 22.0, 1e-6));
+        let expected_thrust_scale = (22.0_f32 * GRAVITY_MSS) / jet.hover_throttle;
+        assert!(approx(jet.thrust_scale, expected_thrust_scale, 1e-3));
+        // Genuinely different from the default plane's thrust_scale.
+        let default_plane = SimPlane::new();
+        assert!(!approx(jet.thrust_scale, default_plane.thrust_scale, 1e-3));
     }
 }
